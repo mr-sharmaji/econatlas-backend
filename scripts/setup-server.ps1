@@ -87,7 +87,8 @@ if (-not (Test-Path $envFile)) {
         "SUPABASE_KEY=$supaKey",
         "SUPABASE_SERVICE_KEY=$supaSvc"
     )
-    $lines | Set-Content -Path $envFile -Encoding UTF8
+    $text = $lines -join "`n"
+    [System.IO.File]::WriteAllText($envFile, $text)
     Write-Host "  .env created at $envFile"
 }
 else {
