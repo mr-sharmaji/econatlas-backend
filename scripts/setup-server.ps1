@@ -94,11 +94,8 @@ if (-not (Test-Path $envFile)) {
     $supaKey = Read-Host "  SUPABASE_KEY"
     $supaSvc = Read-Host "  SUPABASE_SERVICE_KEY"
 
-    @"
-SUPABASE_URL=$supaUrl
-SUPABASE_KEY=$supaKey
-SUPABASE_SERVICE_KEY=$supaSvc
-"@ | Set-Content -Path $envFile -Encoding UTF8
+    $envContent = "SUPABASE_URL=$supaUrl`nSUPABASE_KEY=$supaKey`nSUPABASE_SERVICE_KEY=$supaSvc"
+    $envContent | Set-Content -Path $envFile -Encoding UTF8
 
     Write-Host "  .env created at $envFile"
 } else {
@@ -177,22 +174,20 @@ if ($status -match "SERVICE_RUNNING") {
 
 # ── 8. Next steps ─────────────────────────────────────────────────────────
 
-Write-Host @"
-
-================================================================================
-  SETUP COMPLETE — Next: Install the GitHub Actions self-hosted runner
-================================================================================
-
-  1. Go to your GitHub repo -> Settings -> Actions -> Runners
-  2. Click 'New self-hosted runner' and select Windows / x64
-  3. Follow the instructions to download and configure the runner
-  4. Install the runner as a service:
-
-       cd C:\actions-runner
-       .\svc.ps1 install
-       .\svc.ps1 start
-
-  Once the runner is active, every push to 'main' will automatically
-  deploy to this machine.
-================================================================================
-"@ -ForegroundColor Cyan
+Write-Host ""
+Write-Host "================================================================================" -ForegroundColor Cyan
+Write-Host "  SETUP COMPLETE -- Next: Install the GitHub Actions self-hosted runner" -ForegroundColor Cyan
+Write-Host "================================================================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  1. Go to your GitHub repo -> Settings -> Actions -> Runners" -ForegroundColor Cyan
+Write-Host "  2. Click 'New self-hosted runner' and select Windows / x64" -ForegroundColor Cyan
+Write-Host "  3. Follow the instructions to download and configure the runner" -ForegroundColor Cyan
+Write-Host "  4. Install the runner as a service:" -ForegroundColor Cyan
+Write-Host "" -ForegroundColor Cyan
+Write-Host "       cd C:\actions-runner" -ForegroundColor Cyan
+Write-Host "       .\svc.ps1 install" -ForegroundColor Cyan
+Write-Host "       .\svc.ps1 start" -ForegroundColor Cyan
+Write-Host "" -ForegroundColor Cyan
+Write-Host "  Once the runner is active, every push to 'main' will automatically" -ForegroundColor Cyan
+Write-Host "  deploy to this machine." -ForegroundColor Cyan
+Write-Host "================================================================================" -ForegroundColor Cyan
