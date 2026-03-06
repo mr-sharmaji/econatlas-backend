@@ -114,7 +114,9 @@ Write-Host "  NSSM found"
 
 Write-Step "Registering Windows service: $ServiceName"
 
+$ErrorActionPreference = "Continue"
 $existingStatus = nssm status $ServiceName 2>&1
+$ErrorActionPreference = "Stop"
 $serviceExists = $existingStatus -match "SERVICE_"
 $doInstall = $true
 
