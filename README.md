@@ -120,6 +120,93 @@ The backend expects the following tables to exist in Supabase:
 - **market_prices** — `id`, `asset`, `price`, `timestamp`
 - **devices** — `id`, `user_id`, `device_token`, `platform`
 
+## Deploying on a Windows Server
+
+This section covers running the backend as a persistent Windows service with
+automatic deployments on every push to `main`.
+
+### Prerequisites
+
+| Requirement | Install |
+|-------------|---------|
+| Python 3.13+ | [python.org](https://www.python.org/downloads/) — check "Add to PATH" |
+| Git | [git-scm.com](https://git-scm.com/download/win) |
+| NSSM | `winget install nssm.nssm` or [nssm.cc](https://nssm.cc/download) |
+
+### One-Time Setup
+
+Open an **Administrator PowerShell** and run:
+
+```powershell
+# Clone the repo
+git clone https://github.com/<your-user>/econatlas-backend.git C:\econatlas-backend
+
+# Run the setup script
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\C:\econatlas-backend\scripts\setup-server.ps1 -RepoUrl https://github.com/<your-user>/econatlas-backend.git
+```
+
+The script will:
+1. Create a Python venv and install dependencies
+2. Prompt you for Supabase credentials (`.env`)
+3. Register `econatlas-backend` as a Windows service via NSSM
+4. Start the service on port **8000**
+
+After setup the API is live at `http://localhost:8000/docs`.
+
+### CI/CD — GitHub Actions Self-Hosted Runner
+
+So that every push to `main` automatically deploys to your Windows machine:
+
+**1. Add a self-hosted runner to your repo**
+
+Go to your GitHub repo → **Settings → Actions → Runners → New self-hosted runner**.
+Select **Windows / x64** and follow the download + configure instructions:
+
+```powershell
+mkdir C:\actions-runner && cd C:\actions-runner
+
+# Download (URL from GitHub UI)
+Invoke-WebRequest -Uri <RUNNER_DOWNLOAD_URL> -OutFile actions-runner.zip
+Expand-Archive -Path actions-runner.zip -DestinationPath .
+
+# Configure
+.\config.cmd --url https://github.com/<your-user>/econatlas-backend --token <TOKEN>
+```
+
+**2. Install the runner as a Windows service**
+
+```powershell
+cd C:\actions-runner
+.\svc.ps1 install
+.\svc.ps1 start
+```
+
+**3. Done!** Every push to `main` now triggers the workflow in
+`.github/workflows/deploy.yml`, which syncs code, updates dependencies,
+and restarts the service — all automatically.
+
+### Managing the Service
+
+```powershell
+nssm status econatlas-backend    # Check status
+nssm restart econatlas-backend   # Restart
+nssm stop econatlas-backend      # Stop
+nssm start econatlas-backend     # Start
+nssm edit econatlas-backend      # Edit config (GUI)
+```
+
+Logs are written to `C:\econatlas-backend\logs\`.
+
+### Firewall (optional — expose to LAN/internet)
+
+```powershell
+New-NetFirewallRule -DisplayName "EconAtlas API" `
+  -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow
+```
+
+The API is then accessible at `http://<WINDOWS_IP>:8000` from other devices.
+
 ## Future Roadmap
 
 - AI event extraction pipelines
