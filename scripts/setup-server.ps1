@@ -173,23 +173,3 @@ else {
     Write-Host "  Service did not start. Check logs:" -ForegroundColor Yellow
     Write-Host "    $DeployDir\logs\service-stderr.log"
 }
-
-# ---------- 8. Next steps ----------
-
-Write-Host ""
-Write-Host "================================================================================" -ForegroundColor Cyan
-Write-Host "  SETUP COMPLETE -- Next: Install the GitHub Actions self-hosted runner" -ForegroundColor Cyan
-Write-Host "================================================================================" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "  1. Go to your GitHub repo -> Settings -> Actions -> Runners" -ForegroundColor Cyan
-Write-Host "  2. Click 'New self-hosted runner' and select Windows / x64" -ForegroundColor Cyan
-Write-Host "  3. Follow the instructions to download and configure the runner" -ForegroundColor Cyan
-Write-Host "  4. Install the runner as a service:" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "       cd C:\actions-runner" -ForegroundColor Cyan
-Write-Host "       .\svc.ps1 install" -ForegroundColor Cyan
-Write-Host "       .\svc.ps1 start" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "  Once the runner is active, every push to main will automatically" -ForegroundColor Cyan
-Write-Host "  deploy to this machine." -ForegroundColor Cyan
-Write-Host "================================================================================" -ForegroundColor Cyan
