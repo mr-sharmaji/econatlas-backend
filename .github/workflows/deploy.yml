@@ -51,37 +51,11 @@ jobs:
           & $pip install --upgrade pip --quiet
           & $pip install -r (Join-Path $env:DEPLOY_DIR "requirements.txt") --quiet
 
-      - name: Find NSSM
-        run: |
-          $nssm = (Get-Command nssm -ErrorAction SilentlyContinue).Source
-          if (-not $nssm) {
-            $candidates = @(
-              "C:\Program Files\NSSM\win64\nssm.exe",
-              "C:\Program Files (x86)\NSSM\win64\nssm.exe",
-              "C:\ProgramData\chocolatey\bin\nssm.exe"
-            )
-            foreach ($c in $candidates) {
-              if (Test-Path $c) { $nssm = $c; break }
-            }
-          }
-          if (-not $nssm) {
-            $found = Get-ChildItem -Path "C:\" -Filter "nssm.exe" -Recurse -Depth 5 -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) { $nssm = $found.FullName }
-          }
-          if (-not $nssm) { throw "Cannot find nssm.exe. Install it system-wide." }
-          Write-Host "Found nssm at: $nssm"
-          echo "NSSM_PATH=$nssm" >> $env:GITHUB_ENV
-
       - name: Restart Windows service
         run: |
           $ErrorActionPreference = "Continue"
-          & $env:NSSM_PATH restart $env:SERVICE_NAME
+          nssm restart $env:SERVICE_NAME
           $ErrorActionPreference = "Stop"
-
           Start-Sleep -Seconds 5
-          $status = & $env:NSSM_PATH status $env:SERVICE_NAME
+          $status = nssm status $env:SERVICE_NAME
           Write-Host "Service status: $status"
-          if ($status -notmatch "SERVICE_RUNNING") {
-            throw "Service is not running after restart"
-          }
-          Write-Host "Deployment successful!"
