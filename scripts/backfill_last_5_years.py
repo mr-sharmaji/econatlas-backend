@@ -407,9 +407,13 @@ class HistoricalBackfiller(BaseScraper):
                             logger.exception("Market history fetch failed for %s", symbol)
                             break
                         time.sleep(0.3)
-                # Nifty Smallcap 250: if Yahoo returned no history, use NSE India API
-                if not symbol_rows and symbol == SMALLCAP_250_SYMBOL:
-                    logger.info("%s: trying NSE India as fallback (Yahoo returned no history)", asset)
+                # Nifty Smallcap 250: Yahoo often returns only 1 point (no real history). Use NSE when Yahoo has ≤1 point.
+                if symbol == SMALLCAP_250_SYMBOL and len(symbol_rows) <= 1:
+                    if symbol_rows:
+                        logger.info("%s: Yahoo returned only %d point(s), using NSE India for full history", asset, len(symbol_rows))
+                    else:
+                        logger.info("%s: trying NSE India as fallback (Yahoo returned no history)", asset)
+                    symbol_rows = []
                     for range_start, range_end in yearly:
                         points = self._fetch_nse_index_series(
                             NSE_INDEX_NAME_SMALLCAP_250, range_start, range_end
