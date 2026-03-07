@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
-import time
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -55,57 +53,6 @@ async def _startup_collection() -> None:
     logger.info("Startup data collection complete.")
 
 
-def _run_async_in_new_loop(coro) -> None:
-    """Run an async coroutine in a new event loop (in a separate thread)."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(coro)
-    finally:
-        loop.close()
-
-
-def _run_market_threaded() -> None:
-    _run_async_in_new_loop(_run_market())
-
-
-def _run_commodity_threaded() -> None:
-    _run_async_in_new_loop(_run_commodity())
-
-
-def _run_macro_threaded() -> None:
-    _run_async_in_new_loop(_run_macro())
-
-
-def _run_news_threaded() -> None:
-    _run_async_in_new_loop(_run_news())
-
-
-async def _run_market_scheduled() -> None:
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _run_market_threaded)
-
-
-async def _run_commodity_scheduled() -> None:
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _run_commodity_threaded)
-
-
-async def _run_macro_scheduled() -> None:
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _run_macro_threaded)
-
-
-async def _run_news_scheduled() -> None:
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _run_news_threaded)
-
-
-def _startup_collection_threaded() -> None:
-    time.sleep(2)
-    _run_async_in_new_loop(_startup_collection())
-
-
 def start_scheduler() -> None:
     global _scheduler
     if _scheduler is not None:
@@ -119,14 +66,17 @@ def start_scheduler() -> None:
     )
 
     _scheduler = AsyncIOScheduler(timezone="UTC")
-    _scheduler.add_job(_run_market_scheduled, "interval", minutes=intervals["market"], id="market", replace_existing=True)
-    _scheduler.add_job(_run_commodity_scheduled, "interval", minutes=intervals["commodity"], id="commodity", replace_existing=True)
-    _scheduler.add_job(_run_macro_scheduled, "interval", minutes=intervals["macro"], id="macro", replace_existing=True)
-    _scheduler.add_job(_run_news_scheduled, "interval", minutes=intervals["news"], id="news", replace_existing=True)
+    _scheduler.add_job(_run_market, "interval", minutes=intervals["market"], id="market", replace_existing=True)
+    _scheduler.add_job(_run_commodity, "interval", minutes=intervals["commodity"], id="commodity", replace_existing=True)
+    _scheduler.add_job(_run_macro, "interval", minutes=intervals["macro"], id="macro", replace_existing=True)
+    _scheduler.add_job(_run_news, "interval", minutes=intervals["news"], id="news", replace_existing=True)
     _scheduler.start()
 
-    thread = threading.Thread(target=_startup_collection_threaded, daemon=True)
-    thread.start()
+    async def _deferred_startup() -> None:
+        await asyncio.sleep(2)
+        await _startup_collection()
+
+    asyncio.create_task(_deferred_startup())
 
 
 def stop_scheduler() -> None:

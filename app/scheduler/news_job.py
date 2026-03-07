@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass
@@ -298,10 +299,18 @@ def _detect_impact(text: str) -> str:
 _scraper = NewsScraper()
 
 
+def _fetch_news_data_sync() -> tuple:
+    """Sync fetch and transform; run in thread executor so main loop is not blocked. Returns (records, events)."""
+    articles = _scraper.fetch_all()
+    records = _scraper.to_records(articles)
+    events = _scraper.generate_events(articles)
+    return (records, events)
+
+
 async def run_news_job() -> None:
     try:
-        articles = _scraper.fetch_all()
-        records = _scraper.to_records(articles)
+        loop = asyncio.get_event_loop()
+        records, events = await loop.run_in_executor(None, _fetch_news_data_sync)
         accepted = 0
         for rec in records:
             try:
@@ -309,8 +318,6 @@ async def run_news_job() -> None:
                 accepted += 1
             except Exception:
                 logger.warning("News upsert failed for: %s", rec.get("title", "")[:60])
-
-        events = _scraper.generate_events(articles)
         ev_ok = 0
         for ev in events:
             try:
@@ -318,6 +325,6 @@ async def run_news_job() -> None:
                 ev_ok += 1
             except Exception:
                 pass
-        logger.info("News job complete: articles=%d accepted=%d events=%d", len(articles), accepted, ev_ok)
+        logger.info("News job complete: articles=%d accepted=%d events=%d", len(records), accepted, ev_ok)
     except Exception:
         logger.exception("News job failed")

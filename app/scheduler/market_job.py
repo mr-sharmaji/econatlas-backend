@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import logging
@@ -229,23 +230,29 @@ class MarketScraper(BaseScraper):
 _scraper = MarketScraper()
 
 
+def _fetch_market_rows_sync() -> List[Dict]:
+    """Sync scrape; run in thread executor so main loop is not blocked."""
+    items = _scraper.fetch_all()
+    ts = _scraper.utc_now().isoformat()
+    return [
+        {
+            "asset": it["asset"],
+            "price": it["price"],
+            "timestamp": ts,
+            "source": it.get("source"),
+            "instrument_type": it["instrument_type"],
+            "unit": it.get("unit"),
+            "change_percent": it.get("change_percent"),
+            "previous_close": it.get("previous_close"),
+        }
+        for it in items
+    ]
+
+
 async def run_market_job() -> None:
     try:
-        items = _scraper.fetch_all()
-        ts = _scraper.utc_now().isoformat()
-        rows = [
-            {
-                "asset": it["asset"],
-                "price": it["price"],
-                "timestamp": ts,
-                "source": it.get("source"),
-                "instrument_type": it["instrument_type"],
-                "unit": it.get("unit"),
-                "change_percent": it.get("change_percent"),
-                "previous_close": it.get("previous_close"),
-            }
-            for it in items
-        ]
+        loop = asyncio.get_event_loop()
+        rows = await loop.run_in_executor(None, _fetch_market_rows_sync)
         count = await market_service.insert_prices_batch(rows)
         logger.info("Market job complete: %d items inserted", count)
     except Exception:

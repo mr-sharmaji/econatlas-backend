@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import logging
@@ -136,9 +137,15 @@ class MacroScraper(BaseScraper):
 _scraper = MacroScraper()
 
 
+def _fetch_macro_items_sync() -> list:
+    """Sync scrape; run in thread executor so main loop is not blocked."""
+    return _scraper.fetch_all()
+
+
 async def run_macro_job() -> None:
     try:
-        items = _scraper.fetch_all()
+        loop = asyncio.get_event_loop()
+        items = await loop.run_in_executor(None, _fetch_macro_items_sync)
         for item in items:
             await macro_service.insert_indicator(item)
         logger.info("Macro job complete: %d items", len(items))
