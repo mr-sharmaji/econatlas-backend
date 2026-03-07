@@ -48,6 +48,8 @@ INDEX_MIN_YEAR: dict[str, int] = {
     "NIFTYMIDCAP150.NS": 2019,
     "NIFTYSMLCAP250.NS": 2023,
 }
+# For this symbol Yahoo often returns 400 per year but 200 with data when requesting full range in one call
+SMALLCAP_250_SYMBOL = "NIFTYSMLCAP250.NS"
 
 FX_SYMBOLS = {
     "USDINR=X": "USD/INR",
@@ -259,7 +261,9 @@ class HistoricalBackfiller(BaseScraper):
                 if min_year is not None:
                     logger.info("%s: requesting from year %d only (%d chunks)", asset, min_year, len(yearly))
                 symbol_rows: list[dict[str, Any]] = []
-                for range_start, range_end in yearly:
+                # Nifty Smallcap 250: Yahoo often returns 400 per year but 200 with data for full range
+                if symbol == SMALLCAP_250_SYMBOL and yearly:
+                    range_start, range_end = yearly[0][0], yearly[-1][1]
                     try:
                         points = self._fetch_yahoo_series(symbol, range_start, range_end)
                         for ts, price in points:
@@ -275,20 +279,45 @@ class HistoricalBackfiller(BaseScraper):
                                     "previous_close": None,
                                 }
                             )
+                        if points:
+                            logger.info("%s: got %d points from single full-range request", asset, len(points))
+                        time.sleep(0.5)
                     except requests.exceptions.HTTPError as e:
                         if e.response is not None and e.response.status_code == 400:
-                            logger.warning(
-                                "Skipping %s–%s for %s (no data for this period, e.g. index launched later)",
-                                range_start.date(),
-                                range_end.date(),
-                                symbol,
-                            )
-                            continue
-                        raise
-                    except Exception:
-                        logger.exception("Market history fetch failed for %s", symbol)
-                        break
-                    time.sleep(0.3)
+                            logger.warning("%s: full-range request 400, falling back to year-by-year", asset)
+                        else:
+                            raise
+                if not symbol_rows:
+                    for range_start, range_end in yearly:
+                        try:
+                            points = self._fetch_yahoo_series(symbol, range_start, range_end)
+                            for ts, price in points:
+                                symbol_rows.append(
+                                    {
+                                        "asset": asset,
+                                        "price": price,
+                                        "timestamp": ts.isoformat(),
+                                        "source": "yahoo_chart_api_backfill",
+                                        "instrument_type": instrument_type,
+                                        "unit": unit,
+                                        "change_percent": None,
+                                        "previous_close": None,
+                                    }
+                                )
+                        except requests.exceptions.HTTPError as e:
+                            if e.response is not None and e.response.status_code == 400:
+                                logger.warning(
+                                    "Skipping %s–%s for %s (no data for this period, e.g. index launched later)",
+                                    range_start.date(),
+                                    range_end.date(),
+                                    symbol,
+                                )
+                                continue
+                            raise
+                        except Exception:
+                            logger.exception("Market history fetch failed for %s", symbol)
+                            break
+                        time.sleep(0.3)
                 _fill_change_percent(symbol_rows)
                 rows.extend(symbol_rows)
             if batch_num < math.ceil(len(items) / self.config.api_batch_size):
