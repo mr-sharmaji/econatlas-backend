@@ -44,13 +44,17 @@ INDEX_SYMBOLS = {
     "NIFTYSMLCAP250.NS": "Nifty Smallcap 250",
 }
 # Yahoo returns 400 for older years on these NSE indices; only request from min_year to avoid 400s.
+# Smallcap 250 has no min_year; we use the global backfill range and skip 400s per chunk.
 INDEX_MIN_YEAR: dict[str, int] = {
     "NIFTYMIDCAP150.NS": 2019,
-    "NIFTYSMLCAP250.NS": 2023,
 }
-# Nifty Smallcap 250: Yahoo chart API returns no history; we use NSE India as fallback (see _fetch_nse_index_series).
+# Nifty Smallcap 250: index symbol returns ~1 point from Yahoo; we try NSE, optional jugaad-data, then ETF.
+# Other known sources (not wired here): Kaggle dataset "NIFTY SMALLCAP 250 Time Series 2000-23"; Investing.com CSV;
+# Twelve Data / INDstocks (paid); niftyindices.com POST (jugaad-data uses this; may 500 from some networks).
 SMALLCAP_250_SYMBOL = "NIFTYSMLCAP250.NS"
-# NSE India historical index API (requires session cookie from visiting nseindia.com first).
+# ETF tracking Nifty Smallcap 250 (Yahoo has history; use when index/NSE/jugaad fail). Launched Feb 2023.
+SMALLCAP_250_ETF_SYMBOL = "HDFCSML250.NS"
+# NSE India historical index API (requires session cookie first). Verified: returns 404 as of 2026; fallback is best-effort.
 NSE_BASE_URL = "https://www.nseindia.com"
 NSE_INDEX_HISTORY_PATH = "api/historical/indicesHistory"
 NSE_INDEX_NAME_SMALLCAP_250 = "NIFTY SMALLCAP 250"
@@ -249,6 +253,12 @@ class HistoricalBackfiller(BaseScraper):
             resp = self.session.get(url, params=params, headers=nse_headers, timeout=20)
             resp.raise_for_status()
             data = resp.json()
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                logger.warning("NSE index history returned 404 for %s (endpoint currently unavailable)", index_name)
+            else:
+                logger.warning("NSE index history request failed: %s", e)
+            return out
         except (requests.RequestException, ValueError) as e:
             logger.warning("NSE index history request failed: %s", e)
             return out
@@ -261,6 +271,50 @@ class HistoricalBackfiller(BaseScraper):
             try:
                 price = float(close_raw)
             except (TypeError, ValueError):
+                continue
+            if not math.isfinite(price) or price <= 0:
+                continue
+            if self.start_ts <= ts <= self.end_ts:
+                out.append((ts, price))
+        out.sort(key=lambda x: x[0])
+        return out
+
+    def _fetch_jugaad_index_series(
+        self,
+        index_name: str,
+        range_start: datetime,
+        range_end: datetime,
+    ) -> list[tuple[datetime, float]]:
+        """Fetch index history via jugaad-data (niftyindices.com). Optional: requires pip install jugaad-data."""
+        try:
+            from jugaad_data.nse import index_df
+        except ImportError:
+            return []
+        out: list[tuple[datetime, float]] = []
+        try:
+            df = index_df(
+                index_name,
+                from_date=range_start.date(),
+                to_date=range_end.date(),
+            )
+        except Exception as e:
+            logger.warning("jugaad_data index_df failed for %s: %s", index_name, e)
+            return out
+        date_col = "HistoricalDate" if "HistoricalDate" in df.columns else "DATE"
+        close_col = "CLOSE"
+        if date_col not in df.columns or close_col not in df.columns:
+            return out
+        for _, row in df.iterrows():
+            try:
+                d = row[date_col]
+                if hasattr(d, "to_pydatetime"):
+                    ts = d.to_pydatetime().replace(tzinfo=UTC)
+                elif isinstance(d, datetime):
+                    ts = d if d.tzinfo else d.replace(tzinfo=UTC)
+                else:
+                    continue
+                price = float(row[close_col])
+            except (TypeError, ValueError, KeyError):
                 continue
             if not math.isfinite(price) or price <= 0:
                 continue
@@ -440,6 +494,71 @@ class HistoricalBackfiller(BaseScraper):
                                 range_end.date(),
                             )
                         time.sleep(0.5)
+                # Nifty Smallcap 250: try jugaad-data (niftyindices.com) if available; gives real index levels.
+                if symbol == SMALLCAP_250_SYMBOL and len(symbol_rows) <= 1:
+                    logger.info("%s: trying jugaad-data (niftyindices.com) for index history", asset)
+                    symbol_rows = []
+                    for range_start, range_end in yearly:
+                        points = self._fetch_jugaad_index_series(
+                            NSE_INDEX_NAME_SMALLCAP_250, range_start, range_end
+                        )
+                        for ts, price in points:
+                            symbol_rows.append(
+                                {
+                                    "asset": asset,
+                                    "price": price,
+                                    "timestamp": ts.isoformat(),
+                                    "source": "jugaad_niftyindices_backfill",
+                                    "instrument_type": instrument_type,
+                                    "unit": unit,
+                                    "change_percent": None,
+                                    "previous_close": None,
+                                }
+                            )
+                        if points:
+                            logger.info(
+                                "%s: jugaad_data returned %d points for %s–%s",
+                                asset,
+                                len(points),
+                                range_start.date(),
+                                range_end.date(),
+                            )
+                        time.sleep(0.3)
+                # Nifty Smallcap 250: if still no history, use ETF as proxy (same index, Yahoo has ETF history).
+                if symbol == SMALLCAP_250_SYMBOL and len(symbol_rows) <= 1:
+                    logger.info("%s: using Yahoo ETF %s as proxy for history", asset, SMALLCAP_250_ETF_SYMBOL)
+                    symbol_rows = []
+                    for range_start, range_end in yearly:
+                        try:
+                            points = self._fetch_yahoo_series(
+                                SMALLCAP_250_ETF_SYMBOL, range_start, range_end
+                            )
+                            for ts, price in points:
+                                symbol_rows.append(
+                                    {
+                                        "asset": asset,
+                                        "price": price,
+                                        "timestamp": ts.isoformat(),
+                                        "source": "yahoo_etf_backfill",
+                                        "instrument_type": instrument_type,
+                                        "unit": unit,
+                                        "change_percent": None,
+                                        "previous_close": None,
+                                    }
+                                )
+                        except requests.exceptions.HTTPError as e:
+                            if e.response is not None and e.response.status_code == 400:
+                                logger.warning(
+                                    "Skipping %s–%s for %s (no data for this period)",
+                                    range_start.date(),
+                                    range_end.date(),
+                                    SMALLCAP_250_ETF_SYMBOL,
+                                )
+                                continue
+                            raise
+                        time.sleep(0.3)
+                    if symbol_rows:
+                        logger.info("%s: got %d points from ETF proxy", asset, len(symbol_rows))
                 _fill_change_percent(symbol_rows)
                 rows.extend(symbol_rows)
             if batch_num < math.ceil(len(items) / self.config.api_batch_size):
