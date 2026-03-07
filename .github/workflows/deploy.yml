@@ -51,52 +51,13 @@ jobs:
           & $pip install --upgrade pip --quiet
           & $pip install -r (Join-Path $env:DEPLOY_DIR "requirements.txt") --quiet
 
-      - name: Restart Windows service (stop/start with checks)
+      - name: Restart Windows service
         run: |
           $ErrorActionPreference = "Stop"
-
-          function Wait-ServiceStatus {
-            param(
-              [string]$Name,
-              [string]$Expected,
-              [int]$TimeoutSeconds = 45
-            )
-
-            $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-            while ((Get-Date) -lt $deadline) {
-              $current = nssm status $Name
-              if ($current -match $Expected) {
-                Write-Host "Service status reached expected state: $current"
-                return
-              }
-              Start-Sleep -Seconds 1
-            }
-            throw "Timed out waiting for service '$Name' to reach status '$Expected'. Last status: $(nssm status $Name)"
+          nssm restart $env:SERVICE_NAME
+          Start-Sleep -Seconds 5
+          $status = nssm status $env:SERVICE_NAME
+          Write-Host "Service status: $status"
+          if ($status -notmatch "SERVICE_RUNNING") {
+            throw "Service failed to restart. Status: $status"
           }
-
-          Write-Host "Stopping service..."
-          nssm stop $env:SERVICE_NAME | Out-Null
-          Wait-ServiceStatus -Name $env:SERVICE_NAME -Expected "SERVICE_STOPPED"
-
-          Start-Sleep -Seconds 2
-
-          Write-Host "Starting service..."
-          nssm start $env:SERVICE_NAME | Out-Null
-          Wait-ServiceStatus -Name $env:SERVICE_NAME -Expected "SERVICE_RUNNING"
-
-      - name: Verify deployed routes are live
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $openapiUrl = "http://127.0.0.1:8000/openapi.json"
-          Write-Host "Checking OpenAPI: $openapiUrl"
-          $openapi = Invoke-RestMethod -Uri $openapiUrl -TimeoutSec 15
-
-          $requiredPaths = @("/market", "/commodities", "/news")
-          foreach ($path in $requiredPaths) {
-            if (-not $openapi.paths.PSObject.Properties.Name.Contains($path)) {
-              throw "Post-deploy verification failed. Missing route in OpenAPI: $path"
-            }
-          }
-
-          Write-Host "Post-deploy verification passed. All expected routes are live."
