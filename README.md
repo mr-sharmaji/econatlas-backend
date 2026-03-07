@@ -48,13 +48,21 @@ app/
 │   └── routes/
 │       ├── health.py        # GET /health
 │       ├── events.py        # POST & GET /events
-│       └── macro.py         # GET /macro
+│       ├── macro.py         # POST & GET /macro
+│       ├── market.py        # POST & GET /market, GET /market/latest
+│       ├── commodities.py   # POST & GET /commodities, GET /commodities/latest
+│       └── news.py          # POST & GET /news
 ├── schemas/
 │   ├── event_schema.py      # Pydantic models for events
-│   └── macro_schema.py      # Pydantic models for macro indicators
+│   ├── macro_schema.py      # Pydantic models for macro indicators
+│   ├── market_schema.py     # Pydantic models for market price responses
+│   ├── news_schema.py       # Pydantic models for news article responses
+│   └── ingest_schema.py     # Shared ingestion payload/ack models
 ├── services/
 │   ├── event_service.py     # business logic — events
-│   └── macro_service.py     # business logic — macro indicators
+│   ├── macro_service.py     # business logic — macro indicators
+│   ├── market_service.py    # persistence for market/commodity prices
+│   └── news_service.py      # persistence for news article records
 └── main.py                  # FastAPI app factory
 ```
 
@@ -104,21 +112,38 @@ docker run -p 8000:8000 --env-file .env econatlas-backend
 
 ## API Endpoints
 
-| Method | Path      | Description                      |
-|--------|-----------|----------------------------------|
-| GET    | /health   | Health check                     |
-| POST   | /events   | Create a new economic event      |
-| GET    | /events   | List recent economic events      |
-| GET    | /macro    | List macro-economic indicators   |
+| Method | Path                | Description                                         |
+|--------|---------------------|-----------------------------------------------------|
+| GET    | /health             | Health check                                        |
+| POST   | /events             | Create a new economic event                         |
+| GET    | /events             | List recent economic events                         |
+| POST   | /market             | Ingest normalized market record                     |
+| GET    | /market             | List market prices (filter by instrument_type, asset) |
+| GET    | /market/latest      | Latest price per asset (de-duplicated)              |
+| POST   | /commodities        | Ingest normalized commodity record                  |
+| GET    | /commodities        | List commodity prices (filter by asset)             |
+| GET    | /commodities/latest | Latest price per commodity asset                    |
+| POST   | /news               | Ingest news record and emit event                   |
+| GET    | /news               | List news articles (filter by entity, impact, source) |
+| POST   | /macro              | Ingest macro-economic indicator                     |
+| GET    | /macro              | List macro-economic indicators (filter by country)  |
 
 ## Supabase Tables
 
 The backend expects the following tables to exist in Supabase:
 
 - **economic_events** — `id`, `event_type`, `entity`, `impact`, `confidence`, `created_at`
-- **macro_indicators** — `id`, `indicator_name`, `value`, `country`, `timestamp`
-- **market_prices** — `id`, `asset`, `price`, `timestamp`
+- **macro_indicators** — `id`, `indicator_name`, `value`, `country`, `timestamp`, `unit`, `source`
+- **market_prices** — `id`, `asset`, `price`, `timestamp`, `source`, `instrument_type`, `unit`
+- **news_articles** — `id`, `title`, `summary`, `body`, `timestamp`, `source`, `url`, `primary_entity`, `impact`, `confidence`
 - **devices** — `id`, `user_id`, `device_token`, `platform`
+
+## Ingestion Notes
+
+- The scraper can post directly to `/market`, `/commodities`, `/news`, and `/macro`.
+- Market and commodity routes persist both a price row (`market_prices`) and an event row (`economic_events`).
+- News ingestion tries to store the article in `news_articles` and always emits an event in `economic_events`.
+- The legacy `/events` endpoint remains available for generic event ingestion and compatibility.
 
 ## Deploying on a Windows Server
 

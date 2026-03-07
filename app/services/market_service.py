@@ -23,3 +23,53 @@ async def insert_price(
     }
     result = client.table(TABLE).insert(payload).execute()
     return result.data[0]
+
+
+async def get_prices(
+    instrument_type: str | None = None,
+    asset: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """Fetch market prices with optional filters, ordered by most recent."""
+    client = get_supabase()
+    query = client.table(TABLE).select("*")
+
+    if instrument_type:
+        query = query.eq("instrument_type", instrument_type)
+    if asset:
+        query = query.eq("asset", asset.lower())
+
+    result = (
+        query
+        .order("timestamp", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    return result.data
+
+
+async def get_latest_prices(
+    instrument_type: str | None = None,
+) -> list[dict]:
+    """Return the single most recent price per asset, optionally filtered by type.
+
+    Uses a large fetch window then deduplicates in Python since Supabase
+    REST doesn't support DISTINCT ON directly.
+    """
+    client = get_supabase()
+    query = client.table(TABLE).select("*")
+
+    if instrument_type:
+        query = query.eq("instrument_type", instrument_type)
+
+    result = query.order("timestamp", desc=True).limit(500).execute()
+
+    seen: set[str] = set()
+    latest: list[dict] = []
+    for row in result.data:
+        key = row["asset"]
+        if key not in seen:
+            seen.add(key)
+            latest.append(row)
+    return latest

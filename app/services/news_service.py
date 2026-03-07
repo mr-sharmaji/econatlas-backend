@@ -25,10 +25,36 @@ async def upsert_article(payload: dict) -> dict:
         try:
             result = client.table(TABLE).upsert(filtered_payload, on_conflict="url").execute()
         except Exception as exc:
-            # Common case: on_conflict target missing/invalid in DB schema.
             logger.warning("News upsert failed; falling back to insert: %s", str(exc))
             result = client.table(TABLE).insert(filtered_payload).execute()
     else:
         result = client.table(TABLE).insert(filtered_payload).execute()
 
     return result.data[0]
+
+
+async def get_articles(
+    entity: str | None = None,
+    impact: str | None = None,
+    source: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """Fetch news articles with optional filters, ordered by most recent."""
+    client = get_supabase()
+    query = client.table(TABLE).select("*")
+
+    if entity:
+        query = query.eq("primary_entity", entity)
+    if impact:
+        query = query.eq("impact", impact)
+    if source:
+        query = query.eq("source", source)
+
+    result = (
+        query
+        .order("timestamp", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    )
+    return result.data

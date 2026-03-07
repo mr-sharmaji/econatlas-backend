@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.ingest_schema import CommodityIngestPayload, IngestAck
+from app.schemas.market_schema import MarketPriceListResponse, MarketPriceResponse
 from app.services import event_service, market_service
 
 router = APIRouter(prefix="/commodities", tags=["commodities"])
@@ -36,5 +37,36 @@ async def ingest_commodity(payload: CommodityIngestPayload) -> IngestAck:
             }
         )
         return IngestAck(route="/commodities", event_id=row["id"])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("", response_model=MarketPriceListResponse)
+async def list_commodities(
+    asset: str | None = Query(default=None, description="gold, silver, crude oil, natural gas, copper"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> MarketPriceListResponse:
+    """Return commodity prices with optional asset filter."""
+    try:
+        rows = await market_service.get_prices(
+            instrument_type="commodity",
+            asset=asset,
+            limit=limit,
+            offset=offset,
+        )
+        prices = [MarketPriceResponse(**r) for r in rows]
+        return MarketPriceListResponse(prices=prices, count=len(prices))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/latest", response_model=MarketPriceListResponse)
+async def latest_commodities() -> MarketPriceListResponse:
+    """Return the most recent price for each commodity asset."""
+    try:
+        rows = await market_service.get_latest_prices(instrument_type="commodity")
+        prices = [MarketPriceResponse(**r) for r in rows]
+        return MarketPriceListResponse(prices=prices, count=len(prices))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
