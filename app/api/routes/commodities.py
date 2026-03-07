@@ -26,6 +26,8 @@ async def ingest_commodity(payload: CommodityIngestPayload) -> IngestAck:
             source=payload.source,
             instrument_type="commodity",
             unit=COMMODITY_UNITS.get(payload.asset.lower(), "usd"),
+            change_percent=payload.change_percent,
+            previous_close=payload.previous_close,
         )
 
         row = await event_service.insert_event_dict(

@@ -10,6 +10,8 @@ async def insert_price(
     source: str | None = None,
     instrument_type: str | None = None,
     unit: str | None = None,
+    change_percent: float | None = None,
+    previous_close: float | None = None,
 ) -> dict:
     """Insert one market/commodity price point and return created row."""
     client = get_supabase()
@@ -20,6 +22,8 @@ async def insert_price(
         "source": source,
         "instrument_type": instrument_type,
         "unit": unit,
+        "change_percent": change_percent,
+        "previous_close": previous_close,
     }
     result = client.table(TABLE).insert(payload).execute()
     return result.data[0]
@@ -38,7 +42,7 @@ async def get_prices(
     if instrument_type:
         query = query.eq("instrument_type", instrument_type)
     if asset:
-        query = query.eq("asset", asset.lower())
+        query = query.eq("asset", asset)
 
     result = (
         query

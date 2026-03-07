@@ -13,6 +13,8 @@ class MarketPriceResponse(BaseModel):
     source: str | None = None
     instrument_type: str | None = None
     unit: str | None = None
+    change_percent: float | None = None
+    previous_close: float | None = None
 
 
 class MarketPriceListResponse(BaseModel):

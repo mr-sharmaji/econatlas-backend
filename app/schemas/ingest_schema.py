@@ -21,6 +21,8 @@ class MarketIngestPayload(BaseModel):
     unit: str | None = None
     timestamp: datetime
     source: str | None = None
+    change_percent: float | None = None
+    previous_close: float | None = None
 
 
 class CommodityIngestPayload(BaseModel):
@@ -31,6 +33,8 @@ class CommodityIngestPayload(BaseModel):
     original_value: float | None = None
     original_currency: str | None = None
     fx_rate_used: float | None = None
+    change_percent: float | None = None
+    previous_close: float | None = None
 
 
 class NewsIngestPayload(BaseModel):
