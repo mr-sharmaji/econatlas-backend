@@ -146,22 +146,53 @@ async def get_prices(
 async def get_latest_prices(
     instrument_type: str | None = None,
 ) -> list[dict]:
-    """Return the single most recent price per asset, optionally filtered by type."""
+    """Return the single most recent price per asset, optionally filtered by type.
+    When change_percent is null, it is filled from the previous day's price so the app can show % change (e.g. Nifty Bank)."""
     pool = await get_pool()
     if instrument_type:
         rows = await pool.fetch(
-            f"""
-            SELECT DISTINCT ON (asset) * FROM {TABLE}
-            WHERE instrument_type = $1
-            ORDER BY asset, timestamp DESC
+            """
+            WITH ranked AS (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY asset, instrument_type ORDER BY timestamp DESC) AS rn
+                FROM market_prices
+                WHERE instrument_type = $1
+            )
+            SELECT id, asset, price, timestamp, source, instrument_type, unit, change_percent, previous_close,
+                   (SELECT price FROM market_prices m2
+                    WHERE m2.asset = ranked.asset AND m2.instrument_type = ranked.instrument_type
+                      AND m2.timestamp < ranked.timestamp
+                    ORDER BY m2.timestamp DESC LIMIT 1) AS prev_price
+            FROM ranked WHERE rn = 1
             """,
             instrument_type,
         )
     else:
         rows = await pool.fetch(
             f"""
-            SELECT DISTINCT ON (asset) * FROM {TABLE}
-            ORDER BY asset, timestamp DESC
+            WITH ranked AS (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY asset, instrument_type ORDER BY timestamp DESC) AS rn
+                FROM {TABLE}
+            )
+            SELECT id, asset, price, timestamp, source, instrument_type, unit, change_percent, previous_close,
+                   (SELECT price FROM market_prices m2
+                    WHERE m2.asset = ranked.asset AND m2.instrument_type = ranked.instrument_type
+                      AND m2.timestamp < ranked.timestamp
+                    ORDER BY m2.timestamp DESC LIMIT 1) AS prev_price
+            FROM ranked WHERE rn = 1
             """
         )
-    return [record_to_dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = record_to_dict(r)
+        prev = d.pop("prev_price", None)
+        if d.get("change_percent") is None and prev is not None and isinstance(prev, (int, float)):
+            try:
+                p = float(d["price"])
+                pv = float(prev)
+                if pv and pv != 0:
+                    d["change_percent"] = round(((p - pv) / pv) * 100, 2)
+                    d["previous_close"] = pv
+            except (TypeError, ZeroDivisionError):
+                pass
+        out.append(d)
+    return out

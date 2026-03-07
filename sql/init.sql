@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS market_prices (
 CREATE INDEX IF NOT EXISTS idx_market_prices_timestamp ON market_prices ("timestamp" DESC);
 CREATE INDEX IF NOT EXISTS idx_market_prices_asset ON market_prices (asset);
 CREATE INDEX IF NOT EXISTS idx_market_prices_instrument_type ON market_prices (instrument_type);
+-- Prevent duplicate (asset, instrument_type, date) so backfill re-runs are safe
+CREATE UNIQUE INDEX IF NOT EXISTS idx_market_prices_asset_type_ts ON market_prices (asset, instrument_type, "timestamp");
 
 -- Macro indicators
 CREATE TABLE IF NOT EXISTS macro_indicators (
@@ -30,6 +32,8 @@ CREATE TABLE IF NOT EXISTS macro_indicators (
 
 CREATE INDEX IF NOT EXISTS idx_macro_indicators_timestamp ON macro_indicators ("timestamp" DESC);
 CREATE INDEX IF NOT EXISTS idx_macro_indicators_country ON macro_indicators (country);
+-- Prevent duplicate (indicator_name, country, date) so backfill re-runs are safe
+CREATE UNIQUE INDEX IF NOT EXISTS idx_macro_indicators_name_country_ts ON macro_indicators (indicator_name, country, "timestamp");
 
 -- News articles
 CREATE TABLE IF NOT EXISTS news_articles (

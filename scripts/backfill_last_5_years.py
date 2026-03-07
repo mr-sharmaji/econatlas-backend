@@ -2,7 +2,9 @@
 
 Fetches from today back N years (default 10). Yahoo series (indices, FX, commodities) are requested
 year-by-year so each day in range is returned; FRED/World Bank use their native frequency.
-Idempotent: re-runs skip timestamps already in the DB.
+
+Idempotent / safe to re-run: existing (asset, instrument_type, timestamp) and (indicator_name, country, timestamp)
+are skipped in code, and the DB has unique indexes so INSERT uses ON CONFLICT DO NOTHING (no duplicates).
 """
 from __future__ import annotations
 
@@ -17,6 +19,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+
+import requests
 
 from app.core.database import close_pool, get_pool, init_pool, parse_ts
 from app.scheduler.base import BaseScraper
@@ -92,6 +96,28 @@ class BackfillConfig:
     db_batch_size: int
     db_sleep_seconds: float
     validate_only: bool
+
+
+def _pct_change(current: float, previous: float | None) -> float | None:
+    if previous is None or previous == 0:
+        return None
+    return round(((current - previous) / previous) * 100, 2)
+
+
+def _fill_change_percent(rows: list[dict[str, Any]]) -> None:
+    """Fill change_percent and previous_close from previous row (rows must be sorted by timestamp ascending)."""
+    rows.sort(key=lambda r: r["timestamp"])
+    prev_price: float | None = None
+    for r in rows:
+        price = r.get("price")
+        if isinstance(price, (int, float)):
+            price = float(price)
+        else:
+            prev_price = None
+            continue
+        r["previous_close"] = prev_price
+        r["change_percent"] = _pct_change(price, prev_price) if prev_price is not None else None
+        prev_price = price
 
 
 class HistoricalBackfiller(BaseScraper):
@@ -222,10 +248,12 @@ class HistoricalBackfiller(BaseScraper):
         for batch_num, chunk in enumerate(self._batched(items, self.config.api_batch_size), start=1):
             logger.info("Market API batch %d/%d", batch_num, math.ceil(len(items) / self.config.api_batch_size))
             for symbol, asset, instrument_type, unit in chunk:
-                try:
-                    for range_start, range_end in yearly:
-                        for ts, price in self._fetch_yahoo_series(symbol, range_start, range_end):
-                            rows.append(
+                symbol_rows: list[dict[str, Any]] = []
+                for range_start, range_end in yearly:
+                    try:
+                        points = self._fetch_yahoo_series(symbol, range_start, range_end)
+                        for ts, price in points:
+                            symbol_rows.append(
                                 {
                                     "asset": asset,
                                     "price": price,
@@ -237,9 +265,22 @@ class HistoricalBackfiller(BaseScraper):
                                     "previous_close": None,
                                 }
                             )
-                        time.sleep(0.3)
-                except Exception:
-                    logger.exception("Market history fetch failed for %s", symbol)
+                    except requests.exceptions.HTTPError as e:
+                        if e.response is not None and e.response.status_code == 400:
+                            logger.warning(
+                                "Skipping %s–%s for %s (no data for this period, e.g. index launched later)",
+                                range_start.date(),
+                                range_end.date(),
+                                symbol,
+                            )
+                            continue
+                        raise
+                    except Exception:
+                        logger.exception("Market history fetch failed for %s", symbol)
+                        break
+                    time.sleep(0.3)
+                _fill_change_percent(symbol_rows)
+                rows.extend(symbol_rows)
             if batch_num < math.ceil(len(items) / self.config.api_batch_size):
                 time.sleep(self.config.api_sleep_seconds)
         return rows
@@ -251,10 +292,12 @@ class HistoricalBackfiller(BaseScraper):
         for batch_num, chunk in enumerate(self._batched(items, self.config.api_batch_size), start=1):
             logger.info("Commodity API batch %d/%d", batch_num, math.ceil(len(items) / self.config.api_batch_size))
             for symbol, (asset, unit) in chunk:
-                try:
-                    for range_start, range_end in yearly:
-                        for ts, price in self._fetch_yahoo_series(symbol, range_start, range_end):
-                            rows.append(
+                symbol_rows = []
+                for range_start, range_end in yearly:
+                    try:
+                        points = self._fetch_yahoo_series(symbol, range_start, range_end)
+                        for ts, price in points:
+                            symbol_rows.append(
                                 {
                                     "asset": asset,
                                     "price": price,
@@ -266,9 +309,22 @@ class HistoricalBackfiller(BaseScraper):
                                     "previous_close": None,
                                 }
                             )
-                        time.sleep(0.3)
-                except Exception:
-                    logger.exception("Commodity history fetch failed for %s", symbol)
+                    except requests.exceptions.HTTPError as e:
+                        if e.response is not None and e.response.status_code == 400:
+                            logger.warning(
+                                "Skipping %s–%s for %s (no data for this period)",
+                                range_start.date(),
+                                range_end.date(),
+                                symbol,
+                            )
+                            continue
+                        raise
+                    except Exception:
+                        logger.exception("Commodity history fetch failed for %s", symbol)
+                        break
+                    time.sleep(0.3)
+                _fill_change_percent(symbol_rows)
+                rows.extend(symbol_rows)
             if batch_num < math.ceil(len(items) / self.config.api_batch_size):
                 time.sleep(self.config.api_sleep_seconds)
         return rows
@@ -450,6 +506,7 @@ async def insert_market_rows_idempotent(
                         INSERT INTO market_prices
                         (asset, price, "timestamp", source, instrument_type, unit, change_percent, previous_close)
                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        ON CONFLICT (asset, instrument_type, "timestamp") DO NOTHING
                         """,
                         row["asset"],
                         row["price"],
@@ -513,6 +570,7 @@ async def insert_macro_rows_idempotent(
                         INSERT INTO macro_indicators
                         (indicator_name, value, country, "timestamp", unit, source)
                         VALUES ($1, $2, $3, $4, $5, $6)
+                        ON CONFLICT (indicator_name, country, "timestamp") DO NOTHING
                         """,
                         row["indicator_name"],
                         row["value"],
