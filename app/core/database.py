@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -10,6 +11,18 @@ import asyncpg
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def parse_ts(ts: str | datetime | None):
+    """Return a timezone-aware datetime for asyncpg. Accepts None, datetime, or ISO str."""
+    if ts is None:
+        return None
+    if isinstance(ts, datetime):
+        return ts
+    if isinstance(ts, str):
+        s = ts.replace("Z", "+00:00")
+        return datetime.fromisoformat(s)
+    return ts
 
 _pool: asyncpg.Pool | None = None
 

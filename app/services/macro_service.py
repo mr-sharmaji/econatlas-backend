@@ -1,4 +1,4 @@
-from app.core.database import get_pool, record_to_dict
+from app.core.database import get_pool, parse_ts, record_to_dict
 
 TABLE = "macro_indicators"
 
@@ -32,12 +32,12 @@ async def insert_indicator(payload: dict) -> dict:
     row = await pool.fetchrow(
         f"""
         INSERT INTO {TABLE} (indicator_name, value, country, timestamp)
-        VALUES ($1, $2, $3, $4::timestamptz)
+        VALUES ($1, $2, $3, $4)
         RETURNING *
         """,
         payload["indicator_name"],
         payload["value"],
         payload["country"],
-        payload["timestamp"],
+        parse_ts(payload["timestamp"]),
     )
     return record_to_dict(row)

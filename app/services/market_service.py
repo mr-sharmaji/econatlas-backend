@@ -1,4 +1,4 @@
-from app.core.database import get_pool, record_to_dict
+from app.core.database import get_pool, parse_ts, record_to_dict
 
 TABLE = "market_prices"
 
@@ -19,12 +19,12 @@ async def insert_price(
         f"""
         INSERT INTO {TABLE}
         (asset, price, timestamp, source, instrument_type, unit, change_percent, previous_close)
-        VALUES ($1, $2, $3::timestamptz, $4, $5, $6, $7, $8)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *
         """,
         asset,
         price,
-        timestamp,
+        parse_ts(timestamp),
         source,
         instrument_type,
         unit,
@@ -46,11 +46,11 @@ async def insert_prices_batch(rows: list[dict]) -> int:
                 f"""
                 INSERT INTO {TABLE}
                 (asset, price, timestamp, source, instrument_type, unit, change_percent, previous_close)
-                VALUES ($1, $2, $3::timestamptz, $4, $5, $6, $7, $8)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 """,
                 r.get("asset"),
                 r.get("price"),
-                r.get("timestamp"),
+                parse_ts(r.get("timestamp")),
                 r.get("source"),
                 r.get("instrument_type"),
                 r.get("unit"),

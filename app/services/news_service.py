@@ -1,6 +1,6 @@
 import logging
 
-from app.core.database import get_pool, record_to_dict
+from app.core.database import get_pool, parse_ts, record_to_dict
 
 TABLE = "news_articles"
 logger = logging.getLogger(__name__)
@@ -13,7 +13,7 @@ async def upsert_article(payload: dict) -> dict:
         "title": payload["title"],
         "summary": payload.get("summary"),
         "body": payload.get("body"),
-        "timestamp": payload["timestamp"],
+        "timestamp": parse_ts(payload.get("timestamp")),
         "source": payload.get("source"),
         "url": payload.get("url"),
         "primary_entity": payload.get("primary_entity"),
