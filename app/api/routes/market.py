@@ -64,7 +64,7 @@ async def ingest_market(payload: MarketIngestPayload) -> IngestAck:
 async def list_market_prices(
     instrument_type: str | None = Query(default=None, description="index, currency, or bond_yield"),
     asset: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1, le=2500),
     offset: int = Query(default=0, ge=0),
 ) -> MarketPriceListResponse:
     """Return market prices (indices, currencies, bond yields) with optional filters."""

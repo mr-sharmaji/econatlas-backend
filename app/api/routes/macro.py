@@ -23,7 +23,7 @@ async def create_macro_indicator(payload: MacroIndicatorCreate) -> MacroIndicato
 @router.get("", response_model=MacroIndicatorListResponse)
 async def list_macro_indicators(
     country: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1, le=2500),
     offset: int = Query(default=0, ge=0),
 ) -> MacroIndicatorListResponse:
     """Return the most recent macro-economic indicators."""

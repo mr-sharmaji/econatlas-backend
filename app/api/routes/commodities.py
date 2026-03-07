@@ -46,7 +46,7 @@ async def ingest_commodity(payload: CommodityIngestPayload) -> IngestAck:
 @router.get("", response_model=MarketPriceListResponse)
 async def list_commodities(
     asset: str | None = Query(default=None, description="gold, silver, crude oil, natural gas, copper"),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1, le=2500),
     offset: int = Query(default=0, ge=0),
 ) -> MarketPriceListResponse:
     """Return commodity prices with optional asset filter."""
