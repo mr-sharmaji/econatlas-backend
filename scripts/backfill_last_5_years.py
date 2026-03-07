@@ -1,3 +1,9 @@
+"""Backfill EconAtlas with daily (or native-frequency) history for indices, commodities, currencies, bonds, and macros.
+
+Fetches from today back N years (default 10). Yahoo series (indices, FX, commodities) are requested
+year-by-year so each day in range is returned; FRED/World Bank use their native frequency.
+Idempotent: re-runs skip timestamps already in the DB.
+"""
 from __future__ import annotations
 
 import argparse
@@ -103,10 +109,18 @@ class HistoricalBackfiller(BaseScraper):
     def _to_dt(self, epoch: int) -> datetime:
         return datetime.fromtimestamp(epoch, tz=UTC)
 
-    def _fetch_yahoo_series(self, symbol: str) -> list[tuple[datetime, float]]:
+    def _fetch_yahoo_series(
+        self,
+        symbol: str,
+        range_start: datetime | None = None,
+        range_end: datetime | None = None,
+    ) -> list[tuple[datetime, float]]:
+        """Fetch daily OHLC history for a symbol. Use range_start/range_end to chunk (e.g. per year) for full daily coverage."""
+        start = range_start or self.start_ts
+        end = range_end or self.end_ts
         params = {
-            "period1": int(self.start_ts.timestamp()),
-            "period2": int(self.end_ts.timestamp()),
+            "period1": int(start.timestamp()),
+            "period2": int(end.timestamp()),
             "interval": "1d",
             "events": "history",
             "includePrePost": "false",
@@ -132,6 +146,21 @@ class HistoricalBackfiller(BaseScraper):
             if self.start_ts <= ts <= self.end_ts:
                 out.append((ts, value))
         return out
+
+    def _iter_yearly_chunks(self) -> list[tuple[datetime, datetime]]:
+        """Yield (start_ts, end_ts) for each calendar year in [start_ts, end_ts] for chunked API calls."""
+        chunks: list[tuple[datetime, datetime]] = []
+        current = self.start_ts.date()
+        end_date = self.end_ts.date()
+        while current <= end_date:
+            year_start = datetime(current.year, 1, 1, tzinfo=UTC)
+            year_end = datetime(current.year, 12, 31, 23, 59, 59, tzinfo=UTC)
+            chunk_start = max(year_start, self.start_ts)
+            chunk_end = min(year_end, self.end_ts)
+            if chunk_start <= chunk_end:
+                chunks.append((chunk_start, chunk_end))
+            current = date(current.year + 1, 1, 1)
+        return chunks
 
     def _fetch_fred_series(self, series_id: str) -> list[tuple[datetime, float]]:
         text = self._get_text(FRED_CSV_URL, params={"id": series_id})
@@ -165,7 +194,7 @@ class HistoricalBackfiller(BaseScraper):
     def _fetch_world_bank(self, country: str, indicator: str) -> list[tuple[datetime, float]]:
         payload = self._get_json(
             WORLD_BANK_URL.format(country=country.lower(), indicator=indicator),
-            params={"format": "json", "per_page": 120},
+            params={"format": "json", "per_page": 15},
         )
         if not isinstance(payload, list) or len(payload) < 2 or not isinstance(payload[1], list):
             return []
@@ -189,23 +218,26 @@ class HistoricalBackfiller(BaseScraper):
         rows: list[dict[str, Any]] = []
         items = [(k, v, "index", "points") for k, v in INDEX_SYMBOLS.items()]
         items.extend((k, v, "currency", "inr") for k, v in FX_SYMBOLS.items())
+        yearly = self._iter_yearly_chunks()
         for batch_num, chunk in enumerate(self._batched(items, self.config.api_batch_size), start=1):
             logger.info("Market API batch %d/%d", batch_num, math.ceil(len(items) / self.config.api_batch_size))
             for symbol, asset, instrument_type, unit in chunk:
                 try:
-                    for ts, price in self._fetch_yahoo_series(symbol):
-                        rows.append(
-                            {
-                                "asset": asset,
-                                "price": price,
-                                "timestamp": ts.isoformat(),
-                                "source": "yahoo_chart_api_backfill",
-                                "instrument_type": instrument_type,
-                                "unit": unit,
-                                "change_percent": None,
-                                "previous_close": None,
-                            }
-                        )
+                    for range_start, range_end in yearly:
+                        for ts, price in self._fetch_yahoo_series(symbol, range_start, range_end):
+                            rows.append(
+                                {
+                                    "asset": asset,
+                                    "price": price,
+                                    "timestamp": ts.isoformat(),
+                                    "source": "yahoo_chart_api_backfill",
+                                    "instrument_type": instrument_type,
+                                    "unit": unit,
+                                    "change_percent": None,
+                                    "previous_close": None,
+                                }
+                            )
+                        time.sleep(0.3)
                 except Exception:
                     logger.exception("Market history fetch failed for %s", symbol)
             if batch_num < math.ceil(len(items) / self.config.api_batch_size):
@@ -215,23 +247,26 @@ class HistoricalBackfiller(BaseScraper):
     def collect_commodity_rows(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         items = list(COMMODITY_SYMBOLS.items())
+        yearly = self._iter_yearly_chunks()
         for batch_num, chunk in enumerate(self._batched(items, self.config.api_batch_size), start=1):
             logger.info("Commodity API batch %d/%d", batch_num, math.ceil(len(items) / self.config.api_batch_size))
             for symbol, (asset, unit) in chunk:
                 try:
-                    for ts, price in self._fetch_yahoo_series(symbol):
-                        rows.append(
-                            {
-                                "asset": asset,
-                                "price": price,
-                                "timestamp": ts.isoformat(),
-                                "source": "yahoo_chart_api_backfill",
-                                "instrument_type": "commodity",
-                                "unit": unit,
-                                "change_percent": None,
-                                "previous_close": None,
-                            }
-                        )
+                    for range_start, range_end in yearly:
+                        for ts, price in self._fetch_yahoo_series(symbol, range_start, range_end):
+                            rows.append(
+                                {
+                                    "asset": asset,
+                                    "price": price,
+                                    "timestamp": ts.isoformat(),
+                                    "source": "yahoo_chart_api_backfill",
+                                    "instrument_type": "commodity",
+                                    "unit": unit,
+                                    "change_percent": None,
+                                    "previous_close": None,
+                                }
+                            )
+                        time.sleep(0.3)
                 except Exception:
                     logger.exception("Commodity history fetch failed for %s", symbol)
             if batch_num < math.ceil(len(items) / self.config.api_batch_size):
@@ -593,9 +628,9 @@ async def validate_backfill(start_ts: datetime, end_ts: datetime) -> dict[str, A
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Backfill EconAtlas historical data for the last N years in rate-limited batches.",
+        description="Backfill EconAtlas historical data for every day from today back N years (indices, commodities, currencies, bonds, macros).",
     )
-    parser.add_argument("--years", type=int, default=5, help="Years of history to backfill (default: 5).")
+    parser.add_argument("--years", type=int, default=10, help="Years of history to backfill (default: 10).")
     parser.add_argument("--passes", type=int, default=2, help="How many times to run backfill for idempotency checks.")
     parser.add_argument("--api-batch-size", type=int, default=3, help="Number of symbols/series per API batch.")
     parser.add_argument(
@@ -673,6 +708,7 @@ async def main() -> None:
         datetime.min.time(),
         tzinfo=UTC,
     )
+    logger.info("Backfill range: %s to %s (%d years)", start_ts.date(), end_ts.date(), args.years)
     cfg = BackfillConfig(
         years=args.years,
         api_batch_size=max(args.api_batch_size, 1),
