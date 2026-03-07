@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field
 class IngestAck(BaseModel):
     status: str = "accepted"
     route: str
-    event_id: str
+    event_id: str | None = None
+    article_id: str | None = None
 
 
 class MarketIngestPayload(BaseModel):

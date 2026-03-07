@@ -14,7 +14,7 @@ router = APIRouter(prefix="/macro", tags=["macro"])
 async def create_macro_indicator(payload: MacroIndicatorCreate) -> MacroIndicatorResponse:
     """Receive a macro-economic indicator from scraper."""
     try:
-        row = await macro_service.insert_indicator(payload.model_dump())
+        row = await macro_service.insert_indicator(payload.model_dump(mode="json"))
         return MacroIndicatorResponse(**row)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from app.schemas.ingest_schema import CommodityIngestPayload, IngestAck
-from app.services import event_service
+from app.services import event_service, market_service
 
 router = APIRouter(prefix="/commodities", tags=["commodities"])
 
@@ -10,6 +10,12 @@ router = APIRouter(prefix="/commodities", tags=["commodities"])
 async def ingest_commodity(payload: CommodityIngestPayload) -> IngestAck:
     """Receive normalized commodity record from scraper and store as event."""
     try:
+        await market_service.insert_price(
+            asset=payload.asset.lower(),
+            price=payload.price_usd,
+            timestamp=payload.timestamp.isoformat(),
+        )
+
         row = await event_service.insert_event_dict(
             {
                 "event_type": "commodity_price_change",

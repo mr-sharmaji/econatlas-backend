@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from app.schemas.ingest_schema import IngestAck, MarketIngestPayload
-from app.services import event_service
+from app.services import event_service, market_service
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -18,6 +18,19 @@ async def ingest_market(payload: MarketIngestPayload) -> IngestAck:
         entity = entity_map.get(payload.type)
         if not entity:
             raise HTTPException(status_code=422, detail="Missing entity for market payload")
+
+        if payload.type == "bond_yield":
+            price_value = payload.yield_percent
+        else:
+            price_value = payload.value
+        if price_value is None:
+            raise HTTPException(status_code=422, detail="Missing numeric value for market payload")
+
+        await market_service.insert_price(
+            asset=entity,
+            price=float(price_value),
+            timestamp=payload.timestamp.isoformat(),
+        )
 
         impact = "macro_signal" if payload.type == "bond_yield" else "market_signal"
         row = await event_service.insert_event_dict(
