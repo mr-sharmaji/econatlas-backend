@@ -43,6 +43,11 @@ INDEX_SYMBOLS = {
     "NIFTYMIDCAP150.NS": "Nifty Midcap 150",
     "NIFTYSMLCAP250.NS": "Nifty Smallcap 250",
 }
+# Yahoo returns 400 for older years on these NSE indices; only request from min_year to avoid 400s.
+INDEX_MIN_YEAR: dict[str, int] = {
+    "NIFTYMIDCAP150.NS": 2019,
+    "NIFTYSMLCAP250.NS": 2023,
+}
 
 FX_SYMBOLS = {
     "USDINR=X": "USD/INR",
@@ -173,11 +178,13 @@ class HistoricalBackfiller(BaseScraper):
                 out.append((ts, value))
         return out
 
-    def _iter_yearly_chunks(self) -> list[tuple[datetime, datetime]]:
-        """Yield (start_ts, end_ts) for each calendar year in [start_ts, end_ts] for chunked API calls."""
+    def _iter_yearly_chunks(self, min_year: int | None = None) -> list[tuple[datetime, datetime]]:
+        """(start_ts, end_ts) for each calendar year in range. If min_year set, only years >= min_year (for indices where Yahoo returns 400 for old years)."""
         chunks: list[tuple[datetime, datetime]] = []
         current = self.start_ts.date()
         end_date = self.end_ts.date()
+        if min_year is not None and current.year < min_year:
+            current = date(min_year, 1, 1)
         while current <= end_date:
             year_start = datetime(current.year, 1, 1, tzinfo=UTC)
             year_end = datetime(current.year, 12, 31, 23, 59, 59, tzinfo=UTC)
@@ -244,10 +251,13 @@ class HistoricalBackfiller(BaseScraper):
         rows: list[dict[str, Any]] = []
         items = [(k, v, "index", "points") for k, v in INDEX_SYMBOLS.items()]
         items.extend((k, v, "currency", "inr") for k, v in FX_SYMBOLS.items())
-        yearly = self._iter_yearly_chunks()
         for batch_num, chunk in enumerate(self._batched(items, self.config.api_batch_size), start=1):
             logger.info("Market API batch %d/%d", batch_num, math.ceil(len(items) / self.config.api_batch_size))
             for symbol, asset, instrument_type, unit in chunk:
+                min_year = INDEX_MIN_YEAR.get(symbol)
+                yearly = self._iter_yearly_chunks(min_year=min_year)
+                if min_year is not None:
+                    logger.info("%s: requesting from year %d only (%d chunks)", asset, min_year, len(yearly))
                 symbol_rows: list[dict[str, Any]] = []
                 for range_start, range_end in yearly:
                     try:
