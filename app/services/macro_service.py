@@ -22,3 +22,16 @@ async def get_indicators(
         .execute()
     )
     return result.data
+
+
+async def insert_indicator(payload: dict) -> dict:
+    """Insert a macro-economic indicator row and return the created row."""
+    client = get_supabase()
+    filtered_payload = {
+        "indicator_name": payload["indicator_name"],
+        "value": payload["value"],
+        "country": payload["country"],
+        "timestamp": payload["timestamp"],
+    }
+    result = client.table(TABLE).insert(filtered_payload).execute()
+    return result.data[0]

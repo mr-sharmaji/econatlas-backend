@@ -1,9 +1,23 @@
 from fastapi import APIRouter, HTTPException, Query
 
-from app.schemas.macro_schema import MacroIndicatorListResponse, MacroIndicatorResponse
+from app.schemas.macro_schema import (
+    MacroIndicatorCreate,
+    MacroIndicatorListResponse,
+    MacroIndicatorResponse,
+)
 from app.services import macro_service
 
 router = APIRouter(prefix="/macro", tags=["macro"])
+
+
+@router.post("", response_model=MacroIndicatorResponse, status_code=201)
+async def create_macro_indicator(payload: MacroIndicatorCreate) -> MacroIndicatorResponse:
+    """Receive a macro-economic indicator from scraper."""
+    try:
+        row = await macro_service.insert_indicator(payload.model_dump())
+        return MacroIndicatorResponse(**row)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("", response_model=MacroIndicatorListResponse)

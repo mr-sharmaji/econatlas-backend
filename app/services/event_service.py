@@ -15,6 +15,13 @@ async def insert_event(payload: EventCreate) -> dict:
     return result.data[0]
 
 
+async def insert_event_dict(payload: dict) -> dict:
+    """Insert an event payload dict and return the created row."""
+    client = get_supabase()
+    result = client.table(TABLE).insert(payload).execute()
+    return result.data[0]
+
+
 async def get_events(limit: int = 50, offset: int = 0) -> list[dict]:
     """Fetch the most recent economic events ordered by creation time."""
     client = get_supabase()
