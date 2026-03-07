@@ -48,8 +48,12 @@ INDEX_MIN_YEAR: dict[str, int] = {
     "NIFTYMIDCAP150.NS": 2019,
     "NIFTYSMLCAP250.NS": 2023,
 }
-# For this symbol Yahoo often returns 400 per year but 200 with data when requesting full range in one call
+# Nifty Smallcap 250: Yahoo chart API returns no history; we use NSE India as fallback (see _fetch_nse_index_series).
 SMALLCAP_250_SYMBOL = "NIFTYSMLCAP250.NS"
+# NSE India historical index API (requires session cookie from visiting nseindia.com first).
+NSE_BASE_URL = "https://www.nseindia.com"
+NSE_INDEX_HISTORY_PATH = "api/historical/indicesHistory"
+NSE_INDEX_NAME_SMALLCAP_250 = "NIFTY SMALLCAP 250"
 
 FX_SYMBOLS = {
     "USDINR=X": "USD/INR",
@@ -178,6 +182,91 @@ class HistoricalBackfiller(BaseScraper):
             ts = self._to_dt(int(epoch))
             if self.start_ts <= ts <= self.end_ts:
                 out.append((ts, value))
+        return out
+
+    def _ensure_nse_cookies(self) -> None:
+        """Ensure NSE session has cookies (visit homepage first). Required for indicesHistory API."""
+        if getattr(self, "_nse_cookies_set", False):
+            return
+        nse_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.nseindia.com/",
+        }
+        try:
+            self.session.get(
+                f"{NSE_BASE_URL}/",
+                headers=nse_headers,
+                timeout=15,
+            )
+            self._nse_cookies_set = True
+        except requests.RequestException as e:
+            logger.warning("NSE cookie fetch failed: %s", e)
+
+    def _parse_nse_date(self, raw: Any) -> datetime | None:
+        """Parse NSE timestamp: can be epoch (ms or s) or string like 08-Mar-2026."""
+        if raw is None:
+            return None
+        if isinstance(raw, (int, float)):
+            epoch = int(raw)
+            if epoch > 1e12:
+                epoch = epoch // 1000
+            return datetime.fromtimestamp(epoch, tz=UTC)
+        if isinstance(raw, str):
+            s = (raw.strip().split()[0] or "")[:12]
+            if not s:
+                return None
+            for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+                try:
+                    return datetime.strptime(s, fmt).replace(tzinfo=UTC)
+                except ValueError:
+                    continue
+        return None
+
+    def _fetch_nse_index_series(
+        self,
+        index_name: str,
+        range_start: datetime,
+        range_end: datetime,
+    ) -> list[tuple[datetime, float]]:
+        """Fetch historical index close from NSE India API. Returns list of (datetime, price)."""
+        self._ensure_nse_cookies()
+        url = f"{NSE_BASE_URL}/{NSE_INDEX_HISTORY_PATH}"
+        params = {
+            "indexType": index_name,
+            "from": range_start.strftime("%d-%m-%Y"),
+            "to": range_end.strftime("%d-%m-%Y"),
+        }
+        nse_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": f"{NSE_BASE_URL}/",
+        }
+        out: list[tuple[datetime, float]] = []
+        try:
+            resp = self.session.get(url, params=params, headers=nse_headers, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
+        except (requests.RequestException, ValueError) as e:
+            logger.warning("NSE index history request failed: %s", e)
+            return out
+        records = (data or {}).get("data", {}).get("indexCloseOnlineRecords") or []
+        for rec in records:
+            ts = self._parse_nse_date(rec.get("EOD_TIMESTAMP") or rec.get("TIMESTAMP"))
+            close_raw = rec.get("EOD_CLOSE_INDEX_VAL") or rec.get("CH_CLOSING_PRICE")
+            if ts is None or close_raw is None:
+                continue
+            try:
+                price = float(close_raw)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(price) or price <= 0:
+                continue
+            if self.start_ts <= ts <= self.end_ts:
+                out.append((ts, price))
+        out.sort(key=lambda x: x[0])
         return out
 
     def _iter_yearly_chunks(self, min_year: int | None = None) -> list[tuple[datetime, datetime]]:
@@ -318,6 +407,35 @@ class HistoricalBackfiller(BaseScraper):
                             logger.exception("Market history fetch failed for %s", symbol)
                             break
                         time.sleep(0.3)
+                # Nifty Smallcap 250: if Yahoo returned no history, use NSE India API
+                if not symbol_rows and symbol == SMALLCAP_250_SYMBOL:
+                    logger.info("%s: trying NSE India as fallback (Yahoo returned no history)", asset)
+                    for range_start, range_end in yearly:
+                        points = self._fetch_nse_index_series(
+                            NSE_INDEX_NAME_SMALLCAP_250, range_start, range_end
+                        )
+                        for ts, price in points:
+                            symbol_rows.append(
+                                {
+                                    "asset": asset,
+                                    "price": price,
+                                    "timestamp": ts.isoformat(),
+                                    "source": "nse_indices_history_backfill",
+                                    "instrument_type": instrument_type,
+                                    "unit": unit,
+                                    "change_percent": None,
+                                    "previous_close": None,
+                                }
+                            )
+                        if points:
+                            logger.info(
+                                "%s: NSE returned %d points for %s–%s",
+                                asset,
+                                len(points),
+                                range_start.date(),
+                                range_end.date(),
+                            )
+                        time.sleep(0.5)
                 _fill_change_percent(symbol_rows)
                 rows.extend(symbol_rows)
             if batch_num < math.ceil(len(items) / self.config.api_batch_size):
