@@ -24,17 +24,19 @@ scraper service. It does **not** scrape data itself.
 
 ## Tech Stack
 
-| Layer          | Choice               |
-|----------------|----------------------|
-| Language       | Python 3.13          |
-| Framework      | FastAPI              |
-| Server         | Uvicorn              |
-| Database       | Supabase Postgres    |
-| Supabase SDK   | supabase-py          |
-| HTTP Client    | httpx                |
-| Validation     | Pydantic             |
-| Config         | python-dotenv        |
-| Container      | Docker               |
+
+| Layer        | Choice            |
+| ------------ | ----------------- |
+| Language     | Python 3.13       |
+| Framework    | FastAPI           |
+| Server       | Uvicorn           |
+| Database     | Supabase Postgres |
+| Supabase SDK | supabase-py       |
+| HTTP Client  | httpx             |
+| Validation   | Pydantic          |
+| Config       | python-dotenv     |
+| Container    | Docker            |
+
 
 ## Project Structure
 
@@ -112,21 +114,23 @@ docker run -p 8000:8000 --env-file .env econatlas-backend
 
 ## API Endpoints
 
-| Method | Path                | Description                                         |
-|--------|---------------------|-----------------------------------------------------|
-| GET    | /health             | Health check                                        |
-| POST   | /events             | Create a new economic event                         |
-| GET    | /events             | List recent economic events                         |
-| POST   | /market             | Ingest normalized market record                     |
+
+| Method | Path                | Description                                           |
+| ------ | ------------------- | ----------------------------------------------------- |
+| GET    | /health             | Health check                                          |
+| POST   | /events             | Create a new economic event                           |
+| GET    | /events             | List recent economic events                           |
+| POST   | /market             | Ingest normalized market record                       |
 | GET    | /market             | List market prices (filter by instrument_type, asset) |
-| GET    | /market/latest      | Latest price per asset (de-duplicated)              |
-| POST   | /commodities        | Ingest normalized commodity record                  |
-| GET    | /commodities        | List commodity prices (filter by asset)             |
-| GET    | /commodities/latest | Latest price per commodity asset                    |
-| POST   | /news               | Ingest news record and emit event                   |
+| GET    | /market/latest      | Latest price per asset (de-duplicated)                |
+| POST   | /commodities        | Ingest normalized commodity record                    |
+| GET    | /commodities        | List commodity prices (filter by asset)               |
+| GET    | /commodities/latest | Latest price per commodity asset                      |
+| POST   | /news               | Ingest news record and emit event                     |
 | GET    | /news               | List news articles (filter by entity, impact, source) |
-| POST   | /macro              | Ingest macro-economic indicator                     |
-| GET    | /macro              | List macro-economic indicators (filter by country)  |
+| POST   | /macro              | Ingest macro-economic indicator                       |
+| GET    | /macro              | List macro-economic indicators (filter by country)    |
+
 
 ## Supabase Tables
 
@@ -152,11 +156,13 @@ automatic deployments on every push to `main`.
 
 ### Prerequisites
 
-| Requirement | Install |
-|-------------|---------|
+
+| Requirement  | Install                                                               |
+| ------------ | --------------------------------------------------------------------- |
 | Python 3.13+ | [python.org](https://www.python.org/downloads/) — check "Add to PATH" |
-| Git | [git-scm.com](https://git-scm.com/download/win) |
-| NSSM | `winget install nssm.nssm` or [nssm.cc](https://nssm.cc/download) |
+| Git          | [git-scm.com](https://git-scm.com/download/win)                       |
+| NSSM         | `winget install nssm.nssm` or [nssm.cc](https://nssm.cc/download)     |
+
 
 ### One-Time Setup
 
@@ -172,6 +178,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
 The script will:
+
 1. Create a Python venv and install dependencies
 2. Prompt you for Supabase credentials (`.env`)
 3. Register `econatlas-backend` as a Windows service via NSSM
@@ -238,3 +245,4 @@ The API is then accessible at `http://<WINDOWS_IP>:8000` from other devices.
 - Economic knowledge graph
 - Portfolio exposure analysis
 - Push notification triggers via Supabase Edge Functions
+

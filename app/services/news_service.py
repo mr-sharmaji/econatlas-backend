@@ -24,13 +24,22 @@ async def upsert_article(payload: dict) -> dict:
     if filtered_payload.get("url"):
         try:
             result = client.table(TABLE).upsert(filtered_payload, on_conflict="url").execute()
+            return result.data[0]
         except Exception as exc:
             logger.warning("News upsert failed; falling back to insert: %s", str(exc))
+        try:
             result = client.table(TABLE).insert(filtered_payload).execute()
+            return result.data[0]
+        except Exception as insert_exc:
+            err = str(insert_exc).lower()
+            if "409" in str(insert_exc) or "duplicate" in err or "unique" in err:
+                existing = client.table(TABLE).select("*").eq("url", filtered_payload["url"]).limit(1).execute()
+                if existing.data:
+                    return existing.data[0]
+            raise insert_exc from exc
     else:
         result = client.table(TABLE).insert(filtered_payload).execute()
-
-    return result.data[0]
+        return result.data[0]
 
 
 async def get_articles(

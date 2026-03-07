@@ -73,7 +73,11 @@ def start_scheduler() -> None:
     _scheduler.add_job(_run_news, "interval", minutes=intervals["news"], id="news", replace_existing=True)
     _scheduler.start()
 
-    asyncio.ensure_future(_startup_collection())
+    async def _deferred_startup() -> None:
+        await asyncio.sleep(2)
+        await _startup_collection()
+
+    asyncio.ensure_future(_deferred_startup())
 
 
 def stop_scheduler() -> None:
