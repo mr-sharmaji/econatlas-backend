@@ -4,9 +4,7 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    supabase_url: str
-    supabase_key: str
-    supabase_service_key: str
+    database_url: str
 
     app_name: str = "EconAtlas"
     debug: bool = False

@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: econatlas-postgres
+    environment:
+      POSTGRES_USER: econatlas
+      POSTGRES_PASSWORD: econatlas
+      POSTGRES_DB: econatlas
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U econatlas -d econatlas"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: econatlas-backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://econatlas:econatlas@postgres:5432/econatlas
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

@@ -1,4 +1,4 @@
-name: Deploy to Windows Server
+name: Deploy with Docker Compose
 
 on:
   push:
@@ -14,7 +14,6 @@ jobs:
 
     env:
       DEPLOY_DIR: C:\PersonalProjects\econatlas-backend
-      SERVICE_NAME: econatlas-backend
 
     steps:
       - name: Checkout code
@@ -23,41 +22,19 @@ jobs:
       - name: Sync files to deployment directory
         run: |
           $ErrorActionPreference = "Stop"
-
           if (-not (Test-Path $env:DEPLOY_DIR)) {
             New-Item -ItemType Directory -Path $env:DEPLOY_DIR -Force | Out-Null
           }
-
-          # Mirror source to deploy dir, preserving .env and .venv
           robocopy . $env:DEPLOY_DIR /MIR `
-            /XD .git .github .venv __pycache__ _work logs `
+            /XD .git .github __pycache__ _work logs .venv `
             /XF .env .DS_Store
-          # robocopy exit codes 0-7 are success
-          if ($LASTEXITCODE -le 7) { $global:LASTEXITCODE = 0 }
-          else { throw "robocopy failed with exit code $LASTEXITCODE" }
+          if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code $LASTEXITCODE" }
+          $global:LASTEXITCODE = 0
 
-      - name: Set up virtual environment and install dependencies
+      - name: Deploy with Docker Compose
         run: |
           $ErrorActionPreference = "Stop"
-          $venv = Join-Path $env:DEPLOY_DIR ".venv"
-          $pip  = Join-Path $venv "Scripts\pip.exe"
-
-          if (-not (Test-Path (Join-Path $venv "Scripts\python.exe"))) {
-            Write-Host "Creating virtual environment..."
-            python -m venv $venv
-          }
-
-          Write-Host "Installing dependencies..."
-          & $pip install --upgrade pip --quiet
-          & $pip install -r (Join-Path $env:DEPLOY_DIR "requirements.txt") --quiet
-
-      - name: Restart Windows service
-        run: |
-          $ErrorActionPreference = "Stop"
-          nssm restart $env:SERVICE_NAME
-          Start-Sleep -Seconds 5
-          $status = nssm status $env:SERVICE_NAME
-          Write-Host "Service status: $status"
-          if ($status -notmatch "SERVICE_RUNNING") {
-            throw "Service failed to restart. Status: $status"
-          }
+          Set-Location $env:DEPLOY_DIR
+          docker compose build --no-cache
+          docker compose up -d
+          docker compose ps

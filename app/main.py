@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.core.config import get_settings
+from app.core.database import close_pool, init_pool
 from app.scheduler.runner import start_scheduler, stop_scheduler
 
 logging.basicConfig(
@@ -17,9 +18,11 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    await init_pool()
     start_scheduler()
     yield
     stop_scheduler()
+    await close_pool()
 
 
 def create_app() -> FastAPI:

@@ -1,10 +1,10 @@
 #Requires -RunAsAdministrator
+# Sets up EconAtlas backend on Windows using Docker Compose (PostgreSQL + FastAPI app).
 
 param(
-    [string]$DeployDir   = "C:\econatlas-backend",
-    [string]$RepoUrl     = "",
-    [string]$ServiceName = "econatlas-backend",
-    [int]$Port           = 8000
+    [string]$DeployDir = "C:\econatlas-backend",
+    [string]$RepoUrl   = "",
+    [int]$Port         = 8000
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,22 +14,101 @@ function Write-Step($msg) {
     Write-Host "==> $msg" -ForegroundColor Cyan
 }
 
-# ---------- 1. Validate prerequisites ----------
+# ---------- 1. Validate prerequisites (install Docker if missing) ----------
 
 Write-Step "Checking prerequisites"
 
-$python = Get-Command python -ErrorAction SilentlyContinue
-if (-not $python) {
-    throw "Python is not installed or not on PATH."
+function Refresh-EnvPath {
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
 }
-$pyVer = & python --version 2>&1
-Write-Host "  Python: $pyVer"
 
-$git = Get-Command git -ErrorAction SilentlyContinue
-if (-not $git) {
-    throw "Git is not installed or not on PATH."
+function Install-DockerDesktop {
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        throw "winget is not available. Install Docker Desktop manually: https://docs.docker.com/desktop/install/windows-install/"
+    }
+    Write-Host "  Installing Docker Desktop via winget..."
+    winget install --id Docker.DockerDesktop -e --accept-source-agreements --accept-package-agreements
+    if ($LASTEXITCODE -ne 0) {
+        throw "Docker Desktop installation failed. Install manually: https://docs.docker.com/desktop/install/windows-install/"
+    }
+    Refresh-EnvPath
 }
-Write-Host "  Git:    $(git --version)"
+
+# Ensure Docker is installed
+$dockerMissing = -not (Get-Command docker -ErrorAction SilentlyContinue)
+if ($dockerMissing) {
+    Install-DockerDesktop
+    # PATH may not include docker until a new shell is opened
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        Write-Host ""
+        Write-Host "  Docker Desktop is installed. Open a new PowerShell window (as Administrator) and run this script again." -ForegroundColor Yellow
+        Write-Host "  If Docker Desktop prompts to enable WSL2 or restart, complete that first." -ForegroundColor Yellow
+        exit 1
+    }
+}
+
+# Docker must be runnable (daemon)
+try {
+    $dockerVersion = docker --version 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "docker --version failed" }
+    Write-Host "  Docker: $dockerVersion"
+} catch {
+    Write-Host "  Docker is installed but the daemon is not running. Starting Docker Desktop..." -ForegroundColor Yellow
+    $dockerDesktop = "${env:ProgramFiles}\Docker\Docker\Docker Desktop.exe"
+    if (Test-Path $dockerDesktop) {
+        Start-Process -FilePath $dockerDesktop -WindowStyle Hidden
+        Write-Host "  Waiting 30s for Docker Desktop to start..."
+        Start-Sleep -Seconds 30
+    }
+    $dockerVersion = docker --version 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Docker daemon is not running. Start Docker Desktop from the Start menu, wait until it is ready, then run this script again."
+    }
+    Write-Host "  Docker: $dockerVersion"
+}
+
+# Docker Compose: prefer "docker compose" (V2), then "docker-compose" (standalone)
+$script:ComposeCmd = $null
+$composeV2 = docker compose version 2>&1
+if ($LASTEXITCODE -eq 0) {
+    $script:ComposeCmd = "docker compose"
+    Write-Host "  Docker Compose: $composeV2"
+} else {
+    if (Get-Command docker-compose -ErrorAction SilentlyContinue) {
+        $composeV1 = docker-compose --version 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $script:ComposeCmd = "docker-compose"
+            Write-Host "  Docker Compose: $composeV1"
+        }
+    }
+}
+if (-not $script:ComposeCmd) {
+    Write-Host "  Docker Compose not found. Docker Desktop includes it; installing/repairing Docker Desktop..." -ForegroundColor Yellow
+    Install-DockerDesktop
+    $composeV2 = docker compose version 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $script:ComposeCmd = "docker compose"
+        Write-Host "  Docker Compose: $composeV2"
+    }
+}
+if (-not $script:ComposeCmd) {
+    Write-Host ""
+    Write-Host "  Open a new PowerShell window and run this script again so Docker Compose is on PATH." -ForegroundColor Yellow
+    exit 1
+}
+
+# Git: install via winget if missing
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Write-Host "  Installing Git via winget..."
+        winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements
+        Refresh-EnvPath
+    }
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        throw "Git is not installed and could not be installed. Install manually: https://git-scm.com/download/win"
+    }
+}
+Write-Host "  Git: $(git --version)"
 
 # ---------- 2. Clone or update the repo ----------
 
@@ -41,135 +120,52 @@ if (-not (Test-Path $DeployDir)) {
     }
     Write-Host "  Cloning repository..."
     git clone $RepoUrl $DeployDir
-}
-else {
+} else {
     Write-Host "  Directory already exists - pulling latest..."
     Push-Location $DeployDir
     git pull
     Pop-Location
 }
 
-# ---------- 3. Create virtual environment ----------
+# ---------- 3. Create .env if missing ----------
 
-Write-Step "Creating Python virtual environment"
-
-$venvDir = Join-Path $DeployDir ".venv"
-$venvPython = Join-Path $venvDir "Scripts\python.exe"
-
-if (-not (Test-Path $venvPython)) {
-    python -m venv $venvDir
-    Write-Host "  Created .venv"
-}
-else {
-    Write-Host "  .venv already exists"
-}
-
-$pip = Join-Path $venvDir "Scripts\pip.exe"
-$reqFile = Join-Path $DeployDir "requirements.txt"
-& $pip install --upgrade pip --quiet
-& $pip install -r $reqFile --quiet
-Write-Host "  Dependencies installed"
-
-# ---------- 4. Create .env file ----------
-
-Write-Step "Configuring environment variables"
+Write-Step "Configuring environment"
 
 $envFile = Join-Path $DeployDir ".env"
-
 if (-not (Test-Path $envFile)) {
-    Write-Host "  No .env file found. Creating one now."
-    $supaUrl = Read-Host "  SUPABASE_URL"
-    $supaKey = Read-Host "  SUPABASE_KEY"
-    $supaSvc = Read-Host "  SUPABASE_SERVICE_KEY"
-
-    $lines = @(
-        "SUPABASE_URL=$supaUrl",
-        "SUPABASE_KEY=$supaKey",
-        "SUPABASE_SERVICE_KEY=$supaSvc"
-    )
-    $text = $lines -join "`n"
-    [System.IO.File]::WriteAllText($envFile, $text)
-    Write-Host "  .env created at $envFile"
-}
-else {
+    Write-Host "  No .env file found. Creating from .env.example..."
+    $example = Join-Path $DeployDir ".env.example"
+    if (Test-Path $example) {
+        Copy-Item $example $envFile
+        Write-Host "  .env created. Edit $envFile to set DATABASE_URL if not using Docker Compose."
+    } else {
+        $defaultUrl = "postgresql://econatlas:econatlas@localhost:5432/econatlas"
+        Set-Content -Path $envFile -Value "DATABASE_URL=$defaultUrl"
+        Write-Host "  .env created with default DATABASE_URL (for use with Docker Compose)."
+    }
+} else {
     Write-Host "  .env already exists - skipping"
 }
 
-# ---------- 5. Install NSSM ----------
+# ---------- 4. Build and start with Docker Compose ----------
 
-Write-Step "Installing NSSM (service manager)"
+Write-Step "Building and starting containers"
 
-$nssmCmd = Get-Command nssm -ErrorAction SilentlyContinue
-if (-not $nssmCmd) {
-    Write-Host "  Installing via winget..."
-    winget install --id nssm.nssm --accept-source-agreements --accept-package-agreements
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-    $nssmCmd = Get-Command nssm -ErrorAction SilentlyContinue
-    if (-not $nssmCmd) {
-        throw "NSSM installation failed. Install manually from https://nssm.cc/download"
-    }
-}
-Write-Host "  NSSM found"
-
-# ---------- 6. Register the Windows service ----------
-
-Write-Step "Registering Windows service: $ServiceName"
-
-$ErrorActionPreference = "Continue"
-$existingStatus = nssm status $ServiceName 2>&1
-$ErrorActionPreference = "Stop"
-$serviceExists = $existingStatus -match "SERVICE_"
-$doInstall = $true
-
-if ($serviceExists) {
-    Write-Host "  Service already exists (status: $existingStatus)"
-    $overwrite = Read-Host "  Overwrite? (y/N)"
-    if ($overwrite -eq "y") {
-        nssm stop $ServiceName 2>&1 | Out-Null
-        nssm remove $ServiceName confirm
-    }
-    else {
-        $doInstall = $false
-        Write-Host "  Keeping existing service config"
-    }
+Push-Location $DeployDir
+try {
+    Write-Host "  Using: $script:ComposeCmd"
+    Invoke-Expression "$script:ComposeCmd build"
+    Invoke-Expression "$script:ComposeCmd up -d"
+    Write-Host "  Containers started"
+    Invoke-Expression "$script:ComposeCmd ps"
+} finally {
+    Pop-Location
 }
 
-if ($doInstall) {
-    $uvicorn = Join-Path $venvDir "Scripts\uvicorn.exe"
-    $logsDir = Join-Path $DeployDir "logs"
+# ---------- 5. Summary ----------
 
-    nssm install $ServiceName $uvicorn
-    nssm set $ServiceName AppParameters "app.main:app --host 0.0.0.0 --port $Port"
-    nssm set $ServiceName AppDirectory $DeployDir
-    nssm set $ServiceName AppEnvironmentExtra "PATH=$venvDir\Scripts;%PATH%"
-    nssm set $ServiceName DisplayName "EconAtlas Backend API"
-    nssm set $ServiceName Description "FastAPI backend for EconAtlas"
-    nssm set $ServiceName Start SERVICE_AUTO_START
-    nssm set $ServiceName AppStdout (Join-Path $logsDir "service-stdout.log")
-    nssm set $ServiceName AppStderr (Join-Path $logsDir "service-stderr.log")
-    nssm set $ServiceName AppRotateFiles 1
-    nssm set $ServiceName AppRotateBytes 5242880
-
-    New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
-    Write-Host "  Service registered"
-}
-
-# ---------- 7. Start the service ----------
-
-Write-Step "Starting service"
-
-nssm start $ServiceName
-Start-Sleep -Seconds 3
-$status = nssm status $ServiceName
-Write-Host "  Status: $status"
-
-if ($status -match "SERVICE_RUNNING") {
-    Write-Host ""
-    Write-Host "  API is live at http://localhost:$Port" -ForegroundColor Green
-    Write-Host "  Docs available at http://localhost:$Port/docs" -ForegroundColor Green
-}
-else {
-    Write-Host ""
-    Write-Host "  Service did not start. Check logs:" -ForegroundColor Yellow
-    Write-Host "    $DeployDir\logs\service-stderr.log"
-}
+Write-Host ""
+Write-Host "  API is at http://localhost:$Port" -ForegroundColor Green
+Write-Host "  Docs at http://localhost:$Port/docs" -ForegroundColor Green
+Write-Host ""
+Write-Host "  Manage: cd $DeployDir; docker compose ps | logs | down" -ForegroundColor Yellow

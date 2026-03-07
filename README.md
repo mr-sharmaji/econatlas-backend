@@ -9,111 +9,85 @@ Flutter App (econatlas-app)
         ↓
 FastAPI Backend (econatlas-backend)   ← this repo
         ↓
-Supabase (Postgres · Auth · Storage · Edge Functions)
-
-Scraper Workers (econatlas-scraper)
-        ↓
-FastAPI Backend API
-        ↓
-Supabase Database
+PostgreSQL (Docker or local)
 ```
 
-The backend sits between the Flutter frontend and Supabase.
-It exposes REST endpoints for the mobile app and accepts data pushed by the
-scraper service. It does **not** scrape data itself.
+The backend exposes REST endpoints for the mobile app and runs scheduled jobs (market, commodity, macro, news) that write into PostgreSQL.
 
 ## Tech Stack
 
-
-| Layer        | Choice            |
-| ------------ | ----------------- |
-| Language     | Python 3.13       |
-| Framework    | FastAPI           |
-| Server       | Uvicorn           |
-| Database     | Supabase Postgres |
-| Supabase SDK | supabase-py       |
-| HTTP Client  | httpx             |
-| Validation   | Pydantic          |
-| Config       | python-dotenv     |
-| Container    | Docker            |
-
+| Layer     | Choice        |
+| --------- | ------------- |
+| Language  | Python 3.13   |
+| Framework | FastAPI       |
+| Server    | Uvicorn       |
+| Database  | PostgreSQL    |
+| Driver    | asyncpg       |
+| Config    | python-dotenv |
+| Container | Docker        |
 
 ## Project Structure
 
 ```
 app/
 ├── core/
-│   ├── config.py            # centralised settings (env vars)
-│   └── supabase_client.py   # singleton Supabase client
+│   ├── config.py      # settings (env vars)
+│   └── database.py    # asyncpg pool and schema init
 ├── api/
-│   ├── router.py            # top-level API router
-│   └── routes/
-│       ├── health.py        # GET /health
-│       ├── events.py        # POST & GET /events
-│       ├── macro.py         # POST & GET /macro
-│       ├── market.py        # POST & GET /market, GET /market/latest
-│       ├── commodities.py   # POST & GET /commodities, GET /commodities/latest
-│       └── news.py          # POST & GET /news
+│   ├── router.py
+│   └── routes/        # health, events, macro, market, commodities, news
 ├── schemas/
-│   ├── event_schema.py      # Pydantic models for events
-│   ├── macro_schema.py      # Pydantic models for macro indicators
-│   ├── market_schema.py     # Pydantic models for market price responses
-│   ├── news_schema.py       # Pydantic models for news article responses
-│   └── ingest_schema.py     # Shared ingestion payload/ack models
-├── services/
-│   ├── event_service.py     # business logic — events
-│   ├── macro_service.py     # business logic — macro indicators
-│   ├── market_service.py    # persistence for market/commodity prices
-│   └── news_service.py      # persistence for news article records
-└── main.py                  # FastAPI app factory
+├── services/          # market, macro, news, event (PostgreSQL)
+├── scheduler/         # background jobs (market, commodity, macro, news)
+└── main.py
+sql/
+└── init.sql           # table definitions
 ```
 
-## Running Locally
+## Running with Docker Compose (recommended)
 
-### 1. Create a virtual environment
+Starts PostgreSQL and the API in one go:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+docker compose up -d
 ```
 
-### 2. Install dependencies
+- API: `http://localhost:8000`
+- Docs: `http://localhost:8000/docs`
+- Postgres: `localhost:5432` (user `econatlas`, password `econatlas`, db `econatlas`)
+
+Build and recreate:
 
 ```bash
-pip install -r requirements.txt
+docker compose build --no-cache
+docker compose up -d
 ```
 
-### 3. Configure environment
+## Running locally (no Docker)
 
-```bash
-cp .env.example .env
-# edit .env with your Supabase credentials
-```
+1. **PostgreSQL** must be running (e.g. local install or a Postgres container).
 
-### 4. Start the server
+2. **Create DB and user** (if needed):
 
-```bash
-uvicorn app.main:app --reload --port 8000
-```
+   ```sql
+   CREATE USER econatlas WITH PASSWORD 'econatlas';
+   CREATE DATABASE econatlas OWNER econatlas;
+   ```
 
-The API docs are available at `http://localhost:8000/docs`.
+3. **Env and run:**
 
-## Docker
+   ```bash
+   cp .env.example .env
+   # Edit .env: DATABASE_URL=postgresql://econatlas:econatlas@localhost:5432/econatlas
+   python -m venv .venv
+   source .venv/bin/activate   # or .venv\Scripts\activate on Windows
+   pip install -r requirements.txt
+   uvicorn app.main:app --reload --port 8000
+   ```
 
-### Build
-
-```bash
-docker build -t econatlas-backend .
-```
-
-### Run
-
-```bash
-docker run -p 8000:8000 --env-file .env econatlas-backend
-```
+   On first run, the app applies `sql/init.sql` if the file exists.
 
 ## API Endpoints
-
 
 | Method | Path                | Description                                           |
 | ------ | ------------------- | ----------------------------------------------------- |
@@ -131,118 +105,64 @@ docker run -p 8000:8000 --env-file .env econatlas-backend
 | POST   | /macro              | Ingest macro-economic indicator                       |
 | GET    | /macro              | List macro-economic indicators (filter by country)    |
 
+## Database Tables
 
-## Supabase Tables
-
-The backend expects the following tables to exist in Supabase:
+Defined in `sql/init.sql`:
 
 - **economic_events** — `id`, `event_type`, `entity`, `impact`, `confidence`, `created_at`
 - **macro_indicators** — `id`, `indicator_name`, `value`, `country`, `timestamp`, `unit`, `source`
-- **market_prices** — `id`, `asset`, `price`, `timestamp`, `source`, `instrument_type`, `unit`
-- **news_articles** — `id`, `title`, `summary`, `body`, `timestamp`, `source`, `url`, `primary_entity`, `impact`, `confidence`
-- **devices** — `id`, `user_id`, `device_token`, `platform`
+- **market_prices** — `id`, `asset`, `price`, `timestamp`, `source`, `instrument_type`, `unit`, `change_percent`, `previous_close`
+- **news_articles** — `id`, `title`, `summary`, `body`, `timestamp`, `source`, `url` (unique), `primary_entity`, `impact`, `confidence`
+- **devices** — `id`, `user_id`, `device_token`, `platform` (for future use)
 
-## Ingestion Notes
-
-- The scraper can post directly to `/market`, `/commodities`, `/news`, and `/macro`.
-- Market and commodity routes persist both a price row (`market_prices`) and an event row (`economic_events`).
-- News ingestion tries to store the article in `news_articles` and always emits an event in `economic_events`.
-- The legacy `/events` endpoint remains available for generic event ingestion and compatibility.
-
-## Deploying on a Windows Server
-
-This section covers running the backend as a persistent Windows service with
-automatic deployments on every push to `main`.
+## Deploying on a Windows Server (Docker)
 
 ### Prerequisites
 
-
-| Requirement  | Install                                                               |
-| ------------ | --------------------------------------------------------------------- |
-| Python 3.13+ | [python.org](https://www.python.org/downloads/) — check "Add to PATH" |
-| Git          | [git-scm.com](https://git-scm.com/download/win)                       |
-| NSSM         | `winget install nssm.nssm` or [nssm.cc](https://nssm.cc/download)     |
-
+- **Docker Desktop** (or Docker Engine + Docker Compose)
+- **Git**
 
 ### One-Time Setup
 
-Open an **Administrator PowerShell** and run:
+In **Administrator PowerShell**:
 
 ```powershell
-# Clone the repo
 git clone https://github.com/<your-user>/econatlas-backend.git C:\econatlas-backend
-
-# Run the setup script
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\C:\econatlas-backend\scripts\setup-server.ps1 -RepoUrl https://github.com/<your-user>/econatlas-backend.git
 ```
 
-The script will:
+The script checks Docker/Docker Compose and Git, creates `.env` from `.env.example` if missing, then runs `docker compose up -d`.
 
-1. Create a Python venv and install dependencies
-2. Prompt you for Supabase credentials (`.env`)
-3. Register `econatlas-backend` as a Windows service via NSSM
-4. Start the service on port **8000**
+### CI/CD — GitHub Actions (self-hosted runner)
 
-After setup the API is live at `http://localhost:8000/docs`.
+1. Add a **self-hosted runner** (Windows) to the repo.
+2. On push to `main`, the workflow in `.github/workflows/deploy.yml`:
+   - Syncs the repo into `C:\PersonalProjects\econatlas-backend`
+   - Runs `docker compose build --no-cache` and `docker compose up -d`
 
-### CI/CD — GitHub Actions Self-Hosted Runner
-
-So that every push to `main` automatically deploys to your Windows machine:
-
-**1. Add a self-hosted runner to your repo**
-
-Go to your GitHub repo → **Settings → Actions → Runners → New self-hosted runner**.
-Select **Windows / x64** and follow the download + configure instructions:
+### Managing containers
 
 ```powershell
-mkdir C:\actions-runner && cd C:\actions-runner
-
-# Download (URL from GitHub UI)
-Invoke-WebRequest -Uri <RUNNER_DOWNLOAD_URL> -OutFile actions-runner.zip
-Expand-Archive -Path actions-runner.zip -DestinationPath .
-
-# Configure
-.\config.cmd --url https://github.com/<your-user>/econatlas-backend --token <TOKEN>
+cd C:\econatlas-backend
+docker compose ps
+docker compose logs -f app
+docker compose down
+docker compose up -d
 ```
 
-**2. Install the runner as a Windows service**
+### Firewall (optional)
 
-```powershell
-cd C:\actions-runner
-.\svc.ps1 install
-.\svc.ps1 start
-```
-
-**3. Done!** Every push to `main` now triggers the workflow in
-`.github/workflows/deploy.yml`, which syncs code, updates dependencies,
-and restarts the service — all automatically.
-
-### Managing the Service
-
-```powershell
-nssm status econatlas-backend    # Check status
-nssm restart econatlas-backend   # Restart
-nssm stop econatlas-backend      # Stop
-nssm start econatlas-backend     # Start
-nssm edit econatlas-backend      # Edit config (GUI)
-```
-
-Logs are written to `C:\econatlas-backend\logs\`.
-
-### Firewall (optional — expose to LAN/internet)
+To expose the API on the LAN:
 
 ```powershell
 New-NetFirewallRule -DisplayName "EconAtlas API" `
   -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow
 ```
 
-The API is then accessible at `http://<WINDOWS_IP>:8000` from other devices.
-
 ## Future Roadmap
 
 - AI event extraction pipelines
 - Economic knowledge graph
 - Portfolio exposure analysis
-- Push notification triggers via Supabase Edge Functions
-
+- Push notifications
