@@ -34,6 +34,26 @@ async def insert_price(
     return record_to_dict(row)
 
 
+async def get_latest_price_per_asset_type(
+    asset_type_pairs: list[tuple[str, str]],
+) -> dict[tuple[str, str], float]:
+    """Return map (asset, instrument_type) -> latest price for given pairs."""
+    if not asset_type_pairs:
+        return {}
+    pool = await get_pool()
+    # One row per (asset, instrument_type) with latest price; we filter in Python
+    rows = await pool.fetch(
+        f"""
+        SELECT DISTINCT ON (asset, instrument_type) asset, instrument_type, price
+        FROM {TABLE}
+        ORDER BY asset, instrument_type, timestamp DESC
+        """
+    )
+    key_to_price = {(r["asset"], r["instrument_type"] or ""): float(r["price"]) for r in rows}
+    need = set(asset_type_pairs)
+    return {k: key_to_price[k] for k in need if k in key_to_price}
+
+
 async def insert_prices_batch(rows: list[dict]) -> int:
     """Insert multiple price rows in one request. Returns count inserted."""
     if not rows:
@@ -59,6 +79,40 @@ async def insert_prices_batch(rows: list[dict]) -> int:
             )
             count += 1
     return count
+
+
+# Tolerance for float price comparison (avoids duplicates when markets closed)
+_PRICE_CHANGE_TOLERANCE = 1e-9
+
+
+async def insert_prices_batch_skip_unchanged(
+    rows: list[dict],
+    tolerance: float = _PRICE_CHANGE_TOLERANCE,
+) -> tuple[int, int]:
+    """Insert only rows where price changed from latest for that (asset, instrument_type). Returns (inserted, skipped)."""
+    if not rows:
+        return 0, 0
+    pairs = [(r.get("asset"), r.get("instrument_type") or "") for r in rows]
+    latest = await get_latest_price_per_asset_type(pairs)
+    to_insert = []
+    for r in rows:
+        key = (r.get("asset"), r.get("instrument_type") or "")
+        new_price = r.get("price")
+        if isinstance(new_price, (int, float)):
+            new_price = float(new_price)
+        else:
+            to_insert.append(r)
+            continue
+        last = latest.get(key)
+        if last is None:
+            to_insert.append(r)
+            continue
+        if abs(new_price - last) <= tolerance:
+            continue
+        to_insert.append(r)
+    inserted = await insert_prices_batch(to_insert) if to_insert else 0
+    skipped = len(rows) - inserted
+    return inserted, skipped
 
 
 async def get_prices(

@@ -253,7 +253,7 @@ async def run_market_job() -> None:
     try:
         loop = asyncio.get_event_loop()
         rows = await loop.run_in_executor(None, _fetch_market_rows_sync)
-        count = await market_service.insert_prices_batch(rows)
-        logger.info("Market job complete: %d items inserted", count)
+        inserted, skipped = await market_service.insert_prices_batch_skip_unchanged(rows)
+        logger.info("Market job complete: %d inserted, %d skipped (unchanged)", inserted, skipped)
     except Exception:
         logger.exception("Market job failed")
