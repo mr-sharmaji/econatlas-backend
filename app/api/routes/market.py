@@ -25,6 +25,12 @@ async def ingest_market(payload: MarketIngestPayload) -> IngestAck:
             price_value = payload.value
         if price_value is None:
             raise HTTPException(status_code=422, detail="Missing numeric value for market payload")
+        default_unit_by_type = {
+            "index": "points",
+            "currency": "fx_rate",
+            "bond_yield": "percent",
+        }
+        unit_value = payload.unit or default_unit_by_type[payload.type]
 
         await market_service.insert_price(
             asset=entity,
@@ -32,6 +38,7 @@ async def ingest_market(payload: MarketIngestPayload) -> IngestAck:
             timestamp=payload.timestamp.isoformat(),
             source=payload.source,
             instrument_type=payload.type,
+            unit=unit_value,
         )
 
         impact = "macro_signal" if payload.type == "bond_yield" else "market_signal"
