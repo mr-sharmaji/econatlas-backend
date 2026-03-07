@@ -30,6 +30,8 @@ async def ingest_market(payload: MarketIngestPayload) -> IngestAck:
             asset=entity,
             price=float(price_value),
             timestamp=payload.timestamp.isoformat(),
+            source=payload.source,
+            instrument_type=payload.type,
         )
 
         impact = "macro_signal" if payload.type == "bond_yield" else "market_signal"

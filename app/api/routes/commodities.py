@@ -14,6 +14,8 @@ async def ingest_commodity(payload: CommodityIngestPayload) -> IngestAck:
             asset=payload.asset.lower(),
             price=payload.price_usd,
             timestamp=payload.timestamp.isoformat(),
+            source=payload.source,
+            instrument_type="commodity",
         )
 
         row = await event_service.insert_event_dict(
