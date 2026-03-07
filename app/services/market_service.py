@@ -29,6 +29,15 @@ async def insert_price(
     return result.data[0]
 
 
+async def insert_prices_batch(rows: list[dict]) -> int:
+    """Insert multiple price rows in one request. Returns count inserted."""
+    if not rows:
+        return 0
+    client = get_supabase()
+    result = client.table(TABLE).insert(rows).execute()
+    return len(result.data)
+
+
 async def get_prices(
     instrument_type: str | None = None,
     asset: str | None = None,
