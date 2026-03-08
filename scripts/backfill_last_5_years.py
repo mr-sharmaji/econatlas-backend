@@ -95,6 +95,7 @@ class BackfillConfig:
     db_batch_size: int
     db_sleep_seconds: float
     validate_only: bool
+    macro_only: bool = False
 
 
 def _pct_change(current: float, previous: float | None) -> float | None:
@@ -643,6 +644,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip fetch/insert and only run validation for selected window.",
     )
+    parser.add_argument(
+        "--macro-only",
+        action="store_true",
+        help="Backfill only macro indicators (skip market, commodities, bonds).",
+    )
     return parser.parse_args()
 
 
@@ -656,79 +662,80 @@ async def run_once(backfiller: HistoricalBackfiller, cfg: BackfillConfig) -> dic
     commodity_items = list(COMMODITY_SYMBOLS.items())
 
     if not cfg.validate_only:
-        # Market (indices + FX): per symbol, per year → fetch then insert
-        for sym_idx, (symbol, asset, instrument_type, unit) in enumerate(market_items):
-            yearly = backfiller._iter_yearly_chunks()
-            for range_start, range_end in yearly:
-                rows = backfiller._collect_market_symbol_year(
-                    symbol, asset, instrument_type, unit, range_start, range_end
-                )
-                if rows:
-                    fetched_market_count += len(rows)
-                    inc, sk = await insert_market_rows_idempotent(
-                        rows, range_start, range_end,
-                        cfg.db_batch_size, cfg.db_sleep_seconds,
+        if not cfg.macro_only:
+            # Market (indices + FX): per symbol, per year → fetch then insert
+            for sym_idx, (symbol, asset, instrument_type, unit) in enumerate(market_items):
+                yearly = backfiller._iter_yearly_chunks()
+                for range_start, range_end in yearly:
+                    rows = backfiller._collect_market_symbol_year(
+                        symbol, asset, instrument_type, unit, range_start, range_end
                     )
-                    inserted_market += inc
-                    skipped_market += sk
-                del rows
-            if (sym_idx + 1) % backfiller.config.api_batch_size == 0:
-                await asyncio.sleep(cfg.api_sleep_seconds)
+                    if rows:
+                        fetched_market_count += len(rows)
+                        inc, sk = await insert_market_rows_idempotent(
+                            rows, range_start, range_end,
+                            cfg.db_batch_size, cfg.db_sleep_seconds,
+                        )
+                        inserted_market += inc
+                        skipped_market += sk
+                    del rows
+                if (sym_idx + 1) % backfiller.config.api_batch_size == 0:
+                    await asyncio.sleep(cfg.api_sleep_seconds)
 
-        # Commodity: per symbol, per year → fetch then insert
-        for sym_idx, (symbol, (asset, unit)) in enumerate(commodity_items):
-            yearly = backfiller._iter_yearly_chunks()
-            for range_start, range_end in yearly:
-                rows = backfiller._collect_commodity_symbol_year(
-                    symbol, asset, unit, range_start, range_end
-                )
-                if rows:
-                    fetched_market_count += len(rows)
-                    inc, sk = await insert_market_rows_idempotent(
-                        rows, range_start, range_end,
-                        cfg.db_batch_size, cfg.db_sleep_seconds,
+            # Commodity: per symbol, per year → fetch then insert
+            for sym_idx, (symbol, (asset, unit)) in enumerate(commodity_items):
+                yearly = backfiller._iter_yearly_chunks()
+                for range_start, range_end in yearly:
+                    rows = backfiller._collect_commodity_symbol_year(
+                        symbol, asset, unit, range_start, range_end
                     )
-                    inserted_market += inc
-                    skipped_market += sk
-                del rows
-            if (sym_idx + 1) % backfiller.config.api_batch_size == 0:
-                await asyncio.sleep(cfg.api_sleep_seconds)
+                    if rows:
+                        fetched_market_count += len(rows)
+                        inc, sk = await insert_market_rows_idempotent(
+                            rows, range_start, range_end,
+                            cfg.db_batch_size, cfg.db_sleep_seconds,
+                        )
+                        inserted_market += inc
+                        skipped_market += sk
+                    del rows
+                if (sym_idx + 1) % backfiller.config.api_batch_size == 0:
+                    await asyncio.sleep(cfg.api_sleep_seconds)
 
-        # Bonds: per series, per year → fetch FRED then insert
-        yearly = backfiller._iter_yearly_chunks()
-        for asset, series_id in BOND_SERIES:
-            for range_start, range_end in yearly:
-                try:
-                    points = backfiller._fetch_fred_series(
-                        series_id, range_start=range_start, range_end=range_end
-                    )
-                except Exception:
-                    logger.exception("Bond history fetch failed for %s", series_id)
-                    break
-                rows = [
-                    {
-                        "asset": asset,
-                        "price": value,
-                        "timestamp": ts.isoformat(),
-                        "source": "fred_api_backfill",
-                        "instrument_type": "bond_yield",
-                        "unit": "percent",
-                        "change_percent": None,
-                        "previous_close": None,
-                    }
-                    for ts, value in points
-                    if range_start <= ts <= range_end
-                ]
-                if rows:
-                    fetched_market_count += len(rows)
-                    inc, sk = await insert_market_rows_idempotent(
-                        rows, range_start, range_end,
-                        cfg.db_batch_size, cfg.db_sleep_seconds,
-                    )
-                    inserted_market += inc
-                    skipped_market += sk
-                del rows
-            await asyncio.sleep(cfg.api_sleep_seconds)
+            # Bonds: per series, per year → fetch FRED then insert
+            yearly = backfiller._iter_yearly_chunks()
+            for asset, series_id in BOND_SERIES:
+                for range_start, range_end in yearly:
+                    try:
+                        points = backfiller._fetch_fred_series(
+                            series_id, range_start=range_start, range_end=range_end
+                        )
+                    except Exception:
+                        logger.exception("Bond history fetch failed for %s", series_id)
+                        break
+                    rows = [
+                        {
+                            "asset": asset,
+                            "price": value,
+                            "timestamp": ts.isoformat(),
+                            "source": "fred_api_backfill",
+                            "instrument_type": "bond_yield",
+                            "unit": "percent",
+                            "change_percent": None,
+                            "previous_close": None,
+                        }
+                        for ts, value in points
+                        if range_start <= ts <= range_end
+                    ]
+                    if rows:
+                        fetched_market_count += len(rows)
+                        inc, sk = await insert_market_rows_idempotent(
+                            rows, range_start, range_end,
+                            cfg.db_batch_size, cfg.db_sleep_seconds,
+                        )
+                        inserted_market += inc
+                        skipped_market += sk
+                    del rows
+                await asyncio.sleep(cfg.api_sleep_seconds)
 
         # Macro: per indicator fetch full series, then insert year-by-year
         macro_work: list[tuple[str, str, str, str]] = []  # (source_type, country, ref, indicator_name)
@@ -835,6 +842,7 @@ async def main() -> None:
         db_batch_size=max(args.db_batch_size, 1),
         db_sleep_seconds=max(args.db_sleep_seconds, 0),
         validate_only=bool(args.validate_only),
+        macro_only=bool(args.macro_only),
     )
 
     await init_pool()
