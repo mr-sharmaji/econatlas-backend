@@ -115,6 +115,14 @@ Defined in `sql/init.sql`:
 - **news_articles** — `id`, `title`, `summary`, `body`, `timestamp`, `source`, `url` (unique), `primary_entity`, `impact`, `confidence`
 - **devices** — `id`, `user_id`, `device_token`, `platform` (for future use)
 
+## Data model: one row per day (market & commodity)
+
+For **market** (indices, FX, bond yields) and **commodity** prices we keep **at most one row per (asset, instrument_type, calendar day)** so charts get one point per day.
+
+- The scheduler uses **today 00:00 UTC** as the timestamp and **upserts** (insert or update) so each run overwrites today’s row with the latest price. No duplicate rows for the same day.
+- **When markets are closed**: we avoid writing stale data. The job uses **exchange calendars** (NSE/NYSE) as the main gate. If the calendar says **closed**, we still fetch; we **only write when the price changed** from the last stored value (so we don’t miss days when the market was actually open but the calendar was wrong). If the calendar says **open** we always write. So wrong calendar (holiday vs live or vice versa) is partly corrected by the data.
+- **Macro** indicators use table `macro_indicators` with one row per `(indicator_name, country, timestamp)`; timestamps are **observation/release dates** from FRED/World Bank (e.g. monthly), so there is no “many rows per day” issue.
+
 ## Deploying on a Windows Server (Docker)
 
 ### Prerequisites

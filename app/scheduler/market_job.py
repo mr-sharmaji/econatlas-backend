@@ -8,6 +8,7 @@ import re
 from typing import Dict, List, Tuple
 
 from app.scheduler.base import BaseScraper
+from app.scheduler.trading_calendar import is_trading_day_markets
 from app.services import event_service, market_service
 
 logger = logging.getLogger(__name__)
@@ -230,13 +231,14 @@ class MarketScraper(BaseScraper):
 _scraper = MarketScraper()
 
 
-def _fetch_market_rows_sync() -> List[Dict]:
-    """Sync scrape; run in thread executor so main loop is not blocked.
-    Uses today 00:00 UTC as timestamp so we get one row per day (upsert); avoids many intraday rows breaking charts."""
-    items = _scraper.fetch_all()
+def _fetch_market_rows_sync() -> tuple[List[Dict], bool]:
+    """Sync scrape; run in thread executor. Returns (rows, calendar_says_trading_day).
+    When calendar says closed we still fetch; caller may write only rows where price changed (calendar can be wrong)."""
     now = _scraper.utc_now()
+    calendar_open = is_trading_day_markets(now)
+    items = _scraper.fetch_all()
     ts = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    return [
+    rows = [
         {
             "asset": it["asset"],
             "price": it["price"],
@@ -249,12 +251,29 @@ def _fetch_market_rows_sync() -> List[Dict]:
         }
         for it in items
     ]
+    return (rows, calendar_open)
+
+
+_PRICE_CHANGE_TOLERANCE = 1e-9
 
 
 async def run_market_job() -> None:
     try:
         loop = asyncio.get_event_loop()
-        rows = await loop.run_in_executor(None, _fetch_market_rows_sync)
+        rows, calendar_says_open = await loop.run_in_executor(None, _fetch_market_rows_sync)
+        if not rows:
+            return
+        if not calendar_says_open:
+            pairs = [(r["asset"], r.get("instrument_type") or "") for r in rows]
+            latest = await market_service.get_latest_price_per_asset_type(pairs)
+            rows = [
+                r for r in rows
+                if (latest.get((r["asset"], r.get("instrument_type") or "")) is None)
+                or abs(float(r["price"]) - latest[(r["asset"], r.get("instrument_type") or "")]) > _PRICE_CHANGE_TOLERANCE
+            ]
+        if not rows:
+            logger.info("Market job: calendar said closed and no price change; skipped")
+            return
         updated = await market_service.insert_prices_batch_upsert_daily(rows)
         logger.info("Market job complete: %d rows upserted (daily)", updated)
     except Exception:
