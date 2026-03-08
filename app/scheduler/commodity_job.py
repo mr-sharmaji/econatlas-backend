@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import csv
-import io
 import logging
 from typing import Dict, List, Optional
 
@@ -13,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 FX_USD_BASE_URL = "https://open.er-api.com/v6/latest/USD"
-STOOQ_CSV_URL = "https://stooq.com/q/l/"
 
 SYMBOLS = {
     "GC=F": ("gold", "usd_per_troy_ounce"),
@@ -21,14 +18,6 @@ SYMBOLS = {
     "CL=F": ("crude oil", "usd_per_barrel"),
     "NG=F": ("natural gas", "usd_per_mmbtu"),
     "HG=F": ("copper", "usd_per_pound"),
-}
-
-STOOQ_FALLBACK = {
-    "gold": "gc.f",
-    "silver": "si.f",
-    "crude oil": "cl.f",
-    "natural gas": "ng.f",
-    "copper": "hg.f",
 }
 
 
@@ -84,34 +73,11 @@ class CommodityScraper(BaseScraper):
                 logger.warning("Commodity fetch failed for %s", symbol, exc_info=True)
         return items
 
-    def _fetch_stooq(self) -> List[Dict]:
-        items = []
-        unit_map = {a: u for _, (a, u) in SYMBOLS.items()}
-        for asset, symbol in STOOQ_FALLBACK.items():
-            try:
-                text = self._get_text(STOOQ_CSV_URL, params={"s": symbol, "f": "sd2t2ohlcv", "h": ""})
-                row = next(csv.DictReader(io.StringIO(text)), None)
-                if not row:
-                    continue
-                close = row.get("Close")
-                if not close or close in {"N/D", "0"}:
-                    continue
-                items.append({"asset": asset, "price": float(close), "unit": unit_map.get(asset, "usd"), "source": "stooq_fallback", "change_percent": None, "previous_close": None})
-            except Exception:
-                logger.warning("Stooq fallback failed for %s", asset)
-        return items
-
     def fetch_all(self) -> List[Dict]:
         try:
-            items = self._fetch_yahoo()
-            if items:
-                return items
+            return self._fetch_yahoo()
         except Exception:
-            logger.warning("Commodity Yahoo failed; trying Stooq", exc_info=True)
-        try:
-            return self._fetch_stooq()
-        except Exception:
-            logger.exception("Commodity Stooq fallback failed")
+            logger.exception("Commodity Yahoo fetch failed")
             return []
 
 
