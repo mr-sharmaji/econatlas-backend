@@ -64,7 +64,7 @@ async def main() -> None:
         n_commodity = await market_service.insert_prices_batch_upsert_daily(commodity_rows)
         logger.info("Commodities: %d rows upserted (daily) for last trading session.", n_commodity)
 
-    # Optionally write intraday points if market is open (for 1D chart)
+    # Populate intraday for 1D chart: when market open use live timestamp; when closed use last-session close (one point per asset).
     status = get_market_status()
     now = datetime.now(timezone.utc)
     ts_rounded = market_service._round_to_minute(now).isoformat()
@@ -82,14 +82,40 @@ async def main() -> None:
                 })
         if intraday_rows:
             n = await market_service.insert_intraday_batch(intraday_rows)
-            logger.info("Intraday (market): %d points inserted.", n)
-    if status.get("nyse_open") and commodity_rows:
-        intraday_commodity = [
-            {"asset": r["asset"], "instrument_type": "commodity", "price": r["price"], "timestamp": ts_rounded}
-            for r in commodity_rows
+            logger.info("Intraday (market): %d points inserted (market open).", n)
+        if status.get("nyse_open") and commodity_rows:
+            intraday_commodity = [
+                {"asset": r["asset"], "instrument_type": "commodity", "price": r["price"], "timestamp": ts_rounded}
+                for r in commodity_rows
+            ]
+            n = await market_service.insert_intraday_batch(intraday_commodity)
+            logger.info("Intraday (commodities): %d points inserted (market open).", n)
+    else:
+        # Market closed: write one intraday point per asset (last session close) so 1D chart has data.
+        intraday_market = [
+            {
+                "asset": r["asset"],
+                "instrument_type": r.get("instrument_type") or "index",
+                "price": r["price"],
+                "timestamp": r["timestamp"] if isinstance(r["timestamp"], str) else r["timestamp"].isoformat(),
+            }
+            for r in market_rows
         ]
-        n = await market_service.insert_intraday_batch(intraday_commodity)
-        logger.info("Intraday (commodities): %d points inserted.", n)
+        if intraday_market:
+            n = await market_service.insert_intraday_batch(intraday_market)
+            logger.info("Intraday (market): %d points inserted (last session close).", n)
+        if commodity_rows:
+            intraday_commodity = [
+                {
+                    "asset": r["asset"],
+                    "instrument_type": "commodity",
+                    "price": r["price"],
+                    "timestamp": r["timestamp"] if isinstance(r["timestamp"], str) else r["timestamp"].isoformat(),
+                }
+                for r in commodity_rows
+            ]
+            n = await market_service.insert_intraday_batch(intraday_commodity)
+            logger.info("Intraday (commodities): %d points inserted (last session close).", n)
 
     logger.info("Backfill last session complete.")
     await close_pool()
