@@ -5,10 +5,11 @@ import csv
 import io
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
 from app.scheduler.base import BaseScraper
-from app.scheduler.trading_calendar import is_trading_day_markets
+from app.scheduler.trading_calendar import get_trading_date, is_trading_day_markets, NSE, NYSE
 from app.services import event_service, market_service
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,28 @@ BOND_SERIES: List[Tuple[str, str]] = [
     ("US 2Y Treasury Yield", "DGS2"),
     ("India 10Y Bond Yield", "INDIRLTLT01STM"),
 ]
+
+# Asset → exchange for correct trading-date assignment (avoid Monday close stored as Tuesday UTC)
+ASSET_EXCHANGE: Dict[str, str] = {
+    "S&P500": NYSE,
+    "NASDAQ": NYSE,
+    "Dow Jones": NYSE,
+    "Nifty 50": NSE,
+    "Sensex": NSE,
+    "Nifty 500": NSE,
+    "Nifty Bank": NSE,
+    "Nifty IT": NSE,
+    "Nifty Midcap 150": NSE,
+    "Nifty Smallcap 250": NSE,
+    "Gift Nifty": NSE,
+    "USD/INR": NYSE,
+    "EUR/INR": NYSE,
+    "GBP/INR": NYSE,
+    "JPY/INR": NYSE,
+    "India 10Y Bond Yield": NSE,
+    "US 10Y Treasury Yield": NYSE,
+    "US 2Y Treasury Yield": NYSE,
+}
 
 
 def _pct_change(current: float, previous: float | None) -> float | None:
@@ -233,13 +256,16 @@ _scraper = MarketScraper()
 
 def _fetch_market_rows_sync() -> tuple[List[Dict], bool]:
     """Sync scrape; run in thread executor. Returns (rows, calendar_says_trading_day).
-    When calendar says closed we still fetch; caller may write only rows where price changed (calendar can be wrong)."""
+    Each row's timestamp is the exchange trading date (NSE/NYSE) so Monday's close is not stored as Tuesday."""
     now = _scraper.utc_now()
     calendar_open = is_trading_day_markets(now)
     items = _scraper.fetch_all()
-    ts = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    rows = [
-        {
+    rows = []
+    for it in items:
+        exchange = ASSET_EXCHANGE.get(it["asset"], NYSE)
+        trading_date = get_trading_date(now, exchange)
+        ts = datetime(trading_date.year, trading_date.month, trading_date.day, 0, 0, 0, tzinfo=timezone.utc).isoformat()
+        rows.append({
             "asset": it["asset"],
             "price": it["price"],
             "timestamp": ts,
@@ -248,9 +274,7 @@ def _fetch_market_rows_sync() -> tuple[List[Dict], bool]:
             "unit": it.get("unit"),
             "change_percent": it.get("change_percent"),
             "previous_close": it.get("previous_close"),
-        }
-        for it in items
-    ]
+        })
     return (rows, calendar_open)
 
 

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from app.scheduler.base import BaseScraper
+from app.scheduler.trading_calendar import get_trading_date, NSE, NYSE
 from app.services import macro_service
 
 logger = logging.getLogger(__name__)
@@ -163,19 +164,28 @@ def _fetch_macro_items_sync() -> list:
     return _scraper.fetch_all()
 
 
-def _normalize_to_today_utc(items: List[Dict]) -> List[Dict]:
-    """Set each item's timestamp to today 00:00 UTC for one-row-per-day model."""
+# Country → exchange for trading-date assignment (same as market: US=NYSE, India=NSE)
+COUNTRY_EXCHANGE: Dict[str, str] = {"US": NYSE, "IN": NSE}
+
+
+def _assign_trading_date_per_country(items: List[Dict]) -> List[Dict]:
+    """Set each item's timestamp to its exchange trading date (US→NYSE, IN→NSE) at 00:00 UTC."""
     now = datetime.now(timezone.utc)
-    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    ts_iso = day_start.isoformat()
-    return [{**item, "timestamp": ts_iso} for item in items]
+    out = []
+    for item in items:
+        country = item.get("country", "US")
+        exchange = COUNTRY_EXCHANGE.get(country, NYSE)
+        trading_date = get_trading_date(now, exchange)
+        ts = datetime(trading_date.year, trading_date.month, trading_date.day, 0, 0, 0, tzinfo=timezone.utc).isoformat()
+        out.append({**item, "timestamp": ts})
+    return out
 
 
 async def run_macro_job() -> None:
     try:
         loop = asyncio.get_event_loop()
         items = await loop.run_in_executor(None, _fetch_macro_items_sync)
-        items = _normalize_to_today_utc(items)
+        items = _assign_trading_date_per_country(items)
         count = await macro_service.insert_indicators_batch_upsert_daily(items)
         logger.info("Macro job complete: %d rows upserted (daily)", count)
     except Exception:

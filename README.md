@@ -105,11 +105,18 @@ Defined in `sql/init.sql`:
 
 ## Data Model: One Row per Day (All Time Series)
 
-**One row per calendar day** applies to all time-series data so the app gets one point per day in charts and lists:
+**One row per calendar day** applies to all time-series data so the app gets one point per day in charts and lists.
 
-- **Market** — Indices, currencies (FX), and bond yields: at most one row per `(asset, instrument_type, date)` in `market_prices`. Scheduler uses **today 00:00 UTC** and **upserts** so each run updates that day’s row. When the calendar says markets are closed (NSE/NYSE via `exchange-calendars`), we still fetch; we **only write when the price changed** from the last stored value (handles calendar errors).
-- **Commodities** — Gold, silver, oil, etc.: same as market (one row per `(asset, instrument_type, date)` in `market_prices`), with the same calendar + price-change logic.
-- **Macro** — Inflation, rates, GDP, etc.: at most one row per `(indicator_name, country, date)` in `macro_indicators`. The macro job normalizes timestamps to **today 00:00 UTC** and **upserts** so each run updates that day’s row.
+### Exchange trading date (market & commodity)
+
+To avoid **timezone bugs** (e.g. Monday’s US close stored as “Tuesday” when the server is already in Tuesday UTC), we assign each price the **exchange’s trading date**, not the server’s UTC date:
+
+- Each asset is mapped to an exchange (NSE for India indices/bonds, NYSE for US indices, FX, US bonds, commodities). The scheduler uses `exchange-calendars` to get the **trading date** in that exchange’s timezone: if that local date is a session day, we use it; otherwise we use the previous session date. The stored timestamp is that date at 00:00 UTC.
+- So Monday’s close in New York is always stored with date Monday (UTC midnight), even if the job runs on Tuesday UTC.
+
+- **Market** — Indices, FX, bond yields: one row per `(asset, instrument_type, date)` in `market_prices` with date = **exchange trading date** (NSE or NYSE by asset). When the calendar says closed we still fetch; we **only write when the price changed** from the last stored value (handles calendar errors).
+- **Commodities** — Gold, silver, oil, etc.: same, with date = **NYSE trading date** (US futures).
+- **Macro** — One row per `(indicator_name, country, date)` in `macro_indicators`; macro job uses **exchange trading date by country** (US → NYSE date, India → NSE date) so US and India indicators are stored under the correct local trading day.
 
 ## Deploying on a Windows Server (Docker)
 

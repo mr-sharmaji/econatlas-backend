@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from app.scheduler.base import BaseScraper
-from app.scheduler.trading_calendar import is_trading_day_commodities
+from app.scheduler.trading_calendar import get_trading_date, is_trading_day_commodities, NYSE
 from app.services import market_service
 
 logger = logging.getLogger(__name__)
@@ -87,11 +88,12 @@ _scraper = CommodityScraper()
 
 def _fetch_commodity_rows_sync() -> tuple[List[Dict], bool]:
     """Sync scrape; run in thread executor. Returns (rows, calendar_says_trading_day).
-    When calendar says closed we still fetch; caller may write only rows where price changed (calendar can be wrong)."""
+    Timestamp uses NYSE trading date so Monday's close is not stored as Tuesday."""
     now = _scraper.utc_now()
     calendar_open = is_trading_day_commodities(now)
     items = _scraper.fetch_all()
-    ts = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    trading_date = get_trading_date(now, NYSE)
+    ts = datetime(trading_date.year, trading_date.month, trading_date.day, 0, 0, 0, tzinfo=timezone.utc).isoformat()
     rows = [
         {
             "asset": it["asset"],
