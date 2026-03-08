@@ -359,6 +359,11 @@ async def _existing_market_timestamps(
     return {row["timestamp"] for row in rows}
 
 
+def _macro_date_normalize(ts: datetime) -> datetime:
+    """Normalize to midnight UTC so one row per calendar day; avoids same-date duplicates."""
+    return datetime(ts.year, ts.month, ts.day, 0, 0, 0, tzinfo=UTC)
+
+
 async def _existing_macro_timestamps(
     indicator_name: str,
     country: str,
@@ -380,7 +385,7 @@ async def _existing_macro_timestamps(
         start_ts,
         end_ts,
     )
-    return {row["timestamp"] for row in rows}
+    return {_macro_date_normalize(row["timestamp"]) for row in rows}
 
 
 def _chunk_rows(rows: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
@@ -467,13 +472,21 @@ async def insert_macro_rows_idempotent(
     skipped = 0
     total_groups = len(grouped)
     for group_num, ((indicator_name, country), group_rows) in enumerate(grouped.items(), start=1):
+        # One row per calendar day: keep latest value per date
+        by_date: dict[datetime, dict[str, Any]] = {}
+        for r in group_rows:
+            ts = _macro_date_normalize(parse_ts(r["timestamp"]))
+            by_date[ts] = {**r, "timestamp": ts.isoformat()}
+        group_rows = list(by_date.values())
+
         existing = await _existing_macro_timestamps(indicator_name, country, start_ts, end_ts)
         pending = []
         for row in group_rows:
-            ts = parse_ts(row["timestamp"])
+            ts = _macro_date_normalize(parse_ts(row["timestamp"]))
             if ts in existing:
                 skipped += 1
                 continue
+            row["timestamp"] = ts.isoformat()
             pending.append(row)
             existing.add(ts)
 
@@ -739,8 +752,8 @@ async def run_once(backfiller: HistoricalBackfiller, cfg: BackfillConfig) -> dic
                             "indicator_name": indicator_name,
                             "value": value,
                             "country": country,
-                            "timestamp": ts.isoformat(),
-                            "unit": None,
+                            "timestamp": _macro_date_normalize(ts).isoformat(),
+                            "unit": "percent",
                             "source": "fred_api_backfill",
                         }
                         for ts, value in all_points
@@ -753,7 +766,7 @@ async def run_once(backfiller: HistoricalBackfiller, cfg: BackfillConfig) -> dic
                             "indicator_name": "inflation",
                             "value": value,
                             "country": country,
-                            "timestamp": ts.isoformat(),
+                            "timestamp": _macro_date_normalize(ts).isoformat(),
                             "unit": "percent_yoy",
                             "source": "fred_api_backfill",
                         }
@@ -767,7 +780,7 @@ async def run_once(backfiller: HistoricalBackfiller, cfg: BackfillConfig) -> dic
                             "indicator_name": indicator_name,
                             "value": value,
                             "country": country,
-                            "timestamp": ts.isoformat(),
+                            "timestamp": _macro_date_normalize(ts).isoformat(),
                             "unit": "percent",
                             "source": "world_bank_backfill",
                         }

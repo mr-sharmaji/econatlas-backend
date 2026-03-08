@@ -75,7 +75,7 @@ async def init_pool() -> asyncpg.Pool:
                 if up.startswith("CREATE") or up.startswith("ALTER") or up.startswith("DROP"):
                     await conn.execute(stmt)
             logger.info("Schema init executed from sql/init.sql")
-        # Ensure idempotent-insert indexes exist (for ON CONFLICT). Safe if init.sql is old.
+        # Ensure idempotent-insert indexes exist (for ON CONFLICT).
         await conn.execute(
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_market_prices_asset_type_ts '
             'ON market_prices (asset, instrument_type, "timestamp")'

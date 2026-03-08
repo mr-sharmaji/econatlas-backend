@@ -110,7 +110,14 @@ class MacroScraper(BaseScraper):
                     result = self._compute_yoy_inflation(cpi)
                     if result:
                         val, ts = result
-                        items.append({"indicator_name": "inflation", "value": val, "country": country, "timestamp": ts.isoformat()})
+                        items.append({
+                            "indicator_name": "inflation",
+                            "value": val,
+                            "country": country,
+                            "timestamp": ts.isoformat(),
+                            "unit": "percent_yoy",
+                            "source": "fred_api",
+                        })
                 except Exception:
                     logger.exception("Inflation fetch failed for %s", country)
 
@@ -119,7 +126,14 @@ class MacroScraper(BaseScraper):
                     result = self._fred_latest(series)
                     if result:
                         val, ts = result
-                        items.append({"indicator_name": name, "value": val, "country": country, "timestamp": ts.isoformat()})
+                        items.append({
+                            "indicator_name": name,
+                            "value": val,
+                            "country": country,
+                            "timestamp": ts.isoformat(),
+                            "unit": "percent",
+                            "source": "fred_api",
+                        })
                 except Exception:
                     logger.exception("FRED failed %s %s", country, series)
 
@@ -128,7 +142,14 @@ class MacroScraper(BaseScraper):
                     result = self._world_bank(country, wb_ind)
                     if result:
                         val, ts = result
-                        items.append({"indicator_name": name, "value": val, "country": country, "timestamp": ts.isoformat()})
+                        items.append({
+                            "indicator_name": name,
+                            "value": val,
+                            "country": country,
+                            "timestamp": ts.isoformat(),
+                            "unit": "percent",
+                            "source": "world_bank",
+                        })
                 except Exception:
                     logger.exception("World Bank failed %s %s", country, wb_ind)
         return items
