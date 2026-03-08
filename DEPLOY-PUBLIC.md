@@ -17,7 +17,7 @@ Everything in this guide is free:
 | **Port forwarding** (Option 2) | Free (your router, no subscription). |
 | **Windows service** | Free (built into Windows). |
 
-You do **not** need a custom domain, a paid Cloudflare plan, or ngrok paid. The recommended path uses only the free **cfargotunnel.com** hostname.
+You do **not** need a custom domain, a paid Cloudflare plan, or ngrok paid. If you have **no domain** (or only a subdomain like `something.publicvcm.com` that you don’t control), use the **“No domain: create tunnel from dashboard”** flow in Option 1 – no `cloudflared tunnel login` and no domain required; you get a free **cfargotunnel.com** URL.
 
 ---
 
@@ -50,7 +50,11 @@ Free, no router config, runs after restart. Do this on the **same Windows machin
 
 ---
 
-### Step 2: Log in to Cloudflare (one-time, free)
+### Step 2: Authenticate with Cloudflare
+
+**If you have no domain (recommended – 100% free):** skip this step and use **“No domain: create tunnel from dashboard”** below. You never run `tunnel login`.
+
+**If you have a domain** already added to Cloudflare (you control its nameservers):
 
 1. Run:
 
@@ -58,9 +62,30 @@ Free, no router config, runs after restart. Do this on the **same Windows machin
    cloudflared tunnel login
    ```
 
-2. A browser window opens. Sign in with your **free** Cloudflare account (or sign up – no credit card).
-3. You may be asked to **choose a domain**. If you have a domain already on Cloudflare (free DNS), select it. If you don’t have a domain, go to [dash.cloudflare.com](https://dash.cloudflare.com) → **Add a site** and add any domain you own (or use a free domain from a free provider); Cloudflare DNS is free. For the tunnel URL you will use the free **cfargotunnel.com** hostname (Step 5b), so the domain you pick here is only for the certificate – it can be any domain in your account.
-4. Click **Authorize**. A certificate is saved under `%USERPROFILE%\.cloudflared\`. Leave it there.
+2. A browser opens. Sign in with your **free** Cloudflare account.
+3. **Choose a domain** that is already in your Cloudflare account. Cloudflare expects the **root domain** (e.g. `publicvcm.com`), not a full subdomain like `subhamsharma.publicvcm.com`. You can only add a root domain if you control it (e.g. you can set its nameservers to Cloudflare). If your “free domain” is only a subdomain from a provider (e.g. subhamsharma.publicvcm.com) and you don’t control `publicvcm.com`, you cannot add it – use the no-domain path below instead.
+4. Click **Authorize**. A certificate is saved under `%USERPROFILE%\.cloudflared\`.
+
+---
+
+### No domain: create tunnel from dashboard (no login, no own domain)
+
+Use this if **tunnel login** asks for a domain and you don’t have one (or only have a subdomain you don’t control, e.g. `subhamsharma.publicvcm.com`). You create the tunnel in the Zero Trust dashboard and install with a token – **no domain and no `cloudflared tunnel login`** needed.
+
+1. Go to **[Cloudflare Zero Trust](https://one.dash.cloudflare.com)** (free). Sign in. Create a team name if asked (free).
+2. Left menu: **Networks** → **Tunnels** (or **Connectors** → **Cloudflare Tunnels**). Click **Create a tunnel**.
+3. Connector: **Cloudflared**. Name the tunnel (e.g. `econatlas-backend`). Click **Save tunnel**.
+4. Under **Choose an environment**, pick **Windows**. Copy the **install command** (it contains a long token), e.g.:
+   `cloudflared service install <TOKEN>`.
+5. On your Windows PC, open PowerShell **as Administrator**. Run that command. It installs the tunnel and the Windows service; no config file or login needed. Start the service:
+   ```powershell
+   sc start cloudflared
+   sc config cloudflared start= auto
+   ```
+6. In the tunnel page, go to **Public Hostname** → **Add a hostname**. **Subdomain:** e.g. `econatlas`. **Domain:** choose **cfargotunnel.com** (free; no own domain). **Service type:** HTTP, **URL:** `localhost:8000`. Save.
+7. Your URL is **https://econatlas.cfargotunnel.com** (or the subdomain you chose). Use it in the app.
+
+Config is managed in the dashboard; no local `config.yml` required. If you prefer a local config file and your own tunnel ID, you can still create a tunnel from the dashboard first to get credentials, then switch to the config-file flow later.
 
 ---
 
