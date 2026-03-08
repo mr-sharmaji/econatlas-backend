@@ -78,6 +78,7 @@ On first run, the app applies `sql/init.sql` if present.
 | Method | Path                | Description                                      |
 | ------ | ------------------- | ------------------------------------------------ |
 | GET    | /health             | Health check                                     |
+| GET    | /market/status      | Whether markets are live (NSE/NYSE in session)   |
 | GET    | /market/latest      | Latest price per asset (indices, FX, bonds)      |
 | GET    | /market             | Market prices, optional filters, history for charts |
 | POST   | /market             | Ingest market record (scheduler)                  |

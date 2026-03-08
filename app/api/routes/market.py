@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.ingest_schema import IngestAck, MarketIngestPayload
-from app.schemas.market_schema import MarketPriceListResponse, MarketPriceResponse
+from app.schemas.market_schema import MarketPriceListResponse, MarketPriceResponse, MarketStatusResponse
 from app.services import event_service, market_service
+from app.scheduler.trading_calendar import get_market_status
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -80,6 +81,13 @@ async def list_market_prices(
         return MarketPriceListResponse(prices=prices, count=len(prices))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/status", response_model=MarketStatusResponse)
+async def market_status() -> MarketStatusResponse:
+    """Return whether markets are currently live (NSE and/or NYSE in session)."""
+    status = get_market_status()
+    return MarketStatusResponse(**status)
 
 
 @router.get("/latest", response_model=MarketPriceListResponse)

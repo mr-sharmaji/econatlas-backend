@@ -22,3 +22,11 @@ class MarketPriceListResponse(BaseModel):
 
     prices: list[MarketPriceResponse]
     count: int
+
+
+class MarketStatusResponse(BaseModel):
+    """Whether NSE and NYSE are currently in a trading session (market live)."""
+
+    nse_open: bool
+    nyse_open: bool
+    live: bool

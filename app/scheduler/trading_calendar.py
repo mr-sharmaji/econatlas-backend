@@ -91,3 +91,38 @@ def get_trading_date(utc_now: datetime, exchange: str) -> date:
     except Exception:
         # Fallback: return exchange local date (no calendar; may be wrong on weekends)
         return local_date
+
+
+def get_market_status(utc_now: datetime | None = None) -> dict:
+    """Return whether NSE and NYSE are currently in a trading session (market 'live').
+    Returns e.g. {"nse_open": bool, "nyse_open": bool, "live": bool}."""
+    now = utc_now if utc_now is not None else datetime.now(timezone.utc)
+    # Ensure timezone-aware for comparison with exchange_calendars timestamps
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    def _is_open(cal, local_date) -> bool:
+        if cal is None or not cal.is_session(local_date):
+            return False
+        try:
+            open_ts = cal.session_open(local_date)
+            close_ts = cal.session_close(local_date)
+            # exchange_calendars returns UTC timestamps; compare with now
+            open_dt = open_ts.to_pydatetime() if hasattr(open_ts, "to_pydatetime") else open_ts
+            close_dt = close_ts.to_pydatetime() if hasattr(close_ts, "to_pydatetime") else close_ts
+            if open_dt.tzinfo is None:
+                open_dt = open_dt.replace(tzinfo=timezone.utc)
+            if close_dt.tzinfo is None:
+                close_dt = close_dt.replace(tzinfo=timezone.utc)
+            return open_dt <= now <= close_dt
+        except Exception:
+            return False
+
+    nse = _get_nse()
+    nyse = _get_nyse()
+    nse_date = now.astimezone(ZoneInfo("Asia/Kolkata")).date()
+    nyse_date = now.astimezone(ZoneInfo("America/New_York")).date()
+
+    nse_open = _is_open(nse, nse_date)
+    nyse_open = _is_open(nyse, nyse_date)
+    return {"nse_open": nse_open, "nyse_open": nyse_open, "live": nse_open or nyse_open}
