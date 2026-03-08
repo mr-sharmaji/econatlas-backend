@@ -231,9 +231,11 @@ _scraper = MarketScraper()
 
 
 def _fetch_market_rows_sync() -> List[Dict]:
-    """Sync scrape; run in thread executor so main loop is not blocked."""
+    """Sync scrape; run in thread executor so main loop is not blocked.
+    Uses today 00:00 UTC as timestamp so we get one row per day (upsert); avoids many intraday rows breaking charts."""
     items = _scraper.fetch_all()
-    ts = _scraper.utc_now().isoformat()
+    now = _scraper.utc_now()
+    ts = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     return [
         {
             "asset": it["asset"],
@@ -253,7 +255,7 @@ async def run_market_job() -> None:
     try:
         loop = asyncio.get_event_loop()
         rows = await loop.run_in_executor(None, _fetch_market_rows_sync)
-        inserted, skipped = await market_service.insert_prices_batch_skip_unchanged(rows)
-        logger.info("Market job complete: %d inserted, %d skipped (unchanged)", inserted, skipped)
+        updated = await market_service.insert_prices_batch_upsert_daily(rows)
+        logger.info("Market job complete: %d rows upserted (daily)", updated)
     except Exception:
         logger.exception("Market job failed")

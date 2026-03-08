@@ -3,6 +3,35 @@ from app.core.database import get_pool, parse_ts, record_to_dict
 TABLE = "market_prices"
 
 
+def _one_per_day(rows: list[dict]) -> list[dict]:
+    """Keep one row per (asset, instrument_type, calendar day); rows must be ordered by timestamp DESC.
+    Used so chart history has one point per day even if scheduler previously wrote multiple intraday rows."""
+    seen: set[tuple[str, str, str]] = set()
+    out = []
+    for r in rows:
+        ts = r.get("timestamp")
+        if ts is None:
+            out.append(r)
+            continue
+        if hasattr(ts, "date"):
+            day = ts.date().isoformat()
+        elif isinstance(ts, str):
+            try:
+                day = ts[:10]
+            except Exception:
+                out.append(r)
+                continue
+        else:
+            out.append(r)
+            continue
+        key = (str(r.get("asset", "")), str(r.get("instrument_type") or ""), day)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
 async def insert_price(
     asset: str,
     price: float,
@@ -123,6 +152,42 @@ async def insert_prices_batch_skip_unchanged(
     return inserted, skipped
 
 
+async def insert_prices_batch_upsert_daily(rows: list[dict]) -> int:
+    """Insert or update rows so there is at most one row per (asset, instrument_type, date).
+    Use for scheduler: pass rows with timestamp = today 00:00 UTC so we upsert 'today' instead of inserting many intraday rows.
+    Returns count of rows processed (inserted or updated)."""
+    if not rows:
+        return 0
+    pool = await get_pool()
+    updated = 0
+    async with pool.acquire() as conn:
+        for r in rows:
+            await conn.execute(
+                f"""
+                INSERT INTO {TABLE}
+                (asset, price, timestamp, source, instrument_type, unit, change_percent, previous_close)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (asset, instrument_type, "timestamp")
+                DO UPDATE SET
+                    price = EXCLUDED.price,
+                    source = EXCLUDED.source,
+                    unit = COALESCE(EXCLUDED.unit, {TABLE}.unit),
+                    change_percent = EXCLUDED.change_percent,
+                    previous_close = EXCLUDED.previous_close
+                """,
+                r.get("asset"),
+                r.get("price"),
+                parse_ts(r.get("timestamp")),
+                r.get("source"),
+                r.get("instrument_type"),
+                r.get("unit"),
+                r.get("change_percent"),
+                r.get("previous_close"),
+            )
+            updated += 1
+    return updated
+
+
 async def get_prices(
     instrument_type: str | None = None,
     asset: str | None = None,
@@ -148,7 +213,12 @@ async def get_prices(
         f"SELECT * FROM {TABLE} WHERE {where} ORDER BY timestamp DESC LIMIT ${n} OFFSET ${n + 1}",
         *args,
     )
-    return [record_to_dict(r) for r in rows]
+    out = [record_to_dict(r) for r in rows]
+    # Chart use case: one point per day (dedupe by date so history is daily even if old intraday rows exist)
+    if asset and (limit == -1 or limit > 500):
+        out = _one_per_day(out)
+        out.sort(key=lambda x: (x.get("timestamp") or ""), reverse=False)
+    return out
 
 
 async def get_latest_prices(
