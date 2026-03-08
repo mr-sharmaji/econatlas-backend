@@ -13,7 +13,7 @@ PostgreSQL (Docker or local)
 ```
 
 - **API**: REST endpoints for health, market prices, commodities, macro indicators, news, and events.
-- **Scheduler**: Background jobs (market, commodity, macro, news) run on an interval; data is written to PostgreSQL with one row per day for prices and proper handling of market holidays.
+- **Scheduler**: Background jobs (market, commodity, macro, news) run on an interval; data is written to PostgreSQL with one row per day for prices and proper handling of market holidays. Market and commodity jobs default to **every 30 seconds** for live accuracy when markets are open; set `MARKET_INTERVAL_SECONDS=0` and `COMMODITY_INTERVAL_SECONDS=0` to use minute-based intervals instead.
 
 ## Tech Stack
 
@@ -78,7 +78,7 @@ On first run, the app applies `sql/init.sql` if present.
 | Method | Path                | Description                                      |
 | ------ | ------------------- | ------------------------------------------------ |
 | GET    | /health             | Health check                                     |
-| GET    | /market/status      | Whether markets are live (NSE/NYSE in session)   |
+| GET    | /market/status      | Whether markets are live (NSE/NYSE in session); cached 30s, `Cache-Control` set |
 | GET    | /market/latest      | Latest price per asset (indices, FX, bonds)      |
 | GET    | /market             | Market prices, optional filters, history for charts |
 | POST   | /market             | Ingest market record (scheduler)                  |
@@ -173,6 +173,13 @@ Set in `.env`:
 ```
 DATABASE_URL=postgresql://econatlas:econatlas@localhost:5432/econatlas
 ```
+
+Optional scheduler intervals and cache (in `.env`):
+
+- `MARKET_INTERVAL_SECONDS=30` — market job every 30s (default; for live accuracy). Use `0` to fall back to `MARKET_INTERVAL_MINUTES`.
+- `COMMODITY_INTERVAL_SECONDS=30` — commodity job every 30s (default). Use `0` to use minutes.
+- `MACRO_INTERVAL_MINUTES=1`, `NEWS_INTERVAL_MINUTES=30` — macro and news intervals in minutes.
+- `MARKET_STATUS_CACHE_SECONDS=30` — cache for `GET /market/status` (reduces calendar lookups; set to `0` to disable).
 
 ## Roadmap
 

@@ -4,10 +4,17 @@ e.g. Monday's US close being stored as Tuesday when server is already in Tuesday
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
+from app.core.config import get_settings
+
 logger = logging.getLogger(__name__)
+
+# In-memory cache for get_market_status (avoids repeated calendar lookups; status only changes at session boundaries).
+_status_cache: dict | None = None
+_status_cache_until: float = 0.0
 
 # Lazy-loaded calendars (avoid import cost at module load)
 _nse_calendar = None
@@ -95,7 +102,13 @@ def get_trading_date(utc_now: datetime, exchange: str) -> date:
 
 def get_market_status(utc_now: datetime | None = None) -> dict:
     """Return whether NSE and NYSE are currently in a trading session (market 'live').
-    Returns e.g. {"nse_open": bool, "nyse_open": bool, "live": bool}."""
+    Returns e.g. {"nse_open": bool, "nyse_open": bool, "live": bool}.
+    Result is cached for market_status_cache_seconds to reduce calendar lookups."""
+    global _status_cache, _status_cache_until
+    ttl = get_settings().market_status_cache_seconds
+    if ttl > 0 and _status_cache is not None and time.monotonic() < _status_cache_until:
+        return _status_cache
+
     now = utc_now if utc_now is not None else datetime.now(timezone.utc)
     # Ensure timezone-aware for comparison with exchange_calendars timestamps
     if now.tzinfo is None:
@@ -125,4 +138,8 @@ def get_market_status(utc_now: datetime | None = None) -> dict:
 
     nse_open = _is_open(nse, nse_date)
     nyse_open = _is_open(nyse, nyse_date)
-    return {"nse_open": nse_open, "nyse_open": nyse_open, "live": nse_open or nyse_open}
+    result = {"nse_open": nse_open, "nyse_open": nyse_open, "live": nse_open or nyse_open}
+    if ttl > 0:
+        _status_cache = result
+        _status_cache_until = time.monotonic() + ttl
+    return result

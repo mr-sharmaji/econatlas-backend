@@ -11,8 +11,14 @@ class Settings(BaseSettings):
 
     market_interval_minutes: int = 1
     commodity_interval_minutes: int = 1
+    # When set, market/commodity jobs run every N seconds (default 30 for live accuracy). Set to 0 or omit to use *_interval_minutes.
+    market_interval_seconds: int | None = 30
+    commodity_interval_seconds: int | None = 30
     macro_interval_minutes: int = 1
     news_interval_minutes: int = 30
+
+    # Cache GET /market/status for this many seconds (reduces calendar lookups; status only changes at session boundaries).
+    market_status_cache_seconds: int = 30
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

@@ -13,13 +13,15 @@ logger = logging.getLogger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 
 
-def _get_intervals() -> dict[str, int]:
+def _get_intervals() -> dict:
     settings = get_settings()
     return {
-        "market": getattr(settings, "market_interval_minutes", 1),
-        "commodity": getattr(settings, "commodity_interval_minutes", 1),
-        "macro": getattr(settings, "macro_interval_minutes", 1),
-        "news": getattr(settings, "news_interval_minutes", 30),
+        "market_seconds": getattr(settings, "market_interval_seconds", None),
+        "market_minutes": getattr(settings, "market_interval_minutes", 1),
+        "commodity_seconds": getattr(settings, "commodity_interval_seconds", None),
+        "commodity_minutes": getattr(settings, "commodity_interval_minutes", 1),
+        "macro_minutes": getattr(settings, "macro_interval_minutes", 1),
+        "news_minutes": getattr(settings, "news_interval_minutes", 30),
     }
 
 
@@ -59,17 +61,25 @@ def start_scheduler() -> None:
         return
 
     intervals = _get_intervals()
-    logger.info(
-        "Starting scheduler — market=%dm commodity=%dm macro=%dm news=%dm",
-        intervals["market"], intervals["commodity"],
-        intervals["macro"], intervals["news"],
-    )
-
     _scheduler = AsyncIOScheduler(timezone="UTC")
-    _scheduler.add_job(_run_market, "interval", minutes=intervals["market"], id="market", replace_existing=True)
-    _scheduler.add_job(_run_commodity, "interval", minutes=intervals["commodity"], id="commodity", replace_existing=True)
-    _scheduler.add_job(_run_macro, "interval", minutes=intervals["macro"], id="macro", replace_existing=True)
-    _scheduler.add_job(_run_news, "interval", minutes=intervals["news"], id="news", replace_existing=True)
+
+    if intervals["market_seconds"] and intervals["market_seconds"] > 0:
+        _scheduler.add_job(_run_market, "interval", seconds=intervals["market_seconds"], id="market", replace_existing=True)
+        logger.info("Scheduler: market every %ds (live accuracy)", intervals["market_seconds"])
+    else:
+        _scheduler.add_job(_run_market, "interval", minutes=intervals["market_minutes"], id="market", replace_existing=True)
+        logger.info("Scheduler: market every %dm", intervals["market_minutes"])
+
+    if intervals["commodity_seconds"] and intervals["commodity_seconds"] > 0:
+        _scheduler.add_job(_run_commodity, "interval", seconds=intervals["commodity_seconds"], id="commodity", replace_existing=True)
+        logger.info("Scheduler: commodity every %ds (live accuracy)", intervals["commodity_seconds"])
+    else:
+        _scheduler.add_job(_run_commodity, "interval", minutes=intervals["commodity_minutes"], id="commodity", replace_existing=True)
+        logger.info("Scheduler: commodity every %dm", intervals["commodity_minutes"])
+
+    _scheduler.add_job(_run_macro, "interval", minutes=intervals["macro_minutes"], id="macro", replace_existing=True)
+    _scheduler.add_job(_run_news, "interval", minutes=intervals["news_minutes"], id="news", replace_existing=True)
+    logger.info("Scheduler: macro=%dm news=%dm", intervals["macro_minutes"], intervals["news_minutes"])
     _scheduler.start()
 
     async def _deferred_startup() -> None:

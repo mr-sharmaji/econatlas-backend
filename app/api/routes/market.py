@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
+from app.core.config import get_settings
 from app.schemas.ingest_schema import IngestAck, MarketIngestPayload
 from app.schemas.market_schema import MarketPriceListResponse, MarketPriceResponse, MarketStatusResponse
 from app.services import event_service, market_service
@@ -84,9 +85,12 @@ async def list_market_prices(
 
 
 @router.get("/status", response_model=MarketStatusResponse)
-async def market_status() -> MarketStatusResponse:
-    """Return whether markets are currently live (NSE and/or NYSE in session)."""
+async def market_status(response: Response) -> MarketStatusResponse:
+    """Return whether markets are currently live (NSE and/or NYSE in session). Cached server-side and via Cache-Control."""
     status = get_market_status()
+    max_age = get_settings().market_status_cache_seconds
+    if max_age > 0:
+        response.headers["Cache-Control"] = f"public, max-age={max_age}"
     return MarketStatusResponse(**status)
 
 
