@@ -64,30 +64,19 @@ async def main() -> None:
         n_commodity = await market_service.insert_prices_batch_upsert_daily(commodity_rows)
         logger.info("Commodities: %d rows upserted (daily) for last trading session.", n_commodity)
 
-    # Populate intraday for 1D chart: when market open use live timestamp; when closed use last-session close (one point per asset).
+    # Populate intraday for 1D chart: when market open use same logic as scheduler (live timestamp); when closed use last-session close (one point per asset).
     status = get_market_status()
     now = datetime.now(timezone.utc)
     ts_rounded = market_service._round_to_minute(now).isoformat()
     if status.get("nse_open") or status.get("nyse_open"):
-        from app.scheduler.market_job import ASSET_EXCHANGE, NSE, NYSE
-        intraday_rows = []
-        for r in market_rows:
-            exchange = ASSET_EXCHANGE.get(r["asset"], NYSE)
-            if (exchange == NSE and status.get("nse_open")) or (exchange == NYSE and status.get("nyse_open")):
-                intraday_rows.append({
-                    "asset": r["asset"],
-                    "instrument_type": r.get("instrument_type") or "index",
-                    "price": r["price"],
-                    "timestamp": ts_rounded,
-                })
+        from app.scheduler.market_job import build_market_intraday_rows_for_open
+        from app.scheduler.commodity_job import build_commodity_intraday_rows_for_open
+        intraday_rows = build_market_intraday_rows_for_open(market_rows, status, ts_rounded)
         if intraday_rows:
             n = await market_service.insert_intraday_batch(intraday_rows)
             logger.info("Intraday (market): %d points inserted (market open).", n)
         if status.get("nyse_open") and commodity_rows:
-            intraday_commodity = [
-                {"asset": r["asset"], "instrument_type": "commodity", "price": r["price"], "timestamp": ts_rounded}
-                for r in commodity_rows
-            ]
+            intraday_commodity = build_commodity_intraday_rows_for_open(commodity_rows, ts_rounded)
             n = await market_service.insert_intraday_batch(intraday_commodity)
             logger.info("Intraday (commodities): %d points inserted (market open).", n)
     else:

@@ -113,6 +113,14 @@ def _fetch_commodity_rows_sync() -> tuple[List[Dict], bool]:
 _PRICE_CHANGE_TOLERANCE = 1e-9
 
 
+def build_commodity_intraday_rows_for_open(commodity_rows: list[dict], ts_rounded: str) -> list[dict]:
+    """Build intraday rows for 1D chart when NYSE (commodities) is open. Same logic for scheduler and backfill."""
+    return [
+        {"asset": r["asset"], "instrument_type": "commodity", "price": r["price"], "timestamp": ts_rounded}
+        for r in commodity_rows
+    ]
+
+
 async def run_commodity_job() -> None:
     try:
         loop = asyncio.get_event_loop()
@@ -131,15 +139,11 @@ async def run_commodity_job() -> None:
             logger.info("Commodity job: calendar said closed and no price change; skipped")
             return
         updated = await market_service.insert_prices_batch_upsert_daily(rows)
-        # When NYSE is open (commodities session), write intraday for 1D chart
         status = get_market_status()
         if status.get("nyse_open"):
             now = datetime.now(timezone.utc)
             ts_rounded = market_service._round_to_minute(now).isoformat()
-            intraday_rows = [
-                {"asset": r["asset"], "instrument_type": "commodity", "price": r["price"], "timestamp": ts_rounded}
-                for r in rows
-            ]
+            intraday_rows = build_commodity_intraday_rows_for_open(rows, ts_rounded)
             n = await market_service.insert_intraday_batch(intraday_rows)
             logger.info("Commodity job: %d daily upserted, %d intraday", updated, n)
         else:

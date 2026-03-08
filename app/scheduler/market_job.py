@@ -281,6 +281,21 @@ def _fetch_market_rows_sync() -> tuple[List[Dict], bool]:
 _PRICE_CHANGE_TOLERANCE = 1e-9
 
 
+def build_market_intraday_rows_for_open(market_rows: list[dict], status: dict, ts_rounded: str) -> list[dict]:
+    """Build intraday rows for 1D chart when market is open. Same logic for scheduler and backfill."""
+    intraday_rows = []
+    for r in market_rows:
+        exchange = ASSET_EXCHANGE.get(r["asset"], NYSE)
+        if (exchange == NSE and status.get("nse_open")) or (exchange == NYSE and status.get("nyse_open")):
+            intraday_rows.append({
+                "asset": r["asset"],
+                "instrument_type": r.get("instrument_type") or "index",
+                "price": r["price"],
+                "timestamp": ts_rounded,
+            })
+    return intraday_rows
+
+
 async def run_market_job() -> None:
     try:
         loop = asyncio.get_event_loop()
@@ -299,20 +314,10 @@ async def run_market_job() -> None:
             logger.info("Market job: calendar said closed and no price change; skipped")
             return
         updated = await market_service.insert_prices_batch_upsert_daily(rows)
-        # When market is live, also write intraday points for 1D chart
         status = get_market_status()
         now = datetime.now(timezone.utc)
         ts_rounded = market_service._round_to_minute(now).isoformat()
-        intraday_rows = []
-        for r in rows:
-            exchange = ASSET_EXCHANGE.get(r["asset"], NYSE)
-            if (exchange == NSE and status.get("nse_open")) or (exchange == NYSE and status.get("nyse_open")):
-                intraday_rows.append({
-                    "asset": r["asset"],
-                    "instrument_type": r.get("instrument_type") or "index",
-                    "price": r["price"],
-                    "timestamp": ts_rounded,
-                })
+        intraday_rows = build_market_intraday_rows_for_open(rows, status, ts_rounded)
         if intraday_rows:
             n = await market_service.insert_intraday_batch(intraday_rows)
             logger.info("Market job: %d daily upserted, %d intraday", updated, n)
