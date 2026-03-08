@@ -1,7 +1,12 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.ingest_schema import CommodityIngestPayload, IngestAck
-from app.schemas.market_schema import MarketPriceListResponse, MarketPriceResponse
+from app.schemas.market_schema import (
+    IntradayPointResponse,
+    IntradayResponse,
+    MarketPriceListResponse,
+    MarketPriceResponse,
+)
 from app.services import event_service, market_service
 
 router = APIRouter(prefix="/commodities", tags=["commodities"])
@@ -60,6 +65,19 @@ async def list_commodities(
         )
         prices = [MarketPriceResponse(**r) for r in rows]
         return MarketPriceListResponse(prices=prices, count=len(prices))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/intraday", response_model=IntradayResponse)
+async def get_commodity_intraday(
+    asset: str = Query(..., description="Commodity asset (e.g. Gold, Silver)"),
+) -> IntradayResponse:
+    """Return intraday price points for 1D chart (last 24h). Empty when market closed or no data yet."""
+    try:
+        rows = await market_service.get_intraday(asset=asset, instrument_type="commodity")
+        prices = [IntradayPointResponse(timestamp=r["timestamp"], price=r["price"]) for r in rows]
+        return IntradayResponse(prices=prices)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

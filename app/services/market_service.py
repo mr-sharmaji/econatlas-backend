@@ -1,6 +1,9 @@
+from datetime import datetime, timezone, timedelta
+
 from app.core.database import get_pool, parse_ts, record_to_dict
 
 TABLE = "market_prices"
+TABLE_INTRADAY = "market_prices_intraday"
 
 
 def _one_per_day(rows: list[dict]) -> list[dict]:
@@ -274,3 +277,76 @@ async def get_latest_prices(
                 pass
         out.append(d)
     return out
+
+
+# ---- Intraday (1D live) ----
+
+def _round_to_minute(utc_dt: datetime) -> datetime:
+    """Round to minute for intraday storage (limits rows per run)."""
+    return utc_dt.replace(second=0, microsecond=0)
+
+
+async def insert_intraday_batch(rows: list[dict]) -> int:
+    """Insert intraday price points (asset, instrument_type, price, timestamp). Returns count inserted."""
+    if not rows:
+        return 0
+    pool = await get_pool()
+    count = 0
+    async with pool.acquire() as conn:
+        for r in rows:
+            await conn.execute(
+                f"""
+                INSERT INTO {TABLE_INTRADAY} (asset, instrument_type, price, "timestamp")
+                VALUES ($1, $2, $3, $4)
+                """,
+                r.get("asset"),
+                r.get("instrument_type"),
+                r.get("price"),
+                parse_ts(r.get("timestamp")),
+            )
+            count += 1
+    return count
+
+
+async def get_intraday(
+    asset: str,
+    instrument_type: str,
+    from_ts: datetime | None = None,
+    to_ts: datetime | None = None,
+) -> list[dict]:
+    """Return intraday points for asset, ordered by timestamp asc. Default: last 24h."""
+    pool = await get_pool()
+    now = datetime.now(timezone.utc)
+    if to_ts is None:
+        to_ts = now
+    if from_ts is None:
+        from_ts = now - timedelta(hours=24)
+    rows = await pool.fetch(
+        f"""
+        SELECT "timestamp", price
+        FROM {TABLE_INTRADAY}
+        WHERE asset = $1 AND instrument_type = $2
+          AND "timestamp" >= $3 AND "timestamp" <= $4
+        ORDER BY "timestamp" ASC
+        """,
+        asset,
+        instrument_type,
+        from_ts,
+        to_ts,
+    )
+    return [{"timestamp": r["timestamp"].isoformat() if hasattr(r["timestamp"], "isoformat") else r["timestamp"], "price": float(r["price"])} for r in rows]
+
+
+async def cleanup_intraday_older_than(days: int = 2) -> int:
+    """Delete intraday rows older than given days. Returns count deleted."""
+    pool = await get_pool()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    result = await pool.execute(
+        f'DELETE FROM {TABLE_INTRADAY} WHERE "timestamp" < $1',
+        cutoff,
+    )
+    # e.g. "DELETE 42"
+    try:
+        return int(result.split()[-1])
+    except (ValueError, IndexError):
+        return 0

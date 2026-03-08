@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
 from app.scheduler.base import BaseScraper
-from app.scheduler.trading_calendar import get_trading_date, is_trading_day_markets, NSE, NYSE
+from app.scheduler.trading_calendar import get_trading_date, get_market_status, is_trading_day_markets, NSE, NYSE
 from app.services import event_service, market_service
 
 logger = logging.getLogger(__name__)
@@ -299,6 +299,24 @@ async def run_market_job() -> None:
             logger.info("Market job: calendar said closed and no price change; skipped")
             return
         updated = await market_service.insert_prices_batch_upsert_daily(rows)
-        logger.info("Market job complete: %d rows upserted (daily)", updated)
+        # When market is live, also write intraday points for 1D chart
+        status = get_market_status()
+        now = datetime.now(timezone.utc)
+        ts_rounded = market_service._round_to_minute(now).isoformat()
+        intraday_rows = []
+        for r in rows:
+            exchange = ASSET_EXCHANGE.get(r["asset"], NYSE)
+            if (exchange == NSE and status.get("nse_open")) or (exchange == NYSE and status.get("nyse_open")):
+                intraday_rows.append({
+                    "asset": r["asset"],
+                    "instrument_type": r.get("instrument_type") or "index",
+                    "price": r["price"],
+                    "timestamp": ts_rounded,
+                })
+        if intraday_rows:
+            n = await market_service.insert_intraday_batch(intraday_rows)
+            logger.info("Market job: %d daily upserted, %d intraday", updated, n)
+        else:
+            logger.info("Market job complete: %d rows upserted (daily)", updated)
     except Exception:
         logger.exception("Market job failed")

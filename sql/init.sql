@@ -19,6 +19,15 @@ CREATE INDEX IF NOT EXISTS idx_market_prices_instrument_type ON market_prices (i
 -- Prevent duplicate (asset, instrument_type, date) so backfill re-runs are safe
 CREATE UNIQUE INDEX IF NOT EXISTS idx_market_prices_asset_type_ts ON market_prices (asset, instrument_type, "timestamp");
 
+CREATE TABLE IF NOT EXISTS market_prices_intraday (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    asset TEXT NOT NULL,
+    instrument_type TEXT NOT NULL,
+    price DOUBLE PRECISION NOT NULL,
+    "timestamp" TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_market_prices_intraday_asset_type_ts ON market_prices_intraday (asset, instrument_type, "timestamp" DESC);
+
 -- Macro indicators
 CREATE TABLE IF NOT EXISTS macro_indicators (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

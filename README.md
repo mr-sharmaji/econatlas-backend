@@ -42,8 +42,13 @@ app/
 ├── services/             # market, macro, news, event (PostgreSQL)
 ├── scheduler/            # market_job, commodity_job, macro_job, news_job, trading_calendar
 └── main.py
+docs/
+└── DEPLOY-PUBLIC.md      # Making the backend public (Cloudflare Tunnel, etc.)
 sql/
 └── init.sql              # Table definitions
+scripts/
+├── backfill_last_session.py   # Backfill last trading session (daily + optional intraday)
+└── backfill_last_5_years.py   # Historical backfill (years of data)
 ```
 
 ## Quick Start
@@ -73,15 +78,31 @@ uvicorn app.main:app --reload --port 8000
 
 On first run, the app applies `sql/init.sql` if present.
 
+**Docs:** See `docs/DEPLOY-PUBLIC.md` for making the backend public (e.g. Cloudflare Tunnel).
+
+## Scripts
+
+**Backfill last trading session** — Refresh the most recent trading day’s daily data (market + commodities). Use after a scheduler gap or restart. Idempotent (upsert).
+
+```bash
+# From backend repo root, with venv activated and .env set:
+python scripts/backfill_last_session.py
+# Or: PYTHONPATH=. python scripts/backfill_last_session.py
+```
+
+When the market is open, the script also writes intraday points for the 1D chart.
+
 ## API Endpoints
 
 | Method | Path                | Description                                      |
 | ------ | ------------------- | ------------------------------------------------ |
 | GET    | /health             | Health check                                     |
 | GET    | /market/status      | Whether markets are live (NSE/NYSE in session); cached 30s, `Cache-Control` set |
+| GET    | /market/intraday    | Intraday points for 1D chart (last 24h; query `asset`, `instrument_type`) |
 | GET    | /market/latest      | Latest price per asset (indices, FX, bonds)      |
 | GET    | /market             | Market prices, optional filters, history for charts |
 | POST   | /market             | Ingest market record (scheduler)                  |
+| GET    | /commodities/intraday | Intraday points for 1D chart (last 24h; query `asset`) |
 | GET    | /commodities/latest | Latest price per commodity (gold, silver, oil…)   |
 | GET    | /commodities        | Commodity prices, optional filters, history      |
 | POST   | /commodities        | Ingest commodity record (scheduler)               |
@@ -98,7 +119,8 @@ Interactive docs: **http://localhost:8000/docs**.
 
 Defined in `sql/init.sql`:
 
-- **market_prices** — Asset, price, timestamp, source, instrument_type, unit, change_percent, previous_close (indices, FX, bonds, commodities).
+- **market_prices** — Asset, price, timestamp, source, instrument_type, unit, change_percent, previous_close (indices, FX, bonds, commodities). One row per (asset, instrument_type, date).
+- **market_prices_intraday** — Intraday points for 1D live chart (asset, instrument_type, price, timestamp). Written when market is open; last 24h returned by API.
 - **macro_indicators** — Indicator name, value, country, timestamp, unit, source.
 - **news_articles** — Title, summary, body, timestamp, source, url, primary_entity, impact, confidence.
 - **economic_events** — Event type, entity, impact, confidence, created_at.
@@ -140,7 +162,7 @@ The script ensures Docker/Compose and Git are available, creates `.env` from `.e
 
 ### Making the API public (internet)
 
-To expose the backend so the mobile app can reach it from anywhere, use **Cloudflare Tunnel** with a custom domain. See **[DEPLOY-PUBLIC.md](DEPLOY-PUBLIC.md)** for step-by-step setup (cloudflared, DNS, Windows service). Port forwarding is also documented as an alternative.
+To expose the backend so the mobile app can reach it from anywhere, use **Cloudflare Tunnel** with a custom domain. See **[docs/DEPLOY-PUBLIC.md](docs/DEPLOY-PUBLIC.md)** for step-by-step setup (cloudflared, DNS, Windows service). Port forwarding is also documented as an alternative.
 
 ### Managing containers
 

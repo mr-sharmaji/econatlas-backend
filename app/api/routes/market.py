@@ -2,7 +2,13 @@ from fastapi import APIRouter, HTTPException, Query, Response
 
 from app.core.config import get_settings
 from app.schemas.ingest_schema import IngestAck, MarketIngestPayload
-from app.schemas.market_schema import MarketPriceListResponse, MarketPriceResponse, MarketStatusResponse
+from app.schemas.market_schema import (
+    IntradayPointResponse,
+    IntradayResponse,
+    MarketPriceListResponse,
+    MarketPriceResponse,
+    MarketStatusResponse,
+)
 from app.services import event_service, market_service
 from app.scheduler.trading_calendar import get_market_status
 
@@ -92,6 +98,20 @@ async def market_status(response: Response) -> MarketStatusResponse:
     if max_age > 0:
         response.headers["Cache-Control"] = f"public, max-age={max_age}"
     return MarketStatusResponse(**status)
+
+
+@router.get("/intraday", response_model=IntradayResponse)
+async def get_intraday(
+    asset: str = Query(..., description="Asset name (e.g. Nifty 50, S&P500)"),
+    instrument_type: str = Query(..., description="index, currency, or bond_yield"),
+) -> IntradayResponse:
+    """Return intraday price points for 1D chart (last 24h). Empty when market closed or no data yet."""
+    try:
+        rows = await market_service.get_intraday(asset=asset, instrument_type=instrument_type)
+        prices = [IntradayPointResponse(timestamp=r["timestamp"], price=r["price"]) for r in rows]
+        return IntradayResponse(prices=prices)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/latest", response_model=MarketPriceListResponse)

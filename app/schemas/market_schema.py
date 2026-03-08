@@ -30,3 +30,16 @@ class MarketStatusResponse(BaseModel):
     nse_open: bool
     nyse_open: bool
     live: bool
+
+
+class IntradayPointResponse(BaseModel):
+    """Single intraday price point for 1D chart."""
+
+    timestamp: str
+    price: float
+
+
+class IntradayResponse(BaseModel):
+    """Intraday prices for 1D live chart (when market is open)."""
+
+    prices: list[IntradayPointResponse]
