@@ -46,15 +46,16 @@ async def ingest_commodity(payload: CommodityIngestPayload) -> IngestAck:
 @router.get("", response_model=MarketPriceListResponse)
 async def list_commodities(
     asset: str | None = Query(default=None, description="gold, silver, crude oil, natural gas, copper"),
-    limit: int = Query(default=50, ge=1, le=2500),
+    limit: int = Query(default=50, ge=-1, description="Max rows. Use -1 for all."),
     offset: int = Query(default=0, ge=0),
 ) -> MarketPriceListResponse:
     """Return commodity prices with optional asset filter."""
     try:
+        effective_limit = 100_000 if limit == -1 else limit
         rows = await market_service.get_prices(
             instrument_type="commodity",
             asset=asset,
-            limit=limit,
+            limit=effective_limit,
             offset=offset,
         )
         prices = [MarketPriceResponse(**r) for r in rows]
