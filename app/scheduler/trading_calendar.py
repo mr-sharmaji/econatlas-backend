@@ -24,15 +24,20 @@ _nyse_calendar = None
 NSE = "NSE"
 NYSE = "NYSE"
 
+# exchange_calendars canonical names: XBOM = BSE (India, same tz/session as NSE); XNYS = NYSE (US).
+# Package has no XNSE; XBOM is the India exchange calendar in gerrymanoim/exchange_calendars.
+_NSE_CALENDAR_NAME = "XBOM"
+_NYSE_CALENDAR_NAME = "XNYS"
+
 
 def _get_nse():
     global _nse_calendar
     if _nse_calendar is None:
         try:
             import exchange_calendars as xcals
-            _nse_calendar = xcals.get_calendar("XNSE")
+            _nse_calendar = xcals.get_calendar(_NSE_CALENDAR_NAME)
         except Exception as e:
-            logger.warning("NSE calendar unavailable: %s", e)
+            logger.warning("NSE calendar (%s) unavailable: %s. Using weekday/date fallback for India.", _NSE_CALENDAR_NAME, e)
     return _nse_calendar
 
 
@@ -41,9 +46,9 @@ def _get_nyse():
     if _nyse_calendar is None:
         try:
             import exchange_calendars as xcals
-            _nyse_calendar = xcals.get_calendar("XNYS")
+            _nyse_calendar = xcals.get_calendar(_NYSE_CALENDAR_NAME)
         except Exception as e:
-            logger.warning("NYSE calendar unavailable: %s", e)
+            logger.warning("NYSE calendar (%s) unavailable: %s. Using weekday/date fallback for US.", _NYSE_CALENDAR_NAME, e)
     return _nyse_calendar
 
 

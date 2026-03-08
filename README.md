@@ -92,6 +92,15 @@ python scripts/backfill_last_session.py
 
 When the market is open, the script also writes intraday points for the 1D chart.
 
+**Verify with curl** (start the backend first, then run backfill if needed):
+
+```bash
+curl -s http://localhost:8000/health
+curl -s "http://localhost:8000/market/latest" | head -c 400
+```
+
+If `market/latest` is empty, run `python scripts/backfill_last_session.py`, then curl again.
+
 ## API Endpoints
 
 | Method | Path                | Description                                      |

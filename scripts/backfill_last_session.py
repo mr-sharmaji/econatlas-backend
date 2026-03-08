@@ -50,19 +50,19 @@ async def main() -> None:
 
     # Fetch market rows (indices, FX, bonds) – timestamp = exchange trading date
     market_rows, _ = await loop.run_in_executor(None, _fetch_market_rows_sync)
-    if market_rows:
+    if not market_rows:
+        logger.warning("Market: no rows fetched (check network / Yahoo/FRED). Nothing to insert.")
+    else:
         n_market = await market_service.insert_prices_batch_upsert_daily(market_rows)
         logger.info("Market: %d rows upserted (daily) for last trading session.", n_market)
-    else:
-        logger.warning("Market: no rows fetched.")
 
     # Fetch commodity rows – timestamp = NYSE trading date
     commodity_rows, _ = await loop.run_in_executor(None, _fetch_commodity_rows_sync)
-    if commodity_rows:
+    if not commodity_rows:
+        logger.warning("Commodities: no rows fetched (check network). Nothing to insert.")
+    else:
         n_commodity = await market_service.insert_prices_batch_upsert_daily(commodity_rows)
         logger.info("Commodities: %d rows upserted (daily) for last trading session.", n_commodity)
-    else:
-        logger.warning("Commodities: no rows fetched.")
 
     # Optionally write intraday points if market is open (for 1D chart)
     status = get_market_status()
