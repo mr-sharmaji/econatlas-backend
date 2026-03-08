@@ -1,7 +1,7 @@
 """Backfill EconAtlas with daily (or native-frequency) history for indices, commodities, currencies, bonds, and macros.
 
-Fetches from today back N years (default 10). Yahoo series (indices, FX, commodities) are requested
-year-by-year so each day in range is returned; FRED/World Bank use their native frequency.
+Fetches from today back N years (default 10; supports 50+ years). Data is fetched and inserted year-by-year
+to limit memory: each symbol’s year chunk is written to the DB before the next is fetched.
 
 Idempotent / safe to re-run: existing (asset, instrument_type, timestamp) and (indicator_name, country, timestamp)
 are skipped in code, and the DB has unique indexes so INSERT uses ON CONFLICT DO NOTHING (no duplicates).
@@ -43,22 +43,6 @@ INDEX_SYMBOLS = {
     "NIFTYMIDCAP150.NS": "Nifty Midcap 150",
     "NIFTYSMLCAP250.NS": "Nifty Smallcap 250",
 }
-# Yahoo returns 400 for older years on these NSE indices; only request from min_year to avoid 400s.
-# Smallcap 250 has no min_year; we use the global backfill range and skip 400s per chunk.
-INDEX_MIN_YEAR: dict[str, int] = {
-    "NIFTYMIDCAP150.NS": 2019,
-}
-# Nifty Smallcap 250: index symbol returns ~1 point from Yahoo; we try NSE, optional jugaad-data, then ETF.
-# Other known sources (not wired here): Kaggle dataset "NIFTY SMALLCAP 250 Time Series 2000-23"; Investing.com CSV;
-# Twelve Data / INDstocks (paid); niftyindices.com POST (jugaad-data uses this; may 500 from some networks).
-SMALLCAP_250_SYMBOL = "NIFTYSMLCAP250.NS"
-# ETF tracking Nifty Smallcap 250 (Yahoo has history; use when index/NSE/jugaad fail). Launched Feb 2023.
-SMALLCAP_250_ETF_SYMBOL = "HDFCSML250.NS"
-# NSE India historical index API (requires session cookie first). Verified: returns 404 as of 2026; fallback is best-effort.
-NSE_BASE_URL = "https://www.nseindia.com"
-NSE_INDEX_HISTORY_PATH = "api/historical/indicesHistory"
-NSE_INDEX_NAME_SMALLCAP_250 = "NIFTY SMALLCAP 250"
-
 FX_SYMBOLS = {
     "USDINR=X": "USD/INR",
     "EURINR=X": "EUR/INR",
@@ -188,148 +172,11 @@ class HistoricalBackfiller(BaseScraper):
                 out.append((ts, value))
         return out
 
-    def _ensure_nse_cookies(self) -> None:
-        """Ensure NSE session has cookies (visit homepage first). Required for indicesHistory API."""
-        if getattr(self, "_nse_cookies_set", False):
-            return
-        nse_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.nseindia.com/",
-        }
-        try:
-            self.session.get(
-                f"{NSE_BASE_URL}/",
-                headers=nse_headers,
-                timeout=15,
-            )
-            self._nse_cookies_set = True
-        except requests.RequestException as e:
-            logger.warning("NSE cookie fetch failed: %s", e)
-
-    def _parse_nse_date(self, raw: Any) -> datetime | None:
-        """Parse NSE timestamp: can be epoch (ms or s) or string like 08-Mar-2026."""
-        if raw is None:
-            return None
-        if isinstance(raw, (int, float)):
-            epoch = int(raw)
-            if epoch > 1e12:
-                epoch = epoch // 1000
-            return datetime.fromtimestamp(epoch, tz=UTC)
-        if isinstance(raw, str):
-            s = (raw.strip().split()[0] or "")[:12]
-            if not s:
-                return None
-            for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y"):
-                try:
-                    return datetime.strptime(s, fmt).replace(tzinfo=UTC)
-                except ValueError:
-                    continue
-        return None
-
-    def _fetch_nse_index_series(
-        self,
-        index_name: str,
-        range_start: datetime,
-        range_end: datetime,
-    ) -> list[tuple[datetime, float]]:
-        """Fetch historical index close from NSE India API. Returns list of (datetime, price)."""
-        self._ensure_nse_cookies()
-        url = f"{NSE_BASE_URL}/{NSE_INDEX_HISTORY_PATH}"
-        params = {
-            "indexType": index_name,
-            "from": range_start.strftime("%d-%m-%Y"),
-            "to": range_end.strftime("%d-%m-%Y"),
-        }
-        nse_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": f"{NSE_BASE_URL}/",
-        }
-        out: list[tuple[datetime, float]] = []
-        try:
-            resp = self.session.get(url, params=params, headers=nse_headers, timeout=20)
-            resp.raise_for_status()
-            data = resp.json()
-        except requests.exceptions.HTTPError as e:
-            if e.response is not None and e.response.status_code == 404:
-                logger.warning("NSE index history returned 404 for %s (endpoint currently unavailable)", index_name)
-            else:
-                logger.warning("NSE index history request failed: %s", e)
-            return out
-        except (requests.RequestException, ValueError) as e:
-            logger.warning("NSE index history request failed: %s", e)
-            return out
-        records = (data or {}).get("data", {}).get("indexCloseOnlineRecords") or []
-        for rec in records:
-            ts = self._parse_nse_date(rec.get("EOD_TIMESTAMP") or rec.get("TIMESTAMP"))
-            close_raw = rec.get("EOD_CLOSE_INDEX_VAL") or rec.get("CH_CLOSING_PRICE")
-            if ts is None or close_raw is None:
-                continue
-            try:
-                price = float(close_raw)
-            except (TypeError, ValueError):
-                continue
-            if not math.isfinite(price) or price <= 0:
-                continue
-            if self.start_ts <= ts <= self.end_ts:
-                out.append((ts, price))
-        out.sort(key=lambda x: x[0])
-        return out
-
-    def _fetch_jugaad_index_series(
-        self,
-        index_name: str,
-        range_start: datetime,
-        range_end: datetime,
-    ) -> list[tuple[datetime, float]]:
-        """Fetch index history via jugaad-data (niftyindices.com). Optional: requires pip install jugaad-data."""
-        try:
-            from jugaad_data.nse import index_df
-        except ImportError:
-            return []
-        out: list[tuple[datetime, float]] = []
-        try:
-            df = index_df(
-                index_name,
-                from_date=range_start.date(),
-                to_date=range_end.date(),
-            )
-        except Exception as e:
-            logger.warning("jugaad_data index_df failed for %s: %s", index_name, e)
-            return out
-        date_col = "HistoricalDate" if "HistoricalDate" in df.columns else "DATE"
-        close_col = "CLOSE"
-        if date_col not in df.columns or close_col not in df.columns:
-            return out
-        for _, row in df.iterrows():
-            try:
-                d = row[date_col]
-                if hasattr(d, "to_pydatetime"):
-                    ts = d.to_pydatetime().replace(tzinfo=UTC)
-                elif isinstance(d, datetime):
-                    ts = d if d.tzinfo else d.replace(tzinfo=UTC)
-                else:
-                    continue
-                price = float(row[close_col])
-            except (TypeError, ValueError, KeyError):
-                continue
-            if not math.isfinite(price) or price <= 0:
-                continue
-            if self.start_ts <= ts <= self.end_ts:
-                out.append((ts, price))
-        out.sort(key=lambda x: x[0])
-        return out
-
-    def _iter_yearly_chunks(self, min_year: int | None = None) -> list[tuple[datetime, datetime]]:
-        """(start_ts, end_ts) for each calendar year in range. If min_year set, only years >= min_year (for indices where Yahoo returns 400 for old years)."""
+    def _iter_yearly_chunks(self) -> list[tuple[datetime, datetime]]:
+        """(start_ts, end_ts) for each calendar year in range."""
         chunks: list[tuple[datetime, datetime]] = []
         current = self.start_ts.date()
         end_date = self.end_ts.date()
-        if min_year is not None and current.year < min_year:
-            current = date(min_year, 1, 1)
         while current <= end_date:
             year_start = datetime(current.year, 1, 1, tzinfo=UTC)
             year_end = datetime(current.year, 12, 31, 23, 59, 59, tzinfo=UTC)
@@ -340,8 +187,18 @@ class HistoricalBackfiller(BaseScraper):
             current = date(current.year + 1, 1, 1)
         return chunks
 
-    def _fetch_fred_series(self, series_id: str) -> list[tuple[datetime, float]]:
-        text = self._get_text(FRED_CSV_URL, params={"id": series_id})
+    def _fetch_fred_series(
+        self,
+        series_id: str,
+        range_start: datetime | None = None,
+        range_end: datetime | None = None,
+    ) -> list[tuple[datetime, float]]:
+        params: dict[str, str] = {"id": series_id}
+        if range_start is not None:
+            params["cosd"] = range_start.strftime("%Y-%m-%d")
+        if range_end is not None:
+            params["coed"] = range_end.strftime("%Y-%m-%d")
+        text = self._get_text(FRED_CSV_URL, params=params)
         reader = csv.DictReader(io.StringIO(text))
         out: list[tuple[datetime, float]] = []
         for row in reader:
@@ -392,311 +249,90 @@ class HistoricalBackfiller(BaseScraper):
         out.sort(key=lambda item: item[0])
         return out
 
-    def collect_market_rows(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        items = [(k, v, "index", "points") for k, v in INDEX_SYMBOLS.items()]
-        items.extend((k, v, "currency", "inr") for k, v in FX_SYMBOLS.items())
-        for batch_num, chunk in enumerate(self._batched(items, self.config.api_batch_size), start=1):
-            logger.info("Market API batch %d/%d", batch_num, math.ceil(len(items) / self.config.api_batch_size))
-            for symbol, asset, instrument_type, unit in chunk:
-                min_year = INDEX_MIN_YEAR.get(symbol)
-                yearly = self._iter_yearly_chunks(min_year=min_year)
-                if min_year is not None:
-                    logger.info("%s: requesting from year %d only (%d chunks)", asset, min_year, len(yearly))
-                symbol_rows: list[dict[str, Any]] = []
-                # Nifty Smallcap 250: Yahoo often returns 400 per year but 200 with data for full range
-                if symbol == SMALLCAP_250_SYMBOL and yearly:
-                    range_start, range_end = yearly[0][0], yearly[-1][1]
-                    try:
-                        points = self._fetch_yahoo_series(symbol, range_start, range_end)
-                        for ts, price in points:
-                            symbol_rows.append(
-                                {
-                                    "asset": asset,
-                                    "price": price,
-                                    "timestamp": ts.isoformat(),
-                                    "source": "yahoo_chart_api_backfill",
-                                    "instrument_type": instrument_type,
-                                    "unit": unit,
-                                    "change_percent": None,
-                                    "previous_close": None,
-                                }
-                            )
-                        if points:
-                            logger.info("%s: got %d points from single full-range request", asset, len(points))
-                        time.sleep(0.5)
-                    except requests.exceptions.HTTPError as e:
-                        if e.response is not None and e.response.status_code == 400:
-                            logger.warning("%s: full-range request 400, falling back to year-by-year", asset)
-                        else:
-                            raise
-                if not symbol_rows:
-                    for range_start, range_end in yearly:
-                        try:
-                            points = self._fetch_yahoo_series(symbol, range_start, range_end)
-                            for ts, price in points:
-                                symbol_rows.append(
-                                    {
-                                        "asset": asset,
-                                        "price": price,
-                                        "timestamp": ts.isoformat(),
-                                        "source": "yahoo_chart_api_backfill",
-                                        "instrument_type": instrument_type,
-                                        "unit": unit,
-                                        "change_percent": None,
-                                        "previous_close": None,
-                                    }
-                                )
-                        except requests.exceptions.HTTPError as e:
-                            if e.response is not None and e.response.status_code == 400:
-                                logger.warning(
-                                    "Skipping %s–%s for %s (no data for this period, e.g. index launched later)",
-                                    range_start.date(),
-                                    range_end.date(),
-                                    symbol,
-                                )
-                                continue
-                            raise
-                        except Exception:
-                            logger.exception("Market history fetch failed for %s", symbol)
-                            break
-                        time.sleep(0.3)
-                # Nifty Smallcap 250: Yahoo often returns only 1 point (no real history). Use NSE when Yahoo has ≤1 point.
-                if symbol == SMALLCAP_250_SYMBOL and len(symbol_rows) <= 1:
-                    if symbol_rows:
-                        logger.info("%s: Yahoo returned only %d point(s), using NSE India for full history", asset, len(symbol_rows))
-                    else:
-                        logger.info("%s: trying NSE India as fallback (Yahoo returned no history)", asset)
-                    symbol_rows = []
-                    for range_start, range_end in yearly:
-                        points = self._fetch_nse_index_series(
-                            NSE_INDEX_NAME_SMALLCAP_250, range_start, range_end
-                        )
-                        for ts, price in points:
-                            symbol_rows.append(
-                                {
-                                    "asset": asset,
-                                    "price": price,
-                                    "timestamp": ts.isoformat(),
-                                    "source": "nse_indices_history_backfill",
-                                    "instrument_type": instrument_type,
-                                    "unit": unit,
-                                    "change_percent": None,
-                                    "previous_close": None,
-                                }
-                            )
-                        if points:
-                            logger.info(
-                                "%s: NSE returned %d points for %s–%s",
-                                asset,
-                                len(points),
-                                range_start.date(),
-                                range_end.date(),
-                            )
-                        time.sleep(0.5)
-                # Nifty Smallcap 250: try jugaad-data (niftyindices.com) if available; gives real index levels.
-                if symbol == SMALLCAP_250_SYMBOL and len(symbol_rows) <= 1:
-                    logger.info("%s: trying jugaad-data (niftyindices.com) for index history", asset)
-                    symbol_rows = []
-                    for range_start, range_end in yearly:
-                        points = self._fetch_jugaad_index_series(
-                            NSE_INDEX_NAME_SMALLCAP_250, range_start, range_end
-                        )
-                        for ts, price in points:
-                            symbol_rows.append(
-                                {
-                                    "asset": asset,
-                                    "price": price,
-                                    "timestamp": ts.isoformat(),
-                                    "source": "jugaad_niftyindices_backfill",
-                                    "instrument_type": instrument_type,
-                                    "unit": unit,
-                                    "change_percent": None,
-                                    "previous_close": None,
-                                }
-                            )
-                        if points:
-                            logger.info(
-                                "%s: jugaad_data returned %d points for %s–%s",
-                                asset,
-                                len(points),
-                                range_start.date(),
-                                range_end.date(),
-                            )
-                        time.sleep(0.3)
-                # Nifty Smallcap 250: if still no history, use ETF as proxy (same index, Yahoo has ETF history).
-                if symbol == SMALLCAP_250_SYMBOL and len(symbol_rows) <= 1:
-                    logger.info("%s: using Yahoo ETF %s as proxy for history", asset, SMALLCAP_250_ETF_SYMBOL)
-                    symbol_rows = []
-                    for range_start, range_end in yearly:
-                        try:
-                            points = self._fetch_yahoo_series(
-                                SMALLCAP_250_ETF_SYMBOL, range_start, range_end
-                            )
-                            for ts, price in points:
-                                symbol_rows.append(
-                                    {
-                                        "asset": asset,
-                                        "price": price,
-                                        "timestamp": ts.isoformat(),
-                                        "source": "yahoo_etf_backfill",
-                                        "instrument_type": instrument_type,
-                                        "unit": unit,
-                                        "change_percent": None,
-                                        "previous_close": None,
-                                    }
-                                )
-                        except requests.exceptions.HTTPError as e:
-                            if e.response is not None and e.response.status_code == 400:
-                                logger.warning(
-                                    "Skipping %s–%s for %s (no data for this period)",
-                                    range_start.date(),
-                                    range_end.date(),
-                                    SMALLCAP_250_ETF_SYMBOL,
-                                )
-                                continue
-                            raise
-                        time.sleep(0.3)
-                    if symbol_rows:
-                        logger.info("%s: got %d points from ETF proxy", asset, len(symbol_rows))
-                _fill_change_percent(symbol_rows)
-                rows.extend(symbol_rows)
-            if batch_num < math.ceil(len(items) / self.config.api_batch_size):
-                time.sleep(self.config.api_sleep_seconds)
-        return rows
+    def _collect_market_symbol_year(
+        self,
+        symbol: str,
+        asset: str,
+        instrument_type: str,
+        unit: str,
+        range_start: datetime,
+        range_end: datetime,
+    ) -> list[dict[str, Any]]:
+        """Fetch one market symbol’s rows for one year range (Yahoo only). Used for year-by-year insert to limit memory."""
+        symbol_rows: list[dict[str, Any]] = []
+        try:
+            points = self._fetch_yahoo_series(symbol, range_start, range_end)
+            for ts, price in points:
+                symbol_rows.append(
+                    {
+                        "asset": asset,
+                        "price": price,
+                        "timestamp": ts.isoformat(),
+                        "source": "yahoo_chart_api_backfill",
+                        "instrument_type": instrument_type,
+                        "unit": unit,
+                        "change_percent": None,
+                        "previous_close": None,
+                    }
+                )
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 400:
+                logger.warning(
+                    "Skipping %s–%s for %s (no data for this period)",
+                    range_start.date(),
+                    range_end.date(),
+                    symbol,
+                )
+                return []
+            raise
+        except Exception:
+            logger.exception("Market history fetch failed for %s", symbol)
+            return []
+        time.sleep(0.3)
+        _fill_change_percent(symbol_rows)
+        return symbol_rows
 
-    def collect_commodity_rows(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        items = list(COMMODITY_SYMBOLS.items())
-        yearly = self._iter_yearly_chunks()
-        for batch_num, chunk in enumerate(self._batched(items, self.config.api_batch_size), start=1):
-            logger.info("Commodity API batch %d/%d", batch_num, math.ceil(len(items) / self.config.api_batch_size))
-            for symbol, (asset, unit) in chunk:
-                symbol_rows = []
-                for range_start, range_end in yearly:
-                    try:
-                        points = self._fetch_yahoo_series(symbol, range_start, range_end)
-                        for ts, price in points:
-                            symbol_rows.append(
-                                {
-                                    "asset": asset,
-                                    "price": price,
-                                    "timestamp": ts.isoformat(),
-                                    "source": "yahoo_chart_api_backfill",
-                                    "instrument_type": "commodity",
-                                    "unit": unit,
-                                    "change_percent": None,
-                                    "previous_close": None,
-                                }
-                            )
-                    except requests.exceptions.HTTPError as e:
-                        if e.response is not None and e.response.status_code == 400:
-                            logger.warning(
-                                "Skipping %s–%s for %s (no data for this period)",
-                                range_start.date(),
-                                range_end.date(),
-                                symbol,
-                            )
-                            continue
-                        raise
-                    except Exception:
-                        logger.exception("Commodity history fetch failed for %s", symbol)
-                        break
-                    time.sleep(0.3)
-                _fill_change_percent(symbol_rows)
-                rows.extend(symbol_rows)
-            if batch_num < math.ceil(len(items) / self.config.api_batch_size):
-                time.sleep(self.config.api_sleep_seconds)
-        return rows
-
-    def collect_bond_rows(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        items = list(BOND_SERIES)
-        for batch_num, chunk in enumerate(self._batched(items, self.config.api_batch_size), start=1):
-            logger.info("Bond API batch %d/%d", batch_num, math.ceil(len(items) / self.config.api_batch_size))
-            for asset, series_id in chunk:
-                try:
-                    for ts, value in self._fetch_fred_series(series_id):
-                        rows.append(
-                            {
-                                "asset": asset,
-                                "price": value,
-                                "timestamp": ts.isoformat(),
-                                "source": "fred_api_backfill",
-                                "instrument_type": "bond_yield",
-                                "unit": "percent",
-                                "change_percent": None,
-                                "previous_close": None,
-                            }
-                        )
-                except Exception:
-                    logger.exception("Bond history fetch failed for %s", series_id)
-            if batch_num < math.ceil(len(items) / self.config.api_batch_size):
-                time.sleep(self.config.api_sleep_seconds)
-        return rows
-
-    def collect_macro_rows(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        work_items: list[tuple[str, str, str]] = []
-        for country, pairs in FRED_DIRECT.items():
-            for indicator_name, series_id in pairs:
-                work_items.append(("fred_direct", country, f"{indicator_name}:{series_id}"))
-        for country, series_id in FRED_CPI.items():
-            work_items.append(("fred_cpi", country, series_id))
-        for country, pairs in WORLD_BANK_FALLBACK.items():
-            for indicator_name, indicator_id in pairs:
-                work_items.append(("world_bank", country, f"{indicator_name}:{indicator_id}"))
-
-        total_batches = math.ceil(len(work_items) / self.config.api_batch_size)
-        for batch_num, chunk in enumerate(self._batched(work_items, self.config.api_batch_size), start=1):
-            logger.info("Macro API batch %d/%d", batch_num, total_batches)
-            for source_type, country, ref in chunk:
-                try:
-                    if source_type == "fred_direct":
-                        indicator_name, series_id = ref.split(":", 1)
-                        for ts, value in self._fetch_fred_series(series_id):
-                            rows.append(
-                                {
-                                    "indicator_name": indicator_name,
-                                    "value": value,
-                                    "country": country,
-                                    "timestamp": ts.isoformat(),
-                                    "unit": None,
-                                    "source": "fred_api_backfill",
-                                }
-                            )
-                    elif source_type == "fred_cpi":
-                        cpi_rows = self._fetch_fred_series(ref)
-                        for ts, value in self._compute_yoy(cpi_rows):
-                            if self.start_ts <= ts <= self.end_ts:
-                                rows.append(
-                                    {
-                                        "indicator_name": "inflation",
-                                        "value": value,
-                                        "country": country,
-                                        "timestamp": ts.isoformat(),
-                                        "unit": "percent_yoy",
-                                        "source": "fred_api_backfill",
-                                    }
-                                )
-                    else:
-                        indicator_name, indicator_id = ref.split(":", 1)
-                        for ts, value in self._fetch_world_bank(country, indicator_id):
-                            rows.append(
-                                {
-                                    "indicator_name": indicator_name,
-                                    "value": value,
-                                    "country": country,
-                                    "timestamp": ts.isoformat(),
-                                    "unit": "percent",
-                                    "source": "world_bank_backfill",
-                                }
-                            )
-                except Exception:
-                    logger.exception("Macro history fetch failed for %s %s", source_type, ref)
-            if batch_num < total_batches:
-                time.sleep(self.config.api_sleep_seconds)
-        return rows
+    def _collect_commodity_symbol_year(
+        self,
+        symbol: str,
+        asset: str,
+        unit: str,
+        range_start: datetime,
+        range_end: datetime,
+    ) -> list[dict[str, Any]]:
+        """Fetch one commodity’s rows for one year range. Used for year-by-year insert to limit memory."""
+        symbol_rows: list[dict[str, Any]] = []
+        try:
+            points = self._fetch_yahoo_series(symbol, range_start, range_end)
+            for ts, price in points:
+                symbol_rows.append(
+                    {
+                        "asset": asset,
+                        "price": price,
+                        "timestamp": ts.isoformat(),
+                        "source": "yahoo_chart_api_backfill",
+                        "instrument_type": "commodity",
+                        "unit": unit,
+                        "change_percent": None,
+                        "previous_close": None,
+                    }
+                )
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 400:
+                logger.warning(
+                    "Skipping %s–%s for %s (no data for this period)",
+                    range_start.date(),
+                    range_end.date(),
+                    symbol,
+                )
+                return []
+            raise
+        except Exception:
+            logger.exception("Commodity history fetch failed for %s", symbol)
+            return []
+        time.sleep(0.3)
+        _fill_change_percent(symbol_rows)
+        return symbol_rows
 
 
 async def _existing_market_timestamps(
@@ -966,7 +602,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Backfill EconAtlas historical data for every day from today back N years (indices, commodities, currencies, bonds, macros).",
     )
-    parser.add_argument("--years", type=int, default=10, help="Years of history to backfill (default: 10).")
+    parser.add_argument(
+        "--years",
+        type=int,
+        default=10,
+        help="Years of history to backfill (default: 10). Supports 50+ years; insertion is year-by-year to limit memory.",
+    )
     parser.add_argument("--passes", type=int, default=2, help="How many times to run backfill for idempotency checks.")
     parser.add_argument("--api-batch-size", type=int, default=3, help="Number of symbols/series per API batch.")
     parser.add_argument(
@@ -991,41 +632,168 @@ def parse_args() -> argparse.Namespace:
 
 
 async def run_once(backfiller: HistoricalBackfiller, cfg: BackfillConfig) -> dict[str, Any]:
-    market_rows = backfiller.collect_market_rows()
-    commodity_rows = backfiller.collect_commodity_rows()
-    bond_rows = backfiller.collect_bond_rows()
-    macro_rows = backfiller.collect_macro_rows()
-
-    all_market_rows = [*market_rows, *commodity_rows, *bond_rows]
-    logger.info(
-        "Fetched rows: market=%d commodity=%d bond=%d macro=%d",
-        len(market_rows),
-        len(commodity_rows),
-        len(bond_rows),
-        len(macro_rows),
-    )
-
+    """Run backfill with year-by-year fetch and insert to limit memory (supports 50+ years)."""
     inserted_market = skipped_market = inserted_macro = skipped_macro = 0
+    fetched_market_count = fetched_macro_count = 0
+
+    market_items = [(k, v, "index", "points") for k, v in INDEX_SYMBOLS.items()]
+    market_items.extend((k, v, "currency", "inr") for k, v in FX_SYMBOLS.items())
+    commodity_items = list(COMMODITY_SYMBOLS.items())
+
     if not cfg.validate_only:
-        inserted_market, skipped_market = await insert_market_rows_idempotent(
-            all_market_rows,
-            backfiller.start_ts,
-            backfiller.end_ts,
-            cfg.db_batch_size,
-            cfg.db_sleep_seconds,
-        )
-        inserted_macro, skipped_macro = await insert_macro_rows_idempotent(
-            macro_rows,
-            backfiller.start_ts,
-            backfiller.end_ts,
-            cfg.db_batch_size,
-            cfg.db_sleep_seconds,
-        )
+        # Market (indices + FX): per symbol, per year → fetch then insert
+        for sym_idx, (symbol, asset, instrument_type, unit) in enumerate(market_items):
+            yearly = backfiller._iter_yearly_chunks()
+            for range_start, range_end in yearly:
+                rows = backfiller._collect_market_symbol_year(
+                    symbol, asset, instrument_type, unit, range_start, range_end
+                )
+                if rows:
+                    fetched_market_count += len(rows)
+                    inc, sk = await insert_market_rows_idempotent(
+                        rows, range_start, range_end,
+                        cfg.db_batch_size, cfg.db_sleep_seconds,
+                    )
+                    inserted_market += inc
+                    skipped_market += sk
+                del rows
+            if (sym_idx + 1) % backfiller.config.api_batch_size == 0:
+                await asyncio.sleep(cfg.api_sleep_seconds)
+
+        # Commodity: per symbol, per year → fetch then insert
+        for sym_idx, (symbol, (asset, unit)) in enumerate(commodity_items):
+            yearly = backfiller._iter_yearly_chunks()
+            for range_start, range_end in yearly:
+                rows = backfiller._collect_commodity_symbol_year(
+                    symbol, asset, unit, range_start, range_end
+                )
+                if rows:
+                    fetched_market_count += len(rows)
+                    inc, sk = await insert_market_rows_idempotent(
+                        rows, range_start, range_end,
+                        cfg.db_batch_size, cfg.db_sleep_seconds,
+                    )
+                    inserted_market += inc
+                    skipped_market += sk
+                del rows
+            if (sym_idx + 1) % backfiller.config.api_batch_size == 0:
+                await asyncio.sleep(cfg.api_sleep_seconds)
+
+        # Bonds: per series, per year → fetch FRED then insert
+        yearly = backfiller._iter_yearly_chunks()
+        for asset, series_id in BOND_SERIES:
+            for range_start, range_end in yearly:
+                try:
+                    points = backfiller._fetch_fred_series(
+                        series_id, range_start=range_start, range_end=range_end
+                    )
+                except Exception:
+                    logger.exception("Bond history fetch failed for %s", series_id)
+                    break
+                rows = [
+                    {
+                        "asset": asset,
+                        "price": value,
+                        "timestamp": ts.isoformat(),
+                        "source": "fred_api_backfill",
+                        "instrument_type": "bond_yield",
+                        "unit": "percent",
+                        "change_percent": None,
+                        "previous_close": None,
+                    }
+                    for ts, value in points
+                    if range_start <= ts <= range_end
+                ]
+                if rows:
+                    fetched_market_count += len(rows)
+                    inc, sk = await insert_market_rows_idempotent(
+                        rows, range_start, range_end,
+                        cfg.db_batch_size, cfg.db_sleep_seconds,
+                    )
+                    inserted_market += inc
+                    skipped_market += sk
+                del rows
+            await asyncio.sleep(cfg.api_sleep_seconds)
+
+        # Macro: per indicator fetch full series, then insert year-by-year
+        macro_work: list[tuple[str, str, str, str]] = []  # (source_type, country, ref, indicator_name)
+        for country, pairs in FRED_DIRECT.items():
+            for indicator_name, series_id in pairs:
+                macro_work.append(("fred_direct", country, f"{indicator_name}:{series_id}", indicator_name))
+        for country, series_id in FRED_CPI.items():
+            macro_work.append(("fred_cpi", country, series_id, "inflation"))
+        for country, pairs in WORLD_BANK_FALLBACK.items():
+            for indicator_name, indicator_id in pairs:
+                macro_work.append(("world_bank", country, f"{indicator_name}:{indicator_id}", indicator_name))
+
+        yearly = backfiller._iter_yearly_chunks()
+        for source_type, country, ref, indicator_name in macro_work:
+            try:
+                if source_type == "fred_direct":
+                    _, series_id = ref.split(":", 1)
+                    all_points = backfiller._fetch_fred_series(series_id)
+                    full_rows = [
+                        {
+                            "indicator_name": indicator_name,
+                            "value": value,
+                            "country": country,
+                            "timestamp": ts.isoformat(),
+                            "unit": None,
+                            "source": "fred_api_backfill",
+                        }
+                        for ts, value in all_points
+                    ]
+                elif source_type == "fred_cpi":
+                    cpi_points = backfiller._fetch_fred_series(ref)
+                    yoy = backfiller._compute_yoy(cpi_points)
+                    full_rows = [
+                        {
+                            "indicator_name": "inflation",
+                            "value": value,
+                            "country": country,
+                            "timestamp": ts.isoformat(),
+                            "unit": "percent_yoy",
+                            "source": "fred_api_backfill",
+                        }
+                        for ts, value in yoy
+                        if backfiller.start_ts <= ts <= backfiller.end_ts
+                    ]
+                else:
+                    _, indicator_id = ref.split(":", 1)
+                    full_rows = [
+                        {
+                            "indicator_name": indicator_name,
+                            "value": value,
+                            "country": country,
+                            "timestamp": ts.isoformat(),
+                            "unit": "percent",
+                            "source": "world_bank_backfill",
+                        }
+                        for ts, value in backfiller._fetch_world_bank(country, indicator_id)
+                    ]
+            except Exception:
+                logger.exception("Macro fetch failed for %s %s", source_type, ref)
+                continue
+            for range_start, range_end in yearly:
+                chunk = [
+                    r for r in full_rows
+                    if range_start <= parse_ts(r["timestamp"]) <= range_end
+                ]
+                if chunk:
+                    fetched_macro_count += len(chunk)
+                    inc, sk = await insert_macro_rows_idempotent(
+                        chunk, range_start, range_end,
+                        cfg.db_batch_size, cfg.db_sleep_seconds,
+                    )
+                    inserted_macro += inc
+                    skipped_macro += sk
+            del full_rows
+            await asyncio.sleep(cfg.api_sleep_seconds)
 
     validation = await validate_backfill(backfiller.start_ts, backfiller.end_ts)
     return {
-        "fetched_market_rows": len(all_market_rows),
-        "fetched_macro_rows": len(macro_rows),
+        "fetched_market_rows": fetched_market_count,
+        "fetched_macro_rows": fetched_macro_count,
         "inserted_market_rows": inserted_market,
         "skipped_market_rows": skipped_market,
         "inserted_macro_rows": inserted_macro,
