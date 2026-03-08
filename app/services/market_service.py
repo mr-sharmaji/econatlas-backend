@@ -20,7 +20,7 @@ async def insert_price(
         INSERT INTO {TABLE}
         (asset, price, timestamp, source, instrument_type, unit, change_percent, previous_close)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (asset, instrument_type, timestamp) DO NOTHING
+        ON CONFLICT (asset, instrument_type, "timestamp") DO NOTHING
         RETURNING *
         """,
         asset,
@@ -70,7 +70,7 @@ async def insert_prices_batch(rows: list[dict]) -> int:
                 INSERT INTO {TABLE}
                 (asset, price, timestamp, source, instrument_type, unit, change_percent, previous_close)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                ON CONFLICT (asset, instrument_type, timestamp) DO NOTHING
+                ON CONFLICT (asset, instrument_type, "timestamp") DO NOTHING
                 """,
                 r.get("asset"),
                 r.get("price"),

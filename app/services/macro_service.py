@@ -61,7 +61,7 @@ async def insert_indicator(payload: dict) -> dict | None:
         f"""
         INSERT INTO {TABLE} (indicator_name, value, country, timestamp, unit, source)
         VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (indicator_name, country, timestamp) DO NOTHING
+        ON CONFLICT (indicator_name, country, "timestamp") DO NOTHING
         RETURNING *
         """,
         payload["indicator_name"],
