@@ -5,7 +5,7 @@ import csv
 import io
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Dict, List, Tuple
 
 from app.scheduler.base import BaseScraper
@@ -252,6 +252,95 @@ class MarketScraper(BaseScraper):
 
 
 _scraper = MarketScraper()
+
+
+def _fetch_yahoo_1m_bars(symbol: str) -> tuple[list[tuple[datetime, float]], str]:
+    """Fetch 1-minute OHLC bars from Yahoo Chart API (range=2d, interval=1m).
+    Returns (list of (utc_datetime, close_price), currency_code). Returns ([], 'USD') on failure."""
+    try:
+        url = YAHOO_CHART_URL.format(symbol=symbol)
+        payload = _scraper._get_json(url, params={"interval": "1m", "range": "2d"})
+        result = payload.get("chart", {}).get("result", [])
+        if not result:
+            return ([], "USD")
+        res = result[0]
+        meta = res.get("meta", {})
+        currency = str(meta.get("currency", "USD") or "USD")
+        timestamps = res.get("timestamp") or []
+        quote = (res.get("indicators", {}).get("quote", []) or [{}])[0]
+        closes = quote.get("close") or []
+        out = []
+        for i, ts in enumerate(timestamps):
+            if i >= len(closes):
+                break
+            c = closes[i]
+            if c is None:
+                continue
+            try:
+                dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+                out.append((dt, float(c)))
+            except (TypeError, ValueError):
+                continue
+        return (out, currency)
+    except Exception:
+        logger.warning("Failed to fetch 1m bars for %s", symbol, exc_info=True)
+        return ([], "USD")
+
+
+def build_market_intraday_rows_last_session_yahoo(
+    market_rows: list[dict], trading_date_by_exchange: dict[str, date]
+) -> list[dict]:
+    """Build full minute-level intraday rows for last session using Yahoo 1m chart data.
+    For assets with a Yahoo symbol we fetch 1m bars and filter to the given trading date;
+    for others (Gift Nifty, bonds) we add one point from market_rows."""
+    from app.services import market_service as svc
+
+    rows_out = []
+    # Assets we can get 1m data for (symbol -> (asset, instrument_type))
+    yahoo_assets = {}
+    for sym, asset in INDEX_SYMBOLS.items():
+        yahoo_assets[sym] = (asset, "index")
+    for sym, asset in FX_SYMBOLS.items():
+        yahoo_assets[sym] = (asset, "currency")
+
+    # Reverse: asset -> (symbol, instrument_type)
+    asset_to_symbol: dict[str, tuple[str, str]] = {}
+    for sym, (asset, itype) in yahoo_assets.items():
+        asset_to_symbol[asset] = (sym, itype)
+
+    for sym, (asset_name, instrument_type) in yahoo_assets.items():
+        exchange = ASSET_EXCHANGE.get(asset_name, NYSE)
+        trading_date = trading_date_by_exchange.get(exchange)
+        if not trading_date:
+            continue
+        day_str = trading_date.strftime("%Y-%m-%d")
+        bars, _ = _fetch_yahoo_1m_bars(sym)
+        for dt, close in bars:
+            if dt.strftime("%Y-%m-%d") != day_str:
+                continue
+            ts_rounded = svc._round_to_minute(dt).isoformat()
+            rows_out.append({
+                "asset": asset_name,
+                "instrument_type": instrument_type,
+                "price": close,
+                "timestamp": ts_rounded,
+            })
+
+    # Single point for assets without Yahoo intraday (Gift Nifty, bonds)
+    yahoo_asset_set = set(asset_to_symbol.keys())
+    for r in market_rows:
+        if r.get("asset") in yahoo_asset_set:
+            continue
+        ts = r.get("timestamp")
+        if isinstance(ts, datetime):
+            ts = ts.isoformat()
+        rows_out.append({
+            "asset": r["asset"],
+            "instrument_type": r.get("instrument_type") or "index",
+            "price": r["price"],
+            "timestamp": ts,
+        })
+    return rows_out
 
 
 def _fetch_market_rows_sync() -> tuple[List[Dict], bool]:

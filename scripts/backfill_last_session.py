@@ -1,9 +1,12 @@
-"""Backfill the last trading session's daily data (market + commodities) into market_prices.
+"""Backfill the last trading session's daily data (market + commodities) and intraday data.
 
 Use this to refresh or backfill the most recent trading day when the scheduler missed a run
 or after a restart. Fetches current prices, assigns the exchange trading date (NSE/NYSE),
-and upserts into market_prices. Does not filter by price change (unlike the scheduler when
-markets are closed), so the last session is fully written.
+and upserts into market_prices. When markets are closed, fetches full minute-level intraday
+data from Yahoo (same granularity as live) and inserts into market_prices_intraday. When
+markets are open, inserts a single current snapshot for intraday (same as scheduler).
+Does not filter by price change (unlike the scheduler when closed), so the last session
+is fully written.
 
 Usage (from repo root econatlas-backend):
 
@@ -40,7 +43,7 @@ async def main() -> None:
     try:
         from app.scheduler.market_job import _fetch_market_rows_sync
         from app.scheduler.commodity_job import _fetch_commodity_rows_sync
-        from app.scheduler.trading_calendar import get_market_status
+        from app.scheduler.trading_calendar import get_market_status, get_trading_date
         from datetime import datetime, timezone
     except ImportError as e:
         logger.error("Import failed: %s. Run from backend root with deps installed.", e)
@@ -64,7 +67,9 @@ async def main() -> None:
         n_commodity = await market_service.insert_prices_batch_upsert_daily(commodity_rows)
         logger.info("Commodities: %d rows upserted (daily) for last trading session.", n_commodity)
 
-    # Populate intraday for 1D chart: when market open use same logic as scheduler (live timestamp); when closed use last-session close (one point per asset).
+    # Populate intraday for 1D chart: when market open use same logic as scheduler (live timestamp); when closed fetch full minute-level data from Yahoo.
+    from app.scheduler.trading_calendar import NSE, NYSE
+
     status = get_market_status()
     now = datetime.now(timezone.utc)
     ts_rounded = market_service._round_to_minute(now).isoformat()
@@ -80,31 +85,28 @@ async def main() -> None:
             n = await market_service.insert_intraday_batch(intraday_commodity)
             logger.info("Intraday (commodities): %d points inserted (market open).", n)
     else:
-        # Market closed: write one intraday point per asset (last session close) so 1D chart has data.
-        intraday_market = [
-            {
-                "asset": r["asset"],
-                "instrument_type": r.get("instrument_type") or "index",
-                "price": r["price"],
-                "timestamp": r["timestamp"] if isinstance(r["timestamp"], str) else r["timestamp"].isoformat(),
-            }
-            for r in market_rows
-        ]
+        # Market closed: fetch full minute-level intraday from Yahoo (same as live session granularity).
+        from app.scheduler.market_job import build_market_intraday_rows_last_session_yahoo
+        from app.scheduler.commodity_job import build_commodity_intraday_rows_last_session_yahoo
+
+        trading_date_nse = get_trading_date(now, NSE)
+        trading_date_nyse = get_trading_date(now, NYSE)
+        trading_date_by_exchange = {NSE: trading_date_nse, NYSE: trading_date_nyse}
+        intraday_market = await loop.run_in_executor(
+            None,
+            lambda: build_market_intraday_rows_last_session_yahoo(market_rows, trading_date_by_exchange),
+        )
         if intraday_market:
             n = await market_service.insert_intraday_batch(intraday_market)
-            logger.info("Intraday (market): %d points inserted (last session close).", n)
+            logger.info("Intraday (market): %d points inserted (last session, minute-level).", n)
         if commodity_rows:
-            intraday_commodity = [
-                {
-                    "asset": r["asset"],
-                    "instrument_type": "commodity",
-                    "price": r["price"],
-                    "timestamp": r["timestamp"] if isinstance(r["timestamp"], str) else r["timestamp"].isoformat(),
-                }
-                for r in commodity_rows
-            ]
-            n = await market_service.insert_intraday_batch(intraday_commodity)
-            logger.info("Intraday (commodities): %d points inserted (last session close).", n)
+            intraday_commodity = await loop.run_in_executor(
+                None,
+                lambda: build_commodity_intraday_rows_last_session_yahoo(commodity_rows, trading_date_nyse),
+            )
+            if intraday_commodity:
+                n = await market_service.insert_intraday_batch(intraday_commodity)
+                logger.info("Intraday (commodities): %d points inserted (last session, minute-level).", n)
 
     logger.info("Backfill last session complete.")
     await close_pool()

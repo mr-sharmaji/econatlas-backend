@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
 
 from app.scheduler.base import BaseScraper
@@ -119,6 +119,34 @@ def build_commodity_intraday_rows_for_open(commodity_rows: list[dict], ts_rounde
         {"asset": r["asset"], "instrument_type": "commodity", "price": r["price"], "timestamp": ts_rounded}
         for r in commodity_rows
     ]
+
+
+def build_commodity_intraday_rows_last_session_yahoo(
+    commodity_rows: list[dict], trading_date: date
+) -> list[dict]:
+    """Build full minute-level intraday rows for last session using Yahoo 1m chart data.
+    Fetches 1m bars per symbol, converts close to USD, filters to trading_date."""
+    from app.scheduler.market_job import _fetch_yahoo_1m_bars
+
+    day_str = trading_date.strftime("%Y-%m-%d")
+    rows_out = []
+    for symbol, (asset_name, _unit) in SYMBOLS.items():
+        bars, currency = _fetch_yahoo_1m_bars(symbol)
+        for dt, close in bars:
+            if dt.strftime("%Y-%m-%d") != day_str:
+                continue
+            try:
+                usd_price, _ = _scraper._to_usd(float(close), currency)
+            except (ValueError, TypeError):
+                continue
+            ts_rounded = market_service._round_to_minute(dt).isoformat()
+            rows_out.append({
+                "asset": asset_name,
+                "instrument_type": "commodity",
+                "price": usd_price,
+                "timestamp": ts_rounded,
+            })
+    return rows_out
 
 
 async def run_commodity_job() -> None:
