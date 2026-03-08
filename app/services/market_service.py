@@ -314,25 +314,41 @@ async def get_intraday(
     from_ts: datetime | None = None,
     to_ts: datetime | None = None,
 ) -> list[dict]:
-    """Return intraday points for asset, ordered by timestamp asc. Default: last 24h."""
+    """Return intraday points for the most recent session (calendar day with data).
+    When market is open that is today; when closed it is the last trading day from backfill.
+    Optional from_ts/to_ts override the window (e.g. last 24h)."""
     pool = await get_pool()
-    now = datetime.now(timezone.utc)
-    if to_ts is None:
-        to_ts = now
-    if from_ts is None:
-        from_ts = now - timedelta(hours=24)
+    if from_ts is not None and to_ts is not None:
+        day_start, day_end = from_ts, to_ts
+    else:
+        row = await pool.fetchrow(
+            f"""
+            SELECT MAX("timestamp") as max_ts
+            FROM {TABLE_INTRADAY}
+            WHERE asset = $1 AND instrument_type = $2
+            """,
+            asset,
+            instrument_type,
+        )
+        if not row or row["max_ts"] is None:
+            return []
+        max_ts = row["max_ts"]
+        if getattr(max_ts, "tzinfo", None) is None:
+            max_ts = max_ts.replace(tzinfo=timezone.utc)
+        day_start = datetime(max_ts.year, max_ts.month, max_ts.day, 0, 0, 0, tzinfo=timezone.utc)
+        day_end = day_start + timedelta(days=1)
     rows = await pool.fetch(
         f"""
         SELECT "timestamp", price
         FROM {TABLE_INTRADAY}
         WHERE asset = $1 AND instrument_type = $2
-          AND "timestamp" >= $3 AND "timestamp" <= $4
+          AND "timestamp" >= $3 AND "timestamp" < $4
         ORDER BY "timestamp" ASC
         """,
         asset,
         instrument_type,
-        from_ts,
-        to_ts,
+        day_start,
+        day_end,
     )
     return [{"timestamp": r["timestamp"].isoformat() if hasattr(r["timestamp"], "isoformat") else r["timestamp"], "price": float(r["price"])} for r in rows]
 
