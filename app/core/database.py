@@ -64,8 +64,8 @@ async def init_pool() -> asyncpg.Pool:
         command_timeout=60,
     )
     logger.info("Database pool created")
-    if _INIT_SQL_PATH.exists():
-        async with _pool.acquire() as conn:
+    async with _pool.acquire() as conn:
+        if _INIT_SQL_PATH.exists():
             sql = _INIT_SQL_PATH.read_text()
             for raw in sql.split(";"):
                 stmt = raw.strip()
@@ -74,7 +74,17 @@ async def init_pool() -> asyncpg.Pool:
                 up = stmt.upper()
                 if up.startswith("CREATE") or up.startswith("ALTER") or up.startswith("DROP"):
                     await conn.execute(stmt)
-        logger.info("Schema init executed from sql/init.sql")
+            logger.info("Schema init executed from sql/init.sql")
+        # Ensure idempotent-insert indexes exist (for ON CONFLICT). Safe if init.sql is old.
+        await conn.execute(
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_market_prices_asset_type_ts '
+            'ON market_prices (asset, instrument_type, "timestamp")'
+        )
+        await conn.execute(
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_macro_indicators_name_country_ts '
+            'ON macro_indicators (indicator_name, country, "timestamp")'
+        )
+        logger.info("Idempotent indexes ensured")
     return _pool
 
 
