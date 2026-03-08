@@ -422,6 +422,7 @@ async def insert_market_rows_idempotent(
                         INSERT INTO market_prices
                         (asset, price, "timestamp", source, instrument_type, unit, change_percent, previous_close)
                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        ON CONFLICT (asset, instrument_type, "timestamp") DO NOTHING
                         """,
                         row["asset"],
                         row["price"],
@@ -485,6 +486,7 @@ async def insert_macro_rows_idempotent(
                         INSERT INTO macro_indicators
                         (indicator_name, value, country, "timestamp", unit, source)
                         VALUES ($1, $2, $3, $4, $5, $6)
+                        ON CONFLICT (indicator_name, country, "timestamp") DO NOTHING
                         """,
                         row["indicator_name"],
                         row["value"],

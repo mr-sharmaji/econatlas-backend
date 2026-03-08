@@ -12,14 +12,15 @@ async def insert_price(
     unit: str | None = None,
     change_percent: float | None = None,
     previous_close: float | None = None,
-) -> dict:
-    """Insert one market/commodity price point and return created row."""
+) -> dict | None:
+    """Insert one market/commodity price point. Idempotent: ON CONFLICT DO NOTHING. Returns created row or None if already existed."""
     pool = await get_pool()
     row = await pool.fetchrow(
         f"""
         INSERT INTO {TABLE}
         (asset, price, timestamp, source, instrument_type, unit, change_percent, previous_close)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (asset, instrument_type, timestamp) DO NOTHING
         RETURNING *
         """,
         asset,
@@ -31,6 +32,8 @@ async def insert_price(
         change_percent,
         previous_close,
     )
+    if row is None:
+        return None
     return record_to_dict(row)
 
 
@@ -55,18 +58,19 @@ async def get_latest_price_per_asset_type(
 
 
 async def insert_prices_batch(rows: list[dict]) -> int:
-    """Insert multiple price rows in one request. Returns count inserted."""
+    """Insert multiple price rows. Idempotent: ON CONFLICT DO NOTHING. Returns count actually inserted."""
     if not rows:
         return 0
     pool = await get_pool()
-    count = 0
+    inserted = 0
     async with pool.acquire() as conn:
         for r in rows:
-            await conn.execute(
+            result = await conn.execute(
                 f"""
                 INSERT INTO {TABLE}
                 (asset, price, timestamp, source, instrument_type, unit, change_percent, previous_close)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (asset, instrument_type, timestamp) DO NOTHING
                 """,
                 r.get("asset"),
                 r.get("price"),
@@ -77,8 +81,12 @@ async def insert_prices_batch(rows: list[dict]) -> int:
                 r.get("change_percent"),
                 r.get("previous_close"),
             )
-            count += 1
-    return count
+            # asyncpg execute returns e.g. "INSERT 0 1" or "INSERT 0 0"
+            if result:
+                parts = result.split()
+                if len(parts) >= 3:
+                    inserted += int(parts[-1])
+    return inserted
 
 
 # Tolerance for float price comparison (avoids duplicates when markets closed)
