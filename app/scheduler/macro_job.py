@@ -163,12 +163,20 @@ def _fetch_macro_items_sync() -> list:
     return _scraper.fetch_all()
 
 
+def _normalize_to_today_utc(items: List[Dict]) -> List[Dict]:
+    """Set each item's timestamp to today 00:00 UTC for one-row-per-day model."""
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    ts_iso = day_start.isoformat()
+    return [{**item, "timestamp": ts_iso} for item in items]
+
+
 async def run_macro_job() -> None:
     try:
         loop = asyncio.get_event_loop()
         items = await loop.run_in_executor(None, _fetch_macro_items_sync)
-        for item in items:
-            await macro_service.insert_indicator(item)
-        logger.info("Macro job complete: %d items", len(items))
+        items = _normalize_to_today_utc(items)
+        count = await macro_service.insert_indicators_batch_upsert_daily(items)
+        logger.info("Macro job complete: %d rows upserted (daily)", count)
     except Exception:
         logger.exception("Macro job failed")

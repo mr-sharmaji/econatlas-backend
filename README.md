@@ -1,6 +1,6 @@
 # EconAtlas Backend
 
-REST API backend for **EconAtlas** — a Personal Economic Intelligence System.
+REST API backend for **EconAtlas** — a Personal Economic Intelligence System. The backend is **production-ready**: it serves the Flutter app, runs scheduled jobs for market/commodity/macro/news data, and can be deployed locally or exposed via Cloudflare Tunnel.
 
 ## Architecture
 
@@ -12,7 +12,8 @@ FastAPI Backend (econatlas-backend)   ← this repo
 PostgreSQL (Docker or local)
 ```
 
-The backend exposes REST endpoints for the mobile app and runs scheduled jobs (market, commodity, macro, news) that write into PostgreSQL.
+- **API**: REST endpoints for health, market prices, commodities, macro indicators, news, and events.
+- **Scheduler**: Background jobs (market, commodity, macro, news) run on an interval; data is written to PostgreSQL with one row per day for prices and proper handling of market holidays.
 
 ## Tech Stack
 
@@ -23,6 +24,7 @@ The backend exposes REST endpoints for the mobile app and runs scheduled jobs (m
 | Server    | Uvicorn       |
 | Database  | PostgreSQL    |
 | Driver    | asyncpg       |
+| Scheduler | APScheduler   |
 | Config    | python-dotenv |
 | Container | Docker        |
 
@@ -31,106 +33,92 @@ The backend exposes REST endpoints for the mobile app and runs scheduled jobs (m
 ```
 app/
 ├── core/
-│   ├── config.py      # settings (env vars)
-│   └── database.py    # asyncpg pool and schema init
+│   ├── config.py         # Settings (env vars)
+│   └── database.py       # asyncpg pool and schema init
 ├── api/
 │   ├── router.py
-│   └── routes/        # health, events, macro, market, commodities, news
+│   └── routes/           # health, events, macro, market, commodities, news
 ├── schemas/
-├── services/          # market, macro, news, event (PostgreSQL)
-├── scheduler/         # background jobs (market, commodity, macro, news)
+├── services/             # market, macro, news, event (PostgreSQL)
+├── scheduler/            # market_job, commodity_job, macro_job, news_job, trading_calendar
 └── main.py
 sql/
-└── init.sql           # table definitions
+└── init.sql              # Table definitions
 ```
 
-## Running with Docker Compose (recommended)
+## Quick Start
 
-Starts PostgreSQL and the API in one go:
+**With Docker (recommended):**
 
 ```bash
 docker compose up -d
 ```
 
-- API: `http://localhost:8000`
-- Docs: `http://localhost:8000/docs`
+- API: **http://localhost:8000**
+- Docs: **http://localhost:8000/docs**
 - Postgres: `localhost:5432` (user `econatlas`, password `econatlas`, db `econatlas`)
 
-Build and recreate:
+**Local run (no Docker):**
+
+1. Run PostgreSQL and create DB/user (see below).
+2. Copy `.env.example` to `.env` and set `DATABASE_URL`.
+3. Create venv, install deps, run:
 
 ```bash
-docker compose build --no-cache
-docker compose up -d
+python -m venv .venv
+source .venv/bin/activate   # or .venv\Scripts\activate on Windows
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
 ```
 
-## Running locally (no Docker)
-
-1. **PostgreSQL** must be running (e.g. local install or a Postgres container).
-
-2. **Create DB and user** (if needed):
-
-   ```sql
-   CREATE USER econatlas WITH PASSWORD 'econatlas';
-   CREATE DATABASE econatlas OWNER econatlas;
-   ```
-
-3. **Env and run:**
-
-   ```bash
-   cp .env.example .env
-   # Edit .env: DATABASE_URL=postgresql://econatlas:econatlas@localhost:5432/econatlas
-   python -m venv .venv
-   source .venv/bin/activate   # or .venv\Scripts\activate on Windows
-   pip install -r requirements.txt
-   uvicorn app.main:app --reload --port 8000
-   ```
-
-   On first run, the app applies `sql/init.sql` if the file exists.
+On first run, the app applies `sql/init.sql` if present.
 
 ## API Endpoints
 
-| Method | Path                | Description                                           |
-| ------ | ------------------- | ----------------------------------------------------- |
-| GET    | /health             | Health check                                          |
-| POST   | /events             | Create a new economic event                           |
-| GET    | /events             | List recent economic events                           |
-| POST   | /market             | Ingest normalized market record                       |
-| GET    | /market             | List market prices (filter by instrument_type, asset) |
-| GET    | /market/latest      | Latest price per asset (de-duplicated)                |
-| POST   | /commodities        | Ingest normalized commodity record                    |
-| GET    | /commodities        | List commodity prices (filter by asset)               |
-| GET    | /commodities/latest | Latest price per commodity asset                      |
-| POST   | /news               | Ingest news record and emit event                     |
-| GET    | /news               | List news articles (filter by entity, impact, source) |
-| POST   | /macro              | Ingest macro-economic indicator                       |
-| GET    | /macro              | List macro-economic indicators (filter by country)    |
+| Method | Path                | Description                                      |
+| ------ | ------------------- | ------------------------------------------------ |
+| GET    | /health             | Health check                                     |
+| GET    | /market/latest      | Latest price per asset (indices, FX, bonds)      |
+| GET    | /market             | Market prices, optional filters, history for charts |
+| POST   | /market             | Ingest market record (scheduler)                  |
+| GET    | /commodities/latest | Latest price per commodity (gold, silver, oil…)   |
+| GET    | /commodities        | Commodity prices, optional filters, history      |
+| POST   | /commodities        | Ingest commodity record (scheduler)               |
+| GET    | /macro              | Macro indicators (inflation, rates, GDP, etc.)   |
+| POST   | /macro              | Ingest macro indicator (scheduler)               |
+| GET    | /news               | News articles (filter by entity, impact, source) |
+| POST   | /news               | Ingest news record (scheduler)                    |
+| GET    | /events             | Economic events timeline                         |
+| POST   | /events             | Create economic event                            |
+
+Interactive docs: **http://localhost:8000/docs**.
 
 ## Database Tables
 
 Defined in `sql/init.sql`:
 
-- **economic_events** — `id`, `event_type`, `entity`, `impact`, `confidence`, `created_at`
-- **macro_indicators** — `id`, `indicator_name`, `value`, `country`, `timestamp`, `unit`, `source`
-- **market_prices** — `id`, `asset`, `price`, `timestamp`, `source`, `instrument_type`, `unit`, `change_percent`, `previous_close`
-- **news_articles** — `id`, `title`, `summary`, `body`, `timestamp`, `source`, `url` (unique), `primary_entity`, `impact`, `confidence`
-- **devices** — `id`, `user_id`, `device_token`, `platform` (for future use)
+- **market_prices** — Asset, price, timestamp, source, instrument_type, unit, change_percent, previous_close (indices, FX, bonds, commodities).
+- **macro_indicators** — Indicator name, value, country, timestamp, unit, source.
+- **news_articles** — Title, summary, body, timestamp, source, url, primary_entity, impact, confidence.
+- **economic_events** — Event type, entity, impact, confidence, created_at.
+- **devices** — For future push notifications.
 
-## Data model: one row per day (market & commodity)
+## Data Model: One Row per Day (All Time Series)
 
-For **market** (indices, FX, bond yields) and **commodity** prices we keep **at most one row per (asset, instrument_type, calendar day)** so charts get one point per day.
+**One row per calendar day** applies to all time-series data so the app gets one point per day in charts and lists:
 
-- The scheduler uses **today 00:00 UTC** as the timestamp and **upserts** (insert or update) so each run overwrites today’s row with the latest price. No duplicate rows for the same day.
-- **When markets are closed**: we avoid writing stale data. The job uses **exchange calendars** (NSE/NYSE) as the main gate. If the calendar says **closed**, we still fetch; we **only write when the price changed** from the last stored value (so we don’t miss days when the market was actually open but the calendar was wrong). If the calendar says **open** we always write. So wrong calendar (holiday vs live or vice versa) is partly corrected by the data.
-- **Macro** indicators use table `macro_indicators` with one row per `(indicator_name, country, timestamp)`; timestamps are **observation/release dates** from FRED/World Bank (e.g. monthly), so there is no “many rows per day” issue.
+- **Market** — Indices, currencies (FX), and bond yields: at most one row per `(asset, instrument_type, date)` in `market_prices`. Scheduler uses **today 00:00 UTC** and **upserts** so each run updates that day’s row. When the calendar says markets are closed (NSE/NYSE via `exchange-calendars`), we still fetch; we **only write when the price changed** from the last stored value (handles calendar errors).
+- **Commodities** — Gold, silver, oil, etc.: same as market (one row per `(asset, instrument_type, date)` in `market_prices`), with the same calendar + price-change logic.
+- **Macro** — Inflation, rates, GDP, etc.: at most one row per `(indicator_name, country, date)` in `macro_indicators`. The macro job normalizes timestamps to **today 00:00 UTC** and **upserts** so each run updates that day’s row.
 
 ## Deploying on a Windows Server (Docker)
 
 ### Prerequisites
 
-- **Docker Desktop** (or Docker Engine + Docker Compose)
-- **Git**
+- Docker Desktop (or Docker Engine + Docker Compose)
+- Git
 
-### One-Time Setup
+### One-time setup
 
 In **Administrator PowerShell**:
 
@@ -140,14 +128,11 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\C:\econatlas-backend\scripts\setup-server.ps1 -RepoUrl https://github.com/<your-user>/econatlas-backend.git
 ```
 
-The script checks Docker/Docker Compose and Git, creates `.env` from `.env.example` if missing, then runs `docker compose up -d`.
+The script ensures Docker/Compose and Git are available, creates `.env` from `.env.example` if missing, then runs `docker compose up -d`.
 
-### CI/CD — GitHub Actions (self-hosted runner)
+### Making the API public (internet)
 
-1. Add a **self-hosted runner** (Windows) to the repo.
-2. On push to `main`, the workflow in `.github/workflows/deploy.yml`:
-   - Syncs the repo into `C:\PersonalProjects\econatlas-backend`
-   - Runs `docker compose build --no-cache` and `docker compose up -d`
+To expose the backend so the mobile app can reach it from anywhere, use **Cloudflare Tunnel** with a custom domain. See **[DEPLOY-PUBLIC.md](DEPLOY-PUBLIC.md)** for step-by-step setup (cloudflared, DNS, Windows service). Port forwarding is also documented as an alternative.
 
 ### Managing containers
 
@@ -159,18 +144,31 @@ docker compose down
 docker compose up -d
 ```
 
-### Firewall (optional)
-
-To expose the API on the LAN:
+### Optional: open firewall for LAN
 
 ```powershell
 New-NetFirewallRule -DisplayName "EconAtlas API" `
   -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow
 ```
 
-## Future Roadmap
+## Local PostgreSQL (no Docker)
+
+Create DB and user:
+
+```sql
+CREATE USER econatlas WITH PASSWORD 'econatlas';
+CREATE DATABASE econatlas OWNER econatlas;
+```
+
+Set in `.env`:
+
+```
+DATABASE_URL=postgresql://econatlas:econatlas@localhost:5432/econatlas
+```
+
+## Roadmap
 
 - AI event extraction pipelines
 - Economic knowledge graph
 - Portfolio exposure analysis
-- Push notifications
+- Push notifications (devices table ready)

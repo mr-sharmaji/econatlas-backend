@@ -76,6 +76,36 @@ async def insert_indicator(payload: dict) -> dict | None:
     return record_to_dict(row)
 
 
+async def insert_indicators_batch_upsert_daily(rows: list[dict]) -> int:
+    """Insert or update macro rows so there is at most one row per (indicator_name, country, date).
+    Use for scheduler: pass rows with timestamp = today 00:00 UTC. Returns count processed."""
+    if not rows:
+        return 0
+    pool = await get_pool()
+    count = 0
+    async with pool.acquire() as conn:
+        for r in rows:
+            await conn.execute(
+                f"""
+                INSERT INTO {TABLE} (indicator_name, value, country, timestamp, unit, source)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (indicator_name, country, "timestamp")
+                DO UPDATE SET
+                    value = EXCLUDED.value,
+                    unit = COALESCE(EXCLUDED.unit, {TABLE}.unit),
+                    source = EXCLUDED.source
+                """,
+                r.get("indicator_name"),
+                r.get("value"),
+                r.get("country"),
+                parse_ts(r.get("timestamp")),
+                r.get("unit"),
+                r.get("source"),
+            )
+            count += 1
+    return count
+
+
 async def get_existing_indicator(indicator_name: str, country: str, timestamp) -> dict | None:
     """Fetch existing row by (indicator_name, country, timestamp) for 200 response on conflict."""
     pool = await get_pool()
