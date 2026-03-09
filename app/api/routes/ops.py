@@ -2,7 +2,9 @@ from fastapi import APIRouter, Header, HTTPException, Query
 
 from app.core.config import get_settings
 from app.core.log_stream import get_log_entries
+from app.schemas.market_intel_schema import DataHealthResponse
 from app.schemas.ops_schema import LogEntryResponse, LogListResponse
+from app.services import market_intel_service
 
 router = APIRouter(prefix="/ops", tags=["ops"])
 
@@ -36,3 +38,12 @@ async def ops_logs(
     )
     entries = [LogEntryResponse(**r) for r in rows]
     return LogListResponse(entries=entries, count=len(entries), latest_id=latest_id)
+
+
+@router.get("/data-health", response_model=DataHealthResponse)
+async def data_health(
+    x_ops_token: str | None = Header(default=None),
+) -> DataHealthResponse:
+    _authorize(x_ops_token)
+    payload = await market_intel_service.get_data_health()
+    return DataHealthResponse(**payload)

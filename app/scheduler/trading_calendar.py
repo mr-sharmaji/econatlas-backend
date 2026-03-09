@@ -24,6 +24,10 @@ _nyse_calendar = None
 # Exchange identifier for get_trading_date
 NSE = "NSE"
 NYSE = "NYSE"
+LSE = "LSE"
+XETRA = "XETRA"
+EURONEXT = "EURONEXT"
+TSE = "TSE"
 
 # exchange_calendars canonical names: XBOM = BSE (India, same tz/session as NSE); XNYS = NYSE (US).
 # Package has no XNSE; XBOM is the India exchange calendar in gerrymanoim/exchange_calendars.
@@ -32,6 +36,10 @@ _NYSE_CALENDAR_NAME = "XNYS"
 
 _NSE_TZ = ZoneInfo("Asia/Kolkata")
 _NYSE_TZ = ZoneInfo("America/New_York")
+_LSE_TZ = ZoneInfo("Europe/London")
+_XETRA_TZ = ZoneInfo("Europe/Berlin")
+_EURONEXT_TZ = ZoneInfo("Europe/Paris")
+_TSE_TZ = ZoneInfo("Asia/Tokyo")
 
 
 def _get_nse():
@@ -115,6 +123,14 @@ def _fallback_is_open(exchange: str, utc_now: datetime) -> bool:
 def _fallback_trading_date(exchange: str, utc_now: datetime) -> date:
     if exchange == NSE:
         local = utc_now.astimezone(_NSE_TZ)
+    elif exchange == LSE:
+        local = utc_now.astimezone(_LSE_TZ)
+    elif exchange == XETRA:
+        local = utc_now.astimezone(_XETRA_TZ)
+    elif exchange == EURONEXT:
+        local = utc_now.astimezone(_EURONEXT_TZ)
+    elif exchange == TSE:
+        local = utc_now.astimezone(_TSE_TZ)
     else:
         local = utc_now.astimezone(_NYSE_TZ)
     d = local.date()
@@ -239,9 +255,16 @@ def get_trading_date(utc_now: datetime, exchange: str) -> date:
     elif exchange == NYSE:
         cal = _get_nyse()
         tz = _NYSE_TZ
+    elif exchange == LSE:
+        return _fallback_trading_date(exchange, now)
+    elif exchange == XETRA:
+        return _fallback_trading_date(exchange, now)
+    elif exchange == EURONEXT:
+        return _fallback_trading_date(exchange, now)
+    elif exchange == TSE:
+        return _fallback_trading_date(exchange, now)
     else:
-        # Fallback: use UTC date
-        return now.date()
+        return _fallback_trading_date(exchange, now)
     if cal is None:
         return _fallback_trading_date(exchange, now)
 
@@ -380,3 +403,70 @@ def is_commodity_session_expected_open(utc_now: datetime) -> bool:
         return t < dtime(17, 0)
     # Mon-Thu: open except daily break.
     return not (dtime(17, 0) <= t < dtime(18, 0))
+
+
+def _is_local_window_open(
+    utc_now: datetime,
+    *,
+    tz: ZoneInfo,
+    start: dtime,
+    end: dtime,
+    weekdays: set[int] | None = None,
+    breaks: list[tuple[dtime, dtime]] | None = None,
+) -> bool:
+    local = utc_now.astimezone(tz)
+    wd = local.weekday()
+    if weekdays is not None and wd not in weekdays:
+        return False
+    t = local.timetz().replace(tzinfo=None)
+    if not (start <= t <= end):
+        return False
+    for b_start, b_end in breaks or []:
+        if b_start <= t < b_end:
+            return False
+    return True
+
+
+def is_exchange_expected_open(exchange: str, utc_now: datetime, status: dict | None = None) -> bool:
+    """Best-effort expected-open check for region-aware phase computation."""
+    now = utc_now if utc_now.tzinfo is not None else utc_now.replace(tzinfo=timezone.utc)
+    if exchange == NSE:
+        st = status or get_market_status(now)
+        return bool(st.get("nse_open"))
+    if exchange == NYSE:
+        st = status or get_market_status(now)
+        return bool(st.get("nyse_open"))
+    if exchange == LSE:
+        return _is_local_window_open(
+            now,
+            tz=_LSE_TZ,
+            start=dtime(8, 0),
+            end=dtime(16, 30),
+            weekdays={0, 1, 2, 3, 4},
+        )
+    if exchange == XETRA:
+        return _is_local_window_open(
+            now,
+            tz=_XETRA_TZ,
+            start=dtime(9, 0),
+            end=dtime(17, 30),
+            weekdays={0, 1, 2, 3, 4},
+        )
+    if exchange == EURONEXT:
+        return _is_local_window_open(
+            now,
+            tz=_EURONEXT_TZ,
+            start=dtime(9, 0),
+            end=dtime(17, 30),
+            weekdays={0, 1, 2, 3, 4},
+        )
+    if exchange == TSE:
+        return _is_local_window_open(
+            now,
+            tz=_TSE_TZ,
+            start=dtime(9, 0),
+            end=dtime(15, 0),
+            weekdays={0, 1, 2, 3, 4},
+            breaks=[(dtime(11, 30), dtime(12, 30))],
+        )
+    return False

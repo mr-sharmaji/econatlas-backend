@@ -23,6 +23,10 @@ class MarketPriceResponse(BaseModel):
     data_quality: str | None = None
     is_predictive: bool | None = None
     session_source: str | None = None
+    region: str | None = None
+    exchange: str | None = None
+    session_policy: str | None = None
+    tradable_type: str | None = None
 
 
 class MarketPriceListResponse(BaseModel):

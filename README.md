@@ -111,6 +111,10 @@ If `market/latest` is empty, run `python scripts/backfill_last_session.py`, then
 | GET    | /market/latest      | Latest price per asset (indices, FX, bonds)      |
 | GET    | /market             | Market prices, optional filters, history for charts |
 | POST   | /market             | Ingest market record (scheduler)                  |
+| GET    | /assets/catalog     | Canonical asset catalog with region/session metadata |
+| GET    | /watchlist          | Device-scoped watchlist (seeds defaults on first call) |
+| PUT    | /watchlist          | Replace ordered device watchlist                  |
+| GET    | /screener           | Smart screener ranked opportunities               |
 | GET    | /commodities/intraday | Intraday points for 1D chart (last 24h; query `asset`) |
 | GET    | /commodities/latest | Latest price per commodity (gold, silver, oil…)   |
 | GET    | /commodities        | Commodity prices, optional filters, history      |
@@ -122,6 +126,7 @@ If `market/latest` is empty, run `python scripts/backfill_last_session.py`, then
 | GET    | /events             | Economic events timeline                         |
 | POST   | /events             | Create economic event                            |
 | GET    | /ops/logs           | Tail in-memory backend logs (limit/filter/after_id; optional token) |
+| GET    | /ops/data-health    | Freshness/phase/latency diagnostics summary      |
 
 Interactive docs: **http://localhost:8000/docs**.
 

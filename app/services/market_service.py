@@ -1,10 +1,12 @@
 import logging
 from datetime import datetime, timezone, timedelta
 
+from app.core.asset_catalog import get_asset_meta
 from app.core.config import get_settings
 from app.core.database import get_pool, parse_ts, record_to_dict
 from app.scheduler.trading_calendar import (
     get_market_status,
+    is_exchange_expected_open,
     is_commodity_session_expected_open,
     is_fx_session_expected_open,
 )
@@ -168,6 +170,12 @@ def _is_expected_open(asset: str, instrument_type: str, now_utc: datetime, statu
         return is_fx_session_expected_open(now_utc)
     if instrument_type == "commodity":
         return is_commodity_session_expected_open(now_utc)
+    meta = get_asset_meta(asset)
+    if meta is not None and meta.session_policy == "predictive":
+        st = status or get_market_status(now_utc)
+        return bool(st.get("gift_nifty_open"))
+    if meta is not None and meta.session_policy == "session":
+        return is_exchange_expected_open(meta.exchange, now_utc, status=status)
     st = status or get_market_status(now_utc)
     if instrument_type == "index":
         if asset == "Gift Nifty":
@@ -356,6 +364,11 @@ async def get_latest_prices(
         d["data_quality"] = None
         d["is_predictive"] = bool(asset == "Gift Nifty")
         d["session_source"] = "gift_nifty_windows" if asset == "Gift Nifty" else None
+        meta = get_asset_meta(asset)
+        d["region"] = meta.region if meta is not None else None
+        d["exchange"] = meta.exchange if meta is not None else None
+        d["session_policy"] = meta.session_policy if meta is not None else None
+        d["tradable_type"] = meta.tradable_type if meta is not None else None
         if inst in _ROLLING_24H_TYPES:
             rolling = await _get_intraday_rolling_change(
                 pool,
@@ -413,6 +426,17 @@ async def get_latest_prices(
             intraday_day = await get_intraday(asset=asset, instrument_type=inst)
             points = intraday_day.get("prices") or []
             if points:
+                if len(points) >= 2:
+                    first_price = points[0].get("price")
+                    last_price = points[-1].get("price")
+                    try:
+                        f = float(first_price)
+                        l = float(last_price)
+                        if f != 0:
+                            d["change_percent"] = round(((l - f) / f) * 100, 2)
+                            d["previous_close"] = f
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        pass
                 last_tick_ts = _normalize_dt(points[-1].get("timestamp"))
                 if last_tick_ts is not None:
                     d["last_tick_timestamp"] = _to_iso(last_tick_ts)

@@ -95,3 +95,20 @@ CREATE TABLE IF NOT EXISTS devices (
     device_token TEXT,
     platform TEXT
 );
+
+-- Device-scoped watchlists (no auth v1)
+CREATE TABLE IF NOT EXISTS device_watchlists (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    device_id TEXT NOT NULL,
+    asset TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_device_watchlists_device_asset_unique
+ON device_watchlists (device_id, asset);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_device_watchlists_device_position_unique
+ON device_watchlists (device_id, position);
+CREATE INDEX IF NOT EXISTS idx_device_watchlists_device_position
+ON device_watchlists (device_id, position ASC);

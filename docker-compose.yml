@@ -24,6 +24,7 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://econatlas:econatlas@postgres:5432/econatlas
+      LOG_LEVEL: DEBUG
     depends_on:
       postgres:
         condition: service_healthy

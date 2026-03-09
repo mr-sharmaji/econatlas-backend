@@ -91,6 +91,30 @@ async def init_pool() -> asyncpg.Pool:
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_macro_indicators_name_country_ts '
             'ON macro_indicators (indicator_name, country, "timestamp")'
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS device_watchlists (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                device_id TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_device_watchlists_device_asset_unique "
+            "ON device_watchlists (device_id, asset)"
+        )
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_device_watchlists_device_position_unique "
+            "ON device_watchlists (device_id, position)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_device_watchlists_device_position "
+            "ON device_watchlists (device_id, position ASC)"
+        )
         # Intraday canonical tick metadata columns (backward-compatible migration).
         await conn.execute(
             'ALTER TABLE market_prices_intraday ADD COLUMN IF NOT EXISTS source_timestamp TIMESTAMPTZ'

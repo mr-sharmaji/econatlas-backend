@@ -17,8 +17,13 @@ from app.scheduler.trading_calendar import (
     get_gift_nifty_trading_date,
     is_gift_nifty_open,
     is_trading_day_markets,
+    is_exchange_expected_open,
     NSE,
     NYSE,
+    LSE,
+    XETRA,
+    EURONEXT,
+    TSE,
 )
 from app.services import event_service, market_service
 
@@ -33,6 +38,10 @@ INDEX_SYMBOLS = {
     "^GSPC": "S&P500",
     "^IXIC": "NASDAQ",
     "^DJI": "Dow Jones",
+    "^VIX": "CBOE VIX",
+    "XLK": "S&P 500 Tech",
+    "XLF": "S&P 500 Financials",
+    "XLE": "S&P 500 Energy",
     "^NSEI": "Nifty 50",
     "^BSESN": "Sensex",
     "^NSEBANK": "Nifty Bank",
@@ -40,6 +49,15 @@ INDEX_SYMBOLS = {
     "^CNXIT": "Nifty IT",
     "NIFTYMIDCAP150.NS": "Nifty Midcap 150",
     "NIFTYSMLCAP250.NS": "Nifty Smallcap 250",
+    "^CNXAUTO": "Nifty Auto",
+    "^CNXPHARMA": "Nifty Pharma",
+    "^CNXMETAL": "Nifty Metal",
+    "^FTSE": "FTSE 100",
+    "^GDAXI": "DAX",
+    "^FCHI": "CAC 40",
+    "^STOXX50E": "Euro Stoxx 50",
+    "^N225": "Nikkei 225",
+    "^TOPX": "TOPIX",
 }
 
 FX_SYMBOLS = {
@@ -67,7 +85,20 @@ ASSET_EXCHANGE: Dict[str, str] = {
     "Nifty IT": NSE,
     "Nifty Midcap 150": NSE,
     "Nifty Smallcap 250": NSE,
+    "Nifty Auto": NSE,
+    "Nifty Pharma": NSE,
+    "Nifty Metal": NSE,
     "Gift Nifty": NSE,
+    "FTSE 100": LSE,
+    "DAX": XETRA,
+    "CAC 40": EURONEXT,
+    "Euro Stoxx 50": EURONEXT,
+    "Nikkei 225": TSE,
+    "TOPIX": TSE,
+    "CBOE VIX": NYSE,
+    "S&P 500 Tech": NYSE,
+    "S&P 500 Financials": NYSE,
+    "S&P 500 Energy": NYSE,
     "USD/INR": NYSE,
     "EUR/INR": NYSE,
     "GBP/INR": NYSE,
@@ -574,6 +605,7 @@ def build_market_intraday_rows_for_open(
     Gift Nifty follows dedicated Gift Nifty session status.
     Other indices/bonds follow exchange open status."""
     intraday_rows = []
+    now_utc = datetime.now(timezone.utc)
     for r in market_rows:
         instrument_type = r.get("instrument_type") or "index"
         exchange = ASSET_EXCHANGE.get(r["asset"], NYSE)
@@ -582,8 +614,8 @@ def build_market_intraday_rows_for_open(
             include = True
         elif r.get("asset") == "Gift Nifty":
             include = bool(status.get("gift_nifty_open"))
-        elif (exchange == NSE and status.get("nse_open")) or (exchange == NYSE and status.get("nyse_open")):
-            include = True
+        elif exchange in {NSE, NYSE, LSE, XETRA, EURONEXT, TSE}:
+            include = is_exchange_expected_open(exchange, now_utc, status=status)
         if include:
             source_dt = parse_ts(r.get("source_timestamp")) if r.get("source_timestamp") else None
             if source_dt is None:
