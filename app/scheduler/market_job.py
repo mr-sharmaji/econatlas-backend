@@ -262,12 +262,12 @@ class MarketScraper(BaseScraper):
 _scraper = MarketScraper()
 
 
-def _fetch_yahoo_1m_bars(symbol: str) -> tuple[list[tuple[datetime, float]], str]:
-    """Fetch 1-minute OHLC bars from Yahoo Chart API (range=2d, interval=1m).
+def _fetch_yahoo_1m_bars(symbol: str, range_period: str = "2d") -> tuple[list[tuple[datetime, float]], str]:
+    """Fetch 1-minute OHLC bars from Yahoo Chart API.
     Returns (list of (utc_datetime, close_price), currency_code). Returns ([], 'USD') on failure."""
     try:
         url = YAHOO_CHART_URL.format(symbol=symbol)
-        payload = _scraper._get_json(url, params={"interval": "1m", "range": "2d"})
+        payload = _scraper._get_json(url, params={"interval": "1m", "range": range_period})
         result = payload.get("chart", {}).get("result", [])
         if not result:
             return ([], "USD")
@@ -296,12 +296,19 @@ def _fetch_yahoo_1m_bars(symbol: str) -> tuple[list[tuple[datetime, float]], str
 
 
 def build_market_intraday_rows_last_session_yahoo(
-    market_rows: list[dict], trading_date_by_exchange: dict[str, date]
+    market_rows: list[dict], trading_date_by_exchange: dict[str, date | list[date] | set[date]]
 ) -> list[dict]:
-    """Build full minute-level intraday rows for last session using Yahoo 1m chart data.
-    For assets with a Yahoo symbol we fetch 1m bars and filter to the given trading date;
+    """Build full minute-level intraday rows for target sessions using Yahoo 1m chart data.
+    For assets with a Yahoo symbol we fetch 1m bars and filter to the given trading date(s);
     for others (Gift Nifty, bonds) we add one point from market_rows."""
     from app.services import market_service as svc
+
+    def _normalize_dates(v: date | list[date] | set[date] | None) -> set[date]:
+        if v is None:
+            return set()
+        if isinstance(v, date):
+            return {v}
+        return set(v)
 
     rows_out = []
     # Assets we can get 1m data for (symbol -> (asset, instrument_type))
@@ -318,13 +325,12 @@ def build_market_intraday_rows_last_session_yahoo(
 
     for sym, (asset_name, instrument_type) in yahoo_assets.items():
         exchange = ASSET_EXCHANGE.get(asset_name, NYSE)
-        trading_date = trading_date_by_exchange.get(exchange)
-        if not trading_date:
+        target_dates = _normalize_dates(trading_date_by_exchange.get(exchange))
+        if not target_dates:
             continue
-        day_str = trading_date.strftime("%Y-%m-%d")
-        bars, _ = _fetch_yahoo_1m_bars(sym)
+        bars, _ = _fetch_yahoo_1m_bars(sym, range_period="7d")
         for dt, close in bars:
-            if dt.strftime("%Y-%m-%d") != day_str:
+            if dt.date() not in target_dates:
                 continue
             ts_rounded = svc._round_to_minute(dt).isoformat()
             rows_out.append({

@@ -263,6 +263,43 @@ def get_trading_date(utc_now: datetime, exchange: str) -> date:
         return _fallback_trading_date(exchange, now)
 
 
+def get_recent_trading_dates(utc_now: datetime, exchange: str, count: int) -> list[date]:
+    """Return up to `count` most recent trading dates for `exchange` (oldest -> newest)."""
+    if count <= 0:
+        return []
+
+    now = utc_now if utc_now.tzinfo is not None else utc_now.replace(tzinfo=timezone.utc)
+    latest = get_trading_date(now, exchange)
+
+    if exchange == NSE:
+        cal = _get_nse()
+    elif exchange == NYSE:
+        cal = _get_nyse()
+    else:
+        cal = None
+
+    if cal is None:
+        out = []
+        d = latest
+        while len(out) < count:
+            if d.weekday() < 5:
+                out.append(d)
+            d = d - timedelta(days=1)
+        out.reverse()
+        return out
+
+    dates = [latest]
+    cur = latest
+    while len(dates) < count:
+        prev = _previous_session_date(cal, cur)
+        if prev == cur:
+            break
+        dates.append(prev)
+        cur = prev
+    dates.reverse()
+    return dates
+
+
 def get_market_status(utc_now: datetime | None = None) -> dict:
     """Return whether NSE and NYSE are currently in a trading session (market 'live').
     Returns e.g. {"nse_open": bool, "nyse_open": bool, "live": bool}.

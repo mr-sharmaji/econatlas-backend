@@ -122,18 +122,24 @@ def build_commodity_intraday_rows_for_open(commodity_rows: list[dict], ts_rounde
 
 
 def build_commodity_intraday_rows_last_session_yahoo(
-    commodity_rows: list[dict], trading_date: date
+    commodity_rows: list[dict], trading_date: date | list[date] | set[date]
 ) -> list[dict]:
     """Build full minute-level intraday rows for last session using Yahoo 1m chart data.
-    Fetches 1m bars per symbol, converts close to USD, filters to trading_date."""
+    Fetches 1m bars per symbol, converts close to USD, filters to target trading date(s)."""
     from app.scheduler.market_job import _fetch_yahoo_1m_bars
 
-    day_str = trading_date.strftime("%Y-%m-%d")
+    if isinstance(trading_date, date):
+        target_dates = {trading_date}
+    else:
+        target_dates = set(trading_date)
+    if not target_dates:
+        return []
+
     rows_out = []
     for symbol, (asset_name, _unit) in SYMBOLS.items():
-        bars, currency = _fetch_yahoo_1m_bars(symbol)
+        bars, currency = _fetch_yahoo_1m_bars(symbol, range_period="7d")
         for dt, close in bars:
-            if dt.strftime("%Y-%m-%d") != day_str:
+            if dt.date() not in target_dates:
                 continue
             try:
                 usd_price, _ = _scraper._to_usd(float(close), currency)
