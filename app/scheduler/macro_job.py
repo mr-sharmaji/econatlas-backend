@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from app.scheduler.base import BaseScraper
-from app.scheduler.trading_calendar import get_trading_date, NSE, NYSE, XETRA, TSE
 from app.services import macro_service
 
 logger = logging.getLogger(__name__)
@@ -165,6 +164,21 @@ class MacroScraper(BaseScraper):
                 continue
         return None
 
+    @staticmethod
+    def _parse_time(value: object) -> tuple[int, int, int] | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        for fmt in ("%H:%M:%S", "%H:%M", "%I:%M:%S %p", "%I:%M %p"):
+            try:
+                parsed = datetime.strptime(text, fmt)
+                return parsed.hour, parsed.minute, parsed.second
+            except ValueError:
+                continue
+        return None
+
     def _extract_net_from_row(self, row: dict, prefix: str | None = None) -> float | None:
         keys = list(row.keys())
         for key in keys:
@@ -234,11 +248,25 @@ class MacroScraper(BaseScraper):
             if not isinstance(row, dict):
                 continue
             row_date = None
+            row_time = None
             for k, v in row.items():
-                if "date" in str(k).lower():
+                key_l = str(k).lower()
+                if "date" in key_l:
                     row_date = self._parse_date(v)
                     if row_date is not None:
                         break
+            for k, v in row.items():
+                if "time" in str(k).lower():
+                    row_time = self._parse_time(v)
+                    if row_time is not None:
+                        break
+            if row_date is not None and row_time is not None:
+                row_date = row_date.replace(
+                    hour=row_time[0],
+                    minute=row_time[1],
+                    second=row_time[2],
+                    microsecond=0,
+                )
 
             # Wide-format rows with explicit FII/DII net keys.
             fii_value, fii_ts = _pick_latest(
@@ -272,21 +300,13 @@ class MacroScraper(BaseScraper):
                     )
 
         ts_default = self.utc_now()
-        def _fresh_ts(ts: datetime | None) -> datetime:
-            if ts is None:
-                return ts_default
-            # NSE FII/DII responses are often day-only dates; when it's today's trade date,
-            # use current fetch time so UI reflects fresh ingestion.
-            if ts.date() == ts_default.date():
-                return ts_default
-            return ts
         items: List[Dict] = []
         if fii_value is not None:
             items.append({
                 "indicator_name": "fii_net_cash",
                 "value": round(fii_value, 2),
                 "country": "IN",
-                "timestamp": _fresh_ts(fii_ts).isoformat(),
+                "timestamp": (fii_ts or ts_default).isoformat(),
                 "unit": "inr_cr",
                 "source": "nse_fiidii_api",
             })
@@ -295,7 +315,7 @@ class MacroScraper(BaseScraper):
                 "indicator_name": "dii_net_cash",
                 "value": round(dii_value, 2),
                 "country": "IN",
-                "timestamp": _fresh_ts(dii_ts).isoformat(),
+                "timestamp": (dii_ts or ts_default).isoformat(),
                 "unit": "inr_cr",
                 "source": "nse_fiidii_api",
             })
@@ -372,39 +392,19 @@ def _fetch_macro_items_sync() -> list:
     return _scraper.fetch_all()
 
 
-# Country → exchange for trading-date assignment (same as market: US=NYSE, India=NSE)
-COUNTRY_EXCHANGE: Dict[str, str] = {
-    "US": NYSE,
-    "IN": NSE,
-    "EU": XETRA,
-    "JP": TSE,
-}
-
-
-def _assign_trading_date_per_country(items: List[Dict]) -> List[Dict]:
-    """Set each item's timestamp to its exchange trading date (US→NYSE, IN→NSE) at 00:00 UTC."""
-    now = datetime.now(timezone.utc)
-    out = []
-    for item in items:
-        source = str(item.get("source") or "").lower()
-        # Keep provider timestamp for flow snapshots (trade-date specific).
-        if source == "nse_fiidii_api" and item.get("timestamp"):
-            out.append(item)
-            continue
-        country = item.get("country", "US")
-        exchange = COUNTRY_EXCHANGE.get(country, NYSE)
-        trading_date = get_trading_date(now, exchange)
-        ts = datetime(trading_date.year, trading_date.month, trading_date.day, 0, 0, 0, tzinfo=timezone.utc).isoformat()
-        out.append({**item, "timestamp": ts})
-    return out
-
-
 async def run_macro_job() -> None:
     try:
         loop = asyncio.get_event_loop()
         items = await loop.run_in_executor(None, _fetch_macro_items_sync)
-        items = _assign_trading_date_per_country(items)
-        count = await macro_service.insert_indicators_batch_upsert_daily(items)
-        logger.info("Macro job complete: %d rows upserted (daily)", count)
+        pruned = await macro_service.delete_rows_newer_than_source_timestamps(
+            items,
+            sources={"fred_api", "world_bank"},
+        )
+        count = await macro_service.insert_indicators_batch_upsert_source_timestamp(items)
+        logger.info(
+            "Macro job complete: %d rows upserted (source timestamp), %d legacy rows pruned",
+            count,
+            pruned,
+        )
     except Exception:
         logger.exception("Macro job failed")

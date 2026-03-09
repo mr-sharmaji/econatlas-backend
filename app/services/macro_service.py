@@ -76,9 +76,9 @@ async def insert_indicator(payload: dict) -> dict | None:
     return record_to_dict(row)
 
 
-async def insert_indicators_batch_upsert_daily(rows: list[dict]) -> int:
-    """Insert or update macro rows so there is at most one row per (indicator_name, country, date).
-    Use for scheduler: pass rows with timestamp = today 00:00 UTC. Returns count processed."""
+async def insert_indicators_batch_upsert_source_timestamp(rows: list[dict]) -> int:
+    """Insert or update macro rows using provider/source timestamps.
+    Uniqueness is (indicator_name, country, timestamp)."""
     if not rows:
         return 0
     pool = await get_pool()
@@ -104,6 +104,60 @@ async def insert_indicators_batch_upsert_daily(rows: list[dict]) -> int:
             )
             count += 1
     return count
+
+
+async def insert_indicators_batch_upsert_daily(rows: list[dict]) -> int:
+    """Backward-compatible alias.
+    Prefer insert_indicators_batch_upsert_source_timestamp for new code."""
+    return await insert_indicators_batch_upsert_source_timestamp(rows)
+
+
+async def delete_rows_newer_than_source_timestamps(
+    rows: list[dict],
+    sources: set[str] | None = None,
+) -> int:
+    """Delete legacy rows that are newer than provider/source timestamps.
+    Useful when migrating from synthetic daily timestamps to source timestamps."""
+    if not rows:
+        return 0
+    source_filter = {s.lower() for s in (sources or set())}
+    candidates: set[tuple[str, str, str, str]] = set()
+    for r in rows:
+        indicator = r.get("indicator_name")
+        country = r.get("country")
+        source = str(r.get("source") or "").lower()
+        ts = r.get("timestamp")
+        if not indicator or not country or not ts:
+            continue
+        if source_filter and source not in source_filter:
+            continue
+        candidates.add((str(indicator), str(country), source, str(ts)))
+
+    if not candidates:
+        return 0
+
+    pool = await get_pool()
+    deleted = 0
+    async with pool.acquire() as conn:
+        for indicator, country, source, ts in candidates:
+            status = await conn.execute(
+                f"""
+                DELETE FROM {TABLE}
+                WHERE indicator_name = $1
+                  AND country = $2
+                  AND LOWER(COALESCE(source, '')) = $3
+                  AND "timestamp" > $4
+                """,
+                indicator,
+                country,
+                source,
+                parse_ts(ts),
+            )
+            try:
+                deleted += int(str(status).split()[-1])
+            except Exception:
+                continue
+    return deleted
 
 
 async def get_existing_indicator(indicator_name: str, country: str, timestamp) -> dict | None:
