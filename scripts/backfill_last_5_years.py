@@ -62,6 +62,9 @@ FX_SYMBOLS = {
     "MYRINR=X": "MYR/INR",
     "IDRINR=X": "IDR/INR",
     "PHPINR=X": "PHP/INR",
+    "ZARINR=X": "ZAR/INR",
+    "BRLINR=X": "BRL/INR",
+    "MXNINR=X": "MXN/INR",
 }
 
 COMMODITY_SYMBOLS = {
@@ -70,7 +73,6 @@ COMMODITY_SYMBOLS = {
     "PL=F": ("platinum", "usd_per_troy_ounce"),
     "PA=F": ("palladium", "usd_per_troy_ounce"),
     "CL=F": ("crude oil", "usd_per_barrel"),
-    "BZ=F": ("brent crude", "usd_per_barrel"),
     "NG=F": ("natural gas", "usd_per_mmbtu"),
     "HG=F": ("copper", "usd_per_pound"),
 }

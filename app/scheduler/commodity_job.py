@@ -22,7 +22,6 @@ SYMBOLS = {
     "PL=F": ("platinum", "usd_per_troy_ounce"),
     "PA=F": ("palladium", "usd_per_troy_ounce"),
     "CL=F": ("crude oil", "usd_per_barrel"),
-    "BZ=F": ("brent crude", "usd_per_barrel"),
     "NG=F": ("natural gas", "usd_per_mmbtu"),
     "HG=F": ("copper", "usd_per_pound"),
 }

@@ -272,13 +272,21 @@ class MacroScraper(BaseScraper):
                     )
 
         ts_default = self.utc_now()
+        def _fresh_ts(ts: datetime | None) -> datetime:
+            if ts is None:
+                return ts_default
+            # NSE FII/DII responses are often day-only dates; when it's today's trade date,
+            # use current fetch time so UI reflects fresh ingestion.
+            if ts.date() == ts_default.date():
+                return ts_default
+            return ts
         items: List[Dict] = []
         if fii_value is not None:
             items.append({
                 "indicator_name": "fii_net_cash",
                 "value": round(fii_value, 2),
                 "country": "IN",
-                "timestamp": (fii_ts or ts_default).isoformat(),
+                "timestamp": _fresh_ts(fii_ts).isoformat(),
                 "unit": "inr_cr",
                 "source": "nse_fiidii_api",
             })
@@ -287,7 +295,7 @@ class MacroScraper(BaseScraper):
                 "indicator_name": "dii_net_cash",
                 "value": round(dii_value, 2),
                 "country": "IN",
-                "timestamp": (dii_ts or ts_default).isoformat(),
+                "timestamp": _fresh_ts(dii_ts).isoformat(),
                 "unit": "inr_cr",
                 "source": "nse_fiidii_api",
             })
