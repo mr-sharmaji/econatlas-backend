@@ -463,21 +463,21 @@ async def get_latest_prices(
                 except (TypeError, ValueError):
                     pass
 
-                # Keep session % aligned with intraday chart window (first tick -> last tick)
-                # so detail card and chart always match.
+                # Prefer previous-close based session % for true market day move.
+                # Fall back to first->last intraday only when previous_close is unavailable.
                 pv_raw = d.get("previous_close")
                 try:
                     pv = float(pv_raw) if pv_raw is not None else None
                     lp = float(d.get("price")) if d.get("price") is not None else None
-                    if len(points) >= 2 and lp is not None:
+                    if pv is not None and pv != 0 and lp is not None:
+                        d["change_percent"] = round(((lp - pv) / pv) * 100, 2)
+                        d["previous_close"] = pv
+                    elif len(points) >= 2 and lp is not None:
                         f = float(points[0].get("price"))
                         if f != 0 and lp is not None:
                             d["change_percent"] = round(((lp - f) / f) * 100, 2)
                             if d.get("previous_close") is None:
                                 d["previous_close"] = f
-                    elif pv is not None and pv != 0 and lp is not None:
-                        d["change_percent"] = round(((lp - pv) / pv) * 100, 2)
-                        d["previous_close"] = pv
                 except (TypeError, ValueError, ZeroDivisionError):
                     pass
                 last_tick_ts = _normalize_dt(points[-1].get("timestamp"))

@@ -34,6 +34,7 @@ WORLD_BANK_URL = "https://api.worldbank.org/v2/country/{country}/indicator/{indi
 INDEX_SYMBOLS = {
     "^GSPC": "S&P500",
     "^IXIC": "NASDAQ",
+    "^NDX": "Nasdaq 100",
     "^DJI": "Dow Jones",
     "^NSEI": "Nifty 50",
     "^BSESN": "Sensex",

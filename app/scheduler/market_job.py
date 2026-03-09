@@ -37,6 +37,7 @@ GIFT_NIFTY_URL = "https://giftcitynifty.com/gift-nifty-intraday-price-data/"
 INDEX_SYMBOLS = {
     "^GSPC": "S&P500",
     "^IXIC": "NASDAQ",
+    "^NDX": "Nasdaq 100",
     "^DJI": "Dow Jones",
     "^VIX": "CBOE VIX",
     "XLK": "S&P 500 Tech",
@@ -97,6 +98,7 @@ BOND_SERIES: List[Tuple[str, str]] = [
 ASSET_EXCHANGE: Dict[str, str] = {
     "S&P500": NYSE,
     "NASDAQ": NYSE,
+    "Nasdaq 100": NYSE,
     "Dow Jones": NYSE,
     "Nifty 50": NSE,
     "Sensex": NSE,

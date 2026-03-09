@@ -34,7 +34,8 @@ ASSET_CATALOG: tuple[AssetCatalogItem, ...] = (
     AssetCatalogItem("Gift Nifty", "index", "GIFTNIFTY", "India", "NSE", "predictive", 110, "predictive_index", "points", True, "Nifty 50"),
     # US indices and sector proxies
     AssetCatalogItem("S&P500", "index", "^GSPC", "US", "NYSE", "session", 200, "index", "points", False, "S&P500"),
-    AssetCatalogItem("NASDAQ", "index", "^IXIC", "US", "NYSE", "session", 210, "index", "points", True, "S&P500"),
+    AssetCatalogItem("NASDAQ", "index", "^IXIC", "US", "NYSE", "session", 210, "index", "points", False, "S&P500"),
+    AssetCatalogItem("Nasdaq 100", "index", "^NDX", "US", "NYSE", "session", 215, "index", "points", True, "S&P500"),
     AssetCatalogItem("Dow Jones", "index", "^DJI", "US", "NYSE", "session", 220, "index", "points", False, "S&P500"),
     AssetCatalogItem("CBOE VIX", "index", "^VIX", "US", "NYSE", "session", 230, "volatility_index", "points", False, "S&P500"),
     AssetCatalogItem("S&P 500 Tech", "index", "XLK", "US", "NYSE", "session", 240, "sector_proxy", "points", False, "S&P500"),
@@ -112,7 +113,7 @@ def default_watchlist_assets() -> list[str]:
     defaults = [i.asset for i in ASSET_CATALOG if i.default_watchlist]
     return defaults or [
         "Nifty 50",
-        "NASDAQ",
+        "Nasdaq 100",
         "Gift Nifty",
         "USD/INR",
         "gold",
