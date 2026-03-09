@@ -1,8 +1,22 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+import re
 from datetime import date, datetime, timedelta, timezone
+from html import unescape
+
+import requests
 
 from app.core.database import get_pool, parse_ts, record_to_dict
+
+logger = logging.getLogger(__name__)
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+_LIVE_SOURCE = "investorgain_webnode"
+_SYNC_TTL_SECONDS = 180
+_LIVE_REPORT_ID = 331
+_LIVE_BASE_URL = "https://webnodejs.investorgain.com/cloud/new/report/data-read"
 
 
 def _normalize_status(status: str | None) -> str:
@@ -22,133 +36,234 @@ def _normalize_symbols(symbols: list[str]) -> list[str]:
     return out
 
 
-def _default_ipo_rows() -> list[dict]:
-    today = date.today()
-    return [
-        {
-            "symbol": "HEXATECH",
-            "company_name": "Hexa Tech Systems",
-            "market": "IN",
-            "status": "open",
-            "ipo_type": "mainboard",
-            "issue_size_cr": 1280.0,
-            "price_band": "₹490-515",
-            "gmp_percent": 18.4,
-            "subscription_multiple": 12.6,
-            "open_date": today - timedelta(days=1),
-            "close_date": today + timedelta(days=1),
-            "listing_date": today + timedelta(days=5),
-            "source": "curated_feed",
-        },
-        {
-            "symbol": "ZENSME",
-            "company_name": "Zen Renewables SME",
-            "market": "IN",
-            "status": "open",
-            "ipo_type": "sme",
-            "issue_size_cr": 92.0,
-            "price_band": "₹118-124",
-            "gmp_percent": 5.7,
-            "subscription_multiple": 1.8,
-            "open_date": today - timedelta(days=1),
-            "close_date": today + timedelta(days=1),
-            "listing_date": today + timedelta(days=4),
-            "source": "curated_feed",
-        },
-        {
-            "symbol": "AURAAUTO",
-            "company_name": "Aura Auto Components",
-            "market": "IN",
-            "status": "upcoming",
-            "ipo_type": "mainboard",
-            "issue_size_cr": 2250.0,
-            "price_band": "₹360-378",
-            "gmp_percent": 14.2,
-            "subscription_multiple": None,
-            "open_date": today + timedelta(days=2),
-            "close_date": today + timedelta(days=4),
-            "listing_date": today + timedelta(days=9),
-            "source": "curated_feed",
-        },
-        {
-            "symbol": "KALPASTEEL",
-            "company_name": "Kalpa Steel Works",
-            "market": "IN",
-            "status": "upcoming",
-            "ipo_type": "mainboard",
-            "issue_size_cr": 640.0,
-            "price_band": "₹205-214",
-            "gmp_percent": 3.8,
-            "subscription_multiple": None,
-            "open_date": today + timedelta(days=4),
-            "close_date": today + timedelta(days=6),
-            "listing_date": today + timedelta(days=11),
-            "source": "curated_feed",
-        },
-        {
-            "symbol": "NEXUSSME",
-            "company_name": "Nexus Precision SME",
-            "market": "IN",
-            "status": "upcoming",
-            "ipo_type": "sme",
-            "issue_size_cr": 54.0,
-            "price_band": "₹86-92",
-            "gmp_percent": 22.5,
-            "subscription_multiple": None,
-            "open_date": today + timedelta(days=3),
-            "close_date": today + timedelta(days=5),
-            "listing_date": today + timedelta(days=10),
-            "source": "curated_feed",
-        },
-    ]
+def _strip_text(value: object | None) -> str:
+    if value is None:
+        return ""
+    s = unescape(str(value))
+    s = re.sub(r"<[^>]*>", "", s)
+    return re.sub(r"\s+", " ", s).strip()
 
 
-async def _ensure_seed_rows() -> None:
+def _slug_symbol(name: str) -> str:
+    compact = re.sub(r"[^A-Z0-9]+", "", name.upper())
+    if not compact:
+        return "IPOUNK"
+    return compact[:12]
+
+
+def _to_float(value: object | None) -> float | None:
+    if value is None:
+        return None
+    s = _strip_text(value)
+    if not s or s in {"-", "--", "N/A"}:
+        return None
+    m = re.search(r"-?\d+(?:\.\d+)?", s.replace(",", ""))
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except ValueError:
+        return None
+
+
+def _parse_subscription(value: object | None) -> float | None:
+    s = _strip_text(value).lower()
+    if not s or s in {"-", "--", "na", "n/a"}:
+        return None
+    m = re.search(r"-?\d+(?:\.\d+)?", s.replace(",", ""))
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except ValueError:
+        return None
+
+
+def _parse_date_value(value: object | None) -> date | None:
+    s = _strip_text(value)
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def _parse_source_ts(value: object | None, today_ist: date) -> datetime:
+    text = _strip_text(value)
+    if not text:
+        return datetime.now(timezone.utc)
+
+    for fmt in ("%d-%b %H:%M", "%d-%b %I:%M %p", "%d-%b"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            candidate = parsed.replace(year=today_ist.year)
+            if candidate.date() > (today_ist + timedelta(days=180)):
+                candidate = candidate.replace(year=today_ist.year - 1)
+            elif candidate.date() < (today_ist - timedelta(days=180)):
+                candidate = candidate.replace(year=today_ist.year + 1)
+            return candidate.replace(tzinfo=_IST).astimezone(timezone.utc)
+        except ValueError:
+            continue
+    return datetime.now(timezone.utc)
+
+
+def _financial_year(today_ist: date) -> str:
+    if today_ist.month >= 4:
+        start = today_ist.year
+    else:
+        start = today_ist.year - 1
+    return f"{start}-{str(start + 1)[-2:]}"
+
+
+def _fetch_rows_for_status(source_code: str, status: str, today_ist: date) -> list[dict]:
+    url = (
+        f"{_LIVE_BASE_URL}/{_LIVE_REPORT_ID}/1/"
+        f"{today_ist.month}/{today_ist.year}/{_financial_year(today_ist)}/0/{source_code}"
+    )
+    response = requests.get(url, params={"search": ""}, timeout=15)
+    response.raise_for_status()
+    payload = response.json()
+    if int(payload.get("msg", 0)) != 1:
+        raise RuntimeError(f"IPO source returned msg={payload.get('msg')}")
+
+    rows = payload.get("reportTableData") or []
+    parsed: list[dict] = []
+    for row in rows:
+        ipo_name = _strip_text(row.get("~ipo_name") or row.get("Name"))
+        if not ipo_name:
+            continue
+
+        raw_id = _strip_text(row.get("~id"))
+        symbol = f"IPO{raw_id}" if raw_id else _slug_symbol(ipo_name)
+        category_blob = f"{_strip_text(row.get('~IPO_Category'))} {_strip_text(row.get('Name'))}".upper()
+        ipo_type = "sme" if "SME" in category_blob else "mainboard"
+        gmp_percent = _to_float(row.get("~gmp_percent_calc"))
+        if gmp_percent is None:
+            gmp_percent = _to_float(row.get("GMP"))
+
+        parsed.append(
+            {
+                "symbol": symbol,
+                "company_name": ipo_name,
+                "market": "IN",
+                "status": status,
+                "ipo_type": ipo_type,
+                "issue_size_cr": _to_float(row.get("IPO Size (₹ in cr)")),
+                "price_band": _strip_text(row.get("Price (₹)")) or None,
+                "gmp_percent": gmp_percent,
+                "subscription_multiple": _parse_subscription(row.get("Sub")),
+                "open_date": _parse_date_value(row.get("~Srt_Open")),
+                "close_date": _parse_date_value(row.get("~Srt_Close")),
+                "listing_date": _parse_date_value(row.get("~Str_Listing")),
+                "source_timestamp": _parse_source_ts(row.get("Updated-On"), today_ist),
+                "ingested_at": datetime.now(timezone.utc),
+                "source": _LIVE_SOURCE,
+            }
+        )
+    return parsed
+
+
+def _fetch_live_rows() -> list[dict]:
+    today_ist = datetime.now(_IST).date()
+    combined: list[dict] = []
+    seen: set[str] = set()
+    for source_code, status in (("open", "open"), ("current", "upcoming")):
+        rows = _fetch_rows_for_status(source_code=source_code, status=status, today_ist=today_ist)
+        for row in rows:
+            symbol = str(row["symbol"])
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            combined.append(row)
+    return combined
+
+
+async def _sync_live_rows(force: bool = False) -> None:
     pool = await get_pool()
-    async with pool.acquire() as conn:
-        count = await conn.fetchval("SELECT COUNT(*) FROM ipo_snapshots")
-        if count and int(count) > 0:
+    now_utc = datetime.now(timezone.utc)
+    if not force:
+        async with pool.acquire() as conn:
+            last_ingested = await conn.fetchval(
+                "SELECT MAX(ingested_at) FROM ipo_snapshots WHERE source = $1",
+                _LIVE_SOURCE,
+            )
+        if (
+            isinstance(last_ingested, datetime)
+            and (now_utc - last_ingested).total_seconds() < _SYNC_TTL_SECONDS
+        ):
             return
-        rows = _default_ipo_rows()
-        for r in rows:
+
+    try:
+        rows = await asyncio.to_thread(_fetch_live_rows)
+    except Exception:
+        logger.exception("IPO live sync failed")
+        return
+
+    if not rows:
+        logger.warning("IPO live sync returned zero rows; keeping existing database entries")
+        return
+
+    symbols = [str(r["symbol"]) for r in rows]
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for r in rows:
+                await conn.execute(
+                    """
+                    INSERT INTO ipo_snapshots
+                    (symbol, company_name, market, status, ipo_type, issue_size_cr, price_band,
+                     gmp_percent, subscription_multiple, open_date, close_date, listing_date,
+                     source_timestamp, ingested_at, source)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                    ON CONFLICT (symbol)
+                    DO UPDATE SET
+                        company_name = EXCLUDED.company_name,
+                        market = EXCLUDED.market,
+                        status = EXCLUDED.status,
+                        ipo_type = EXCLUDED.ipo_type,
+                        issue_size_cr = EXCLUDED.issue_size_cr,
+                        price_band = EXCLUDED.price_band,
+                        gmp_percent = EXCLUDED.gmp_percent,
+                        subscription_multiple = EXCLUDED.subscription_multiple,
+                        open_date = EXCLUDED.open_date,
+                        close_date = EXCLUDED.close_date,
+                        listing_date = EXCLUDED.listing_date,
+                        source_timestamp = EXCLUDED.source_timestamp,
+                        ingested_at = EXCLUDED.ingested_at,
+                        source = EXCLUDED.source
+                    """,
+                    r["symbol"],
+                    r["company_name"],
+                    r["market"],
+                    r["status"],
+                    r["ipo_type"],
+                    r["issue_size_cr"],
+                    r["price_band"],
+                    r["gmp_percent"],
+                    r["subscription_multiple"],
+                    r["open_date"],
+                    r["close_date"],
+                    r["listing_date"],
+                    r["source_timestamp"],
+                    r["ingested_at"],
+                    r["source"],
+                )
             await conn.execute(
                 """
-                INSERT INTO ipo_snapshots
-                (symbol, company_name, market, status, ipo_type, issue_size_cr, price_band,
-                 gmp_percent, subscription_multiple, open_date, close_date, listing_date,
-                 source_timestamp, ingested_at, source)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW(), $13)
-                ON CONFLICT (symbol)
-                DO UPDATE SET
-                    company_name = EXCLUDED.company_name,
-                    market = EXCLUDED.market,
-                    status = EXCLUDED.status,
-                    ipo_type = EXCLUDED.ipo_type,
-                    issue_size_cr = EXCLUDED.issue_size_cr,
-                    price_band = EXCLUDED.price_band,
-                    gmp_percent = EXCLUDED.gmp_percent,
-                    subscription_multiple = EXCLUDED.subscription_multiple,
-                    open_date = EXCLUDED.open_date,
-                    close_date = EXCLUDED.close_date,
-                    listing_date = EXCLUDED.listing_date,
-                    source_timestamp = NOW(),
-                    ingested_at = NOW(),
-                    source = EXCLUDED.source
+                DELETE FROM ipo_snapshots
+                WHERE source = $1
+                  AND NOT (symbol = ANY($2::text[]))
                 """,
-                r["symbol"],
-                r["company_name"],
-                r["market"],
-                r["status"],
-                r["ipo_type"],
-                r["issue_size_cr"],
-                r["price_band"],
-                r["gmp_percent"],
-                r["subscription_multiple"],
-                r["open_date"],
-                r["close_date"],
-                r["listing_date"],
-                r["source"],
+                _LIVE_SOURCE,
+                symbols,
             )
+            await conn.execute(
+                """
+                DELETE FROM device_ipo_alerts
+                WHERE symbol NOT IN (SELECT symbol FROM ipo_snapshots)
+                """
+            )
+    logger.info("IPO live sync complete: %d rows upserted", len(rows))
 
 
 def _recommendation(status: str, gmp_percent: float | None, subscription_multiple: float | None) -> tuple[str, str]:
@@ -176,7 +291,7 @@ def _recommendation(status: str, gmp_percent: float | None, subscription_multipl
 
 async def get_ipos(*, status: str = "open", limit: int = 20) -> dict:
     status = _normalize_status(status)
-    await _ensure_seed_rows()
+    await _sync_live_rows()
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -221,7 +336,7 @@ async def get_ipos(*, status: str = "open", limit: int = 20) -> dict:
 
 
 async def get_ipo_alerts(device_id: str) -> list[str]:
-    await _ensure_seed_rows()
+    await _sync_live_rows()
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -237,7 +352,7 @@ async def get_ipo_alerts(device_id: str) -> list[str]:
 
 
 async def put_ipo_alerts(device_id: str, symbols: list[str]) -> list[str]:
-    await _ensure_seed_rows()
+    await _sync_live_rows()
     normalized = _normalize_symbols(symbols)
     pool = await get_pool()
     async with pool.acquire() as conn:
