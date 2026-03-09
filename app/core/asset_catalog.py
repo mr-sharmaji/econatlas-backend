@@ -21,7 +21,7 @@ class AssetCatalogItem:
 ASSET_CATALOG: tuple[AssetCatalogItem, ...] = (
     # India indices
     AssetCatalogItem("Nifty 50", "index", "^NSEI", "India", "NSE", "session", 10, "index", "points", True, "Nifty 50"),
-    AssetCatalogItem("Nifty 500", "index", "^CRSLDX", "India", "NSE", "session", 20, "index", "points", True, "Nifty 50"),
+    AssetCatalogItem("Nifty 500", "index", "^CRSLDX", "India", "NSE", "session", 20, "index", "points", False, "Nifty 50"),
     AssetCatalogItem("Sensex", "index", "^BSESN", "India", "NSE", "session", 30, "index", "points", False, "Nifty 50"),
     AssetCatalogItem("Nifty Bank", "index", "^NSEBANK", "India", "NSE", "session", 40, "index", "points", False, "Nifty 50"),
     AssetCatalogItem("Nifty IT", "index", "^CNXIT", "India", "NSE", "session", 50, "index", "points", False, "Nifty 50"),
@@ -101,7 +101,6 @@ def default_watchlist_assets() -> list[str]:
     defaults = [i.asset for i in ASSET_CATALOG if i.default_watchlist]
     return defaults or [
         "Nifty 50",
-        "Nifty 500",
         "NASDAQ",
         "Gift Nifty",
         "USD/INR",

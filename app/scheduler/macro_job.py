@@ -214,6 +214,22 @@ class MacroScraper(BaseScraper):
         fii_ts: datetime | None = None
         dii_ts: datetime | None = None
 
+        def _pick_latest(
+            current_value: float | None,
+            current_ts: datetime | None,
+            new_value: float | None,
+            new_ts: datetime | None,
+        ) -> tuple[float | None, datetime | None]:
+            if new_value is None:
+                return current_value, current_ts
+            if current_value is None:
+                return new_value, new_ts
+            if current_ts is None and new_ts is not None:
+                return new_value, new_ts
+            if current_ts is not None and new_ts is not None and new_ts >= current_ts:
+                return new_value, new_ts
+            return current_value, current_ts
+
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -225,16 +241,18 @@ class MacroScraper(BaseScraper):
                         break
 
             # Wide-format rows with explicit FII/DII net keys.
-            if fii_value is None:
-                net = self._extract_net_from_row(row, "fii")
-                if net is not None:
-                    fii_value = net
-                    fii_ts = row_date
-            if dii_value is None:
-                net = self._extract_net_from_row(row, "dii")
-                if net is not None:
-                    dii_value = net
-                    dii_ts = row_date
+            fii_value, fii_ts = _pick_latest(
+                fii_value,
+                fii_ts,
+                self._extract_net_from_row(row, "fii"),
+                row_date,
+            )
+            dii_value, dii_ts = _pick_latest(
+                dii_value,
+                dii_ts,
+                self._extract_net_from_row(row, "dii"),
+                row_date,
+            )
 
             label_parts = []
             for k, v in row.items():
@@ -245,11 +263,13 @@ class MacroScraper(BaseScraper):
             if label:
                 net = self._extract_net_from_row(row)
                 if net is not None and ("fii" in label or "fpi" in label or "foreign" in label):
-                    fii_value = net
-                    fii_ts = row_date or fii_ts
+                    fii_value, fii_ts = _pick_latest(
+                        fii_value, fii_ts, net, row_date
+                    )
                 elif net is not None and ("dii" in label or "domestic" in label):
-                    dii_value = net
-                    dii_ts = row_date or dii_ts
+                    dii_value, dii_ts = _pick_latest(
+                        dii_value, dii_ts, net, row_date
+                    )
 
         ts_default = self.utc_now()
         items: List[Dict] = []
@@ -271,6 +291,14 @@ class MacroScraper(BaseScraper):
                 "unit": "inr_cr",
                 "source": "nse_fiidii_api",
             })
+        logger.debug(
+            "NSE FII/DII parsed rows=%d fii=%s@%s dii=%s@%s",
+            len(rows),
+            fii_value,
+            (fii_ts or ts_default).date().isoformat() if fii_value is not None else "-",
+            dii_value,
+            (dii_ts or ts_default).date().isoformat() if dii_value is not None else "-",
+        )
         return items
 
     def fetch_all(self) -> List[Dict]:
