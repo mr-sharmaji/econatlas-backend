@@ -57,16 +57,22 @@ ASSET_CATALOG: tuple[AssetCatalogItem, ...] = (
     AssetCatalogItem("CAD/INR", "currency", "CADINR=X", "FX", "NYSE", "rolling_24h", 550, "fx", "inr", False, "USD/INR"),
     AssetCatalogItem("CHF/INR", "currency", "CHFINR=X", "FX", "NYSE", "rolling_24h", 560, "fx", "inr", False, "USD/INR"),
     AssetCatalogItem("CNY/INR", "currency", "CNYINR=X", "FX", "NYSE", "rolling_24h", 570, "fx", "inr", False, "USD/INR"),
+    AssetCatalogItem("SGD/INR", "currency", "SGDINR=X", "FX", "NYSE", "rolling_24h", 580, "fx", "inr", False, "USD/INR"),
+    AssetCatalogItem("HKD/INR", "currency", "HKDINR=X", "FX", "NYSE", "rolling_24h", 590, "fx", "inr", False, "USD/INR"),
+    AssetCatalogItem("KRW/INR", "currency", "KRWINR=X", "FX", "NYSE", "rolling_24h", 600, "fx", "inr", False, "USD/INR"),
+    AssetCatalogItem("AED/INR", "currency", "AEDINR=X", "FX", "NYSE", "rolling_24h", 610, "fx", "inr", False, "USD/INR"),
     # Commodities
-    AssetCatalogItem("gold", "commodity", "GC=F", "Commodities", "NYSE", "rolling_24h", 600, "commodity", "usd_per_troy_ounce", True, "gold"),
-    AssetCatalogItem("silver", "commodity", "SI=F", "Commodities", "NYSE", "rolling_24h", 610, "commodity", "usd_per_troy_ounce", True, "gold"),
-    AssetCatalogItem("copper", "commodity", "HG=F", "Commodities", "NYSE", "rolling_24h", 620, "commodity", "usd_per_pound", False, "gold"),
-    AssetCatalogItem("crude oil", "commodity", "CL=F", "Commodities", "NYSE", "rolling_24h", 630, "commodity", "usd_per_barrel", False, "gold"),
-    AssetCatalogItem("natural gas", "commodity", "NG=F", "Commodities", "NYSE", "rolling_24h", 640, "commodity", "usd_per_mmbtu", False, "gold"),
+    AssetCatalogItem("gold", "commodity", "GC=F", "Commodities", "NYSE", "rolling_24h", 700, "commodity", "usd_per_troy_ounce", True, "gold"),
+    AssetCatalogItem("silver", "commodity", "SI=F", "Commodities", "NYSE", "rolling_24h", 710, "commodity", "usd_per_troy_ounce", True, "gold"),
+    AssetCatalogItem("copper", "commodity", "HG=F", "Commodities", "NYSE", "rolling_24h", 720, "commodity", "usd_per_pound", False, "gold"),
+    AssetCatalogItem("crude oil", "commodity", "CL=F", "Commodities", "NYSE", "rolling_24h", 730, "commodity", "usd_per_barrel", False, "gold"),
+    AssetCatalogItem("natural gas", "commodity", "NG=F", "Commodities", "NYSE", "rolling_24h", 740, "commodity", "usd_per_mmbtu", False, "gold"),
     # Bonds
-    AssetCatalogItem("India 10Y Bond Yield", "bond_yield", "INDIRLTLT01STM", "India", "NSE", "session", 700, "bond_yield", "percent", False, "India 10Y Bond Yield"),
-    AssetCatalogItem("US 10Y Treasury Yield", "bond_yield", "DGS10", "US", "NYSE", "session", 710, "bond_yield", "percent", False, "US 10Y Treasury Yield"),
-    AssetCatalogItem("US 2Y Treasury Yield", "bond_yield", "DGS2", "US", "NYSE", "session", 720, "bond_yield", "percent", False, "US 10Y Treasury Yield"),
+    AssetCatalogItem("India 10Y Bond Yield", "bond_yield", "INDIRLTLT01STM", "India", "NSE", "session", 800, "bond_yield", "percent", False, "India 10Y Bond Yield"),
+    AssetCatalogItem("US 10Y Treasury Yield", "bond_yield", "DGS10", "US", "NYSE", "session", 810, "bond_yield", "percent", False, "US 10Y Treasury Yield"),
+    AssetCatalogItem("US 2Y Treasury Yield", "bond_yield", "DGS2", "US", "NYSE", "session", 820, "bond_yield", "percent", False, "US 10Y Treasury Yield"),
+    AssetCatalogItem("Germany 10Y Bond Yield", "bond_yield", "IRLTLT01DEM156N", "Europe", "XETRA", "session", 830, "bond_yield", "percent", False, "Germany 10Y Bond Yield"),
+    AssetCatalogItem("Japan 10Y Bond Yield", "bond_yield", "IRLTLT01JPM156N", "Japan", "TSE", "session", 840, "bond_yield", "percent", False, "Japan 10Y Bond Yield"),
 )
 
 _ASSET_LOOKUP = {item.asset: item for item in ASSET_CATALOG}

@@ -70,12 +70,18 @@ FX_SYMBOLS = {
     "CADINR=X": "CAD/INR",
     "CHFINR=X": "CHF/INR",
     "CNYINR=X": "CNY/INR",
+    "SGDINR=X": "SGD/INR",
+    "HKDINR=X": "HKD/INR",
+    "KRWINR=X": "KRW/INR",
+    "AEDINR=X": "AED/INR",
 }
 
 BOND_SERIES: List[Tuple[str, str]] = [
     ("US 10Y Treasury Yield", "DGS10"),
     ("US 2Y Treasury Yield", "DGS2"),
     ("India 10Y Bond Yield", "INDIRLTLT01STM"),
+    ("Germany 10Y Bond Yield", "IRLTLT01DEM156N"),
+    ("Japan 10Y Bond Yield", "IRLTLT01JPM156N"),
 ]
 
 # Asset → exchange for correct trading-date assignment (avoid Monday close stored as Tuesday UTC)
@@ -113,9 +119,15 @@ ASSET_EXCHANGE: Dict[str, str] = {
     "CAD/INR": NYSE,
     "CHF/INR": NYSE,
     "CNY/INR": NYSE,
+    "SGD/INR": NYSE,
+    "HKD/INR": NYSE,
+    "KRW/INR": NYSE,
+    "AED/INR": NYSE,
     "India 10Y Bond Yield": NSE,
     "US 10Y Treasury Yield": NYSE,
     "US 2Y Treasury Yield": NYSE,
+    "Germany 10Y Bond Yield": XETRA,
+    "Japan 10Y Bond Yield": TSE,
 }
 
 
@@ -323,43 +335,33 @@ class MarketScraper(BaseScraper, QuoteProvider):
             source_ts = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc) if raw_ts is not None else datetime.now(timezone.utc)
         except (TypeError, ValueError, OSError):
             source_ts = datetime.now(timezone.utc)
-        items: list[QuoteTick] = [
-            QuoteTick(
-                asset="USD/INR",
-                price=inr,
-                instrument_type="currency",
-                unit="inr",
-                source="er_api",
-                change_percent=None,
-                previous_close=None,
-                provider="er_api",
-                provider_priority=5,
-                confidence_level=0.55,
-                source_timestamp=source_ts,
-                is_fallback=True,
-                quality="fallback",
-            )
-        ]
-        for code, pair in [("EUR", "EUR/INR"), ("GBP", "GBP/INR"), ("JPY", "JPY/INR")]:
-            r = rates.get(code)
-            if r and float(r) > 0:
-                items.append(
-                    QuoteTick(
-                        asset=pair,
-                        price=inr / float(r),
-                        instrument_type="currency",
-                        unit="inr",
-                        source="er_api",
-                        change_percent=None,
-                        previous_close=None,
-                        provider="er_api",
-                        provider_priority=5,
-                        confidence_level=0.55,
-                        source_timestamp=source_ts,
-                        is_fallback=True,
-                        quality="fallback",
-                    )
+        items: list[QuoteTick] = []
+        for symbol, pair in FX_SYMBOLS.items():
+            base = symbol.split("INR=")[0].replace("=X", "")
+            if base == "USD":
+                price = inr
+            else:
+                r = rates.get(base)
+                if r is None or float(r) <= 0:
+                    continue
+                price = inr / float(r)
+            items.append(
+                QuoteTick(
+                    asset=pair,
+                    price=price,
+                    instrument_type="currency",
+                    unit="inr",
+                    source="er_api",
+                    change_percent=None,
+                    previous_close=None,
+                    provider="er_api",
+                    provider_priority=5,
+                    confidence_level=0.55,
+                    source_timestamp=source_ts,
+                    is_fallback=True,
+                    quality="fallback",
                 )
+            )
         return items
 
     def fetch_quotes(self) -> list[QuoteTick]:

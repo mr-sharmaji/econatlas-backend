@@ -48,6 +48,14 @@ FX_SYMBOLS = {
     "EURINR=X": "EUR/INR",
     "GBPINR=X": "GBP/INR",
     "JPYINR=X": "JPY/INR",
+    "AUDINR=X": "AUD/INR",
+    "CADINR=X": "CAD/INR",
+    "CHFINR=X": "CHF/INR",
+    "CNYINR=X": "CNY/INR",
+    "SGDINR=X": "SGD/INR",
+    "HKDINR=X": "HKD/INR",
+    "KRWINR=X": "KRW/INR",
+    "AEDINR=X": "AED/INR",
 }
 
 COMMODITY_SYMBOLS = {
@@ -62,6 +70,8 @@ BOND_SERIES = [
     ("US 10Y Treasury Yield", "DGS10"),
     ("US 2Y Treasury Yield", "DGS2"),
     ("India 10Y Bond Yield", "INDIRLTLT01STM"),
+    ("Germany 10Y Bond Yield", "IRLTLT01DEM156N"),
+    ("Japan 10Y Bond Yield", "IRLTLT01JPM156N"),
 ]
 
 FRED_DIRECT = {

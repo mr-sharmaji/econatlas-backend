@@ -4,6 +4,7 @@ import asyncio
 import csv
 import io
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 WORLD_BANK_URL = "https://api.worldbank.org/v2/country/{country}/indicator/{indicator}"
+NSE_BASE_URL = "https://www.nseindia.com"
+NSE_FII_DII_URL = "https://www.nseindia.com/api/fiidiiTradeReact"
 
 FRED_DIRECT: Dict[str, List[Tuple[str, str]]] = {
     "US": [
@@ -131,6 +134,145 @@ class MacroScraper(BaseScraper):
             return float(val), datetime(int(date), 1, 1, tzinfo=timezone.utc)
         return None
 
+    @staticmethod
+    def _parse_number(value: object) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value).replace(",", "").replace("₹", "").strip()
+        if not text:
+            return None
+        match = re.search(r"-?\d+(?:\.\d+)?", text)
+        if not match:
+            return None
+        try:
+            return float(match.group(0))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _parse_date(value: object) -> datetime | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        for fmt in ("%d-%b-%Y", "%d %b %Y", "%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+        return None
+
+    def _extract_net_from_row(self, row: dict, prefix: str | None = None) -> float | None:
+        keys = list(row.keys())
+        for key in keys:
+            key_l = str(key).lower()
+            if "net" not in key_l:
+                continue
+            if prefix and prefix not in key_l:
+                continue
+            net = self._parse_number(row.get(key))
+            if net is not None:
+                return net
+        buy = None
+        sell = None
+        for key in keys:
+            key_l = str(key).lower()
+            if prefix and prefix not in key_l:
+                continue
+            if "buy" in key_l:
+                buy = self._parse_number(row.get(key))
+            elif "sell" in key_l:
+                sell = self._parse_number(row.get(key))
+        if buy is not None and sell is not None:
+            return round(buy - sell, 2)
+        return None
+
+    def _fetch_fii_dii_flows(self) -> List[Dict]:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json, text/plain, */*",
+            "Referer": f"{NSE_BASE_URL}/market-data/fii-dii-trading-activity",
+        }
+        try:
+            self.session.get(NSE_BASE_URL, headers=headers, timeout=15)
+            response = self.session.get(NSE_FII_DII_URL, headers=headers, timeout=15)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception:
+            logger.exception("NSE FII/DII fetch failed")
+            return []
+
+        rows = payload if isinstance(payload, list) else payload.get("data") or payload.get("rows") or []
+        if not isinstance(rows, list):
+            return []
+
+        fii_value: float | None = None
+        dii_value: float | None = None
+        fii_ts: datetime | None = None
+        dii_ts: datetime | None = None
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_date = None
+            for k, v in row.items():
+                if "date" in str(k).lower():
+                    row_date = self._parse_date(v)
+                    if row_date is not None:
+                        break
+
+            # Wide-format rows with explicit FII/DII net keys.
+            if fii_value is None:
+                net = self._extract_net_from_row(row, "fii")
+                if net is not None:
+                    fii_value = net
+                    fii_ts = row_date
+            if dii_value is None:
+                net = self._extract_net_from_row(row, "dii")
+                if net is not None:
+                    dii_value = net
+                    dii_ts = row_date
+
+            label_parts = []
+            for k, v in row.items():
+                key_l = str(k).lower()
+                if any(token in key_l for token in ("category", "client", "participant", "type", "name")):
+                    label_parts.append(str(v).lower())
+            label = " ".join(label_parts)
+            if label:
+                net = self._extract_net_from_row(row)
+                if net is not None and ("fii" in label or "fpi" in label or "foreign" in label):
+                    fii_value = net
+                    fii_ts = row_date or fii_ts
+                elif net is not None and ("dii" in label or "domestic" in label):
+                    dii_value = net
+                    dii_ts = row_date or dii_ts
+
+        ts_default = self.utc_now()
+        items: List[Dict] = []
+        if fii_value is not None:
+            items.append({
+                "indicator_name": "fii_net_cash",
+                "value": round(fii_value, 2),
+                "country": "IN",
+                "timestamp": (fii_ts or ts_default).isoformat(),
+                "unit": "inr_cr",
+                "source": "nse_fiidii_api",
+            })
+        if dii_value is not None:
+            items.append({
+                "indicator_name": "dii_net_cash",
+                "value": round(dii_value, 2),
+                "country": "IN",
+                "timestamp": (dii_ts or ts_default).isoformat(),
+                "unit": "inr_cr",
+                "source": "nse_fiidii_api",
+            })
+        return items
+
     def fetch_all(self) -> List[Dict]:
         items = []
         for country in COUNTRIES:
@@ -182,6 +324,7 @@ class MacroScraper(BaseScraper):
                         })
                 except Exception:
                     logger.exception("World Bank failed %s %s", country, wb_ind)
+        items.extend(self._fetch_fii_dii_flows())
         return items
 
 
@@ -207,6 +350,11 @@ def _assign_trading_date_per_country(items: List[Dict]) -> List[Dict]:
     now = datetime.now(timezone.utc)
     out = []
     for item in items:
+        source = str(item.get("source") or "").lower()
+        # Keep provider timestamp for flow snapshots (trade-date specific).
+        if source == "nse_fiidii_api" and item.get("timestamp"):
+            out.append(item)
+            continue
         country = item.get("country", "US")
         exchange = COUNTRY_EXCHANGE.get(country, NYSE)
         trading_date = get_trading_date(now, exchange)
