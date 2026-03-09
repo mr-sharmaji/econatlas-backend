@@ -5,7 +5,9 @@ import logging
 from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
 
+from app.core.database import parse_ts
 from app.scheduler.base import BaseScraper
+from app.scheduler.provider_router import QuoteProvider
 from app.scheduler.trading_calendar import get_trading_date, is_trading_day_commodities, NYSE
 from app.services import market_service
 
@@ -23,7 +25,7 @@ SYMBOLS = {
 }
 
 
-class CommodityScraper(BaseScraper):
+class CommodityScraper(BaseScraper, QuoteProvider):
 
     def __init__(self) -> None:
         super().__init__()
@@ -58,8 +60,13 @@ class CommodityScraper(BaseScraper):
                 price = meta.get("regularMarketPrice") or meta.get("previousClose")
                 if price is None:
                     continue
+                raw_ts = meta.get("regularMarketTime")
+                try:
+                    source_ts = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc) if raw_ts is not None else datetime.now(timezone.utc)
+                except (TypeError, ValueError, OSError):
+                    source_ts = datetime.now(timezone.utc)
                 currency = str(meta.get("currency", "USD"))
-                usd_val, fx = self._to_usd(float(price), currency)
+                usd_val, _fx = self._to_usd(float(price), currency)
                 prev_raw = meta.get("chartPreviousClose") or meta.get("previousClose")
                 prev_usd = None
                 pct = None
@@ -70,17 +77,33 @@ class CommodityScraper(BaseScraper):
                             pct = round(((usd_val - prev_usd) / prev_usd) * 100, 2)
                     except (ValueError, ZeroDivisionError):
                         pass
-                items.append({"asset": asset, "price": usd_val, "unit": unit, "source": "yahoo_chart_api", "change_percent": pct, "previous_close": prev_usd})
+                items.append({
+                    "asset": asset,
+                    "price": usd_val,
+                    "unit": unit,
+                    "source": "yahoo_chart_api",
+                    "change_percent": pct,
+                    "previous_close": prev_usd,
+                    "source_timestamp": source_ts.isoformat(),
+                    "provider": "yahoo",
+                    "provider_priority": 1,
+                    "confidence_level": 0.95,
+                    "is_fallback": False,
+                    "quality": "primary",
+                })
             except Exception:
                 logger.warning("Commodity fetch failed for %s", symbol, exc_info=True)
         return items
 
-    def fetch_all(self) -> List[Dict]:
+    def fetch_quotes(self) -> List[Dict]:
         try:
             return self._fetch_yahoo()
         except Exception:
             logger.exception("Commodity Yahoo fetch failed")
             return []
+
+    def fetch_all(self) -> List[Dict]:
+        return self.fetch_quotes()
 
 
 _scraper = CommodityScraper()
@@ -104,6 +127,12 @@ def _fetch_commodity_rows_sync() -> tuple[List[Dict], bool]:
             "unit": it.get("unit"),
             "change_percent": it.get("change_percent"),
             "previous_close": it.get("previous_close"),
+            "source_timestamp": it.get("source_timestamp"),
+            "provider": it.get("provider"),
+            "provider_priority": it.get("provider_priority"),
+            "confidence_level": it.get("confidence_level"),
+            "is_fallback": it.get("is_fallback"),
+            "quality": it.get("quality"),
         }
         for it in items
     ]
@@ -113,12 +142,27 @@ def _fetch_commodity_rows_sync() -> tuple[List[Dict], bool]:
 _PRICE_CHANGE_TOLERANCE = 1e-9
 
 
-def build_commodity_intraday_rows_for_open(commodity_rows: list[dict], ts_rounded: str) -> list[dict]:
-    """Build intraday rows for 1D chart when NYSE (commodities) is open. Same logic for scheduler and backfill."""
-    return [
-        {"asset": r["asset"], "instrument_type": "commodity", "price": r["price"], "timestamp": ts_rounded}
-        for r in commodity_rows
-    ]
+def build_commodity_intraday_rows_for_open(commodity_rows: list[dict]) -> list[dict]:
+    """Build intraday rows for 24H chart using provider source timestamps."""
+    rows = []
+    for r in commodity_rows:
+        source_dt = parse_ts(r.get("source_timestamp")) if r.get("source_timestamp") else None
+        if source_dt is None:
+            source_dt = datetime.now(timezone.utc)
+        ts_rounded = market_service._round_to_minute(source_dt).isoformat()
+        rows.append({
+            "asset": r["asset"],
+            "instrument_type": "commodity",
+            "price": r["price"],
+            "timestamp": ts_rounded,
+            "source_timestamp": ts_rounded,
+            "provider": r.get("provider") or "unknown",
+            "provider_priority": r.get("provider_priority") or 99,
+            "confidence_level": r.get("confidence_level"),
+            "is_fallback": bool(r.get("is_fallback")) if r.get("is_fallback") is not None else False,
+            "quality": r.get("quality"),
+        })
+    return rows
 
 
 def build_commodity_intraday_rows_last_session_yahoo(
@@ -151,6 +195,12 @@ def build_commodity_intraday_rows_last_session_yahoo(
                 "instrument_type": "commodity",
                 "price": usd_price,
                 "timestamp": ts_rounded,
+                "source_timestamp": ts_rounded,
+                "provider": "yahoo_1m",
+                "provider_priority": 1,
+                "confidence_level": 0.95,
+                "is_fallback": False,
+                "quality": "primary",
             })
     return rows_out
 
@@ -173,9 +223,7 @@ async def run_commodity_job() -> None:
         updated = 0
         if rows:
             updated = await market_service.insert_prices_batch_upsert_daily(rows)
-        now = datetime.now(timezone.utc)
-        ts_rounded = market_service._round_to_minute(now).isoformat()
-        intraday_rows = build_commodity_intraday_rows_for_open(fetched_rows, ts_rounded)
+        intraday_rows = build_commodity_intraday_rows_for_open(fetched_rows)
         if intraday_rows:
             n = await market_service.insert_intraday_batch(intraday_rows)
             logger.info("Commodity job: %d daily upserted, %d intraday", updated, n)

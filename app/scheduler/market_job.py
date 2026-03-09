@@ -8,7 +8,9 @@ import re
 from datetime import date, datetime, timezone
 from typing import Dict, List, Tuple
 
+from app.core.database import parse_ts
 from app.scheduler.base import BaseScraper
+from app.scheduler.provider_router import QuoteProvider, QuoteTick, select_best_quotes
 from app.scheduler.trading_calendar import (
     get_trading_date,
     get_market_status,
@@ -82,7 +84,7 @@ def _pct_change(current: float, previous: float | None) -> float | None:
     return round(((current - previous) / previous) * 100, 2)
 
 
-class MarketScraper(BaseScraper):
+class MarketScraper(BaseScraper, QuoteProvider):
 
     def _fetch_all_quotes(self) -> List[Dict]:
         symbols = [*INDEX_SYMBOLS.keys(), *FX_SYMBOLS.keys()]
@@ -98,49 +100,71 @@ class MarketScraper(BaseScraper):
                 if price is None:
                     continue
                 prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+                source_ts = None
+                regular_market_time = meta.get("regularMarketTime")
+                if regular_market_time is not None:
+                    try:
+                        source_ts = datetime.fromtimestamp(int(regular_market_time), tz=timezone.utc)
+                    except (TypeError, ValueError, OSError):
+                        source_ts = None
                 records.append({
                     "symbol": symbol,
                     "price": float(price),
                     "prev": float(prev) if prev else None,
                     "currency": str(meta.get("currency", "USD")),
+                    "source_timestamp": source_ts or datetime.now(timezone.utc),
                 })
             except Exception:
                 logger.warning("Failed to fetch %s", symbol, exc_info=True)
         return records
 
-    def _parse_indices(self, records: List[Dict]) -> List[Dict]:
-        items = []
+    def _parse_indices(self, records: List[Dict]) -> List[QuoteTick]:
+        items: list[QuoteTick] = []
         for r in records:
             if r["symbol"] not in INDEX_SYMBOLS:
                 continue
-            items.append({
-                "asset": INDEX_SYMBOLS[r["symbol"]],
-                "price": r["price"],
-                "instrument_type": "index",
-                "unit": "points",
-                "source": "yahoo_finance_api",
-                "change_percent": _pct_change(r["price"], r["prev"]),
-                "previous_close": r["prev"],
-            })
+            items.append(
+                QuoteTick(
+                    asset=INDEX_SYMBOLS[r["symbol"]],
+                    price=r["price"],
+                    instrument_type="index",
+                    unit="points",
+                    source="yahoo_finance_api",
+                    previous_close=r["prev"],
+                    change_percent=_pct_change(r["price"], r["prev"]),
+                    provider="yahoo",
+                    provider_priority=1,
+                    confidence_level=0.95,
+                    source_timestamp=r["source_timestamp"],
+                    quality="primary",
+                )
+            )
         return items
 
-    def _parse_fx(self, records: List[Dict]) -> List[Dict]:
-        items = []
+    def _parse_fx(self, records: List[Dict]) -> List[QuoteTick]:
+        items: list[QuoteTick] = []
         for r in records:
             if r["symbol"] not in FX_SYMBOLS:
                 continue
-            items.append({
-                "asset": FX_SYMBOLS[r["symbol"]],
-                "price": r["price"],
-                "instrument_type": "currency",
-                "unit": "inr",
-                "source": "yahoo_finance_api",
-                "change_percent": _pct_change(r["price"], r["prev"]),
-                "previous_close": r["prev"],
-            })
+            items.append(
+                QuoteTick(
+                    asset=FX_SYMBOLS[r["symbol"]],
+                    price=r["price"],
+                    instrument_type="currency",
+                    unit="inr",
+                    source="yahoo_finance_api",
+                    previous_close=r["prev"],
+                    change_percent=_pct_change(r["price"], r["prev"]),
+                    provider="yahoo",
+                    provider_priority=1,
+                    confidence_level=0.92,
+                    source_timestamp=r["source_timestamp"],
+                    quality="primary",
+                )
+            )
         return items
 
-    def _fetch_gift_nifty(self) -> Dict | None:
+    def _fetch_gift_nifty(self) -> QuoteTick | None:
         try:
             html = self._get_text(GIFT_NIFTY_URL)
             tables = re.findall(r"<table[^>]*>([\s\S]*?)</table>", html)
@@ -157,48 +181,71 @@ class MarketScraper(BaseScraper):
                     price = float(raw_price)
                     pct = float(raw_pct) if raw_pct else None
                     if price > 0:
-                        return {
-                            "asset": "Gift Nifty",
-                            "price": price,
-                            "instrument_type": "index",
-                            "unit": "points",
-                            "source": "giftcitynifty_scrape",
-                            "change_percent": pct,
-                            "previous_close": None,
-                        }
+                        return QuoteTick(
+                            asset="Gift Nifty",
+                            price=price,
+                            instrument_type="index",
+                            unit="points",
+                            source="giftcitynifty_scrape",
+                            change_percent=pct,
+                            previous_close=None,
+                            provider="giftcitynifty",
+                            provider_priority=1,
+                            confidence_level=0.9,
+                            source_timestamp=datetime.now(timezone.utc),
+                            quality="primary",
+                            is_predictive=True,
+                            session_source="gift_nifty_windows",
+                        )
                 except ValueError:
                     continue
         except Exception:
             logger.exception("Gift Nifty scrape failed")
         return None
 
-    def _fetch_bond_yields(self) -> List[Dict]:
-        items = []
+    def _fetch_bond_yields(self) -> List[QuoteTick]:
+        items: list[QuoteTick] = []
         for name, series_id in BOND_SERIES:
             try:
                 text = self._get_text(FRED_CSV_URL, params={"id": series_id})
                 reader = csv.DictReader(io.StringIO(text))
                 latest = None
+                latest_date = None
                 for row in reader:
                     val = row.get(series_id)
                     if val and val != ".":
                         latest = float(val)
+                        latest_date = row.get("DATE")
                 if latest is None:
                     continue
-                items.append({
-                    "asset": name,
-                    "price": latest,
-                    "instrument_type": "bond_yield",
-                    "unit": "percent",
-                    "source": "fred_api",
-                    "change_percent": None,
-                    "previous_close": None,
-                })
+                try:
+                    if latest_date:
+                        source_ts = datetime.fromisoformat(str(latest_date)).replace(tzinfo=timezone.utc)
+                    else:
+                        source_ts = datetime.now(timezone.utc)
+                except ValueError:
+                    source_ts = datetime.now(timezone.utc)
+                items.append(
+                    QuoteTick(
+                        asset=name,
+                        price=latest,
+                        instrument_type="bond_yield",
+                        unit="percent",
+                        source="fred_api",
+                        change_percent=None,
+                        previous_close=None,
+                        provider="fred",
+                        provider_priority=1,
+                        confidence_level=0.9,
+                        source_timestamp=source_ts,
+                        quality="primary",
+                    )
+                )
             except Exception:
                 logger.exception("Bond yield failed for %s", series_id)
         return items
 
-    def _fetch_fx_fallback(self) -> List[Dict]:
+    def _fetch_fx_fallback(self) -> List[QuoteTick]:
         payload = self._get_json(FX_USD_BASE_URL)
         rates = payload.get("rates", {})
         if not isinstance(rates, dict):
@@ -207,41 +254,107 @@ class MarketScraper(BaseScraper):
         if not inr:
             return []
         inr = float(inr)
-        items = [{"asset": "USD/INR", "price": inr, "instrument_type": "currency", "unit": "inr", "source": "er_api", "change_percent": None, "previous_close": None}]
+        raw_ts = payload.get("time_last_update_unix")
+        try:
+            source_ts = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc) if raw_ts is not None else datetime.now(timezone.utc)
+        except (TypeError, ValueError, OSError):
+            source_ts = datetime.now(timezone.utc)
+        items: list[QuoteTick] = [
+            QuoteTick(
+                asset="USD/INR",
+                price=inr,
+                instrument_type="currency",
+                unit="inr",
+                source="er_api",
+                change_percent=None,
+                previous_close=None,
+                provider="er_api",
+                provider_priority=5,
+                confidence_level=0.55,
+                source_timestamp=source_ts,
+                is_fallback=True,
+                quality="fallback",
+            )
+        ]
         for code, pair in [("EUR", "EUR/INR"), ("GBP", "GBP/INR"), ("JPY", "JPY/INR")]:
             r = rates.get(code)
             if r and float(r) > 0:
-                items.append({"asset": pair, "price": inr / float(r), "instrument_type": "currency", "unit": "inr", "source": "er_api", "change_percent": None, "previous_close": None})
+                items.append(
+                    QuoteTick(
+                        asset=pair,
+                        price=inr / float(r),
+                        instrument_type="currency",
+                        unit="inr",
+                        source="er_api",
+                        change_percent=None,
+                        previous_close=None,
+                        provider="er_api",
+                        provider_priority=5,
+                        confidence_level=0.55,
+                        source_timestamp=source_ts,
+                        is_fallback=True,
+                        quality="fallback",
+                    )
+                )
         return items
 
-    def fetch_all(self) -> List[Dict]:
-        all_items = []
+    def fetch_quotes(self) -> list[QuoteTick]:
+        all_ticks: list[QuoteTick] = []
         try:
             records = self._fetch_all_quotes()
-            all_items.extend(self._parse_indices(records))
-            all_items.extend(self._parse_fx(records))
+            all_ticks.extend(self._parse_indices(records))
+            all_ticks.extend(self._parse_fx(records))
         except Exception:
             logger.warning("Yahoo quote fetch failed; using fallbacks", exc_info=True)
             for sym, name in INDEX_SYMBOLS.items():
                 item = self._fetch_single_index(sym, name)
                 if item:
-                    all_items.append(item)
+                    all_ticks.append(item)
             try:
-                all_items.extend(self._fetch_fx_fallback())
+                all_ticks.extend(self._fetch_fx_fallback())
+            except Exception:
+                logger.exception("FX fallback failed")
+        else:
+            # Always include fallback for any FX pair missing from Yahoo.
+            try:
+                all_ticks.extend(self._fetch_fx_fallback())
             except Exception:
                 logger.exception("FX fallback failed")
 
         gift = self._fetch_gift_nifty()
         if gift:
-            all_items.append(gift)
+            all_ticks.append(gift)
 
         try:
-            all_items.extend(self._fetch_bond_yields())
+            all_ticks.extend(self._fetch_bond_yields())
         except Exception:
             logger.exception("Bond yield fetch failed")
-        return all_items
+        return select_best_quotes(all_ticks)
 
-    def _fetch_single_index(self, symbol: str, name: str) -> Dict | None:
+    def fetch_all(self) -> List[Dict]:
+        """Backward-compatible shape for scheduler code."""
+        out: list[dict] = []
+        for tick in self.fetch_quotes():
+            out.append({
+                "asset": tick.asset,
+                "price": tick.price,
+                "instrument_type": tick.instrument_type,
+                "unit": tick.unit,
+                "source": tick.source,
+                "change_percent": tick.change_percent,
+                "previous_close": tick.previous_close,
+                "source_timestamp": tick.source_timestamp.isoformat(),
+                "provider": tick.provider,
+                "provider_priority": tick.provider_priority,
+                "confidence_level": tick.confidence_level,
+                "is_fallback": tick.is_fallback,
+                "quality": tick.quality,
+                "is_predictive": tick.is_predictive,
+                "session_source": tick.session_source,
+            })
+        return out
+
+    def _fetch_single_index(self, symbol: str, name: str) -> QuoteTick | None:
         try:
             payload = self._get_json(YAHOO_CHART_URL.format(symbol=symbol))
             result = payload.get("chart", {}).get("result", [])
@@ -254,7 +367,25 @@ class MarketScraper(BaseScraper):
             prev = meta.get("chartPreviousClose") or meta.get("previousClose")
             p = float(price)
             pv = float(prev) if prev else None
-            return {"asset": name, "price": p, "instrument_type": "index", "unit": "points", "source": "yahoo_chart_api", "change_percent": _pct_change(p, pv), "previous_close": pv}
+            raw_ts = meta.get("regularMarketTime")
+            try:
+                source_ts = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc) if raw_ts is not None else datetime.now(timezone.utc)
+            except (TypeError, ValueError, OSError):
+                source_ts = datetime.now(timezone.utc)
+            return QuoteTick(
+                asset=name,
+                price=p,
+                instrument_type="index",
+                unit="points",
+                source="yahoo_chart_api",
+                change_percent=_pct_change(p, pv),
+                previous_close=pv,
+                provider="yahoo",
+                provider_priority=1,
+                confidence_level=0.9,
+                source_timestamp=source_ts,
+                quality="primary",
+            )
         except Exception:
             return None
 
@@ -344,6 +475,12 @@ def build_market_intraday_rows_last_session_yahoo(
                 "instrument_type": instrument_type,
                 "price": close,
                 "timestamp": ts_rounded,
+                "source_timestamp": ts_rounded,
+                "provider": "yahoo_1m",
+                "provider_priority": 1,
+                "confidence_level": 0.95,
+                "is_fallback": False,
+                "quality": "primary",
             })
 
     # Single point for assets without Yahoo intraday (Gift Nifty, bonds)
@@ -359,6 +496,14 @@ def build_market_intraday_rows_last_session_yahoo(
             "instrument_type": r.get("instrument_type") or "index",
             "price": r["price"],
             "timestamp": ts,
+            "source_timestamp": ts,
+            "provider": r.get("provider") or "unknown",
+            "provider_priority": r.get("provider_priority") or 99,
+            "confidence_level": r.get("confidence_level"),
+            "is_fallback": bool(r.get("is_fallback")) if r.get("is_fallback") is not None else False,
+            "quality": r.get("quality"),
+            "is_predictive": bool(r.get("is_predictive")) if r.get("is_predictive") is not None else False,
+            "session_source": r.get("session_source"),
         })
     return rows_out
 
@@ -387,6 +532,14 @@ def _fetch_market_rows_sync() -> tuple[List[Dict], bool]:
             "unit": it.get("unit"),
             "change_percent": it.get("change_percent"),
             "previous_close": it.get("previous_close"),
+            "source_timestamp": it.get("source_timestamp"),
+            "provider": it.get("provider"),
+            "provider_priority": it.get("provider_priority"),
+            "confidence_level": it.get("confidence_level"),
+            "is_fallback": it.get("is_fallback"),
+            "quality": it.get("quality"),
+            "is_predictive": it.get("is_predictive"),
+            "session_source": it.get("session_source"),
         })
     return (rows, calendar_open)
 
@@ -397,7 +550,6 @@ _PRICE_CHANGE_TOLERANCE = 1e-9
 def build_market_intraday_rows_for_open(
     market_rows: list[dict],
     status: dict,
-    ts_rounded: str,
 ) -> list[dict]:
     """Build intraday rows for 1D chart.
     Currencies are written every run (24/7 behavior).
@@ -415,11 +567,23 @@ def build_market_intraday_rows_for_open(
         elif (exchange == NSE and status.get("nse_open")) or (exchange == NYSE and status.get("nyse_open")):
             include = True
         if include:
+            source_dt = parse_ts(r.get("source_timestamp")) if r.get("source_timestamp") else None
+            if source_dt is None:
+                source_dt = datetime.now(timezone.utc)
+            ts_rounded = market_service._round_to_minute(source_dt).isoformat()
             intraday_rows.append({
                 "asset": r["asset"],
                 "instrument_type": instrument_type,
                 "price": r["price"],
                 "timestamp": ts_rounded,
+                "source_timestamp": ts_rounded,
+                "provider": r.get("provider") or "unknown",
+                "provider_priority": r.get("provider_priority") or 99,
+                "confidence_level": r.get("confidence_level"),
+                "is_fallback": bool(r.get("is_fallback")) if r.get("is_fallback") is not None else False,
+                "quality": r.get("quality"),
+                "is_predictive": bool(r.get("is_predictive")) if r.get("is_predictive") is not None else False,
+                "session_source": r.get("session_source"),
             })
     return intraday_rows
 
@@ -443,12 +607,9 @@ async def run_market_job() -> None:
         if rows:
             updated = await market_service.insert_prices_batch_upsert_daily(rows)
         status = get_market_status()
-        now = datetime.now(timezone.utc)
-        ts_rounded = market_service._round_to_minute(now).isoformat()
         intraday_rows = build_market_intraday_rows_for_open(
             fetched_rows,
             status,
-            ts_rounded,
         )
         if intraday_rows:
             n = await market_service.insert_intraday_batch(intraday_rows)

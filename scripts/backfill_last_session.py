@@ -21,6 +21,7 @@ Idempotent: uses upsert (ON CONFLICT DO UPDATE) so re-running is safe.
 from __future__ import annotations
 
 import asyncio
+import argparse
 import logging
 import sys
 from pathlib import Path
@@ -37,7 +38,7 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
-async def main() -> None:
+async def main(repair: bool = False) -> None:
     await init_pool()
 
     try:
@@ -109,8 +110,14 @@ async def main() -> None:
             logger.info("Intraday (commodities): %d points inserted (last 5 calendar days, minute-level).", n)
 
     logger.info("Backfill complete.")
+    if repair:
+        repaired = await market_service.repair_intraday_ticks()
+        logger.info("Repair mode: removed %d duplicate canonical intraday ticks.", repaired)
     await close_pool()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Backfill latest sessions and rolling 24H intraday data.")
+    parser.add_argument("--repair", action="store_true", help="Repair canonical intraday duplicates after backfill.")
+    args = parser.parse_args()
+    asyncio.run(main(repair=args.repair))

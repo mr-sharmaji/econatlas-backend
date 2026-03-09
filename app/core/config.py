@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # Cache GET /market/status for this many seconds (reduces calendar lookups; status only changes at session boundaries).
     market_status_cache_seconds: int = 30
 
+    # Tick freshness/staleness thresholds
+    stale_threshold_seconds_market: int = 600
+    stale_threshold_seconds_rolling_24h: int = 900
+
     # Gift Nifty default sessions in IST.
     gift_nifty_session1_open: str = "06:30"
     gift_nifty_session1_close: str = "15:40"

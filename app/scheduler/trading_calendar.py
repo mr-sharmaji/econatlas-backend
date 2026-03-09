@@ -347,3 +347,36 @@ def get_market_status(utc_now: datetime | None = None) -> dict:
         _status_cache = result
         _status_cache_until = time.monotonic() + ttl
     return result
+
+
+def is_fx_session_expected_open(utc_now: datetime) -> bool:
+    """Best-effort 24x5 FX session check in New York local time.
+    Open: Sun 17:00 -> Fri 17:00 (ET)."""
+    now = utc_now if utc_now.tzinfo is not None else utc_now.replace(tzinfo=timezone.utc)
+    ny = now.astimezone(_NYSE_TZ)
+    wd = ny.weekday()  # Mon=0 ... Sun=6
+    t = ny.timetz().replace(tzinfo=None)
+    if wd == 5:  # Saturday
+        return False
+    if wd == 6:  # Sunday
+        return t >= dtime(17, 0)
+    if wd == 4:  # Friday
+        return t < dtime(17, 0)
+    return True  # Mon-Thu
+
+
+def is_commodity_session_expected_open(utc_now: datetime) -> bool:
+    """Best-effort commodity futures session check in New York local time.
+    Approx window: Sun 18:00 -> Fri 17:00 ET with daily 17:00-18:00 maintenance break."""
+    now = utc_now if utc_now.tzinfo is not None else utc_now.replace(tzinfo=timezone.utc)
+    ny = now.astimezone(_NYSE_TZ)
+    wd = ny.weekday()  # Mon=0 ... Sun=6
+    t = ny.timetz().replace(tzinfo=None)
+    if wd == 5:  # Saturday
+        return False
+    if wd == 6:  # Sunday
+        return t >= dtime(18, 0)
+    if wd == 4:  # Friday
+        return t < dtime(17, 0)
+    # Mon-Thu: open except daily break.
+    return not (dtime(17, 0) <= t < dtime(18, 0))

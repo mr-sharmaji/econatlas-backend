@@ -1,6 +1,12 @@
 from datetime import datetime, timezone, timedelta
 
+from app.core.config import get_settings
 from app.core.database import get_pool, parse_ts, record_to_dict
+from app.scheduler.trading_calendar import (
+    get_market_status,
+    is_commodity_session_expected_open,
+    is_fx_session_expected_open,
+)
 
 TABLE = "market_prices"
 TABLE_INTRADAY = "market_prices_intraday"
@@ -124,6 +130,75 @@ async def insert_prices_batch(rows: list[dict]) -> int:
 # Tolerance for float price comparison (avoids duplicates when markets closed)
 _PRICE_CHANGE_TOLERANCE = 1e-9
 _ROLLING_24H_TYPES = {"currency", "commodity"}
+
+PHASE_LIVE = "live"
+PHASE_CLOSED = "closed"
+PHASE_STALE = "stale"
+
+
+def _to_iso(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    if hasattr(dt, "isoformat"):
+        return dt.isoformat()
+    return str(dt)
+
+
+def _normalize_dt(value) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        dt = parse_ts(value)
+    else:
+        return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _is_expected_open(asset: str, instrument_type: str, now_utc: datetime, status: dict | None = None) -> bool:
+    if instrument_type == "currency":
+        return is_fx_session_expected_open(now_utc)
+    if instrument_type == "commodity":
+        return is_commodity_session_expected_open(now_utc)
+    st = status or get_market_status(now_utc)
+    if instrument_type == "index":
+        if asset == "Gift Nifty":
+            return bool(st.get("gift_nifty_open"))
+        india_indices = {
+            "Sensex",
+            "Nifty 50",
+            "Nifty 500",
+            "Nifty Bank",
+            "Nifty IT",
+            "Nifty Midcap 150",
+            "Nifty Smallcap 250",
+        }
+        if asset in india_indices:
+            return bool(st.get("nse_open"))
+        return bool(st.get("nyse_open"))
+    if instrument_type == "bond_yield":
+        if asset == "India 10Y Bond Yield":
+            return bool(st.get("nse_open"))
+        return bool(st.get("nyse_open"))
+    return bool(st.get("nyse_open"))
+
+
+def _compute_phase(asset: str, instrument_type: str, last_tick: datetime | None, now_utc: datetime, status: dict | None = None) -> tuple[str, bool]:
+    if not _is_expected_open(asset, instrument_type, now_utc, status=status):
+        return PHASE_CLOSED, False
+    if last_tick is None:
+        return PHASE_STALE, True
+    s = get_settings()
+    threshold = s.stale_threshold_seconds_rolling_24h if instrument_type in _ROLLING_24H_TYPES else s.stale_threshold_seconds_market
+    age = (now_utc - last_tick).total_seconds()
+    if age <= max(1, threshold):
+        return PHASE_LIVE, False
+    return PHASE_STALE, True
 
 
 async def insert_prices_batch_skip_unchanged(
@@ -264,24 +339,45 @@ async def get_latest_prices(
             """
         )
     out = []
+    now_utc = datetime.now(timezone.utc)
+    status = get_market_status(now_utc)
     for r in rows:
         d = record_to_dict(r)
         prev = d.pop("prev_price", None)
+        asset = str(d.get("asset") or "")
         inst = str(d.get("instrument_type") or "")
+        d["change_window"] = "24h" if inst in _ROLLING_24H_TYPES else "session"
+        d["last_tick_timestamp"] = None
+        d["ingested_at"] = None
+        d["data_quality"] = None
+        d["is_predictive"] = bool(asset == "Gift Nifty")
+        d["session_source"] = "gift_nifty_windows" if asset == "Gift Nifty" else None
         if inst in _ROLLING_24H_TYPES:
             rolling = await _get_intraday_rolling_change(
                 pool,
-                asset=str(d.get("asset") or ""),
+                asset=asset,
                 instrument_type=inst,
                 hours=24,
             )
             if rolling is not None:
-                first_price, last_price, pct, last_ts = rolling
+                first_price = rolling["first_price"]
+                last_price = rolling["last_price"]
+                last_ts = _normalize_dt(rolling.get("last_ts"))
                 d["price"] = last_price
-                if last_ts is not None and hasattr(last_ts, "isoformat"):
+                if last_ts is not None:
                     d["timestamp"] = last_ts.isoformat()
-                d["change_percent"] = pct
+                d["change_percent"] = rolling["pct_change"]
                 d["previous_close"] = first_price
+                d["last_tick_timestamp"] = _to_iso(last_ts)
+                d["ingested_at"] = _to_iso(_normalize_dt(rolling.get("ingested_at")))
+                d["data_quality"] = "fallback" if rolling.get("is_fallback") else "primary"
+                phase, is_stale = _compute_phase(asset, inst, last_ts, now_utc, status=status)
+                d["market_phase"] = phase
+                d["is_stale"] = is_stale
+            else:
+                phase, is_stale = _compute_phase(asset, inst, None, now_utc, status=status)
+                d["market_phase"] = phase
+                d["is_stale"] = is_stale
         elif d.get("change_percent") is None and prev is not None and isinstance(prev, (int, float)):
             try:
                 p = float(d["price"])
@@ -291,6 +387,19 @@ async def get_latest_prices(
                     d["previous_close"] = pv
             except (TypeError, ZeroDivisionError):
                 pass
+        if inst not in _ROLLING_24H_TYPES:
+            intraday_day = await get_intraday(asset=asset, instrument_type=inst)
+            points = intraday_day.get("prices") or []
+            if points:
+                last_tick_ts = _normalize_dt(points[-1].get("timestamp"))
+                if last_tick_ts is not None:
+                    d["last_tick_timestamp"] = _to_iso(last_tick_ts)
+                    d["timestamp"] = last_tick_ts.isoformat()
+                    d["price"] = float(points[-1]["price"])
+            phase, is_stale = _compute_phase(asset, inst, _normalize_dt(d.get("last_tick_timestamp")), now_utc, status=status)
+            d["market_phase"] = phase
+            d["is_stale"] = is_stale
+            d["data_quality"] = "primary"
         out.append(d)
     return out
 
@@ -303,25 +412,48 @@ def _round_to_minute(utc_dt: datetime) -> datetime:
 
 
 async def insert_intraday_batch(rows: list[dict]) -> int:
-    """Insert intraday price points (asset, instrument_type, price, timestamp).
-    Upserts by minute key to avoid duplicate points when scheduler runs sub-minute."""
+    """Insert canonical intraday ticks with provider metadata.
+    Uniqueness key: (asset, instrument_type, source_timestamp, provider)."""
     if not rows:
         return 0
     pool = await get_pool()
     count = 0
     async with pool.acquire() as conn:
         for r in rows:
+            source_ts = parse_ts(r.get("source_timestamp") or r.get("timestamp"))
+            storage_ts = parse_ts(r.get("timestamp") or r.get("source_timestamp"))
+            ingested_at = parse_ts(r.get("ingested_at")) or datetime.now(timezone.utc)
             result = await conn.execute(
                 f"""
-                INSERT INTO {TABLE_INTRADAY} (asset, instrument_type, price, "timestamp")
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (asset, instrument_type, "timestamp")
-                DO UPDATE SET price = EXCLUDED.price
+                INSERT INTO {TABLE_INTRADAY}
+                (asset, instrument_type, price, "timestamp", source_timestamp, ingested_at,
+                 provider, provider_priority, confidence_level, is_fallback, quality, is_predictive, session_source)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                ON CONFLICT (asset, instrument_type, source_timestamp, provider)
+                DO UPDATE SET
+                    price = EXCLUDED.price,
+                    "timestamp" = EXCLUDED."timestamp",
+                    ingested_at = EXCLUDED.ingested_at,
+                    provider_priority = EXCLUDED.provider_priority,
+                    confidence_level = EXCLUDED.confidence_level,
+                    is_fallback = EXCLUDED.is_fallback,
+                    quality = EXCLUDED.quality,
+                    is_predictive = EXCLUDED.is_predictive,
+                    session_source = EXCLUDED.session_source
                 """,
                 r.get("asset"),
                 r.get("instrument_type"),
                 r.get("price"),
-                parse_ts(r.get("timestamp")),
+                storage_ts,
+                source_ts,
+                ingested_at,
+                r.get("provider") or "unknown",
+                int(r.get("provider_priority") or 99),
+                r.get("confidence_level"),
+                bool(r.get("is_fallback")) if r.get("is_fallback") is not None else False,
+                r.get("quality"),
+                bool(r.get("is_predictive")) if r.get("is_predictive") is not None else False,
+                r.get("session_source"),
             )
             if result:
                 parts = result.split()
@@ -335,31 +467,50 @@ async def _get_intraday_rolling_change(
     asset: str,
     instrument_type: str,
     hours: int = 24,
-) -> tuple[float, float, float, datetime | None] | None:
-    """Return (first_price, last_price, pct_change, last_timestamp) from rolling intraday window."""
+) -> dict | None:
+    """Return rolling-window summary from intraday canonical ticks."""
     row = await pool.fetchrow(
         f"""
         WITH bounds AS (
-            SELECT MAX("timestamp") AS max_ts
+            SELECT MAX(COALESCE(source_timestamp, "timestamp")) AS max_ts
             FROM {TABLE_INTRADAY}
             WHERE asset = $1 AND instrument_type = $2
         ),
         points AS (
-            SELECT "timestamp", price, id
+            SELECT
+                COALESCE(source_timestamp, "timestamp") AS tick_ts,
+                price,
+                COALESCE(provider, 'unknown') AS provider,
+                COALESCE(provider_priority, 99) AS provider_priority,
+                COALESCE(is_fallback, FALSE) AS is_fallback,
+                quality,
+                COALESCE(ingested_at, "timestamp") AS ingested_at,
+                id
             FROM {TABLE_INTRADAY}
             WHERE asset = $1 AND instrument_type = $2
-              AND "timestamp" >= ((SELECT max_ts FROM bounds) - make_interval(hours => $3))
-              AND "timestamp" <= (SELECT max_ts FROM bounds)
+              AND COALESCE(source_timestamp, "timestamp") >= ((SELECT max_ts FROM bounds) - make_interval(hours => $3))
+              AND COALESCE(source_timestamp, "timestamp") <= (SELECT max_ts FROM bounds)
         ),
         dedup AS (
-            SELECT DISTINCT ON ("timestamp") "timestamp", price
+            SELECT DISTINCT ON (tick_ts)
+                tick_ts,
+                price,
+                provider,
+                is_fallback,
+                quality,
+                ingested_at
             FROM points
-            ORDER BY "timestamp", id DESC
+            ORDER BY tick_ts, provider_priority ASC, is_fallback ASC, ingested_at DESC, id DESC
         )
         SELECT
-            (SELECT price FROM dedup ORDER BY "timestamp" ASC LIMIT 1) AS first_price,
-            (SELECT price FROM dedup ORDER BY "timestamp" DESC LIMIT 1) AS last_price,
-            (SELECT "timestamp" FROM dedup ORDER BY "timestamp" DESC LIMIT 1) AS last_ts
+            (SELECT price FROM dedup ORDER BY tick_ts ASC LIMIT 1) AS first_price,
+            (SELECT price FROM dedup ORDER BY tick_ts DESC LIMIT 1) AS last_price,
+            (SELECT tick_ts FROM dedup ORDER BY tick_ts DESC LIMIT 1) AS last_ts,
+            (SELECT ingested_at FROM dedup ORDER BY tick_ts DESC LIMIT 1) AS ingested_at,
+            (SELECT provider FROM dedup ORDER BY tick_ts DESC LIMIT 1) AS provider,
+            (SELECT is_fallback FROM dedup ORDER BY tick_ts DESC LIMIT 1) AS is_fallback,
+            (SELECT quality FROM dedup ORDER BY tick_ts DESC LIMIT 1) AS quality,
+            (SELECT COUNT(*) FROM dedup) AS points_count
         """,
         asset,
         instrument_type,
@@ -379,7 +530,17 @@ async def _get_intraday_rolling_change(
     if f == 0:
         return None
     pct = round(((l - f) / f) * 100, 2)
-    return (f, l, pct, row["last_ts"])
+    return {
+        "first_price": f,
+        "last_price": l,
+        "pct_change": pct,
+        "last_ts": row["last_ts"],
+        "ingested_at": row["ingested_at"],
+        "provider": row["provider"] or "unknown",
+        "is_fallback": bool(row["is_fallback"]),
+        "quality": row["quality"],
+        "points_count": int(row["points_count"] or 0),
+    }
 
 
 async def get_intraday(
@@ -387,7 +548,7 @@ async def get_intraday(
     instrument_type: str,
     from_ts: datetime | None = None,
     to_ts: datetime | None = None,
-) -> list[dict]:
+) -> dict:
     """Return intraday points.
     Defaults:
     - currency/commodity: rolling 24h ending at latest tick.
@@ -399,7 +560,7 @@ async def get_intraday(
     else:
         row = await pool.fetchrow(
             f"""
-            SELECT MAX("timestamp") as max_ts
+            SELECT MAX(COALESCE(source_timestamp, "timestamp")) as max_ts
             FROM {TABLE_INTRADAY}
             WHERE asset = $1 AND instrument_type = $2
             """,
@@ -407,7 +568,14 @@ async def get_intraday(
             instrument_type,
         )
         if not row or row["max_ts"] is None:
-            return []
+            return {
+                "prices": [],
+                "window_start": None,
+                "window_end": None,
+                "coverage_minutes": 0,
+                "expected_minutes": 0,
+                "data_mode": "actual_ticks",
+            }
         max_ts = row["max_ts"]
         if getattr(max_ts, "tzinfo", None) is None:
             max_ts = max_ts.replace(tzinfo=timezone.utc)
@@ -420,11 +588,23 @@ async def get_intraday(
     rows = await pool.fetch(
         f"""
         WITH dedup AS (
-            SELECT DISTINCT ON ("timestamp") "timestamp", price
-            FROM {TABLE_INTRADAY}
-            WHERE asset = $1 AND instrument_type = $2
-              AND "timestamp" >= $3 AND "timestamp" < $4
-            ORDER BY "timestamp", id DESC
+            SELECT DISTINCT ON (tick_ts)
+                tick_ts AS "timestamp",
+                price
+            FROM (
+                SELECT
+                    COALESCE(source_timestamp, "timestamp") AS tick_ts,
+                    price,
+                    COALESCE(provider_priority, 99) AS provider_priority,
+                    COALESCE(is_fallback, FALSE) AS is_fallback,
+                    COALESCE(ingested_at, "timestamp") AS ingested_at,
+                    id
+                FROM {TABLE_INTRADAY}
+                WHERE asset = $1 AND instrument_type = $2
+                  AND COALESCE(source_timestamp, "timestamp") >= $3
+                  AND COALESCE(source_timestamp, "timestamp") < $4
+            ) points
+            ORDER BY tick_ts, provider_priority ASC, is_fallback ASC, ingested_at DESC, id DESC
         )
         SELECT "timestamp", price
         FROM dedup
@@ -435,7 +615,23 @@ async def get_intraday(
         day_start,
         day_end,
     )
-    return [{"timestamp": r["timestamp"].isoformat() if hasattr(r["timestamp"], "isoformat") else r["timestamp"], "price": float(r["price"])} for r in rows]
+    prices = [
+        {
+            "timestamp": r["timestamp"].isoformat() if hasattr(r["timestamp"], "isoformat") else r["timestamp"],
+            "price": float(r["price"]),
+        }
+        for r in rows
+    ]
+    expected = 1440 if instrument_type in _ROLLING_24H_TYPES else max(1, int((day_end - day_start).total_seconds() // 60))
+    coverage = len(prices)
+    return {
+        "prices": prices,
+        "window_start": _to_iso(day_start),
+        "window_end": _to_iso(day_end),
+        "coverage_minutes": coverage,
+        "expected_minutes": expected,
+        "data_mode": "actual_ticks",
+    }
 
 
 async def cleanup_intraday_older_than(days: int = 2) -> int:
@@ -443,10 +639,36 @@ async def cleanup_intraday_older_than(days: int = 2) -> int:
     pool = await get_pool()
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     result = await pool.execute(
-        f'DELETE FROM {TABLE_INTRADAY} WHERE "timestamp" < $1',
+        f'DELETE FROM {TABLE_INTRADAY} WHERE COALESCE(source_timestamp, "timestamp") < $1',
         cutoff,
     )
     # e.g. "DELETE 42"
+    try:
+        return int(result.split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+async def repair_intraday_ticks() -> int:
+    """Repair canonical intraday table by de-duping on (asset, instrument_type, source_timestamp, provider)."""
+    pool = await get_pool()
+    result = await pool.execute(
+        f"""
+        WITH ranked AS (
+            SELECT
+                id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY asset, instrument_type, COALESCE(source_timestamp, "timestamp"), COALESCE(provider, 'unknown')
+                    ORDER BY COALESCE(ingested_at, "timestamp") DESC, id DESC
+                ) AS rn
+            FROM {TABLE_INTRADAY}
+        )
+        DELETE FROM {TABLE_INTRADAY} m
+        USING ranked r
+        WHERE m.id = r.id
+          AND r.rn > 1
+        """
+    )
     try:
         return int(result.split()[-1])
     except (ValueError, IndexError):

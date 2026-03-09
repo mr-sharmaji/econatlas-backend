@@ -75,9 +75,17 @@ async def get_commodity_intraday(
 ) -> IntradayResponse:
     """Return commodity intraday points for chart (rolling 24h window)."""
     try:
-        rows = await market_service.get_intraday(asset=asset, instrument_type="commodity")
+        payload = await market_service.get_intraday(asset=asset, instrument_type="commodity")
+        rows = payload.get("prices") or []
         prices = [IntradayPointResponse(timestamp=r["timestamp"], price=r["price"]) for r in rows]
-        return IntradayResponse(prices=prices)
+        return IntradayResponse(
+            prices=prices,
+            window_start=payload.get("window_start"),
+            window_end=payload.get("window_end"),
+            coverage_minutes=payload.get("coverage_minutes"),
+            expected_minutes=payload.get("expected_minutes"),
+            data_mode=payload.get("data_mode"),
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

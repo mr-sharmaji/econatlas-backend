@@ -15,6 +15,14 @@ class MarketPriceResponse(BaseModel):
     unit: str | None = None
     change_percent: float | None = None
     previous_close: float | None = None
+    last_tick_timestamp: datetime | None = None
+    ingested_at: datetime | None = None
+    is_stale: bool | None = None
+    market_phase: str | None = None
+    change_window: str | None = None
+    data_quality: str | None = None
+    is_predictive: bool | None = None
+    session_source: str | None = None
 
 
 class MarketPriceListResponse(BaseModel):
@@ -44,3 +52,8 @@ class IntradayResponse(BaseModel):
     """Intraday prices for 1D live chart (when market is open)."""
 
     prices: list[IntradayPointResponse]
+    window_start: datetime | None = None
+    window_end: datetime | None = None
+    coverage_minutes: int | None = None
+    expected_minutes: int | None = None
+    data_mode: str | None = None

@@ -24,11 +24,22 @@ CREATE TABLE IF NOT EXISTS market_prices_intraday (
     asset TEXT NOT NULL,
     instrument_type TEXT NOT NULL,
     price DOUBLE PRECISION NOT NULL,
-    "timestamp" TIMESTAMPTZ NOT NULL
+    "timestamp" TIMESTAMPTZ NOT NULL,
+    source_timestamp TIMESTAMPTZ NOT NULL,
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    provider TEXT NOT NULL DEFAULT 'unknown',
+    provider_priority INTEGER NOT NULL DEFAULT 99,
+    confidence_level DOUBLE PRECISION,
+    is_fallback BOOLEAN NOT NULL DEFAULT FALSE,
+    quality TEXT,
+    is_predictive BOOLEAN NOT NULL DEFAULT FALSE,
+    session_source TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_market_prices_intraday_asset_type_ts ON market_prices_intraday (asset, instrument_type, "timestamp" DESC);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_market_prices_intraday_asset_type_ts_unique
-ON market_prices_intraday (asset, instrument_type, "timestamp");
+CREATE INDEX IF NOT EXISTS idx_market_prices_intraday_asset_type_source_ts
+ON market_prices_intraday (asset, instrument_type, source_timestamp DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_market_prices_intraday_asset_type_source_ts_provider_unique
+ON market_prices_intraday (asset, instrument_type, source_timestamp, provider);
 
 -- Macro indicators
 CREATE TABLE IF NOT EXISTS macro_indicators (

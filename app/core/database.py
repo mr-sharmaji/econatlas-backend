@@ -75,6 +75,10 @@ async def init_pool() -> asyncpg.Pool:
                 # Defer this one until after duplicate cleanup below.
                 if "IDX_MARKET_PRICES_INTRADAY_ASSET_TYPE_TS_UNIQUE" in up:
                     continue
+                if "IDX_MARKET_PRICES_INTRADAY_ASSET_TYPE_SOURCE_TS" in up:
+                    continue
+                if "IDX_MARKET_PRICES_INTRADAY_ASSET_TYPE_SOURCE_TS_PROVIDER_UNIQUE" in up:
+                    continue
                 if up.startswith("CREATE") or up.startswith("ALTER") or up.startswith("DROP"):
                     await conn.execute(stmt)
             logger.info("Schema init executed from sql/init.sql")
@@ -87,21 +91,84 @@ async def init_pool() -> asyncpg.Pool:
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_macro_indicators_name_country_ts '
             'ON macro_indicators (indicator_name, country, "timestamp")'
         )
-        # Intraday can have duplicate minute rows when scheduler runs sub-minute.
-        # Keep one row per (asset, instrument_type, timestamp) before enforcing uniqueness.
+        # Intraday canonical tick metadata columns (backward-compatible migration).
+        await conn.execute(
+            'ALTER TABLE market_prices_intraday ADD COLUMN IF NOT EXISTS source_timestamp TIMESTAMPTZ'
+        )
+        await conn.execute(
+            'ALTER TABLE market_prices_intraday ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ'
+        )
+        await conn.execute(
+            "ALTER TABLE market_prices_intraday ADD COLUMN IF NOT EXISTS provider TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE market_prices_intraday ADD COLUMN IF NOT EXISTS provider_priority INTEGER"
+        )
+        await conn.execute(
+            "ALTER TABLE market_prices_intraday ADD COLUMN IF NOT EXISTS confidence_level DOUBLE PRECISION"
+        )
+        await conn.execute(
+            "ALTER TABLE market_prices_intraday ADD COLUMN IF NOT EXISTS is_fallback BOOLEAN"
+        )
+        await conn.execute(
+            "ALTER TABLE market_prices_intraday ADD COLUMN IF NOT EXISTS quality TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE market_prices_intraday ADD COLUMN IF NOT EXISTS is_predictive BOOLEAN"
+        )
+        await conn.execute(
+            "ALTER TABLE market_prices_intraday ADD COLUMN IF NOT EXISTS session_source TEXT"
+        )
+        await conn.execute(
+            """
+            UPDATE market_prices_intraday
+            SET source_timestamp = COALESCE(source_timestamp, "timestamp"),
+                ingested_at = COALESCE(ingested_at, NOW()),
+                provider = COALESCE(provider, 'unknown'),
+                provider_priority = COALESCE(provider_priority, 99),
+                is_fallback = COALESCE(is_fallback, FALSE),
+                is_predictive = COALESCE(is_predictive, FALSE)
+            WHERE source_timestamp IS NULL
+               OR ingested_at IS NULL
+               OR provider IS NULL
+               OR provider_priority IS NULL
+               OR is_fallback IS NULL
+               OR is_predictive IS NULL
+            """
+        )
+        await conn.execute('ALTER TABLE market_prices_intraday ALTER COLUMN source_timestamp SET NOT NULL')
+        await conn.execute('ALTER TABLE market_prices_intraday ALTER COLUMN ingested_at SET NOT NULL')
+        await conn.execute("ALTER TABLE market_prices_intraday ALTER COLUMN provider SET DEFAULT 'unknown'")
+        await conn.execute("ALTER TABLE market_prices_intraday ALTER COLUMN provider_priority SET DEFAULT 99")
+        await conn.execute("ALTER TABLE market_prices_intraday ALTER COLUMN is_fallback SET DEFAULT FALSE")
+        await conn.execute("ALTER TABLE market_prices_intraday ALTER COLUMN is_predictive SET DEFAULT FALSE")
+        await conn.execute('ALTER TABLE market_prices_intraday ALTER COLUMN provider SET NOT NULL')
+        await conn.execute('ALTER TABLE market_prices_intraday ALTER COLUMN provider_priority SET NOT NULL')
+        await conn.execute('ALTER TABLE market_prices_intraday ALTER COLUMN is_fallback SET NOT NULL')
+        await conn.execute('ALTER TABLE market_prices_intraday ALTER COLUMN is_predictive SET NOT NULL')
+
+        # Drop old uniqueness constraint to allow multi-provider ticks at same source timestamp.
+        await conn.execute('DROP INDEX IF EXISTS idx_market_prices_intraday_asset_type_ts_unique')
+
+        # Keep one row per canonical key before enforcing uniqueness.
         await conn.execute(
             """
             DELETE FROM market_prices_intraday a
             USING market_prices_intraday b
             WHERE a.asset = b.asset
               AND a.instrument_type = b.instrument_type
-              AND a."timestamp" = b."timestamp"
+              AND a.source_timestamp = b.source_timestamp
+              AND a.provider = b.provider
               AND a.ctid < b.ctid
             """
         )
         await conn.execute(
-            'CREATE UNIQUE INDEX IF NOT EXISTS idx_market_prices_intraday_asset_type_ts_unique '
-            'ON market_prices_intraday (asset, instrument_type, "timestamp")'
+            'CREATE INDEX IF NOT EXISTS idx_market_prices_intraday_asset_type_source_ts '
+            'ON market_prices_intraday (asset, instrument_type, source_timestamp DESC)'
+        )
+        await conn.execute(
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_market_prices_intraday_asset_type_source_ts_provider_unique '
+            'ON market_prices_intraday (asset, instrument_type, source_timestamp, provider)'
         )
         logger.info("Idempotent indexes ensured")
     return _pool
