@@ -31,6 +31,16 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _INIT_SQL_PATH = _PROJECT_ROOT / "sql" / "init.sql"
 
 
+def _strip_sql_line_comments(sql: str) -> str:
+    """Drop full-line '--' comments so statement splitting stays deterministic."""
+    lines: list[str] = []
+    for line in sql.splitlines():
+        if line.lstrip().startswith("--"):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def record_to_dict(record: asyncpg.Record) -> dict:
     """Convert asyncpg Record to a JSON-serializable dict (id/dates as str)."""
     out = {}
@@ -66,10 +76,10 @@ async def init_pool() -> asyncpg.Pool:
     logger.info("Database pool created")
     async with _pool.acquire() as conn:
         if _INIT_SQL_PATH.exists():
-            sql = _INIT_SQL_PATH.read_text()
+            sql = _strip_sql_line_comments(_INIT_SQL_PATH.read_text())
             for raw in sql.split(";"):
                 stmt = raw.strip()
-                if not stmt or stmt.startswith("--"):
+                if not stmt:
                     continue
                 up = stmt.upper()
                 # Defer this one until after duplicate cleanup below.
