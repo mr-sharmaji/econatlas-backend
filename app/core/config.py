@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     stale_threshold_seconds_market: int = 600
     stale_threshold_seconds_rolling_24h: int = 900
 
+    # Ops logs endpoint settings
+    ops_logs_enabled: bool = True
+    ops_log_buffer_size: int = 5000
+    ops_logs_token: str | None = None
+
     # Gift Nifty default sessions in IST.
     gift_nifty_session1_open: str = "06:30"
     gift_nifty_session1_close: str = "15:40"

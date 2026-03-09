@@ -121,6 +121,7 @@ If `market/latest` is empty, run `python scripts/backfill_last_session.py`, then
 | POST   | /news               | Ingest news record (scheduler)                    |
 | GET    | /events             | Economic events timeline                         |
 | POST   | /events             | Create economic event                            |
+| GET    | /ops/logs           | Tail in-memory backend logs (limit/filter/after_id; optional token) |
 
 Interactive docs: **http://localhost:8000/docs**.
 
@@ -211,6 +212,9 @@ Optional scheduler intervals and cache (in `.env`):
 - `COMMODITY_INTERVAL_SECONDS=30` — commodity job every 30s (default). Use `0` to use minutes.
 - `MACRO_INTERVAL_MINUTES=1`, `NEWS_INTERVAL_MINUTES=30` — macro and news intervals in minutes.
 - `MARKET_STATUS_CACHE_SECONDS=30` — cache for `GET /market/status` (reduces calendar lookups; set to `0` to disable).
+- `OPS_LOGS_ENABLED=true` — enable `GET /ops/logs` endpoint.
+- `OPS_LOG_BUFFER_SIZE=5000` — max log entries stored in memory for `/ops/logs`.
+- `OPS_LOGS_TOKEN=` — optional token; when set, clients must send header `x-ops-token`.
 
 ## Roadmap
 
