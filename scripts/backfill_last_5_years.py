@@ -56,12 +56,21 @@ FX_SYMBOLS = {
     "HKDINR=X": "HKD/INR",
     "KRWINR=X": "KRW/INR",
     "AEDINR=X": "AED/INR",
+    "NZDINR=X": "NZD/INR",
+    "SARINR=X": "SAR/INR",
+    "THBINR=X": "THB/INR",
+    "MYRINR=X": "MYR/INR",
+    "IDRINR=X": "IDR/INR",
+    "PHPINR=X": "PHP/INR",
 }
 
 COMMODITY_SYMBOLS = {
     "GC=F": ("gold", "usd_per_troy_ounce"),
     "SI=F": ("silver", "usd_per_troy_ounce"),
+    "PL=F": ("platinum", "usd_per_troy_ounce"),
+    "PA=F": ("palladium", "usd_per_troy_ounce"),
     "CL=F": ("crude oil", "usd_per_barrel"),
+    "BZ=F": ("brent crude", "usd_per_barrel"),
     "NG=F": ("natural gas", "usd_per_mmbtu"),
     "HG=F": ("copper", "usd_per_pound"),
 }

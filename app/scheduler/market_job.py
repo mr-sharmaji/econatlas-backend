@@ -74,6 +74,12 @@ FX_SYMBOLS = {
     "HKDINR=X": "HKD/INR",
     "KRWINR=X": "KRW/INR",
     "AEDINR=X": "AED/INR",
+    "NZDINR=X": "NZD/INR",
+    "SARINR=X": "SAR/INR",
+    "THBINR=X": "THB/INR",
+    "MYRINR=X": "MYR/INR",
+    "IDRINR=X": "IDR/INR",
+    "PHPINR=X": "PHP/INR",
 }
 
 BOND_SERIES: List[Tuple[str, str]] = [
@@ -123,6 +129,12 @@ ASSET_EXCHANGE: Dict[str, str] = {
     "HKD/INR": NYSE,
     "KRW/INR": NYSE,
     "AED/INR": NYSE,
+    "NZD/INR": NYSE,
+    "SAR/INR": NYSE,
+    "THB/INR": NYSE,
+    "MYR/INR": NYSE,
+    "IDR/INR": NYSE,
+    "PHP/INR": NYSE,
     "India 10Y Bond Yield": NSE,
     "US 10Y Treasury Yield": NYSE,
     "US 2Y Treasury Yield": NYSE,
