@@ -112,3 +112,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_device_watchlists_device_position_unique
 ON device_watchlists (device_id, position);
 CREATE INDEX IF NOT EXISTS idx_device_watchlists_device_position
 ON device_watchlists (device_id, position ASC);
+
+-- Stock snapshots for Brief tab (country-level movers/active/sector pulse)
+CREATE TABLE IF NOT EXISTS stock_snapshots (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    market TEXT NOT NULL, -- IN | US
+    symbol TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    sector TEXT,
+    last_price DOUBLE PRECISION NOT NULL,
+    point_change DOUBLE PRECISION,
+    percent_change DOUBLE PRECISION,
+    volume BIGINT,
+    traded_value DOUBLE PRECISION,
+    source_timestamp TIMESTAMPTZ NOT NULL,
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_snapshots_market_symbol_unique
+ON stock_snapshots (market, symbol);
+CREATE INDEX IF NOT EXISTS idx_stock_snapshots_market_pct
+ON stock_snapshots (market, percent_change DESC);
+CREATE INDEX IF NOT EXISTS idx_stock_snapshots_market_active
+ON stock_snapshots (market, traded_value DESC);
+CREATE INDEX IF NOT EXISTS idx_stock_snapshots_market_source_ts
+ON stock_snapshots (market, source_timestamp DESC);

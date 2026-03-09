@@ -20,6 +20,7 @@ def _get_intervals() -> dict:
         "market_minutes": getattr(settings, "market_interval_minutes", 1),
         "commodity_seconds": getattr(settings, "commodity_interval_seconds", None),
         "commodity_minutes": getattr(settings, "commodity_interval_minutes", 1),
+        "brief_minutes": getattr(settings, "brief_interval_minutes", 5),
         "macro_minutes": getattr(settings, "macro_interval_minutes", 1),
         "news_minutes": getattr(settings, "news_interval_minutes", 30),
     }
@@ -55,11 +56,19 @@ async def _run_news() -> None:
     logger.debug("Scheduler tick: news job finished")
 
 
+async def _run_brief() -> None:
+    logger.debug("Scheduler tick: brief stock job started")
+    from app.scheduler.brief_job import run_brief_job
+    await run_brief_job()
+    logger.debug("Scheduler tick: brief stock job finished")
+
+
 async def _startup_collection() -> None:
     """Run all jobs once at startup (market, commodity, macro first; news last)."""
     logger.info("Running startup data collection...")
     await _run_market()
     await _run_commodity()
+    await _run_brief()
     await _run_macro()
     await _run_news()
     logger.info("Startup data collection complete.")
@@ -89,9 +98,15 @@ def start_scheduler() -> None:
         _scheduler.add_job(_run_commodity, "interval", minutes=intervals["commodity_minutes"], id="commodity", replace_existing=True)
         logger.info("Scheduler: commodity every %dm", intervals["commodity_minutes"])
 
+    _scheduler.add_job(_run_brief, "interval", minutes=intervals["brief_minutes"], id="brief", replace_existing=True)
     _scheduler.add_job(_run_macro, "interval", minutes=intervals["macro_minutes"], id="macro", replace_existing=True)
     _scheduler.add_job(_run_news, "interval", minutes=intervals["news_minutes"], id="news", replace_existing=True)
-    logger.info("Scheduler: macro=%dm news=%dm", intervals["macro_minutes"], intervals["news_minutes"])
+    logger.info(
+        "Scheduler: brief=%dm macro=%dm news=%dm",
+        intervals["brief_minutes"],
+        intervals["macro_minutes"],
+        intervals["news_minutes"],
+    )
     _scheduler.start()
     logger.debug("Scheduler started with %d jobs", len(_scheduler.get_jobs()))
 
