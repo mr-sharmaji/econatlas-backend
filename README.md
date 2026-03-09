@@ -208,6 +208,7 @@ DATABASE_URL=postgresql://econatlas:econatlas@localhost:5432/econatlas
 
 Optional scheduler intervals and cache (in `.env`):
 
+- `LOG_LEVEL=INFO` — app log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). Set `DEBUG` to include detailed scheduler/service traces and `/ops/logs` debug entries.
 - `MARKET_INTERVAL_SECONDS=30` — market job every 30s (default; for live accuracy). Use `0` to fall back to `MARKET_INTERVAL_MINUTES`.
 - `COMMODITY_INTERVAL_SECONDS=30` — commodity job every 30s (default). Use `0` to use minutes.
 - `MACRO_INTERVAL_MINUTES=1`, `NEWS_INTERVAL_MINUTES=30` — macro and news intervals in minutes.

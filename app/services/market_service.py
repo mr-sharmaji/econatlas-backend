@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone, timedelta
 
 from app.core.config import get_settings
@@ -7,6 +8,8 @@ from app.scheduler.trading_calendar import (
     is_commodity_session_expected_open,
     is_fx_session_expected_open,
 )
+
+logger = logging.getLogger(__name__)
 
 TABLE = "market_prices"
 TABLE_INTRADAY = "market_prices_intraday"
@@ -341,6 +344,7 @@ async def get_latest_prices(
     out = []
     now_utc = datetime.now(timezone.utc)
     status = get_market_status(now_utc)
+    logger.debug("Computing latest prices: instrument_type=%s rows=%d", instrument_type, len(rows))
     for r in rows:
         d = record_to_dict(r)
         prev = d.pop("prev_price", None)
@@ -374,10 +378,28 @@ async def get_latest_prices(
                 phase, is_stale = _compute_phase(asset, inst, last_ts, now_utc, status=status)
                 d["market_phase"] = phase
                 d["is_stale"] = is_stale
+                logger.debug(
+                    "Rolling latest computed: asset=%s type=%s first=%s last=%s pct=%s last_ts=%s phase=%s stale=%s",
+                    asset,
+                    inst,
+                    first_price,
+                    last_price,
+                    d["change_percent"],
+                    d["last_tick_timestamp"],
+                    phase,
+                    is_stale,
+                )
             else:
                 phase, is_stale = _compute_phase(asset, inst, None, now_utc, status=status)
                 d["market_phase"] = phase
                 d["is_stale"] = is_stale
+                logger.debug(
+                    "Rolling latest missing intraday data: asset=%s type=%s phase=%s stale=%s",
+                    asset,
+                    inst,
+                    phase,
+                    is_stale,
+                )
         elif d.get("change_percent") is None and prev is not None and isinstance(prev, (int, float)):
             try:
                 p = float(d["price"])
@@ -400,7 +422,17 @@ async def get_latest_prices(
             d["market_phase"] = phase
             d["is_stale"] = is_stale
             d["data_quality"] = "primary"
+            logger.debug(
+                "Session latest computed: asset=%s type=%s points=%d last_tick=%s phase=%s stale=%s",
+                asset,
+                inst,
+                len(points),
+                d["last_tick_timestamp"],
+                phase,
+                is_stale,
+            )
         out.append(d)
+    logger.debug("Latest prices ready: instrument_type=%s output_rows=%d", instrument_type, len(out))
     return out
 
 
@@ -459,6 +491,7 @@ async def insert_intraday_batch(rows: list[dict]) -> int:
                 parts = result.split()
                 if len(parts) >= 3:
                     count += int(parts[-1])
+    logger.debug("insert_intraday_batch processed=%d inserted_or_updated=%d", len(rows), count)
     return count
 
 
@@ -517,17 +550,21 @@ async def _get_intraday_rolling_change(
         int(hours),
     )
     if not row:
+        logger.debug("No rolling intraday rows: asset=%s type=%s hours=%d", asset, instrument_type, hours)
         return None
     first = row["first_price"]
     last = row["last_price"]
     if first is None or last is None:
+        logger.debug("Incomplete rolling window points: asset=%s type=%s", asset, instrument_type)
         return None
     try:
         f = float(first)
         l = float(last)
     except (TypeError, ValueError):
+        logger.debug("Invalid rolling values: asset=%s type=%s first=%s last=%s", asset, instrument_type, first, last)
         return None
     if f == 0:
+        logger.debug("Rolling first price is zero: asset=%s type=%s", asset, instrument_type)
         return None
     pct = round(((l - f) / f) * 100, 2)
     return {
@@ -568,6 +605,7 @@ async def get_intraday(
             instrument_type,
         )
         if not row or row["max_ts"] is None:
+            logger.debug("Intraday query has no data: asset=%s type=%s", asset, instrument_type)
             return {
                 "prices": [],
                 "window_start": None,
@@ -624,6 +662,15 @@ async def get_intraday(
     ]
     expected = 1440 if instrument_type in _ROLLING_24H_TYPES else max(1, int((day_end - day_start).total_seconds() // 60))
     coverage = len(prices)
+    logger.debug(
+        "Intraday query: asset=%s type=%s start=%s end=%s points=%d expected=%d",
+        asset,
+        instrument_type,
+        _to_iso(day_start),
+        _to_iso(day_end),
+        coverage,
+        expected,
+    )
     return {
         "prices": prices,
         "window_start": _to_iso(day_start),

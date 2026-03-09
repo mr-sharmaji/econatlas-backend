@@ -8,6 +8,7 @@ class Settings(BaseSettings):
 
     app_name: str = "EconAtlas"
     debug: bool = False
+    log_level: str = "INFO"
 
     market_interval_minutes: int = 1
     commodity_interval_minutes: int = 1

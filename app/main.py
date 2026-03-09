@@ -11,10 +11,33 @@ from app.core.database import close_pool, init_pool
 from app.core.log_stream import setup_log_stream
 from app.scheduler.runner import start_scheduler, stop_scheduler
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-)
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s - %(message)s"
+
+
+def _resolve_log_level(value: str | None) -> int:
+    if not value:
+        return logging.INFO
+    name = value.strip().upper()
+    if hasattr(logging, name):
+        level = getattr(logging, name)
+        if isinstance(level, int):
+            return level
+    named = logging.getLevelName(name)
+    return named if isinstance(named, int) else logging.INFO
+
+
+def _configure_logging(level_name: str | None) -> int:
+    level = _resolve_log_level(level_name)
+    root = logging.getLogger()
+    if not root.handlers:
+        logging.basicConfig(level=level, format=_LOG_FORMAT)
+    else:
+        root.setLevel(level)
+        for handler in root.handlers:
+            handler.setLevel(level)
+            if handler.formatter is None:
+                handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    return level
 
 
 @asynccontextmanager
@@ -28,8 +51,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    log_level = _configure_logging(settings.log_level)
+    logging.getLogger(__name__).info("Logging configured at %s", logging.getLevelName(log_level))
     if settings.ops_logs_enabled:
-        setup_log_stream(settings.ops_log_buffer_size)
+        setup_log_stream(settings.ops_log_buffer_size, min_level=log_level)
 
     application = FastAPI(
         title=settings.app_name,

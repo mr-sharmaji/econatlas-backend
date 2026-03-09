@@ -15,7 +15,7 @@ _scheduler: AsyncIOScheduler | None = None
 
 def _get_intervals() -> dict:
     settings = get_settings()
-    return {
+    intervals = {
         "market_seconds": getattr(settings, "market_interval_seconds", None),
         "market_minutes": getattr(settings, "market_interval_minutes", 1),
         "commodity_seconds": getattr(settings, "commodity_interval_seconds", None),
@@ -23,26 +23,36 @@ def _get_intervals() -> dict:
         "macro_minutes": getattr(settings, "macro_interval_minutes", 1),
         "news_minutes": getattr(settings, "news_interval_minutes", 30),
     }
+    logger.debug("Scheduler intervals resolved: %s", intervals)
+    return intervals
 
 
 async def _run_market() -> None:
+    logger.debug("Scheduler tick: market job started")
     from app.scheduler.market_job import run_market_job
     await run_market_job()
+    logger.debug("Scheduler tick: market job finished")
 
 
 async def _run_commodity() -> None:
+    logger.debug("Scheduler tick: commodity job started")
     from app.scheduler.commodity_job import run_commodity_job
     await run_commodity_job()
+    logger.debug("Scheduler tick: commodity job finished")
 
 
 async def _run_macro() -> None:
+    logger.debug("Scheduler tick: macro job started")
     from app.scheduler.macro_job import run_macro_job
     await run_macro_job()
+    logger.debug("Scheduler tick: macro job finished")
 
 
 async def _run_news() -> None:
+    logger.debug("Scheduler tick: news job started")
     from app.scheduler.news_job import run_news_job
     await run_news_job()
+    logger.debug("Scheduler tick: news job finished")
 
 
 async def _startup_collection() -> None:
@@ -58,10 +68,12 @@ async def _startup_collection() -> None:
 def start_scheduler() -> None:
     global _scheduler
     if _scheduler is not None:
+        logger.debug("Scheduler start ignored: already running")
         return
 
     intervals = _get_intervals()
     _scheduler = AsyncIOScheduler(timezone="UTC")
+    logger.debug("Scheduler instance created with timezone=%s", _scheduler.timezone)
 
     if intervals["market_seconds"] and intervals["market_seconds"] > 0:
         _scheduler.add_job(_run_market, "interval", seconds=intervals["market_seconds"], id="market", replace_existing=True)
@@ -81,8 +93,10 @@ def start_scheduler() -> None:
     _scheduler.add_job(_run_news, "interval", minutes=intervals["news_minutes"], id="news", replace_existing=True)
     logger.info("Scheduler: macro=%dm news=%dm", intervals["macro_minutes"], intervals["news_minutes"])
     _scheduler.start()
+    logger.debug("Scheduler started with %d jobs", len(_scheduler.get_jobs()))
 
     async def _deferred_startup() -> None:
+        logger.debug("Deferred startup data collection queued")
         await asyncio.sleep(2)
         await _startup_collection()
 

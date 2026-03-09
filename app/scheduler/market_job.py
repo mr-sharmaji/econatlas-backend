@@ -89,6 +89,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
     def _fetch_all_quotes(self) -> List[Dict]:
         symbols = [*INDEX_SYMBOLS.keys(), *FX_SYMBOLS.keys()]
         records = []
+        logger.debug("Fetching Yahoo quotes for %d symbols", len(symbols))
         for symbol in symbols:
             try:
                 payload = self._get_json(YAHOO_CHART_URL.format(symbol=symbol))
@@ -116,6 +117,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 })
             except Exception:
                 logger.warning("Failed to fetch %s", symbol, exc_info=True)
+        logger.debug("Yahoo quote fetch complete: %d/%d symbols", len(records), len(symbols))
         return records
 
     def _parse_indices(self, records: List[Dict]) -> List[QuoteTick]:
@@ -243,6 +245,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 )
             except Exception:
                 logger.exception("Bond yield failed for %s", series_id)
+        logger.debug("FRED bond fetch complete: %d/%d series", len(items), len(BOND_SERIES))
         return items
 
     def _fetch_fx_fallback(self) -> List[QuoteTick]:
@@ -302,8 +305,14 @@ class MarketScraper(BaseScraper, QuoteProvider):
         all_ticks: list[QuoteTick] = []
         try:
             records = self._fetch_all_quotes()
+            logger.debug("Yahoo raw records: %d", len(records))
             all_ticks.extend(self._parse_indices(records))
             all_ticks.extend(self._parse_fx(records))
+            logger.debug(
+                "Yahoo parsed ticks: indices=%d fx=%d",
+                len([t for t in all_ticks if t.instrument_type == "index"]),
+                len([t for t in all_ticks if t.instrument_type == "currency"]),
+            )
         except Exception:
             logger.warning("Yahoo quote fetch failed; using fallbacks", exc_info=True)
             for sym, name in INDEX_SYMBOLS.items():
@@ -329,7 +338,9 @@ class MarketScraper(BaseScraper, QuoteProvider):
             all_ticks.extend(self._fetch_bond_yields())
         except Exception:
             logger.exception("Bond yield fetch failed")
-        return select_best_quotes(all_ticks)
+        selected = select_best_quotes(all_ticks)
+        logger.debug("Provider routing selected %d/%d ticks", len(selected), len(all_ticks))
+        return selected
 
     def fetch_all(self) -> List[Dict]:
         """Backward-compatible shape for scheduler code."""
@@ -514,6 +525,12 @@ def _fetch_market_rows_sync() -> tuple[List[Dict], bool]:
     now = _scraper.utc_now()
     calendar_open = is_trading_day_markets(now) or is_gift_nifty_open(now)
     items = _scraper.fetch_all()
+    logger.debug(
+        "Fetched market rows sync: now=%s calendar_open=%s raw_items=%d",
+        now.isoformat(),
+        calendar_open,
+        len(items),
+    )
     rows = []
     for it in items:
         if it["asset"] == "Gift Nifty":
@@ -541,6 +558,7 @@ def _fetch_market_rows_sync() -> tuple[List[Dict], bool]:
             "is_predictive": it.get("is_predictive"),
             "session_source": it.get("session_source"),
         })
+    logger.debug("Prepared market rows for persistence: %d", len(rows))
     return (rows, calendar_open)
 
 
@@ -585,17 +603,29 @@ def build_market_intraday_rows_for_open(
                 "is_predictive": bool(r.get("is_predictive")) if r.get("is_predictive") is not None else False,
                 "session_source": r.get("session_source"),
             })
+    logger.debug(
+        "Built market intraday rows: input=%d output=%d nse_open=%s nyse_open=%s gift_nifty_open=%s",
+        len(market_rows),
+        len(intraday_rows),
+        bool(status.get("nse_open")),
+        bool(status.get("nyse_open")),
+        bool(status.get("gift_nifty_open")),
+    )
     return intraday_rows
 
 
 async def run_market_job() -> None:
     try:
+        logger.debug("Market job cycle started")
         loop = asyncio.get_event_loop()
         fetched_rows, calendar_says_open = await loop.run_in_executor(None, _fetch_market_rows_sync)
+        logger.debug("Market job fetched_rows=%d calendar_says_open=%s", len(fetched_rows), calendar_says_open)
         if not fetched_rows:
+            logger.debug("Market job exiting early: no fetched rows")
             return
         rows = fetched_rows
         if not calendar_says_open:
+            before = len(rows)
             pairs = [(r["asset"], r.get("instrument_type") or "") for r in rows]
             latest = await market_service.get_latest_price_per_asset_type(pairs)
             rows = [
@@ -603,9 +633,11 @@ async def run_market_job() -> None:
                 if (latest.get((r["asset"], r.get("instrument_type") or "")) is None)
                 or abs(float(r["price"]) - latest[(r["asset"], r.get("instrument_type") or "")]) > _PRICE_CHANGE_TOLERANCE
             ]
+            logger.debug("Market job filtered unchanged rows while calendar closed: %d -> %d", before, len(rows))
         updated = 0
         if rows:
             updated = await market_service.insert_prices_batch_upsert_daily(rows)
+        logger.debug("Market job daily rows written=%d", updated)
         status = get_market_status()
         intraday_rows = build_market_intraday_rows_for_open(
             fetched_rows,
@@ -614,9 +646,11 @@ async def run_market_job() -> None:
         if intraday_rows:
             n = await market_service.insert_intraday_batch(intraday_rows)
             logger.info("Market job: %d daily upserted, %d intraday", updated, n)
+            logger.debug("Market job intraday rows attempted=%d inserted_or_updated=%d", len(intraday_rows), n)
         elif updated == 0:
             logger.info("Market job: no daily or intraday rows written")
         else:
             logger.info("Market job complete: %d rows upserted (daily)", updated)
+        logger.debug("Market job cycle completed")
     except Exception:
         logger.exception("Market job failed")

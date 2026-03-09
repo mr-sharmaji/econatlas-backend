@@ -50,6 +50,7 @@ class CommodityScraper(BaseScraper, QuoteProvider):
 
     def _fetch_yahoo(self) -> List[Dict]:
         items = []
+        logger.debug("Fetching commodity quotes for %d symbols", len(SYMBOLS))
         for symbol, (asset, unit) in SYMBOLS.items():
             try:
                 payload = self._get_json(YAHOO_CHART_URL.format(symbol=symbol))
@@ -93,6 +94,7 @@ class CommodityScraper(BaseScraper, QuoteProvider):
                 })
             except Exception:
                 logger.warning("Commodity fetch failed for %s", symbol, exc_info=True)
+        logger.debug("Commodity fetch complete: %d/%d symbols", len(items), len(SYMBOLS))
         return items
 
     def fetch_quotes(self) -> List[Dict]:
@@ -115,6 +117,12 @@ def _fetch_commodity_rows_sync() -> tuple[List[Dict], bool]:
     now = _scraper.utc_now()
     calendar_open = is_trading_day_commodities(now)
     items = _scraper.fetch_all()
+    logger.debug(
+        "Fetched commodity rows sync: now=%s calendar_open=%s raw_items=%d",
+        now.isoformat(),
+        calendar_open,
+        len(items),
+    )
     trading_date = get_trading_date(now, NYSE)
     ts = datetime(trading_date.year, trading_date.month, trading_date.day, 0, 0, 0, tzinfo=timezone.utc).isoformat()
     rows = [
@@ -136,6 +144,7 @@ def _fetch_commodity_rows_sync() -> tuple[List[Dict], bool]:
         }
         for it in items
     ]
+    logger.debug("Prepared commodity rows for persistence: %d", len(rows))
     return (rows, calendar_open)
 
 
@@ -162,6 +171,7 @@ def build_commodity_intraday_rows_for_open(commodity_rows: list[dict]) -> list[d
             "is_fallback": bool(r.get("is_fallback")) if r.get("is_fallback") is not None else False,
             "quality": r.get("quality"),
         })
+    logger.debug("Built commodity intraday rows: input=%d output=%d", len(commodity_rows), len(rows))
     return rows
 
 
@@ -207,12 +217,16 @@ def build_commodity_intraday_rows_last_session_yahoo(
 
 async def run_commodity_job() -> None:
     try:
+        logger.debug("Commodity job cycle started")
         loop = asyncio.get_event_loop()
         fetched_rows, calendar_says_open = await loop.run_in_executor(None, _fetch_commodity_rows_sync)
+        logger.debug("Commodity job fetched_rows=%d calendar_says_open=%s", len(fetched_rows), calendar_says_open)
         if not fetched_rows:
+            logger.debug("Commodity job exiting early: no fetched rows")
             return
         rows = fetched_rows
         if not calendar_says_open:
+            before = len(rows)
             pairs = [(r["asset"], "commodity") for r in rows]
             latest = await market_service.get_latest_price_per_asset_type(pairs)
             rows = [
@@ -220,16 +234,20 @@ async def run_commodity_job() -> None:
                 if (latest.get((r["asset"], "commodity")) is None)
                 or abs(float(r["price"]) - latest[(r["asset"], "commodity")]) > _PRICE_CHANGE_TOLERANCE
             ]
+            logger.debug("Commodity job filtered unchanged rows while calendar closed: %d -> %d", before, len(rows))
         updated = 0
         if rows:
             updated = await market_service.insert_prices_batch_upsert_daily(rows)
+        logger.debug("Commodity job daily rows written=%d", updated)
         intraday_rows = build_commodity_intraday_rows_for_open(fetched_rows)
         if intraday_rows:
             n = await market_service.insert_intraday_batch(intraday_rows)
             logger.info("Commodity job: %d daily upserted, %d intraday", updated, n)
+            logger.debug("Commodity job intraday rows attempted=%d inserted_or_updated=%d", len(intraday_rows), n)
         elif updated == 0:
             logger.info("Commodity job: no daily or intraday rows written")
         else:
             logger.info("Commodity job complete: %d rows upserted (daily)", updated)
+        logger.debug("Commodity job cycle completed")
     except Exception:
         logger.exception("Commodity job failed")

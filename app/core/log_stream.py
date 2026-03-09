@@ -38,18 +38,30 @@ class _InMemoryLogHandler(logging.Handler):
             return
 
 
-def setup_log_stream(max_entries: int = 5000) -> None:
+def _coerce_level(level: int | str | None, *, default: int = logging.INFO) -> int:
+    if isinstance(level, int):
+        return level
+    if isinstance(level, str):
+        value = _level_value(level)
+        if value is not None:
+            return value
+    return default
+
+
+def setup_log_stream(max_entries: int = 5000, min_level: int | str | None = logging.INFO) -> None:
     """Attach one in-memory ring-buffer handler to root logger."""
     global _handler, _entries
     max_entries = max(100, int(max_entries))
+    level_value = _coerce_level(min_level)
     with _lock:
         if _handler is not None:
             if _entries.maxlen != max_entries:
                 _entries = deque(list(_entries), maxlen=max_entries)
+            _handler.setLevel(level_value)
             return
         _entries = deque(maxlen=max_entries)
         _handler = _InMemoryLogHandler()
-        _handler.setLevel(logging.INFO)
+        _handler.setLevel(level_value)
         root = logging.getLogger()
         root.addHandler(_handler)
 
