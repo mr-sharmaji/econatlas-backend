@@ -296,10 +296,13 @@ def _fetch_yahoo_1m_bars(symbol: str, range_period: str = "2d") -> tuple[list[tu
 
 
 def build_market_intraday_rows_last_session_yahoo(
-    market_rows: list[dict], trading_date_by_exchange: dict[str, date | list[date] | set[date]]
+    market_rows: list[dict],
+    trading_date_by_exchange: dict[str, date | list[date] | set[date]],
+    trading_date_by_instrument: dict[str, date | list[date] | set[date]] | None = None,
 ) -> list[dict]:
     """Build full minute-level intraday rows for target sessions using Yahoo 1m chart data.
-    For assets with a Yahoo symbol we fetch 1m bars and filter to the given trading date(s);
+    For assets with a Yahoo symbol we fetch 1m bars and filter to the given target date(s);
+    instrument-level date targets (e.g. currency 24/7 windows) override exchange targets.
     for others (Gift Nifty, bonds) we add one point from market_rows."""
     from app.services import market_service as svc
 
@@ -311,6 +314,7 @@ def build_market_intraday_rows_last_session_yahoo(
         return set(v)
 
     rows_out = []
+    instrument_targets = trading_date_by_instrument or {}
     # Assets we can get 1m data for (symbol -> (asset, instrument_type))
     yahoo_assets = {}
     for sym, asset in INDEX_SYMBOLS.items():
@@ -324,8 +328,10 @@ def build_market_intraday_rows_last_session_yahoo(
         asset_to_symbol[asset] = (sym, itype)
 
     for sym, (asset_name, instrument_type) in yahoo_assets.items():
-        exchange = ASSET_EXCHANGE.get(asset_name, NYSE)
-        target_dates = _normalize_dates(trading_date_by_exchange.get(exchange))
+        target_dates = _normalize_dates(instrument_targets.get(instrument_type))
+        if not target_dates:
+            exchange = ASSET_EXCHANGE.get(asset_name, NYSE)
+            target_dates = _normalize_dates(trading_date_by_exchange.get(exchange))
         if not target_dates:
             continue
         bars, _ = _fetch_yahoo_1m_bars(sym, range_period="7d")

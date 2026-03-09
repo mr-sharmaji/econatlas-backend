@@ -4,7 +4,9 @@ Use this to refresh or backfill recent trading days when the scheduler missed ru
 or after a restart. Fetches current prices, assigns the exchange trading date (NSE/NYSE),
 and upserts into market_prices. It then fetches full minute-level intraday data from Yahoo
 for the last 5 trading sessions (NSE + NYSE calendar aware) and inserts into
-market_prices_intraday. Does not filter by price change, so target sessions are fully written.
+market_prices_intraday. For 24/7-style instruments (currencies and commodities), intraday
+backfill uses the last 5 calendar days including today. Does not filter by price change, so
+target sessions are fully written.
 
 Usage (from repo root econatlas-backend):
 
@@ -42,7 +44,7 @@ async def main() -> None:
         from app.scheduler.market_job import _fetch_market_rows_sync
         from app.scheduler.commodity_job import _fetch_commodity_rows_sync
         from app.scheduler.trading_calendar import get_recent_trading_dates
-        from datetime import datetime, timezone
+        from datetime import datetime, timezone, timedelta
     except ImportError as e:
         logger.error("Import failed: %s. Run from backend root with deps installed.", e)
         return
@@ -65,11 +67,18 @@ async def main() -> None:
         n_commodity = await market_service.insert_prices_batch_upsert_daily(commodity_rows)
         logger.info("Commodities: %d rows upserted (daily) for last trading session.", n_commodity)
 
-    # Populate intraday for 1D chart: backfill 1-minute bars for last 5 trading sessions.
+    # Populate intraday for 1D chart:
+    # - indices/bond yields: last 5 trading sessions
+    # - currencies/commodities: last 5 calendar days including today
     from app.scheduler.trading_calendar import NSE, NYSE
     now = datetime.now(timezone.utc)
+
+    def _recent_calendar_dates(days: int) -> list:
+        return [now.date() - timedelta(days=i) for i in range(days - 1, -1, -1)]
+
     trading_dates_nse = get_recent_trading_dates(now, NSE, 5)
     trading_dates_nyse = get_recent_trading_dates(now, NYSE, 5)
+    recent_calendar_dates = _recent_calendar_dates(5)
     trading_date_by_exchange = {NSE: trading_dates_nse, NYSE: trading_dates_nyse}
 
     from app.scheduler.market_job import build_market_intraday_rows_last_session_yahoo
@@ -77,20 +86,27 @@ async def main() -> None:
 
     intraday_market = await loop.run_in_executor(
         None,
-        lambda: build_market_intraday_rows_last_session_yahoo(market_rows, trading_date_by_exchange),
+        lambda: build_market_intraday_rows_last_session_yahoo(
+            market_rows,
+            trading_date_by_exchange,
+            trading_date_by_instrument={"currency": recent_calendar_dates},
+        ),
     )
     if intraday_market:
         n = await market_service.insert_intraday_batch(intraday_market)
-        logger.info("Intraday (market): %d points inserted (last 5 trading sessions, minute-level).", n)
+        logger.info(
+            "Intraday (market): %d points inserted (indices/bonds last 5 sessions, currencies last 5 calendar days).",
+            n,
+        )
 
     if commodity_rows:
         intraday_commodity = await loop.run_in_executor(
             None,
-            lambda: build_commodity_intraday_rows_last_session_yahoo(commodity_rows, trading_dates_nyse),
+            lambda: build_commodity_intraday_rows_last_session_yahoo(commodity_rows, recent_calendar_dates),
         )
         if intraday_commodity:
             n = await market_service.insert_intraday_batch(intraday_commodity)
-            logger.info("Intraday (commodities): %d points inserted (last 5 trading sessions, minute-level).", n)
+            logger.info("Intraday (commodities): %d points inserted (last 5 calendar days, minute-level).", n)
 
     logger.info("Backfill complete.")
     await close_pool()
