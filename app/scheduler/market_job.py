@@ -115,6 +115,24 @@ def _pct_change(current: float, previous: float | None) -> float | None:
     return round(((current - previous) / previous) * 100, 2)
 
 
+def _pick_previous_close(meta: dict) -> tuple[float | None, str | None]:
+    """Pick previous close with market-convention priority.
+    Prefer regular session references over chart-derived fallback."""
+    candidates = (
+        ("regularMarketPreviousClose", meta.get("regularMarketPreviousClose")),
+        ("previousClose", meta.get("previousClose")),
+        ("chartPreviousClose", meta.get("chartPreviousClose")),
+    )
+    for key, value in candidates:
+        if value is None:
+            continue
+        try:
+            return float(value), key
+        except (TypeError, ValueError):
+            continue
+    return None, None
+
+
 class MarketScraper(BaseScraper, QuoteProvider):
 
     def _fetch_all_quotes(self) -> List[Dict]:
@@ -131,7 +149,9 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 price = meta.get("regularMarketPrice") or meta.get("previousClose")
                 if price is None:
                     continue
-                prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+                prev, prev_key = _pick_previous_close(meta)
+                if prev_key == "chartPreviousClose":
+                    logger.debug("Using chartPreviousClose fallback for %s", symbol)
                 source_ts = None
                 regular_market_time = meta.get("regularMarketTime")
                 if regular_market_time is not None:
@@ -142,7 +162,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 records.append({
                     "symbol": symbol,
                     "price": float(price),
-                    "prev": float(prev) if prev else None,
+                    "prev": prev,
                     "currency": str(meta.get("currency", "USD")),
                     "source_timestamp": source_ts or datetime.now(timezone.utc),
                 })
@@ -406,9 +426,11 @@ class MarketScraper(BaseScraper, QuoteProvider):
             price = meta.get("regularMarketPrice") or meta.get("previousClose")
             if price is None:
                 return None
-            prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+            prev, prev_key = _pick_previous_close(meta)
+            if prev_key == "chartPreviousClose":
+                logger.debug("Using chartPreviousClose fallback for %s", symbol)
             p = float(price)
-            pv = float(prev) if prev else None
+            pv = prev
             raw_ts = meta.get("regularMarketTime")
             try:
                 source_ts = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc) if raw_ts is not None else datetime.now(timezone.utc)
@@ -596,6 +618,27 @@ def _fetch_market_rows_sync() -> tuple[List[Dict], bool]:
 _PRICE_CHANGE_TOLERANCE = 1e-9
 
 
+def _num_changed(a, b, tolerance: float = _PRICE_CHANGE_TOLERANCE) -> bool:
+    if a is None and b is None:
+        return False
+    if a is None or b is None:
+        return True
+    try:
+        return abs(float(a) - float(b)) > tolerance
+    except (TypeError, ValueError):
+        return True
+
+
+def _daily_row_changed(new_row: dict, latest: dict | None) -> bool:
+    if latest is None:
+        return True
+    return (
+        _num_changed(new_row.get("price"), latest.get("price"))
+        or _num_changed(new_row.get("previous_close"), latest.get("previous_close"))
+        or _num_changed(new_row.get("change_percent"), latest.get("change_percent"))
+    )
+
+
 def build_market_intraday_rows_for_open(
     market_rows: list[dict],
     status: dict,
@@ -659,11 +702,10 @@ async def run_market_job() -> None:
         if not calendar_says_open:
             before = len(rows)
             pairs = [(r["asset"], r.get("instrument_type") or "") for r in rows]
-            latest = await market_service.get_latest_price_per_asset_type(pairs)
+            latest = await market_service.get_latest_daily_snapshot_per_asset_type(pairs)
             rows = [
                 r for r in rows
-                if (latest.get((r["asset"], r.get("instrument_type") or "")) is None)
-                or abs(float(r["price"]) - latest[(r["asset"], r.get("instrument_type") or "")]) > _PRICE_CHANGE_TOLERANCE
+                if _daily_row_changed(r, latest.get((r["asset"], r.get("instrument_type") or "")))
             ]
             logger.debug("Market job filtered unchanged rows while calendar closed: %d -> %d", before, len(rows))
         updated = 0

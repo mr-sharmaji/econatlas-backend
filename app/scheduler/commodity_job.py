@@ -25,6 +25,23 @@ SYMBOLS = {
 }
 
 
+def _pick_previous_close(meta: dict) -> tuple[float | None, str | None]:
+    """Pick previous close with market-convention priority."""
+    candidates = (
+        ("regularMarketPreviousClose", meta.get("regularMarketPreviousClose")),
+        ("previousClose", meta.get("previousClose")),
+        ("chartPreviousClose", meta.get("chartPreviousClose")),
+    )
+    for key, value in candidates:
+        if value is None:
+            continue
+        try:
+            return float(value), key
+        except (TypeError, ValueError):
+            continue
+    return None, None
+
+
 class CommodityScraper(BaseScraper, QuoteProvider):
 
     def __init__(self) -> None:
@@ -68,12 +85,14 @@ class CommodityScraper(BaseScraper, QuoteProvider):
                     source_ts = datetime.now(timezone.utc)
                 currency = str(meta.get("currency", "USD"))
                 usd_val, _fx = self._to_usd(float(price), currency)
-                prev_raw = meta.get("chartPreviousClose") or meta.get("previousClose")
+                prev_raw, prev_key = _pick_previous_close(meta)
+                if prev_key == "chartPreviousClose":
+                    logger.debug("Using chartPreviousClose fallback for %s", symbol)
                 prev_usd = None
                 pct = None
                 if prev_raw is not None:
                     try:
-                        prev_usd, _ = self._to_usd(float(prev_raw), currency)
+                        prev_usd, _ = self._to_usd(prev_raw, currency)
                         if prev_usd > 0:
                             pct = round(((usd_val - prev_usd) / prev_usd) * 100, 2)
                     except (ValueError, ZeroDivisionError):
@@ -109,6 +128,29 @@ class CommodityScraper(BaseScraper, QuoteProvider):
 
 
 _scraper = CommodityScraper()
+
+_PRICE_CHANGE_TOLERANCE = 1e-9
+
+
+def _num_changed(a, b, tolerance: float = _PRICE_CHANGE_TOLERANCE) -> bool:
+    if a is None and b is None:
+        return False
+    if a is None or b is None:
+        return True
+    try:
+        return abs(float(a) - float(b)) > tolerance
+    except (TypeError, ValueError):
+        return True
+
+
+def _daily_row_changed(new_row: dict, latest: dict | None) -> bool:
+    if latest is None:
+        return True
+    return (
+        _num_changed(new_row.get("price"), latest.get("price"))
+        or _num_changed(new_row.get("previous_close"), latest.get("previous_close"))
+        or _num_changed(new_row.get("change_percent"), latest.get("change_percent"))
+    )
 
 
 def _fetch_commodity_rows_sync() -> tuple[List[Dict], bool]:
@@ -228,11 +270,10 @@ async def run_commodity_job() -> None:
         if not calendar_says_open:
             before = len(rows)
             pairs = [(r["asset"], "commodity") for r in rows]
-            latest = await market_service.get_latest_price_per_asset_type(pairs)
+            latest = await market_service.get_latest_daily_snapshot_per_asset_type(pairs)
             rows = [
                 r for r in rows
-                if (latest.get((r["asset"], "commodity")) is None)
-                or abs(float(r["price"]) - latest[(r["asset"], "commodity")]) > _PRICE_CHANGE_TOLERANCE
+                if _daily_row_changed(r, latest.get((r["asset"], "commodity")))
             ]
             logger.debug("Commodity job filtered unchanged rows while calendar closed: %d -> %d", before, len(rows))
         updated = 0

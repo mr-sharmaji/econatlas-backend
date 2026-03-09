@@ -100,6 +100,37 @@ async def get_latest_price_per_asset_type(
     return {k: key_to_price[k] for k in need if k in key_to_price}
 
 
+async def get_latest_daily_snapshot_per_asset_type(
+    asset_type_pairs: list[tuple[str, str]],
+) -> dict[tuple[str, str], dict]:
+    """Return map (asset, instrument_type) -> latest daily row fields used by scheduler dedupe logic."""
+    if not asset_type_pairs:
+        return {}
+    pool = await get_pool()
+    rows = await pool.fetch(
+        f"""
+        SELECT DISTINCT ON (asset, instrument_type)
+            asset,
+            instrument_type,
+            price,
+            previous_close,
+            change_percent
+        FROM {TABLE}
+        ORDER BY asset, instrument_type, timestamp DESC
+        """
+    )
+    snapshots = {
+        (r["asset"], r["instrument_type"] or ""): {
+            "price": float(r["price"]) if r["price"] is not None else None,
+            "previous_close": float(r["previous_close"]) if r["previous_close"] is not None else None,
+            "change_percent": float(r["change_percent"]) if r["change_percent"] is not None else None,
+        }
+        for r in rows
+    }
+    need = set(asset_type_pairs)
+    return {k: snapshots[k] for k in need if k in snapshots}
+
+
 async def insert_prices_batch(rows: list[dict]) -> int:
     """Insert multiple price rows. Idempotent: ON CONFLICT DO NOTHING. Returns count actually inserted."""
     if not rows:
@@ -426,22 +457,32 @@ async def get_latest_prices(
             intraday_day = await get_intraday(asset=asset, instrument_type=inst)
             points = intraday_day.get("prices") or []
             if points:
-                if len(points) >= 2:
-                    first_price = points[0].get("price")
-                    last_price = points[-1].get("price")
-                    try:
-                        f = float(first_price)
-                        l = float(last_price)
-                        if f != 0:
-                            d["change_percent"] = round(((l - f) / f) * 100, 2)
+                last_price = points[-1].get("price")
+                try:
+                    d["price"] = float(last_price)
+                except (TypeError, ValueError):
+                    pass
+
+                # Prefer previous_close-based session change when available.
+                # This aligns with standard market convention and captures gap moves.
+                pv_raw = d.get("previous_close")
+                try:
+                    pv = float(pv_raw) if pv_raw is not None else None
+                    lp = float(d.get("price")) if d.get("price") is not None else None
+                    if pv is not None and pv != 0 and lp is not None:
+                        d["change_percent"] = round(((lp - pv) / pv) * 100, 2)
+                        d["previous_close"] = pv
+                    elif len(points) >= 2:
+                        f = float(points[0].get("price"))
+                        if f != 0 and lp is not None:
+                            d["change_percent"] = round(((lp - f) / f) * 100, 2)
                             d["previous_close"] = f
-                    except (TypeError, ValueError, ZeroDivisionError):
-                        pass
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
                 last_tick_ts = _normalize_dt(points[-1].get("timestamp"))
                 if last_tick_ts is not None:
                     d["last_tick_timestamp"] = _to_iso(last_tick_ts)
                     d["timestamp"] = last_tick_ts.isoformat()
-                    d["price"] = float(points[-1]["price"])
             phase, is_stale = _compute_phase(asset, inst, _normalize_dt(d.get("last_tick_timestamp")), now_utc, status=status)
             d["market_phase"] = phase
             d["is_stale"] = is_stale
