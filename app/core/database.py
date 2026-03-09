@@ -84,6 +84,22 @@ async def init_pool() -> asyncpg.Pool:
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_macro_indicators_name_country_ts '
             'ON macro_indicators (indicator_name, country, "timestamp")'
         )
+        # Intraday can have duplicate minute rows when scheduler runs sub-minute.
+        # Keep one row per (asset, instrument_type, timestamp) before enforcing uniqueness.
+        await conn.execute(
+            """
+            DELETE FROM market_prices_intraday a
+            USING market_prices_intraday b
+            WHERE a.asset = b.asset
+              AND a.instrument_type = b.instrument_type
+              AND a."timestamp" = b."timestamp"
+              AND a.ctid < b.ctid
+            """
+        )
+        await conn.execute(
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_market_prices_intraday_asset_type_ts_unique '
+            'ON market_prices_intraday (asset, instrument_type, "timestamp")'
+        )
         logger.info("Idempotent indexes ensured")
     return _pool
 

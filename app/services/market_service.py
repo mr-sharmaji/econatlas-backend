@@ -123,6 +123,7 @@ async def insert_prices_batch(rows: list[dict]) -> int:
 
 # Tolerance for float price comparison (avoids duplicates when markets closed)
 _PRICE_CHANGE_TOLERANCE = 1e-9
+_ROLLING_24H_TYPES = {"currency", "commodity"}
 
 
 async def insert_prices_batch_skip_unchanged(
@@ -266,7 +267,19 @@ async def get_latest_prices(
     for r in rows:
         d = record_to_dict(r)
         prev = d.pop("prev_price", None)
-        if d.get("change_percent") is None and prev is not None and isinstance(prev, (int, float)):
+        inst = str(d.get("instrument_type") or "")
+        if inst in _ROLLING_24H_TYPES:
+            rolling = await _get_intraday_rolling_change(
+                pool,
+                asset=str(d.get("asset") or ""),
+                instrument_type=inst,
+                hours=24,
+            )
+            if rolling is not None:
+                first_price, _last_price, pct = rolling
+                d["change_percent"] = pct
+                d["previous_close"] = first_price
+        elif d.get("change_percent") is None and prev is not None and isinstance(prev, (int, float)):
             try:
                 p = float(d["price"])
                 pv = float(prev)
@@ -287,25 +300,82 @@ def _round_to_minute(utc_dt: datetime) -> datetime:
 
 
 async def insert_intraday_batch(rows: list[dict]) -> int:
-    """Insert intraday price points (asset, instrument_type, price, timestamp). Returns count inserted."""
+    """Insert intraday price points (asset, instrument_type, price, timestamp).
+    Upserts by minute key to avoid duplicate points when scheduler runs sub-minute."""
     if not rows:
         return 0
     pool = await get_pool()
     count = 0
     async with pool.acquire() as conn:
         for r in rows:
-            await conn.execute(
+            result = await conn.execute(
                 f"""
                 INSERT INTO {TABLE_INTRADAY} (asset, instrument_type, price, "timestamp")
                 VALUES ($1, $2, $3, $4)
+                ON CONFLICT (asset, instrument_type, "timestamp")
+                DO UPDATE SET price = EXCLUDED.price
                 """,
                 r.get("asset"),
                 r.get("instrument_type"),
                 r.get("price"),
                 parse_ts(r.get("timestamp")),
             )
-            count += 1
+            if result:
+                parts = result.split()
+                if len(parts) >= 3:
+                    count += int(parts[-1])
     return count
+
+
+async def _get_intraday_rolling_change(
+    pool,
+    asset: str,
+    instrument_type: str,
+    hours: int = 24,
+) -> tuple[float, float, float] | None:
+    """Return (first_price, last_price, pct_change) from rolling intraday window."""
+    row = await pool.fetchrow(
+        f"""
+        WITH bounds AS (
+            SELECT MAX("timestamp") AS max_ts
+            FROM {TABLE_INTRADAY}
+            WHERE asset = $1 AND instrument_type = $2
+        ),
+        points AS (
+            SELECT "timestamp", price, id
+            FROM {TABLE_INTRADAY}
+            WHERE asset = $1 AND instrument_type = $2
+              AND "timestamp" >= ((SELECT max_ts FROM bounds) - make_interval(hours => $3))
+              AND "timestamp" <= (SELECT max_ts FROM bounds)
+        ),
+        dedup AS (
+            SELECT DISTINCT ON ("timestamp") "timestamp", price
+            FROM points
+            ORDER BY "timestamp", id DESC
+        )
+        SELECT
+            (SELECT price FROM dedup ORDER BY "timestamp" ASC LIMIT 1) AS first_price,
+            (SELECT price FROM dedup ORDER BY "timestamp" DESC LIMIT 1) AS last_price
+        """,
+        asset,
+        instrument_type,
+        int(hours),
+    )
+    if not row:
+        return None
+    first = row["first_price"]
+    last = row["last_price"]
+    if first is None or last is None:
+        return None
+    try:
+        f = float(first)
+        l = float(last)
+    except (TypeError, ValueError):
+        return None
+    if f == 0:
+        return None
+    pct = round(((l - f) / f) * 100, 2)
+    return (f, l, pct)
 
 
 async def get_intraday(
@@ -314,9 +384,11 @@ async def get_intraday(
     from_ts: datetime | None = None,
     to_ts: datetime | None = None,
 ) -> list[dict]:
-    """Return intraday points for the most recent session (calendar day with data).
-    When market is open that is today; when closed it is the last trading day from backfill.
-    Optional from_ts/to_ts override the window (e.g. last 24h)."""
+    """Return intraday points.
+    Defaults:
+    - currency/commodity: rolling 24h ending at latest tick.
+    - others: most recent UTC calendar day with data.
+    Optional from_ts/to_ts override the window."""
     pool = await get_pool()
     if from_ts is not None and to_ts is not None:
         day_start, day_end = from_ts, to_ts
@@ -335,14 +407,23 @@ async def get_intraday(
         max_ts = row["max_ts"]
         if getattr(max_ts, "tzinfo", None) is None:
             max_ts = max_ts.replace(tzinfo=timezone.utc)
-        day_start = datetime(max_ts.year, max_ts.month, max_ts.day, 0, 0, 0, tzinfo=timezone.utc)
-        day_end = day_start + timedelta(days=1)
+        if instrument_type in _ROLLING_24H_TYPES:
+            day_start = max_ts - timedelta(hours=24)
+            day_end = max_ts + timedelta(microseconds=1)
+        else:
+            day_start = datetime(max_ts.year, max_ts.month, max_ts.day, 0, 0, 0, tzinfo=timezone.utc)
+            day_end = day_start + timedelta(days=1)
     rows = await pool.fetch(
         f"""
+        WITH dedup AS (
+            SELECT DISTINCT ON ("timestamp") "timestamp", price
+            FROM {TABLE_INTRADAY}
+            WHERE asset = $1 AND instrument_type = $2
+              AND "timestamp" >= $3 AND "timestamp" < $4
+            ORDER BY "timestamp", id DESC
+        )
         SELECT "timestamp", price
-        FROM {TABLE_INTRADAY}
-        WHERE asset = $1 AND instrument_type = $2
-          AND "timestamp" >= $3 AND "timestamp" < $4
+        FROM dedup
         ORDER BY "timestamp" ASC
         """,
         asset,

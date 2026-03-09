@@ -105,7 +105,8 @@ async def get_intraday(
     asset: str = Query(..., description="Asset name (e.g. Nifty 50, S&P500)"),
     instrument_type: str = Query(..., description="index, currency, or bond_yield"),
 ) -> IntradayResponse:
-    """Return intraday price points for 1D chart (last 24h). Empty when market closed or no data yet."""
+    """Return intraday points for chart.
+    currency => rolling 24h, index/bond_yield => latest session day."""
     try:
         rows = await market_service.get_intraday(asset=asset, instrument_type=instrument_type)
         prices = [IntradayPointResponse(timestamp=r["timestamp"], price=r["price"]) for r in rows]

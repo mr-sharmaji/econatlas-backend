@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS market_prices_intraday (
     "timestamp" TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_market_prices_intraday_asset_type_ts ON market_prices_intraday (asset, instrument_type, "timestamp" DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_market_prices_intraday_asset_type_ts_unique
+ON market_prices_intraday (asset, instrument_type, "timestamp");
 
 -- Macro indicators
 CREATE TABLE IF NOT EXISTS macro_indicators (

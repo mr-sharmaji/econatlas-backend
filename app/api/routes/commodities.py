@@ -73,7 +73,7 @@ async def list_commodities(
 async def get_commodity_intraday(
     asset: str = Query(..., description="Commodity asset (e.g. Gold, Silver)"),
 ) -> IntradayResponse:
-    """Return intraday price points for 1D chart (last 24h). Empty when market closed or no data yet."""
+    """Return commodity intraday points for chart (rolling 24h window)."""
     try:
         rows = await market_service.get_intraday(asset=asset, instrument_type="commodity")
         prices = [IntradayPointResponse(timestamp=r["timestamp"], price=r["price"]) for r in rows]
