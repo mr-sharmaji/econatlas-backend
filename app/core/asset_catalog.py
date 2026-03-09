@@ -30,6 +30,7 @@ ASSET_CATALOG: tuple[AssetCatalogItem, ...] = (
     AssetCatalogItem("Nifty Auto", "index", "^CNXAUTO", "India", "NSE", "session", 80, "index", "points", False, "Nifty 50"),
     AssetCatalogItem("Nifty Pharma", "index", "^CNXPHARMA", "India", "NSE", "session", 90, "index", "points", False, "Nifty 50"),
     AssetCatalogItem("Nifty Metal", "index", "^CNXMETAL", "India", "NSE", "session", 100, "index", "points", False, "Nifty 50"),
+    AssetCatalogItem("India VIX", "index", "^INDIAVIX", "India", "NSE", "session", 105, "volatility_index", "points", False, "Nifty 50"),
     AssetCatalogItem("Gift Nifty", "index", "GIFTNIFTY", "India", "NSE", "predictive", 110, "predictive_index", "points", True, "Nifty 50"),
     # US indices and sector proxies
     AssetCatalogItem("S&P500", "index", "^GSPC", "US", "NYSE", "session", 200, "index", "points", False, "S&P500"),
