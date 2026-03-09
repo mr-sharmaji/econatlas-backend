@@ -138,3 +138,43 @@ CREATE INDEX IF NOT EXISTS idx_stock_snapshots_market_active
 ON stock_snapshots (market, traded_value DESC);
 CREATE INDEX IF NOT EXISTS idx_stock_snapshots_market_source_ts
 ON stock_snapshots (market, source_timestamp DESC);
+
+-- IPO snapshots for Overview IPO card
+CREATE TABLE IF NOT EXISTS ipo_snapshots (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    symbol TEXT NOT NULL,
+    company_name TEXT NOT NULL,
+    market TEXT NOT NULL DEFAULT 'IN',
+    status TEXT NOT NULL, -- open | upcoming
+    ipo_type TEXT NOT NULL, -- mainboard | sme
+    issue_size_cr DOUBLE PRECISION,
+    price_band TEXT,
+    gmp_percent DOUBLE PRECISION,
+    subscription_multiple DOUBLE PRECISION,
+    open_date DATE,
+    close_date DATE,
+    listing_date DATE,
+    source_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source TEXT,
+    notes TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ipo_snapshots_symbol_unique
+ON ipo_snapshots (symbol);
+CREATE INDEX IF NOT EXISTS idx_ipo_snapshots_status_dates
+ON ipo_snapshots (status, open_date ASC, close_date ASC);
+
+-- Device-scoped IPO alert selections
+CREATE TABLE IF NOT EXISTS device_ipo_alerts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    device_id TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_device_ipo_alerts_device_symbol_unique
+ON device_ipo_alerts (device_id, symbol);
+CREATE INDEX IF NOT EXISTS idx_device_ipo_alerts_device
+ON device_ipo_alerts (device_id);

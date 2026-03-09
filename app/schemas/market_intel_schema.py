@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
@@ -76,3 +76,38 @@ class DataHealthResponse(BaseModel):
     by_region: dict[str, RegionHealthResponse]
     by_instrument_type: dict[str, RegionHealthResponse]
     quality_counts: dict[str, int]
+
+
+class IpoItemResponse(BaseModel):
+    symbol: str
+    company_name: str
+    market: str = "IN"
+    status: str
+    ipo_type: str
+    issue_size_cr: float | None = None
+    price_band: str | None = None
+    gmp_percent: float | None = None
+    subscription_multiple: float | None = None
+    open_date: date | None = None
+    close_date: date | None = None
+    listing_date: date | None = None
+    source_timestamp: datetime | None = None
+    recommendation: str
+    recommendation_reason: str
+
+
+class IpoListResponse(BaseModel):
+    status: str
+    as_of: datetime | None = None
+    items: list[IpoItemResponse]
+    count: int
+
+
+class IpoAlertsUpdateRequest(BaseModel):
+    symbols: list[str] = Field(default_factory=list)
+
+
+class IpoAlertsResponse(BaseModel):
+    device_id: str
+    symbols: list[str]
+    count: int
