@@ -72,6 +72,9 @@ async def init_pool() -> asyncpg.Pool:
                 if not stmt or stmt.startswith("--"):
                     continue
                 up = stmt.upper()
+                # Defer this one until after duplicate cleanup below.
+                if "IDX_MARKET_PRICES_INTRADAY_ASSET_TYPE_TS_UNIQUE" in up:
+                    continue
                 if up.startswith("CREATE") or up.startswith("ALTER") or up.startswith("DROP"):
                     await conn.execute(stmt)
             logger.info("Schema init executed from sql/init.sql")
