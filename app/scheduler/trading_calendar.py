@@ -3,9 +3,10 @@ Used so we store prices under the exchange's trading date, not server UTC date (
 e.g. Monday's US close being stored as Tuesday when server is already in Tuesday UTC)."""
 from __future__ import annotations
 
+import json
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from app.core.config import get_settings
@@ -124,6 +125,108 @@ def _fallback_trading_date(exchange: str, utc_now: datetime) -> date:
     return d
 
 
+def _parse_hhmm(value: str, default: dtime) -> dtime:
+    try:
+        h, m = value.strip().split(":")
+        return dtime(hour=int(h), minute=int(m))
+    except Exception:
+        return default
+
+
+def _gift_default_sessions() -> tuple[dtime, dtime, dtime, dtime]:
+    s = get_settings()
+    s1_open = _parse_hhmm(getattr(s, "gift_nifty_session1_open", "06:30"), dtime(6, 30))
+    s1_close = _parse_hhmm(getattr(s, "gift_nifty_session1_close", "15:40"), dtime(15, 40))
+    s2_open = _parse_hhmm(getattr(s, "gift_nifty_session2_open", "16:35"), dtime(16, 35))
+    s2_close = _parse_hhmm(getattr(s, "gift_nifty_session2_close", "02:45"), dtime(2, 45))
+    return s1_open, s1_close, s2_open, s2_close
+
+
+def _gift_special_sessions() -> dict[date, list[tuple[dtime, dtime]]]:
+    raw = getattr(get_settings(), "gift_nifty_special_sessions_json", None)
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        logger.warning("Invalid gift_nifty_special_sessions_json; ignoring")
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    out: dict[date, list[tuple[dtime, dtime]]] = {}
+    for k, windows in parsed.items():
+        try:
+            d = date.fromisoformat(str(k))
+        except ValueError:
+            continue
+        if not isinstance(windows, list):
+            continue
+        valid_windows = []
+        for w in windows:
+            if not isinstance(w, list) or len(w) != 2:
+                continue
+            start = _parse_hhmm(str(w[0]), dtime(0, 0))
+            end = _parse_hhmm(str(w[1]), dtime(0, 0))
+            valid_windows.append((start, end))
+        if valid_windows:
+            out[d] = valid_windows
+    return out
+
+
+def _in_window(t: dtime, start: dtime, end: dtime) -> bool:
+    if end >= start:
+        return start <= t <= end
+    # Cross-midnight window (e.g., 16:35 -> 02:45)
+    return t >= start or t <= end
+
+
+def is_gift_nifty_open(utc_now: datetime) -> bool:
+    """True when Gift Nifty session is active in IST.
+    Uses configurable default sessions plus optional per-date override windows."""
+    now = utc_now if utc_now.tzinfo is not None else utc_now.replace(tzinfo=timezone.utc)
+    local = now.astimezone(_NSE_TZ)
+    t = local.timetz().replace(tzinfo=None)
+    d = local.date()
+
+    specials = _gift_special_sessions()
+    # Exact-date special windows
+    for start, end in specials.get(d, []):
+        if _in_window(t, start, end):
+            return True
+    # Previous-date cross-midnight special windows
+    prev_d = d - timedelta(days=1)
+    for start, end in specials.get(prev_d, []):
+        if end < start and t <= end:
+            return True
+    if d in specials or prev_d in specials:
+        return False
+
+    s1_open, s1_close, s2_open, s2_close = _gift_default_sessions()
+    wd = local.weekday()  # Mon=0 ... Sun=6
+
+    # Session 1: weekday daytime
+    if wd <= 4 and s1_open <= t <= s1_close:
+        return True
+    # Session 2 evening: Mon-Fri and Sunday
+    if wd in {0, 1, 2, 3, 4, 6} and t >= s2_open:
+        return True
+    # Session 2 after midnight continuation: Tue-Sat
+    if wd in {1, 2, 3, 4, 5} and t <= s2_close:
+        return True
+    return False
+
+
+def get_gift_nifty_trading_date(utc_now: datetime) -> date:
+    """Gift Nifty trading date in IST for daily upsert.
+    Before session-1 open, keep attributing to the previous IST date."""
+    now = utc_now if utc_now.tzinfo is not None else utc_now.replace(tzinfo=timezone.utc)
+    local = now.astimezone(_NSE_TZ)
+    s1_open, _s1_close, _s2_open, _s2_close = _gift_default_sessions()
+    if local.timetz().replace(tzinfo=None) < s1_open:
+        return local.date() - timedelta(days=1)
+    return local.date()
+
+
 def get_trading_date(utc_now: datetime, exchange: str) -> date:
     """Return the exchange trading date that the 'last price' belongs to (for timestamp assignment).
     When the exchange's local date is a session day we use it; when it is not (weekend/holiday) we use
@@ -196,7 +299,13 @@ def get_market_status(utc_now: datetime | None = None) -> dict:
 
     nse_open = _is_open(nse, nse_date, NSE)
     nyse_open = _is_open(nyse, nyse_date, NYSE)
-    result = {"nse_open": nse_open, "nyse_open": nyse_open, "live": nse_open or nyse_open}
+    gift_nifty_open = is_gift_nifty_open(now)
+    result = {
+        "nse_open": nse_open,
+        "nyse_open": nyse_open,
+        "gift_nifty_open": gift_nifty_open,
+        "live": nse_open or nyse_open or gift_nifty_open,
+    }
     if ttl > 0:
         _status_cache = result
         _status_cache_until = time.monotonic() + ttl

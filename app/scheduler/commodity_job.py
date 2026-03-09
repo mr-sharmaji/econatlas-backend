@@ -152,9 +152,10 @@ def build_commodity_intraday_rows_last_session_yahoo(
 async def run_commodity_job() -> None:
     try:
         loop = asyncio.get_event_loop()
-        rows, calendar_says_open = await loop.run_in_executor(None, _fetch_commodity_rows_sync)
-        if not rows:
+        fetched_rows, calendar_says_open = await loop.run_in_executor(None, _fetch_commodity_rows_sync)
+        if not fetched_rows:
             return
+        rows = fetched_rows
         if not calendar_says_open:
             pairs = [(r["asset"], "commodity") for r in rows]
             latest = await market_service.get_latest_price_per_asset_type(pairs)
@@ -163,16 +164,17 @@ async def run_commodity_job() -> None:
                 if (latest.get((r["asset"], "commodity")) is None)
                 or abs(float(r["price"]) - latest[(r["asset"], "commodity")]) > _PRICE_CHANGE_TOLERANCE
             ]
-        if not rows:
-            logger.info("Commodity job: calendar said closed and no price change; skipped")
-            return
-        updated = await market_service.insert_prices_batch_upsert_daily(rows)
-        if calendar_says_open:
-            now = datetime.now(timezone.utc)
-            ts_rounded = market_service._round_to_minute(now).isoformat()
-            intraday_rows = build_commodity_intraday_rows_for_open(rows, ts_rounded)
+        updated = 0
+        if rows:
+            updated = await market_service.insert_prices_batch_upsert_daily(rows)
+        now = datetime.now(timezone.utc)
+        ts_rounded = market_service._round_to_minute(now).isoformat()
+        intraday_rows = build_commodity_intraday_rows_for_open(fetched_rows, ts_rounded)
+        if intraday_rows:
             n = await market_service.insert_intraday_batch(intraday_rows)
             logger.info("Commodity job: %d daily upserted, %d intraday", updated, n)
+        elif updated == 0:
+            logger.info("Commodity job: no daily or intraday rows written")
         else:
             logger.info("Commodity job complete: %d rows upserted (daily)", updated)
     except Exception:

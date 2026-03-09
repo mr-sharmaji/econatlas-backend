@@ -80,12 +80,11 @@ async def main() -> None:
             market_rows,
             status,
             ts_rounded,
-            calendar_says_trading_day=True,
         )
         if intraday_rows:
             n = await market_service.insert_intraday_batch(intraday_rows)
             logger.info("Intraday (market): %d points inserted (market open).", n)
-        if status.get("nyse_open") and commodity_rows:
+        if commodity_rows:
             intraday_commodity = build_commodity_intraday_rows_for_open(commodity_rows, ts_rounded)
             n = await market_service.insert_intraday_batch(intraday_commodity)
             logger.info("Intraday (commodities): %d points inserted (market open).", n)

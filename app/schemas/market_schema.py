@@ -29,6 +29,7 @@ class MarketStatusResponse(BaseModel):
 
     nse_open: bool
     nyse_open: bool
+    gift_nifty_open: bool = False
     live: bool
 
 

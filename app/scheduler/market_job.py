@@ -9,7 +9,15 @@ from datetime import date, datetime, timezone
 from typing import Dict, List, Tuple
 
 from app.scheduler.base import BaseScraper
-from app.scheduler.trading_calendar import get_trading_date, get_market_status, is_trading_day_markets, NSE, NYSE
+from app.scheduler.trading_calendar import (
+    get_trading_date,
+    get_market_status,
+    get_gift_nifty_trading_date,
+    is_gift_nifty_open,
+    is_trading_day_markets,
+    NSE,
+    NYSE,
+)
 from app.services import event_service, market_service
 
 logger = logging.getLogger(__name__)
@@ -347,12 +355,16 @@ def _fetch_market_rows_sync() -> tuple[List[Dict], bool]:
     """Sync scrape; run in thread executor. Returns (rows, calendar_says_trading_day).
     Each row's timestamp is the exchange trading date (NSE/NYSE) so Monday's close is not stored as Tuesday."""
     now = _scraper.utc_now()
-    calendar_open = is_trading_day_markets(now)
+    calendar_open = is_trading_day_markets(now) or is_gift_nifty_open(now)
     items = _scraper.fetch_all()
     rows = []
     for it in items:
-        exchange = ASSET_EXCHANGE.get(it["asset"], NYSE)
-        trading_date = get_trading_date(now, exchange)
+        if it["asset"] == "Gift Nifty":
+            # Gift Nifty follows its own extended session model.
+            trading_date = get_gift_nifty_trading_date(now)
+        else:
+            exchange = ASSET_EXCHANGE.get(it["asset"], NYSE)
+            trading_date = get_trading_date(now, exchange)
         ts = datetime(trading_date.year, trading_date.month, trading_date.day, 0, 0, 0, tzinfo=timezone.utc).isoformat()
         rows.append({
             "asset": it["asset"],
@@ -374,17 +386,20 @@ def build_market_intraday_rows_for_open(
     market_rows: list[dict],
     status: dict,
     ts_rounded: str,
-    calendar_says_trading_day: bool,
 ) -> list[dict]:
     """Build intraday rows for 1D chart.
-    Indices/bonds follow exchange open status. Currencies follow trading day (24/5-style updates)."""
+    Currencies are written every run (24/7 behavior).
+    Gift Nifty follows dedicated Gift Nifty session status.
+    Other indices/bonds follow exchange open status."""
     intraday_rows = []
     for r in market_rows:
         instrument_type = r.get("instrument_type") or "index"
         exchange = ASSET_EXCHANGE.get(r["asset"], NYSE)
         include = False
         if instrument_type == "currency":
-            include = calendar_says_trading_day
+            include = True
+        elif r.get("asset") == "Gift Nifty":
+            include = bool(status.get("gift_nifty_open"))
         elif (exchange == NSE and status.get("nse_open")) or (exchange == NYSE and status.get("nyse_open")):
             include = True
         if include:
@@ -400,9 +415,10 @@ def build_market_intraday_rows_for_open(
 async def run_market_job() -> None:
     try:
         loop = asyncio.get_event_loop()
-        rows, calendar_says_open = await loop.run_in_executor(None, _fetch_market_rows_sync)
-        if not rows:
+        fetched_rows, calendar_says_open = await loop.run_in_executor(None, _fetch_market_rows_sync)
+        if not fetched_rows:
             return
+        rows = fetched_rows
         if not calendar_says_open:
             pairs = [(r["asset"], r.get("instrument_type") or "") for r in rows]
             latest = await market_service.get_latest_price_per_asset_type(pairs)
@@ -411,22 +427,22 @@ async def run_market_job() -> None:
                 if (latest.get((r["asset"], r.get("instrument_type") or "")) is None)
                 or abs(float(r["price"]) - latest[(r["asset"], r.get("instrument_type") or "")]) > _PRICE_CHANGE_TOLERANCE
             ]
-        if not rows:
-            logger.info("Market job: calendar said closed and no price change; skipped")
-            return
-        updated = await market_service.insert_prices_batch_upsert_daily(rows)
+        updated = 0
+        if rows:
+            updated = await market_service.insert_prices_batch_upsert_daily(rows)
         status = get_market_status()
         now = datetime.now(timezone.utc)
         ts_rounded = market_service._round_to_minute(now).isoformat()
         intraday_rows = build_market_intraday_rows_for_open(
-            rows,
+            fetched_rows,
             status,
             ts_rounded,
-            calendar_says_trading_day=calendar_says_open,
         )
         if intraday_rows:
             n = await market_service.insert_intraday_batch(intraday_rows)
             logger.info("Market job: %d daily upserted, %d intraday", updated, n)
+        elif updated == 0:
+            logger.info("Market job: no daily or intraday rows written")
         else:
             logger.info("Market job complete: %d rows upserted (daily)", updated)
     except Exception:

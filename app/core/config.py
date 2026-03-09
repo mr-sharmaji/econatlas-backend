@@ -20,6 +20,15 @@ class Settings(BaseSettings):
     # Cache GET /market/status for this many seconds (reduces calendar lookups; status only changes at session boundaries).
     market_status_cache_seconds: int = 30
 
+    # Gift Nifty default sessions in IST.
+    gift_nifty_session1_open: str = "06:30"
+    gift_nifty_session1_close: str = "15:40"
+    gift_nifty_session2_open: str = "16:35"
+    gift_nifty_session2_close: str = "02:45"
+    # Optional JSON overrides for special sessions (e.g. Diwali/muhurat).
+    # Example: {"2026-11-12":[["18:00","19:00"]]}
+    gift_nifty_special_sessions_json: str | None = None
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
