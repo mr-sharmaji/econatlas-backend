@@ -76,7 +76,12 @@ async def main() -> None:
     if status.get("nse_open") or status.get("nyse_open"):
         from app.scheduler.market_job import build_market_intraday_rows_for_open
         from app.scheduler.commodity_job import build_commodity_intraday_rows_for_open
-        intraday_rows = build_market_intraday_rows_for_open(market_rows, status, ts_rounded)
+        intraday_rows = build_market_intraday_rows_for_open(
+            market_rows,
+            status,
+            ts_rounded,
+            calendar_says_trading_day=True,
+        )
         if intraday_rows:
             n = await market_service.insert_intraday_batch(intraday_rows)
             logger.info("Intraday (market): %d points inserted (market open).", n)

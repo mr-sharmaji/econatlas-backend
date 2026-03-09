@@ -370,15 +370,27 @@ def _fetch_market_rows_sync() -> tuple[List[Dict], bool]:
 _PRICE_CHANGE_TOLERANCE = 1e-9
 
 
-def build_market_intraday_rows_for_open(market_rows: list[dict], status: dict, ts_rounded: str) -> list[dict]:
-    """Build intraday rows for 1D chart when market is open. Same logic for scheduler and backfill."""
+def build_market_intraday_rows_for_open(
+    market_rows: list[dict],
+    status: dict,
+    ts_rounded: str,
+    calendar_says_trading_day: bool,
+) -> list[dict]:
+    """Build intraday rows for 1D chart.
+    Indices/bonds follow exchange open status. Currencies follow trading day (24/5-style updates)."""
     intraday_rows = []
     for r in market_rows:
+        instrument_type = r.get("instrument_type") or "index"
         exchange = ASSET_EXCHANGE.get(r["asset"], NYSE)
-        if (exchange == NSE and status.get("nse_open")) or (exchange == NYSE and status.get("nyse_open")):
+        include = False
+        if instrument_type == "currency":
+            include = calendar_says_trading_day
+        elif (exchange == NSE and status.get("nse_open")) or (exchange == NYSE and status.get("nyse_open")):
+            include = True
+        if include:
             intraday_rows.append({
                 "asset": r["asset"],
-                "instrument_type": r.get("instrument_type") or "index",
+                "instrument_type": instrument_type,
                 "price": r["price"],
                 "timestamp": ts_rounded,
             })
@@ -406,7 +418,12 @@ async def run_market_job() -> None:
         status = get_market_status()
         now = datetime.now(timezone.utc)
         ts_rounded = market_service._round_to_minute(now).isoformat()
-        intraday_rows = build_market_intraday_rows_for_open(rows, status, ts_rounded)
+        intraday_rows = build_market_intraday_rows_for_open(
+            rows,
+            status,
+            ts_rounded,
+            calendar_says_trading_day=calendar_says_open,
+        )
         if intraday_rows:
             n = await market_service.insert_intraday_batch(intraday_rows)
             logger.info("Market job: %d daily upserted, %d intraday", updated, n)

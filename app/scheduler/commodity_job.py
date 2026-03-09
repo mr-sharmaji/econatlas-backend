@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
 
 from app.scheduler.base import BaseScraper
-from app.scheduler.trading_calendar import get_market_status, get_trading_date, is_trading_day_commodities, NYSE
+from app.scheduler.trading_calendar import get_trading_date, is_trading_day_commodities, NYSE
 from app.services import market_service
 
 logger = logging.getLogger(__name__)
@@ -167,8 +167,7 @@ async def run_commodity_job() -> None:
             logger.info("Commodity job: calendar said closed and no price change; skipped")
             return
         updated = await market_service.insert_prices_batch_upsert_daily(rows)
-        status = get_market_status()
-        if status.get("nyse_open"):
+        if calendar_says_open:
             now = datetime.now(timezone.utc)
             ts_rounded = market_service._round_to_minute(now).isoformat()
             intraday_rows = build_commodity_intraday_rows_for_open(rows, ts_rounded)
