@@ -29,6 +29,9 @@ NYSE = "NYSE"
 _NSE_CALENDAR_NAME = "XBOM"
 _NYSE_CALENDAR_NAME = "XNYS"
 
+_NSE_TZ = ZoneInfo("Asia/Kolkata")
+_NYSE_TZ = ZoneInfo("America/New_York")
+
 
 def _get_nse():
     global _nse_calendar
@@ -58,8 +61,8 @@ def is_trading_day_markets(utc_now: datetime) -> bool:
     nyse = _get_nyse()
     if nse is None and nyse is None:
         return utc_now.weekday() < 5
-    nse_date = utc_now.astimezone(ZoneInfo("Asia/Kolkata")).date()
-    nyse_date = utc_now.astimezone(ZoneInfo("America/New_York")).date()
+    nse_date = utc_now.astimezone(_NSE_TZ).date()
+    nyse_date = utc_now.astimezone(_NYSE_TZ).date()
     if nse and nse.is_session(nse_date):
         return True
     if nyse and nyse.is_session(nyse_date):
@@ -72,37 +75,89 @@ def is_trading_day_commodities(utc_now: datetime) -> bool:
     nyse = _get_nyse()
     if nyse is None:
         return utc_now.weekday() < 5
-    nyse_date = utc_now.astimezone(ZoneInfo("America/New_York")).date()
+    nyse_date = utc_now.astimezone(_NYSE_TZ).date()
     return nyse.is_session(nyse_date)
+
+
+def _to_utc(dt_like) -> datetime:
+    dt = dt_like.to_pydatetime() if hasattr(dt_like, "to_pydatetime") else dt_like
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _session_to_date(session_like) -> date:
+    if hasattr(session_like, "date"):
+        return session_like.date()
+    return date(session_like.year, session_like.month, session_like.day)
+
+
+def _previous_session_date(cal, session_date: date) -> date:
+    try:
+        return _session_to_date(cal.previous_session(session_date))
+    except Exception:
+        try:
+            prev = cal.date_to_session(session_date, "previous")
+            prev_date = _session_to_date(prev)
+            if prev_date == session_date:
+                return _session_to_date(cal.previous_session(prev))
+            return prev_date
+        except Exception:
+            return session_date
+
+
+def _fallback_is_open(exchange: str, utc_now: datetime) -> bool:
+    # No fixed exchange hours fallback: if calendar is unavailable, do not claim "open".
+    return False
+
+
+def _fallback_trading_date(exchange: str, utc_now: datetime) -> date:
+    if exchange == NSE:
+        local = utc_now.astimezone(_NSE_TZ)
+    else:
+        local = utc_now.astimezone(_NYSE_TZ)
+    d = local.date()
+    if local.weekday() >= 5:
+        d = d.fromordinal(d.toordinal() - 1)
+        while d.weekday() >= 5:
+            d = d.fromordinal(d.toordinal() - 1)
+    return d
 
 
 def get_trading_date(utc_now: datetime, exchange: str) -> date:
     """Return the exchange trading date that the 'last price' belongs to (for timestamp assignment).
     When the exchange's local date is a session day we use it; when it is not (weekend/holiday) we use
-    the previous session. Note: before today's session open we still return today if today is a session
-    (last price is then from yesterday); that edge case is a small window and acceptable."""
+    the previous session. Before session open on a trading day, this also returns the previous session date."""
+    now = utc_now if utc_now.tzinfo is not None else utc_now.replace(tzinfo=timezone.utc)
+
     if exchange == NSE:
         cal = _get_nse()
-        tz = ZoneInfo("Asia/Kolkata")
+        tz = _NSE_TZ
     elif exchange == NYSE:
         cal = _get_nyse()
-        tz = ZoneInfo("America/New_York")
+        tz = _NYSE_TZ
     else:
         # Fallback: use UTC date
-        return utc_now.date()
+        return now.date()
     if cal is None:
-        # No calendar: use local exchange date (best-effort)
-        return utc_now.astimezone(tz).date()
-    local_date = utc_now.astimezone(tz).date()
+        return _fallback_trading_date(exchange, now)
+
+    local_date = now.astimezone(tz).date()
     if cal.is_session(local_date):
-        return local_date
+        try:
+            session_open = _to_utc(cal.session_open(local_date))
+            # Before local open, keep writing to previous session day.
+            if now < session_open:
+                return _previous_session_date(cal, local_date)
+            return local_date
+        except Exception:
+            return local_date
     try:
         # date_to_session(..., "previous") gives the session on or before this date
         session_ts = cal.date_to_session(local_date, "previous")
-        return session_ts.date() if hasattr(session_ts, "date") else date(session_ts.year, session_ts.month, session_ts.day)
+        return _session_to_date(session_ts)
     except Exception:
-        # Fallback: return exchange local date (no calendar; may be wrong on weekends)
-        return local_date
+        return _fallback_trading_date(exchange, now)
 
 
 def get_market_status(utc_now: datetime | None = None) -> dict:
@@ -119,30 +174,28 @@ def get_market_status(utc_now: datetime | None = None) -> dict:
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
 
-    def _is_open(cal, local_date) -> bool:
-        if cal is None or not cal.is_session(local_date):
+    def _is_open(cal, local_date, exchange: str) -> bool:
+        if cal is None:
+            return _fallback_is_open(exchange, now)
+        if not cal.is_session(local_date):
             return False
         try:
             open_ts = cal.session_open(local_date)
             close_ts = cal.session_close(local_date)
             # exchange_calendars returns UTC timestamps; compare with now
-            open_dt = open_ts.to_pydatetime() if hasattr(open_ts, "to_pydatetime") else open_ts
-            close_dt = close_ts.to_pydatetime() if hasattr(close_ts, "to_pydatetime") else close_ts
-            if open_dt.tzinfo is None:
-                open_dt = open_dt.replace(tzinfo=timezone.utc)
-            if close_dt.tzinfo is None:
-                close_dt = close_dt.replace(tzinfo=timezone.utc)
+            open_dt = _to_utc(open_ts)
+            close_dt = _to_utc(close_ts)
             return open_dt <= now <= close_dt
         except Exception:
-            return False
+            return _fallback_is_open(exchange, now)
 
     nse = _get_nse()
     nyse = _get_nyse()
-    nse_date = now.astimezone(ZoneInfo("Asia/Kolkata")).date()
-    nyse_date = now.astimezone(ZoneInfo("America/New_York")).date()
+    nse_date = now.astimezone(_NSE_TZ).date()
+    nyse_date = now.astimezone(_NYSE_TZ).date()
 
-    nse_open = _is_open(nse, nse_date)
-    nyse_open = _is_open(nyse, nyse_date)
+    nse_open = _is_open(nse, nse_date, NSE)
+    nyse_open = _is_open(nyse, nyse_date, NYSE)
     result = {"nse_open": nse_open, "nyse_open": nyse_open, "live": nse_open or nyse_open}
     if ttl > 0:
         _status_cache = result
