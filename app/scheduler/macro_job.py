@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from app.scheduler.base import BaseScraper
-from app.scheduler.trading_calendar import get_trading_date, NSE, NYSE
+from app.scheduler.trading_calendar import get_trading_date, NSE, NYSE, XETRA, TSE
 from app.services import macro_service
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,18 @@ FRED_DIRECT: Dict[str, List[Tuple[str, str]]] = {
         ("gdp_growth", "INDGDPRQPSMEI"),
         ("repo_rate", "IRSTCI01INM156N"),
     ],
+    "EU": [
+        ("inflation", "CP0000EZ19M086NEST"),
+        ("gdp_growth", "EUNGDPRQPSMEI"),
+        ("unemployment", "LRHUTTTTEZM156S"),
+        ("repo_rate", "ECBDFR"),
+    ],
+    "JP": [
+        ("inflation", "CPALTT01JPM657N"),
+        ("gdp_growth", "JPNGDPRQPSMEI"),
+        ("unemployment", "LRHUTTTTJPM156S"),
+        ("repo_rate", "IRSTCB01JPM156N"),
+    ],
 }
 
 FRED_CPI: Dict[str, str] = {
@@ -36,9 +48,25 @@ WORLD_BANK_FALLBACK: Dict[str, List[Tuple[str, str]]] = {
     "IN": [
         ("unemployment", "SL.UEM.TOTL.ZS"),
     ],
+    "EU": [
+        ("inflation", "FP.CPI.TOTL.ZG"),
+        ("gdp_growth", "NY.GDP.MKTP.KD.ZG"),
+        ("unemployment", "SL.UEM.TOTL.ZS"),
+    ],
+    "JP": [
+        ("inflation", "FP.CPI.TOTL.ZG"),
+        ("gdp_growth", "NY.GDP.MKTP.KD.ZG"),
+        ("unemployment", "SL.UEM.TOTL.ZS"),
+    ],
 }
 
-COUNTRIES = ["US", "IN"]
+COUNTRIES = ["US", "IN", "EU", "JP"]
+WORLD_BANK_COUNTRY: Dict[str, str] = {
+    "US": "US",
+    "IN": "IN",
+    "EU": "EMU",
+    "JP": "JP",
+}
 
 
 class MacroScraper(BaseScraper):
@@ -90,7 +118,8 @@ class MacroScraper(BaseScraper):
         return yoy, latest_dt
 
     def _world_bank(self, country: str, indicator: str) -> Optional[Tuple[float, datetime]]:
-        url = WORLD_BANK_URL.format(country=country.lower(), indicator=indicator)
+        wb_country = WORLD_BANK_COUNTRY.get(country, country)
+        url = WORLD_BANK_URL.format(country=wb_country.lower(), indicator=indicator)
         payload = self._get_json(url, params={"format": "json", "per_page": 60})
         if not isinstance(payload, list) or len(payload) < 2 or not isinstance(payload[1], list):
             return None
@@ -165,7 +194,12 @@ def _fetch_macro_items_sync() -> list:
 
 
 # Country → exchange for trading-date assignment (same as market: US=NYSE, India=NSE)
-COUNTRY_EXCHANGE: Dict[str, str] = {"US": NYSE, "IN": NSE}
+COUNTRY_EXCHANGE: Dict[str, str] = {
+    "US": NYSE,
+    "IN": NSE,
+    "EU": XETRA,
+    "JP": TSE,
+}
 
 
 def _assign_trading_date_per_country(items: List[Dict]) -> List[Dict]:

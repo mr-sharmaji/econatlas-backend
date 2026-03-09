@@ -66,6 +66,10 @@ FX_SYMBOLS = {
     "EURINR=X": "EUR/INR",
     "GBPINR=X": "GBP/INR",
     "JPYINR=X": "JPY/INR",
+    "AUDINR=X": "AUD/INR",
+    "CADINR=X": "CAD/INR",
+    "CHFINR=X": "CHF/INR",
+    "CNYINR=X": "CNY/INR",
 }
 
 BOND_SERIES: List[Tuple[str, str]] = [
@@ -105,6 +109,10 @@ ASSET_EXCHANGE: Dict[str, str] = {
     "EUR/INR": NYSE,
     "GBP/INR": NYSE,
     "JPY/INR": NYSE,
+    "AUD/INR": NYSE,
+    "CAD/INR": NYSE,
+    "CHF/INR": NYSE,
+    "CNY/INR": NYSE,
     "India 10Y Bond Yield": NSE,
     "US 10Y Treasury Yield": NYSE,
     "US 2Y Treasury Yield": NYSE,

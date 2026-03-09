@@ -53,6 +53,10 @@ ASSET_CATALOG: tuple[AssetCatalogItem, ...] = (
     AssetCatalogItem("EUR/INR", "currency", "EURINR=X", "FX", "NYSE", "rolling_24h", 510, "fx", "inr", False, "USD/INR"),
     AssetCatalogItem("GBP/INR", "currency", "GBPINR=X", "FX", "NYSE", "rolling_24h", 520, "fx", "inr", False, "USD/INR"),
     AssetCatalogItem("JPY/INR", "currency", "JPYINR=X", "FX", "NYSE", "rolling_24h", 530, "fx", "inr", False, "USD/INR"),
+    AssetCatalogItem("AUD/INR", "currency", "AUDINR=X", "FX", "NYSE", "rolling_24h", 540, "fx", "inr", False, "USD/INR"),
+    AssetCatalogItem("CAD/INR", "currency", "CADINR=X", "FX", "NYSE", "rolling_24h", 550, "fx", "inr", False, "USD/INR"),
+    AssetCatalogItem("CHF/INR", "currency", "CHFINR=X", "FX", "NYSE", "rolling_24h", 560, "fx", "inr", False, "USD/INR"),
+    AssetCatalogItem("CNY/INR", "currency", "CNYINR=X", "FX", "NYSE", "rolling_24h", 570, "fx", "inr", False, "USD/INR"),
     # Commodities
     AssetCatalogItem("gold", "commodity", "GC=F", "Commodities", "NYSE", "rolling_24h", 600, "commodity", "usd_per_troy_ounce", True, "gold"),
     AssetCatalogItem("silver", "commodity", "SI=F", "Commodities", "NYSE", "rolling_24h", 610, "commodity", "usd_per_troy_ounce", True, "gold"),
