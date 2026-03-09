@@ -276,7 +276,10 @@ async def get_latest_prices(
                 hours=24,
             )
             if rolling is not None:
-                first_price, _last_price, pct = rolling
+                first_price, last_price, pct, last_ts = rolling
+                d["price"] = last_price
+                if last_ts is not None and hasattr(last_ts, "isoformat"):
+                    d["timestamp"] = last_ts.isoformat()
                 d["change_percent"] = pct
                 d["previous_close"] = first_price
         elif d.get("change_percent") is None and prev is not None and isinstance(prev, (int, float)):
@@ -332,8 +335,8 @@ async def _get_intraday_rolling_change(
     asset: str,
     instrument_type: str,
     hours: int = 24,
-) -> tuple[float, float, float] | None:
-    """Return (first_price, last_price, pct_change) from rolling intraday window."""
+) -> tuple[float, float, float, datetime | None] | None:
+    """Return (first_price, last_price, pct_change, last_timestamp) from rolling intraday window."""
     row = await pool.fetchrow(
         f"""
         WITH bounds AS (
@@ -355,7 +358,8 @@ async def _get_intraday_rolling_change(
         )
         SELECT
             (SELECT price FROM dedup ORDER BY "timestamp" ASC LIMIT 1) AS first_price,
-            (SELECT price FROM dedup ORDER BY "timestamp" DESC LIMIT 1) AS last_price
+            (SELECT price FROM dedup ORDER BY "timestamp" DESC LIMIT 1) AS last_price,
+            (SELECT "timestamp" FROM dedup ORDER BY "timestamp" DESC LIMIT 1) AS last_ts
         """,
         asset,
         instrument_type,
@@ -375,7 +379,7 @@ async def _get_intraday_rolling_change(
     if f == 0:
         return None
     pct = round(((l - f) / f) * 100, 2)
-    return (f, l, pct)
+    return (f, l, pct, row["last_ts"])
 
 
 async def get_intraday(
