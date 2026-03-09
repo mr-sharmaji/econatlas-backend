@@ -51,6 +51,16 @@ def _slug_symbol(name: str) -> str:
     return compact[:12]
 
 
+def _clean_company_name(value: object | None) -> str:
+    name = _strip_text(value)
+    if not name:
+        return ""
+    # Source names include suffixes like "IPO" or "NSE SME/BSE SME"; strip them for UI clarity.
+    name = re.sub(r"\s+(?:NSE|BSE)\s+SME\s*$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"\s+IPO\s*$", "", name, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", name).strip(" -")
+
+
 def _to_float(value: object | None) -> float | None:
     if value is None:
         return None
@@ -133,6 +143,7 @@ def _fetch_rows_for_status(source_code: str, status: str, today_ist: date) -> li
         ipo_name = _strip_text(row.get("~ipo_name") or row.get("Name"))
         if not ipo_name:
             continue
+        company_name = _clean_company_name(ipo_name) or ipo_name
 
         raw_id = _strip_text(row.get("~id"))
         symbol = f"IPO{raw_id}" if raw_id else _slug_symbol(ipo_name)
@@ -145,7 +156,7 @@ def _fetch_rows_for_status(source_code: str, status: str, today_ist: date) -> li
         parsed.append(
             {
                 "symbol": symbol,
-                "company_name": ipo_name,
+                "company_name": company_name,
                 "market": "IN",
                 "status": status,
                 "ipo_type": ipo_type,
@@ -282,6 +293,8 @@ def _recommendation(status: str, gmp_percent: float | None, subscription_multipl
         return "watch", "Mixed indicators; wait for stronger demand confirmation"
 
     # Upcoming IPOs rely primarily on GMP trend at this stage.
+    if gmp <= 0:
+        return "watch", "No GMP signal yet; wait for clearer demand trend"
     if gmp >= 18:
         return "apply", "High GMP trend indicates strong listing interest"
     if gmp <= 6:
