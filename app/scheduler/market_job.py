@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import html
 import io
 import logging
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Tuple
 
 import requests
@@ -279,39 +280,89 @@ class MarketScraper(BaseScraper, QuoteProvider):
 
     def _fetch_gift_nifty(self) -> QuoteTick | None:
         try:
-            html = self._get_text(GIFT_NIFTY_URL)
-            tables = re.findall(r"<table[^>]*>([\s\S]*?)</table>", html)
+            def _clean_cell(raw: str) -> str:
+                return html.unescape(re.sub(r"<[^>]+>", "", raw or "")).strip()
+
+            def _parse_num(raw: str) -> float | None:
+                text = _clean_cell(raw).replace(",", "").replace("%", "")
+                text = text.replace("−", "-").replace("–", "-")
+                m = re.search(r"[-+]?\d*\.?\d+", text)
+                if not m:
+                    return None
+                try:
+                    return float(m.group(0))
+                except (TypeError, ValueError):
+                    return None
+
+            page_html = self._get_text(GIFT_NIFTY_URL)
+            tables = re.findall(r"<table[^>]*>([\s\S]*?)</table>", page_html)
             if not tables:
                 return None
             rows = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", tables[0])
             for row in rows:
                 cells = re.findall(r"<td[^>]*>([\s\S]*?)</td>", row)
-                if len(cells) < 4:
+                if len(cells) < 5:
                     continue
-                raw_price = re.sub(r"<[^>]+>", "", cells[1]).strip().replace(",", "")
-                raw_pct = re.sub(r"<[^>]+>", "", cells[3]).strip()
-                try:
-                    price = float(raw_price)
-                    pct = float(raw_pct) if raw_pct else None
-                    if price > 0:
-                        return QuoteTick(
-                            asset="Gift Nifty",
-                            price=price,
-                            instrument_type="index",
-                            unit="points",
-                            source="giftcitynifty_scrape",
-                            change_percent=pct,
-                            previous_close=None,
-                            provider="giftcitynifty",
-                            provider_priority=1,
-                            confidence_level=0.9,
-                            source_timestamp=datetime.now(timezone.utc),
-                            quality="primary",
-                            is_predictive=True,
-                            session_source="gift_nifty_windows",
-                        )
-                except ValueError:
+                price = _parse_num(cells[1])
+                change = _parse_num(cells[2])
+                pct = _parse_num(cells[3])
+                direction = _clean_cell(cells[4]).lower()
+                if price is None or price <= 0:
                     continue
+                is_down = ("↓" in direction) or ("darr" in direction) or ("down" in direction)
+                is_up = ("↑" in direction) or ("uarr" in direction) or ("up" in direction)
+
+                # Site can show unsigned numbers with arrow direction.
+                if change is not None:
+                    if change > 0 and is_down:
+                        change = -change
+                    elif change < 0 and is_up:
+                        change = abs(change)
+
+                if pct is not None:
+                    if pct > 0 and is_down:
+                        pct = -pct
+                    elif pct < 0 and is_up:
+                        pct = abs(pct)
+
+                previous_close = None
+                if change is not None:
+                    previous_close = round(price - change, 2)
+                elif pct is not None and pct != -100:
+                    previous_close = round(price / (1 + (pct / 100.0)), 2)
+
+                if pct is None and previous_close not in (None, 0):
+                    pct = round(((price - previous_close) / previous_close) * 100, 2)
+
+                now_utc = datetime.now(timezone.utc)
+                now_ist = now_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+                hhmm = _clean_cell(cells[0])
+                source_ts = now_utc
+                m_time = re.search(r"(\d{1,2}):(\d{2})", hhmm)
+                if m_time:
+                    hh = int(m_time.group(1))
+                    mm = int(m_time.group(2))
+                    local_ts = now_ist.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                    if local_ts > (now_ist + timedelta(minutes=5)):
+                        local_ts -= timedelta(days=1)
+                    source_ts = local_ts.astimezone(timezone.utc)
+
+                return QuoteTick(
+                    asset="Gift Nifty",
+                    price=price,
+                    instrument_type="index",
+                    unit="points",
+                    source="giftcitynifty_scrape",
+                    change_percent=pct,
+                    previous_close=previous_close,
+                    provider="giftcitynifty",
+                    provider_priority=1,
+                    confidence_level=0.9,
+                    source_timestamp=source_ts,
+                    quality="primary",
+                    is_predictive=True,
+                    session_source="gift_nifty_windows",
+                )
         except Exception:
             logger.exception("Gift Nifty scrape failed")
         return None
