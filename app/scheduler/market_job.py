@@ -8,6 +8,8 @@ import re
 from datetime import date, datetime, timezone
 from typing import Dict, List, Tuple
 
+import requests
+
 from app.core.database import parse_ts
 from app.scheduler.base import BaseScraper
 from app.scheduler.provider_router import QuoteProvider, QuoteTick, select_best_quotes
@@ -84,6 +86,13 @@ FX_SYMBOLS = {
     "ZARINR=X": "ZAR/INR",
     "BRLINR=X": "BRL/INR",
     "MXNINR=X": "MXN/INR",
+}
+
+# Known Yahoo chart endpoints that return 404. We keep these pairs in the
+# catalog and fill them via fallback provider (ER API) instead of failing noisy.
+UNSUPPORTED_YAHOO_FX_SYMBOLS = {
+    "SARINR=X",
+    "MXNINR=X",
 }
 
 BOND_SERIES: List[Tuple[str, str]] = [
@@ -182,6 +191,9 @@ class MarketScraper(BaseScraper, QuoteProvider):
         records = []
         logger.debug("Fetching Yahoo quotes for %d symbols", len(symbols))
         for symbol in symbols:
+            if symbol in UNSUPPORTED_YAHOO_FX_SYMBOLS:
+                logger.debug("Skipping Yahoo quote fetch for unsupported symbol %s", symbol)
+                continue
             try:
                 payload = self._get_json(YAHOO_CHART_URL.format(symbol=symbol))
                 result = payload.get("chart", {}).get("result", [])
@@ -208,6 +220,12 @@ class MarketScraper(BaseScraper, QuoteProvider):
                     "currency": str(meta.get("currency", "USD")),
                     "source_timestamp": source_ts or datetime.now(timezone.utc),
                 })
+            except requests.exceptions.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status == 404 and symbol in UNSUPPORTED_YAHOO_FX_SYMBOLS:
+                    logger.debug("Yahoo symbol not found (%s), fallback provider will be used", symbol)
+                    continue
+                logger.warning("Failed to fetch %s", symbol, exc_info=True)
             except Exception:
                 logger.warning("Failed to fetch %s", symbol, exc_info=True)
         logger.debug("Yahoo quote fetch complete: %d/%d symbols", len(records), len(symbols))
@@ -492,6 +510,9 @@ _scraper = MarketScraper()
 def _fetch_yahoo_1m_bars(symbol: str, range_period: str = "2d") -> tuple[list[tuple[datetime, float]], str]:
     """Fetch 1-minute OHLC bars from Yahoo Chart API.
     Returns (list of (utc_datetime, close_price), currency_code). Returns ([], 'USD') on failure."""
+    if symbol in UNSUPPORTED_YAHOO_FX_SYMBOLS:
+        logger.debug("Skipping Yahoo 1m bars for unsupported symbol %s", symbol)
+        return ([], "USD")
     try:
         url = YAHOO_CHART_URL.format(symbol=symbol)
         payload = _scraper._get_json(url, params={"interval": "1m", "range": range_period})
@@ -517,6 +538,13 @@ def _fetch_yahoo_1m_bars(symbol: str, range_period: str = "2d") -> tuple[list[tu
             except (TypeError, ValueError):
                 continue
         return (out, currency)
+    except requests.exceptions.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 404 and symbol in UNSUPPORTED_YAHOO_FX_SYMBOLS:
+            logger.debug("Yahoo 1m endpoint unavailable for %s; skipping bars", symbol)
+            return ([], "USD")
+        logger.warning("Failed to fetch 1m bars for %s", symbol, exc_info=True)
+        return ([], "USD")
     except Exception:
         logger.warning("Failed to fetch 1m bars for %s", symbol, exc_info=True)
         return ([], "USD")
@@ -555,6 +583,8 @@ def build_market_intraday_rows_last_session_yahoo(
         asset_to_symbol[asset] = (sym, itype)
 
     for sym, (asset_name, instrument_type) in yahoo_assets.items():
+        if sym in UNSUPPORTED_YAHOO_FX_SYMBOLS:
+            continue
         target_dates = _normalize_dates(instrument_targets.get(instrument_type))
         if not target_dates:
             exchange = ASSET_EXCHANGE.get(asset_name, NYSE)

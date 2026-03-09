@@ -14,13 +14,20 @@ import csv
 import io
 import logging
 import math
+import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import requests
+
+# Ensure backend root is on path when run as: python scripts/backfill_last_5_years.py
+_backend_root = Path(__file__).resolve().parent.parent
+if str(_backend_root) not in sys.path:
+    sys.path.insert(0, str(_backend_root))
 
 from app.core.database import close_pool, get_pool, init_pool, parse_ts
 from app.scheduler.base import BaseScraper
@@ -66,6 +73,13 @@ FX_SYMBOLS = {
     "ZARINR=X": "ZAR/INR",
     "BRLINR=X": "BRL/INR",
     "MXNINR=X": "MXN/INR",
+}
+
+# Yahoo chart does not expose these INR pairs (404). They remain runtime assets
+# via fallback provider, but historical Yahoo backfill must skip them.
+UNSUPPORTED_YAHOO_FX_SYMBOLS = {
+    "SARINR=X",
+    "MXNINR=X",
 }
 
 COMMODITY_SYMBOLS = {
@@ -282,6 +296,8 @@ class HistoricalBackfiller(BaseScraper):
         range_end: datetime,
     ) -> list[dict[str, Any]]:
         """Fetch one market symbol’s rows for one year range (Yahoo only). Used for year-by-year insert to limit memory."""
+        if instrument_type == "currency" and symbol in UNSUPPORTED_YAHOO_FX_SYMBOLS:
+            return []
         symbol_rows: list[dict[str, Any]] = []
         try:
             points = self._fetch_yahoo_series(symbol, range_start, range_end)
@@ -299,7 +315,7 @@ class HistoricalBackfiller(BaseScraper):
                     }
                 )
         except requests.exceptions.HTTPError as e:
-            if e.response is not None and e.response.status_code == 400:
+            if e.response is not None and e.response.status_code in {400, 404}:
                 logger.warning(
                     "Skipping %s–%s for %s (no data for this period)",
                     range_start.date(),
@@ -680,7 +696,11 @@ async def run_once(backfiller: HistoricalBackfiller, cfg: BackfillConfig) -> dic
     fetched_market_count = fetched_macro_count = 0
 
     market_items = [(k, v, "index", "points") for k, v in INDEX_SYMBOLS.items()]
-    market_items.extend((k, v, "currency", "inr") for k, v in FX_SYMBOLS.items())
+    market_items.extend(
+        (k, v, "currency", "inr")
+        for k, v in FX_SYMBOLS.items()
+        if k not in UNSUPPORTED_YAHOO_FX_SYMBOLS
+    )
     commodity_items = list(COMMODITY_SYMBOLS.items())
 
     if not cfg.validate_only:
