@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.macro_schema import (
+    InstitutionalFlowsOverviewResponse,
     MacroIndicatorCreate,
     MacroIndicatorListResponse,
     MacroIndicatorResponse,
@@ -52,5 +53,16 @@ async def list_macro_indicators(
         return MacroIndicatorListResponse(
             indicators=indicators, count=len(indicators)
         )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/flows/overview", response_model=InstitutionalFlowsOverviewResponse)
+async def institutional_flows_overview(
+    sessions: int = Query(default=7, ge=3, le=30),
+) -> InstitutionalFlowsOverviewResponse:
+    try:
+        payload = await macro_service.get_institutional_flows_overview(sessions=sessions)
+        return InstitutionalFlowsOverviewResponse(**payload)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

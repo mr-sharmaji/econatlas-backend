@@ -88,6 +88,9 @@ class IpoItemResponse(BaseModel):
     price_band: str | None = None
     gmp_percent: float | None = None
     subscription_multiple: float | None = None
+    listing_price: float | None = None
+    listing_gain_pct: float | None = None
+    outcome_state: str | None = None
     open_date: date | None = None
     close_date: date | None = None
     listing_date: date | None = None

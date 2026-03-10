@@ -17,7 +17,7 @@ router = APIRouter(prefix="/ipos", tags=["ipos"])
 
 @router.get("", response_model=IpoListResponse)
 async def get_ipos(
-    status: Literal["open", "upcoming"] = Query(default="open"),
+    status: Literal["open", "upcoming", "closed"] = Query(default="open"),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> IpoListResponse:
     try:

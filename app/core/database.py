@@ -125,6 +125,22 @@ async def init_pool() -> asyncpg.Pool:
             "CREATE INDEX IF NOT EXISTS idx_device_watchlists_device_position "
             "ON device_watchlists (device_id, position ASC)"
         )
+        # IPO snapshot backward-compatible columns for Closed tab and retention.
+        await conn.execute(
+            "ALTER TABLE ipo_snapshots ADD COLUMN IF NOT EXISTS listing_price DOUBLE PRECISION"
+        )
+        await conn.execute(
+            "ALTER TABLE ipo_snapshots ADD COLUMN IF NOT EXISTS listing_gain_pct DOUBLE PRECISION"
+        )
+        await conn.execute(
+            "ALTER TABLE ipo_snapshots ADD COLUMN IF NOT EXISTS outcome_state TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE ipo_snapshots ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ipo_snapshots_archived_at ON ipo_snapshots (archived_at)"
+        )
         # Intraday canonical tick metadata columns (backward-compatible migration).
         await conn.execute(
             'ALTER TABLE market_prices_intraday ADD COLUMN IF NOT EXISTS source_timestamp TIMESTAMPTZ'

@@ -21,7 +21,7 @@ _LIVE_BASE_URL = "https://webnodejs.investorgain.com/cloud/new/report/data-read"
 
 def _normalize_status(status: str | None) -> str:
     s = (status or "open").strip().lower()
-    return s if s in {"open", "upcoming"} else "open"
+    return s if s in {"open", "upcoming", "closed"} else "open"
 
 
 def _normalize_symbols(symbols: list[str]) -> list[str]:
@@ -118,6 +118,65 @@ def _parse_source_ts(value: object | None, today_ist: date) -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _parse_listing_price(row: dict) -> float | None:
+    direct_keys = (
+        "~listing_price",
+        "~list_price",
+        "~listing_at",
+        "Listing Price",
+        "Listing price",
+        "Listing At",
+        "Listed Price",
+        "Listed at",
+        "List Price",
+    )
+    for key in direct_keys:
+        if key in row:
+            value = _to_float(row.get(key))
+            if value is not None:
+                return value
+
+    for key, raw in row.items():
+        key_l = str(key).lower()
+        if "list" not in key_l:
+            continue
+        if ("price" not in key_l) and ("at" not in key_l):
+            continue
+        value = _to_float(raw)
+        if value is not None:
+            return value
+    return None
+
+
+def _issue_price_upper(price_band: object | None) -> float | None:
+    text = _strip_text(price_band)
+    if not text:
+        return None
+    numbers = re.findall(r"\d+(?:\.\d+)?", text.replace(",", ""))
+    if not numbers:
+        return None
+    parsed: list[float] = []
+    for n in numbers:
+        try:
+            parsed.append(float(n))
+        except ValueError:
+            continue
+    if not parsed:
+        return None
+    return max(parsed)
+
+
+def _listing_gain_pct(listing_price: object | None, price_band: object | None) -> float | None:
+    try:
+        listed = float(listing_price) if listing_price is not None else None
+    except (TypeError, ValueError):
+        listed = None
+    upper = _issue_price_upper(price_band)
+    if listed is None or upper is None or upper <= 0:
+        return None
+    return round(((listed - upper) / upper) * 100.0, 2)
+
+
 def _financial_year(today_ist: date) -> str:
     if today_ist.month >= 4:
         start = today_ist.year
@@ -152,6 +211,12 @@ def _fetch_rows_for_status(source_code: str, status: str, today_ist: date) -> li
         gmp_percent = _to_float(row.get("~gmp_percent_calc"))
         if gmp_percent is None:
             gmp_percent = _to_float(row.get("GMP"))
+        listing_price = _parse_listing_price(row)
+        listing_gain_pct = _listing_gain_pct(
+            listing_price=listing_price,
+            price_band=row.get("Price (₹)"),
+        )
+        outcome_state = "listed" if listing_price is not None else None
 
         parsed.append(
             {
@@ -164,6 +229,9 @@ def _fetch_rows_for_status(source_code: str, status: str, today_ist: date) -> li
                 "price_band": _strip_text(row.get("Price (₹)")) or None,
                 "gmp_percent": gmp_percent,
                 "subscription_multiple": _parse_subscription(row.get("Sub")),
+                "listing_price": listing_price,
+                "listing_gain_pct": listing_gain_pct,
+                "outcome_state": outcome_state,
                 "open_date": _parse_date_value(row.get("~Srt_Open")),
                 "close_date": _parse_date_value(row.get("~Srt_Close")),
                 "listing_date": _parse_date_value(row.get("~Str_Listing")),
@@ -212,10 +280,10 @@ async def _sync_live_rows(force: bool = False) -> None:
         return
 
     if not rows:
-        logger.warning("IPO live sync returned zero rows; keeping existing database entries")
-        return
+        logger.warning("IPO live sync returned zero rows; continuing with lifecycle cleanup only")
 
     symbols = [str(r["symbol"]) for r in rows]
+    today_ist = datetime.now(_IST).date()
     async with pool.acquire() as conn:
         async with conn.transaction():
             for r in rows:
@@ -223,9 +291,9 @@ async def _sync_live_rows(force: bool = False) -> None:
                     """
                     INSERT INTO ipo_snapshots
                     (symbol, company_name, market, status, ipo_type, issue_size_cr, price_band,
-                     gmp_percent, subscription_multiple, open_date, close_date, listing_date,
-                     source_timestamp, ingested_at, source)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                     gmp_percent, subscription_multiple, listing_price, listing_gain_pct, outcome_state,
+                     open_date, close_date, listing_date, source_timestamp, ingested_at, archived_at, source)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
                     ON CONFLICT (symbol)
                     DO UPDATE SET
                         company_name = EXCLUDED.company_name,
@@ -236,11 +304,15 @@ async def _sync_live_rows(force: bool = False) -> None:
                         price_band = EXCLUDED.price_band,
                         gmp_percent = EXCLUDED.gmp_percent,
                         subscription_multiple = EXCLUDED.subscription_multiple,
+                        listing_price = EXCLUDED.listing_price,
+                        listing_gain_pct = EXCLUDED.listing_gain_pct,
+                        outcome_state = EXCLUDED.outcome_state,
                         open_date = EXCLUDED.open_date,
                         close_date = EXCLUDED.close_date,
                         listing_date = EXCLUDED.listing_date,
                         source_timestamp = EXCLUDED.source_timestamp,
                         ingested_at = EXCLUDED.ingested_at,
+                        archived_at = EXCLUDED.archived_at,
                         source = EXCLUDED.source
                     """,
                     r["symbol"],
@@ -252,34 +324,103 @@ async def _sync_live_rows(force: bool = False) -> None:
                     r["price_band"],
                     r["gmp_percent"],
                     r["subscription_multiple"],
+                    r.get("listing_price"),
+                    r.get("listing_gain_pct"),
+                    r.get("outcome_state"),
                     r["open_date"],
                     r["close_date"],
                     r["listing_date"],
                     r["source_timestamp"],
                     r["ingested_at"],
+                    None,
                     r["source"],
                 )
+            if symbols:
+                # Source no longer returns these symbols: roll them into closed lifecycle.
+                await conn.execute(
+                    """
+                    UPDATE ipo_snapshots
+                    SET status = 'closed'
+                    WHERE source = $1
+                      AND archived_at IS NULL
+                      AND NOT (symbol = ANY($2::text[]))
+                    """,
+                    _LIVE_SOURCE,
+                    symbols,
+                )
+
+            # Date-driven lifecycle close to retain recently completed IPOs.
             await conn.execute(
                 """
-                DELETE FROM ipo_snapshots
-                WHERE source = $1
-                  AND NOT (symbol = ANY($2::text[]))
+                UPDATE ipo_snapshots
+                SET status = 'closed'
+                WHERE archived_at IS NULL
+                  AND status <> 'closed'
+                  AND (
+                    (close_date IS NOT NULL AND close_date < $1::date)
+                    OR (listing_date IS NOT NULL AND listing_date <= $1::date)
+                  )
                 """,
-                _LIVE_SOURCE,
-                symbols,
+                today_ist,
             )
+
+            # Enrich closed rows for UI outcome rendering.
+            await conn.execute(
+                """
+                UPDATE ipo_snapshots
+                SET outcome_state = CASE
+                    WHEN listing_price IS NOT NULL THEN 'listed'
+                    ELSE 'awaiting_listing_data'
+                END,
+                    listing_gain_pct = CASE
+                        WHEN listing_price IS NULL THEN NULL
+                        ELSE listing_gain_pct
+                    END
+                WHERE status = 'closed'
+                  AND archived_at IS NULL
+                """
+            )
+
+            await conn.execute(
+                """
+                UPDATE ipo_snapshots
+                SET outcome_state = NULL
+                WHERE status IN ('open', 'upcoming')
+                  AND archived_at IS NULL
+                """
+            )
+
+            # Soft-archive old closed rows after 14 days.
+            await conn.execute(
+                """
+                UPDATE ipo_snapshots
+                SET archived_at = NOW()
+                WHERE status = 'closed'
+                  AND archived_at IS NULL
+                  AND COALESCE(close_date, listing_date) IS NOT NULL
+                  AND COALESCE(close_date, listing_date) <= ($1::date - 14)
+                """,
+                today_ist,
+            )
+
             await conn.execute(
                 """
                 DELETE FROM device_ipo_alerts
-                WHERE symbol NOT IN (SELECT symbol FROM ipo_snapshots)
+                WHERE symbol NOT IN (
+                    SELECT symbol
+                    FROM ipo_snapshots
+                    WHERE archived_at IS NULL
+                )
                 """
             )
-    logger.info("IPO live sync complete: %d rows upserted", len(rows))
+    logger.info("IPO live sync complete: %d active rows upserted", len(rows))
 
 
 def _recommendation(status: str, gmp_percent: float | None, subscription_multiple: float | None) -> tuple[str, str]:
     gmp = float(gmp_percent or 0.0)
     sub = float(subscription_multiple or 0.0)
+    if status == "closed":
+        return "watch", "Issue closed; review listing outcome"
     if status == "open":
         score = (gmp * 0.65) + (sub * 3.5)
         if gmp >= 16 and sub >= 6:
@@ -310,13 +451,17 @@ async def get_ipos(*, status: str = "open", limit: int = 20) -> dict:
         rows = await conn.fetch(
             """
             SELECT symbol, company_name, market, status, ipo_type, issue_size_cr, price_band,
-                   gmp_percent, subscription_multiple, open_date, close_date, listing_date,
-                   source_timestamp
+                   gmp_percent, subscription_multiple, listing_price, listing_gain_pct,
+                   outcome_state, open_date, close_date, listing_date, source_timestamp
             FROM ipo_snapshots
             WHERE status = $1
+              AND archived_at IS NULL
             ORDER BY
                 CASE WHEN $1 = 'open' THEN close_date END ASC NULLS LAST,
                 CASE WHEN $1 = 'upcoming' THEN open_date END ASC NULLS LAST,
+                CASE WHEN $1 = 'closed' THEN close_date END DESC NULLS LAST,
+                CASE WHEN $1 = 'closed' THEN listing_date END DESC NULLS LAST,
+                CASE WHEN $1 = 'closed' THEN source_timestamp END DESC NULLS LAST,
                 symbol ASC
             LIMIT $2
             """,
@@ -324,13 +469,25 @@ async def get_ipos(*, status: str = "open", limit: int = 20) -> dict:
             limit,
         )
         as_of = await conn.fetchval(
-            "SELECT MAX(source_timestamp) FROM ipo_snapshots WHERE status = $1",
+            "SELECT MAX(source_timestamp) FROM ipo_snapshots WHERE status = $1 AND archived_at IS NULL",
             status,
         )
 
     items: list[dict] = []
     for row in rows:
         item = record_to_dict(row)
+        listed = item.get("listing_price")
+        if item.get("listing_gain_pct") is None:
+            item["listing_gain_pct"] = _listing_gain_pct(
+                listing_price=listed,
+                price_band=item.get("price_band"),
+            )
+        if status == "closed":
+            item["outcome_state"] = (
+                "listed" if item.get("listing_price") is not None else "awaiting_listing_data"
+            )
+        else:
+            item["outcome_state"] = None
         rec, reason = _recommendation(
             status=str(item.get("status") or status),
             gmp_percent=item.get("gmp_percent"),
@@ -371,7 +528,7 @@ async def put_ipo_alerts(device_id: str, symbols: list[str]) -> list[str]:
     async with pool.acquire() as conn:
         if normalized:
             known_rows = await conn.fetch(
-                "SELECT symbol FROM ipo_snapshots WHERE symbol = ANY($1::text[])",
+                "SELECT symbol FROM ipo_snapshots WHERE symbol = ANY($1::text[]) AND archived_at IS NULL",
                 normalized,
             )
             known = {str(r["symbol"]) for r in known_rows}

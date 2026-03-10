@@ -145,17 +145,21 @@ CREATE TABLE IF NOT EXISTS ipo_snapshots (
     symbol TEXT NOT NULL,
     company_name TEXT NOT NULL,
     market TEXT NOT NULL DEFAULT 'IN',
-    status TEXT NOT NULL, -- open | upcoming
+    status TEXT NOT NULL, -- open | upcoming | closed
     ipo_type TEXT NOT NULL, -- mainboard | sme
     issue_size_cr DOUBLE PRECISION,
     price_band TEXT,
     gmp_percent DOUBLE PRECISION,
     subscription_multiple DOUBLE PRECISION,
+    listing_price DOUBLE PRECISION,
+    listing_gain_pct DOUBLE PRECISION,
+    outcome_state TEXT, -- listed | awaiting_listing_data
     open_date DATE,
     close_date DATE,
     listing_date DATE,
     source_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    archived_at TIMESTAMPTZ,
     source TEXT,
     notes TEXT
 );
@@ -164,6 +168,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ipo_snapshots_symbol_unique
 ON ipo_snapshots (symbol);
 CREATE INDEX IF NOT EXISTS idx_ipo_snapshots_status_dates
 ON ipo_snapshots (status, open_date ASC, close_date ASC);
+CREATE INDEX IF NOT EXISTS idx_ipo_snapshots_archived_at
+ON ipo_snapshots (archived_at);
 
 -- Device-scoped IPO alert selections
 CREATE TABLE IF NOT EXISTS device_ipo_alerts (

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
@@ -29,3 +29,19 @@ class MacroIndicatorListResponse(BaseModel):
 
     indicators: list[MacroIndicatorResponse]
     count: int
+
+
+class InstitutionalFlowTrendPoint(BaseModel):
+    session_date: date
+    fii_value: float | None = None
+    dii_value: float | None = None
+    combined_value: float
+    as_of: datetime | None = None
+
+
+class InstitutionalFlowsOverviewResponse(BaseModel):
+    as_of: datetime | None = None
+    fii_value: float | None = None
+    dii_value: float | None = None
+    combined_value: float | None = None
+    trend: list[InstitutionalFlowTrendPoint] = Field(default_factory=list)
