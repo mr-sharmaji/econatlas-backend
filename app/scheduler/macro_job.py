@@ -410,8 +410,14 @@ class MacroScraper(BaseScraper):
                     second=row_time[2],
                     microsecond=0,
                 )
+            elif row_date is not None:
+                # NSE row date is session date; anchor to post-close IST time for stable daily buckets.
+                row_date = row_date.replace(hour=15, minute=30, second=0, microsecond=0)
             if row_date is not None:
                 row_date = row_date.astimezone(timezone.utc)
+            else:
+                # Drop undated rows to avoid synthesizing incorrect "today" session timestamps.
+                continue
 
             # Wide-format rows with explicit FII/DII net keys.
             fii_value, fii_ts = _pick_latest(

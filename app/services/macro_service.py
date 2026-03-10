@@ -178,21 +178,6 @@ async def get_institutional_flows_overview(*, sessions: int = 7) -> dict:
     """Return latest FII/DII flows summary and short combined trend for Overview."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        latest_rows = await conn.fetch(
-            f"""
-            SELECT indicator_name, value, "timestamp"
-            FROM (
-                SELECT indicator_name, value, "timestamp",
-                       ROW_NUMBER() OVER (PARTITION BY indicator_name ORDER BY "timestamp" DESC) AS rn
-                FROM {TABLE}
-                WHERE country = 'IN'
-                  AND indicator_name = ANY($1::text[])
-            ) ranked
-            WHERE rn = 1
-            """,
-            ["fii_net_cash", "dii_net_cash"],
-        )
-
         trend_rows = await conn.fetch(
             f"""
             WITH daily_latest AS (
@@ -200,7 +185,8 @@ async def get_institutional_flows_overview(*, sessions: int = 7) -> dict:
                     indicator_name,
                     session_date,
                     value,
-                    "timestamp"
+                    "timestamp",
+                    EXTRACT(HOUR FROM ("timestamp" AT TIME ZONE 'Asia/Kolkata'))::int AS local_hour
                 FROM (
                     SELECT indicator_name,
                            value,
@@ -210,16 +196,29 @@ async def get_institutional_flows_overview(*, sessions: int = 7) -> dict:
                     WHERE country = 'IN'
                       AND indicator_name = ANY($1::text[])
                 ) raw
-                ORDER BY indicator_name, session_date, "timestamp" DESC
+                ORDER BY
+                    indicator_name,
+                    session_date,
+                    CASE
+                        WHEN EXTRACT(HOUR FROM ("timestamp" AT TIME ZONE 'Asia/Kolkata')) BETWEEN 9 AND 18
+                            THEN 0
+                        ELSE 1
+                    END,
+                    "timestamp" DESC
             ),
             rollup AS (
                 SELECT
                     session_date,
                     MAX(CASE WHEN indicator_name = 'fii_net_cash' THEN value END) AS fii_value,
                     MAX(CASE WHEN indicator_name = 'dii_net_cash' THEN value END) AS dii_value,
-                    MAX("timestamp") AS as_of
+                    MAX("timestamp") AS as_of,
+                    MAX(CASE WHEN local_hour BETWEEN 9 AND 18 THEN 1 ELSE 0 END) AS has_daytime_source
                 FROM daily_latest
                 GROUP BY session_date
+                HAVING
+                    -- Exclude synthetic early-morning "today" rows that can appear before NSE publishes the day.
+                    session_date < (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+                    OR MAX(CASE WHEN local_hour BETWEEN 9 AND 18 THEN 1 ELSE 0 END) = 1
                 ORDER BY session_date DESC
                 LIMIT $2
             )
@@ -236,24 +235,6 @@ async def get_institutional_flows_overview(*, sessions: int = 7) -> dict:
             sessions,
         )
 
-    latest_by_indicator: dict[str, tuple[float | None, object | None]] = {}
-    for row in latest_rows:
-        latest_by_indicator[str(row["indicator_name"])] = (
-            float(row["value"]) if row["value"] is not None else None,
-            row["timestamp"],
-        )
-
-    fii_value = latest_by_indicator.get("fii_net_cash", (None, None))[0]
-    dii_value = latest_by_indicator.get("dii_net_cash", (None, None))[0]
-    fii_ts = latest_by_indicator.get("fii_net_cash", (None, None))[1]
-    dii_ts = latest_by_indicator.get("dii_net_cash", (None, None))[1]
-
-    as_of = None
-    if fii_ts is not None and dii_ts is not None:
-        as_of = fii_ts if fii_ts >= dii_ts else dii_ts
-    else:
-        as_of = fii_ts or dii_ts
-
     trend: list[dict] = []
     for row in trend_rows:
         trend.append(
@@ -265,6 +246,11 @@ async def get_institutional_flows_overview(*, sessions: int = 7) -> dict:
                 "as_of": row["as_of"],
             }
         )
+
+    latest_point = trend[-1] if trend else None
+    fii_value = latest_point["fii_value"] if latest_point else None
+    dii_value = latest_point["dii_value"] if latest_point else None
+    as_of = latest_point["as_of"] if latest_point else None
 
     combined_value = None
     if fii_value is not None or dii_value is not None:
