@@ -143,6 +143,58 @@ async def init_pool() -> asyncpg.Pool:
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ipo_snapshots_archived_at ON ipo_snapshots (archived_at)"
         )
+        # Tax sync metadata columns (backward-compatible migration).
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tax_config_versions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                version TEXT NOT NULL UNIQUE,
+                default_fy TEXT NOT NULL,
+                disclaimer TEXT NOT NULL,
+                supported_fy JSONB NOT NULL,
+                rounding_policy JSONB NOT NULL,
+                rules_by_fy JSONB NOT NULL,
+                content_hash TEXT NOT NULL,
+                source TEXT,
+                source_mode TEXT,
+                is_active BOOLEAN NOT NULL DEFAULT FALSE,
+                archived_at TIMESTAMPTZ,
+                last_validation_status TEXT,
+                last_validation_reason TEXT,
+                last_sync_attempt_at TIMESTAMPTZ,
+                last_sync_success_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            "ALTER TABLE tax_config_versions ADD COLUMN IF NOT EXISTS source_mode TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE tax_config_versions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ"
+        )
+        await conn.execute(
+            "ALTER TABLE tax_config_versions ADD COLUMN IF NOT EXISTS last_validation_status TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE tax_config_versions ADD COLUMN IF NOT EXISTS last_validation_reason TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE tax_config_versions ADD COLUMN IF NOT EXISTS last_sync_attempt_at TIMESTAMPTZ"
+        )
+        await conn.execute(
+            "ALTER TABLE tax_config_versions ADD COLUMN IF NOT EXISTS last_sync_success_at TIMESTAMPTZ"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tax_config_versions_active ON tax_config_versions (is_active) WHERE is_active = TRUE"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tax_config_versions_archived_at ON tax_config_versions (archived_at)"
+        )
+        await conn.execute(
+            "DROP TABLE IF EXISTS tax_validation_cases"
+        )
         # Intraday canonical tick metadata columns (backward-compatible migration).
         await conn.execute(
             'ALTER TABLE market_prices_intraday ADD COLUMN IF NOT EXISTS source_timestamp TIMESTAMPTZ'

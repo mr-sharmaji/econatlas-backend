@@ -184,3 +184,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_device_ipo_alerts_device_symbol_unique
 ON device_ipo_alerts (device_id, symbol);
 CREATE INDEX IF NOT EXISTS idx_device_ipo_alerts_device
 ON device_ipo_alerts (device_id);
+
+-- Tax configuration (DB-backed; no hardcoded backend rule constants)
+CREATE TABLE IF NOT EXISTS tax_config_versions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    version TEXT NOT NULL UNIQUE,
+    default_fy TEXT NOT NULL,
+    disclaimer TEXT NOT NULL,
+    supported_fy JSONB NOT NULL,
+    rounding_policy JSONB NOT NULL,
+    rules_by_fy JSONB NOT NULL,
+    content_hash TEXT NOT NULL,
+    source TEXT,
+    source_mode TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+    archived_at TIMESTAMPTZ,
+    last_validation_status TEXT,
+    last_validation_reason TEXT,
+    last_sync_attempt_at TIMESTAMPTZ,
+    last_sync_success_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tax_config_versions_active
+ON tax_config_versions (is_active)
+WHERE is_active = TRUE;
+
+CREATE INDEX IF NOT EXISTS idx_tax_config_versions_archived_at
+ON tax_config_versions (archived_at);
+
+DROP TABLE IF EXISTS tax_validation_cases;

@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     macro_interval_minutes: int = 1
     news_interval_minutes: int = 30
     brief_interval_minutes: int = 5
+    tax_sync_enabled: bool = True
+    tax_sync_interval_minutes: int = 1440
+    tax_sync_timeout_seconds: int = 30
 
     # Cache GET /market/status for this many seconds (reduces calendar lookups; status only changes at session boundaries).
     market_status_cache_seconds: int = 30
