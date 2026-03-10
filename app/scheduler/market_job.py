@@ -141,6 +141,7 @@ INDEX_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
 INDEX_FALLBACK_MIN_FRESHNESS_GAIN_SECONDS = 120
 FX_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
 FX_FALLBACK_MIN_FRESHNESS_GAIN_SECONDS = 120
+FX_SANITY_MAX_DEVIATION_PCT = 20.0
 
 # Asset → exchange for correct trading-date assignment (avoid Monday close stored as Tuesday UTC)
 ASSET_EXCHANGE: Dict[str, str] = {
@@ -224,6 +225,58 @@ def _pick_previous_close(meta: dict) -> tuple[float | None, str | None]:
 
 
 class MarketScraper(BaseScraper, QuoteProvider):
+    def _apply_fx_sanity_guard(
+        self,
+        selected: list[QuoteTick],
+        all_ticks: list[QuoteTick],
+    ) -> list[QuoteTick]:
+        """Replace clearly anomalous FX ticks with ER API reference ticks.
+
+        Yahoo/Google can occasionally emit inverted/scaled INR crosses
+        (observed with IDR/INR and MYR/INR). We keep primary feeds by default,
+        but if deviation versus ER reference is abnormally large, switch to ER
+        for that cycle.
+        """
+        er_ref: dict[str, QuoteTick] = {}
+        for tick in all_ticks:
+            if tick.instrument_type != "currency" or tick.provider != "er_api":
+                continue
+            prev = er_ref.get(tick.asset)
+            if prev is None:
+                er_ref[tick.asset] = tick
+                continue
+            prev_ts = prev.source_timestamp
+            cur_ts = tick.source_timestamp
+            if prev_ts.tzinfo is None:
+                prev_ts = prev_ts.replace(tzinfo=timezone.utc)
+            if cur_ts.tzinfo is None:
+                cur_ts = cur_ts.replace(tzinfo=timezone.utc)
+            if cur_ts > prev_ts:
+                er_ref[tick.asset] = tick
+
+        guarded: list[QuoteTick] = []
+        for tick in selected:
+            if tick.instrument_type != "currency" or tick.provider == "er_api":
+                guarded.append(tick)
+                continue
+            ref = er_ref.get(tick.asset)
+            if ref is None or ref.price <= 0 or tick.price <= 0:
+                guarded.append(tick)
+                continue
+            deviation_pct = abs((tick.price - ref.price) / ref.price) * 100.0
+            if deviation_pct <= FX_SANITY_MAX_DEVIATION_PCT:
+                guarded.append(tick)
+                continue
+            logger.warning(
+                "FX sanity guard replaced quote: asset=%s provider=%s price=%s ref=%s deviation_pct=%.2f",
+                tick.asset,
+                tick.provider,
+                tick.price,
+                ref.price,
+                deviation_pct,
+            )
+            guarded.append(ref)
+        return guarded
 
     def _fetch_all_quotes(self) -> List[Dict]:
         symbols = [*INDEX_SYMBOLS.keys(), *FX_SYMBOLS.keys()]
@@ -732,6 +785,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
         except Exception:
             logger.exception("Bond yield fetch failed")
         selected = select_best_quotes(all_ticks)
+        selected = self._apply_fx_sanity_guard(selected, all_ticks)
         logger.debug("Provider routing selected %d/%d ticks", len(selected), len(all_ticks))
         return selected
 
