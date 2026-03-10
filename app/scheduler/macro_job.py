@@ -4,9 +4,11 @@ import asyncio
 import csv
 import io
 import logging
+import math
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from app.scheduler.base import BaseScraper
 from app.services import macro_service
@@ -77,8 +79,112 @@ WORLD_BANK_COUNTRY: Dict[str, str] = {
     "JP": "JP",
 }
 
+INDIA_TZ = ZoneInfo("Asia/Kolkata")
+
+# Lower number means higher preference when timestamps tie.
+SOURCE_PRIORITY: Dict[str, int] = {
+    "nse_fiidii_api": 0,
+    "fred_api": 1,
+    "world_bank": 2,
+}
+
+# Lightweight sanity ranges to reject obvious bad provider values.
+VALUE_RANGES: Dict[str, Tuple[float, float]] = {
+    "inflation": (-100.0, 200.0),
+    "gdp_growth": (-50.0, 50.0),
+    "unemployment": (0.0, 100.0),
+    "repo_rate": (-5.0, 50.0),
+    "fii_net_cash": (-1_000_000.0, 1_000_000.0),
+    "dii_net_cash": (-1_000_000.0, 1_000_000.0),
+}
+
 
 class MacroScraper(BaseScraper):
+
+    def _source_priority(self, source: object) -> int:
+        return SOURCE_PRIORITY.get(str(source or "").lower(), 99)
+
+    def _is_value_valid(self, indicator_name: str, value: float) -> bool:
+        if not math.isfinite(value):
+            return False
+        low, high = VALUE_RANGES.get(indicator_name, (-1e12, 1e12))
+        return low <= value <= high
+
+    def _select_best(
+        self,
+        selected: Dict[Tuple[str, str], Dict],
+        item: Dict,
+    ) -> None:
+        indicator = str(item.get("indicator_name") or "").strip()
+        country = str(item.get("country") or "").strip()
+        source = str(item.get("source") or "").strip()
+        value = item.get("value")
+        ts_raw = item.get("timestamp")
+        if not indicator or not country or value is None or not ts_raw:
+            return
+        try:
+            value_f = float(value)
+        except (TypeError, ValueError):
+            logger.debug("Macro drop invalid value: %s/%s value=%s", country, indicator, value)
+            return
+        if not self._is_value_valid(indicator, value_f):
+            logger.warning(
+                "Macro drop out-of-range value: %s/%s source=%s value=%s",
+                country,
+                indicator,
+                source,
+                value_f,
+            )
+            return
+        try:
+            ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+        except ValueError:
+            logger.debug("Macro drop invalid timestamp: %s/%s ts=%s", country, indicator, ts_raw)
+            return
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        now = self.utc_now()
+        # Guard provider clock glitches.
+        if ts > now + timedelta(minutes=10):
+            logger.warning(
+                "Macro drop future timestamp: %s/%s source=%s ts=%s now=%s",
+                country,
+                indicator,
+                source,
+                ts.isoformat(),
+                now.isoformat(),
+            )
+            return
+
+        normalized = {
+            "indicator_name": indicator,
+            "value": round(value_f, 4),
+            "country": country,
+            "timestamp": ts.astimezone(timezone.utc).isoformat(),
+            "unit": item.get("unit"),
+            "source": source,
+        }
+        key = (country, indicator)
+        existing = selected.get(key)
+        if existing is None:
+            selected[key] = normalized
+            return
+        existing_ts = datetime.fromisoformat(str(existing["timestamp"]).replace("Z", "+00:00"))
+        if existing_ts.tzinfo is None:
+            existing_ts = existing_ts.replace(tzinfo=timezone.utc)
+        candidate_ts = datetime.fromisoformat(str(normalized["timestamp"]).replace("Z", "+00:00"))
+        if candidate_ts.tzinfo is None:
+            candidate_ts = candidate_ts.replace(tzinfo=timezone.utc)
+
+        take_candidate = False
+        if candidate_ts > existing_ts:
+            take_candidate = True
+        elif candidate_ts == existing_ts:
+            if self._source_priority(normalized["source"]) < self._source_priority(existing.get("source")):
+                take_candidate = True
+
+        if take_candidate:
+            selected[key] = normalized
 
     def _fetch_fred_csv(self, series_id: str) -> List[Tuple[str, str]]:
         text = self._get_text(FRED_CSV_URL, params={"id": series_id})
@@ -196,7 +302,7 @@ class MacroScraper(BaseScraper):
             return None
         for fmt in ("%d-%b-%Y", "%d %b %Y", "%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
             try:
-                return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+                return datetime.strptime(text, fmt).replace(tzinfo=INDIA_TZ)
             except ValueError:
                 continue
         return None
@@ -304,6 +410,8 @@ class MacroScraper(BaseScraper):
                     second=row_time[2],
                     microsecond=0,
                 )
+            if row_date is not None:
+                row_date = row_date.astimezone(timezone.utc)
 
             # Wide-format rows with explicit FII/DII net keys.
             fii_value, fii_ts = _pick_latest(
@@ -367,7 +475,7 @@ class MacroScraper(BaseScraper):
         return items
 
     def fetch_all(self) -> List[Dict]:
-        items = []
+        selected: Dict[Tuple[str, str], Dict] = {}
         for country in COUNTRIES:
             cpi = FRED_CPI.get(country)
             if cpi:
@@ -375,7 +483,7 @@ class MacroScraper(BaseScraper):
                     result = self._compute_yoy_inflation(cpi)
                     if result:
                         val, ts = result
-                        items.append({
+                        self._select_best(selected, {
                             "indicator_name": "inflation",
                             "value": val,
                             "country": country,
@@ -394,7 +502,7 @@ class MacroScraper(BaseScraper):
                         result = self._fred_latest(series)
                     if result:
                         val, ts = result
-                        items.append({
+                        self._select_best(selected, {
                             "indicator_name": name,
                             "value": val,
                             "country": country,
@@ -410,7 +518,7 @@ class MacroScraper(BaseScraper):
                     result = self._world_bank(country, wb_ind)
                     if result:
                         val, ts = result
-                        items.append({
+                        self._select_best(selected, {
                             "indicator_name": name,
                             "value": val,
                             "country": country,
@@ -420,7 +528,24 @@ class MacroScraper(BaseScraper):
                         })
                 except Exception:
                     logger.exception("World Bank failed %s %s", country, wb_ind)
-        items.extend(self._fetch_fii_dii_flows())
+        for item in self._fetch_fii_dii_flows():
+            self._select_best(selected, item)
+        items = list(selected.values())
+        for item in items:
+            try:
+                ts = datetime.fromisoformat(str(item["timestamp"]).replace("Z", "+00:00"))
+                lag_h = max(0.0, (self.utc_now() - ts).total_seconds() / 3600.0)
+                logger.debug(
+                    "Macro selected %s/%s source=%s ts=%s age_h=%.1f value=%s",
+                    item.get("country"),
+                    item.get("indicator_name"),
+                    item.get("source"),
+                    item.get("timestamp"),
+                    lag_h,
+                    item.get("value"),
+                )
+            except Exception:
+                continue
         return items
 
 
