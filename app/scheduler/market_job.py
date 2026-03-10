@@ -22,6 +22,7 @@ from app.scheduler.trading_calendar import (
     is_gift_nifty_open,
     is_trading_day_markets,
     is_exchange_expected_open,
+    is_fx_session_expected_open,
     NSE,
     NYSE,
     LSE,
@@ -138,6 +139,8 @@ GOOGLE_INDEX_FALLBACKS: dict[str, dict[str, str]] = {
 }
 INDEX_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
 INDEX_FALLBACK_MIN_FRESHNESS_GAIN_SECONDS = 120
+FX_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
+FX_FALLBACK_MIN_FRESHNESS_GAIN_SECONDS = 120
 
 # Asset → exchange for correct trading-date assignment (avoid Monday close stored as Tuesday UTC)
 ASSET_EXCHANGE: Dict[str, str] = {
@@ -426,6 +429,50 @@ class MarketScraper(BaseScraper, QuoteProvider):
         except (TypeError, ValueError, OSError):
             return None
 
+    def _parse_google_fx_quote(
+        self,
+        page_html: str,
+        base_ccy: str,
+        quote_ccy: str,
+    ) -> tuple[float, float | None, float | None, datetime] | None:
+        # Google Finance FX shape appears under labels like "BRL / INR".
+        # Some pages can present the reverse pair (e.g., "INR / JPY"), so we
+        # support inversion when needed.
+        candidates = (
+            (f"{base_ccy} / {quote_ccy}", False),
+            (f"{quote_ccy} / {base_ccy}", True),
+        )
+        for label, inverted in candidates:
+            pattern = re.compile(
+                rf'"{re.escape(label)}"[\s\S]{{0,260}}?'
+                r"\[(?P<price>-?\d+(?:\.\d+)?)\s*,\s*(?P<chg>-?\d+(?:\.\d+)?)\s*,\s*(?P<pct>-?\d+(?:\.\d+)?)\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]"
+                r"[\s\S]{0,240}?\[(?P<ts>\d{10})\]",
+                re.IGNORECASE,
+            )
+            m = pattern.search(page_html)
+            if not m:
+                continue
+            try:
+                raw_price = float(m.group("price"))
+                raw_chg = float(m.group("chg"))
+                raw_prev = raw_price - raw_chg
+                ts = datetime.fromtimestamp(int(m.group("ts")), tz=timezone.utc)
+                if raw_price <= 0:
+                    continue
+                if not inverted:
+                    prev = raw_prev if raw_prev > 0 else None
+                    pct = _pct_change(raw_price, prev)
+                    return raw_price, prev, pct, ts
+                if raw_prev <= 0:
+                    continue
+                inv_price = 1.0 / raw_price
+                inv_prev = 1.0 / raw_prev
+                pct = _pct_change(inv_price, inv_prev)
+                return inv_price, inv_prev, pct, ts
+            except (TypeError, ValueError, OSError, ZeroDivisionError):
+                continue
+        return None
+
     def _fetch_index_fallbacks(self, yahoo_index_ticks: list[QuoteTick]) -> list[QuoteTick]:
         by_asset = {t.asset: t for t in yahoo_index_ticks}
         now = datetime.now(timezone.utc)
@@ -485,6 +532,64 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 )
             except Exception:
                 logger.debug("Index fallback fetch failed for %s", asset, exc_info=True)
+        return out
+
+    def _fetch_fx_google_fallbacks(self, yahoo_fx_ticks: list[QuoteTick]) -> list[QuoteTick]:
+        now = datetime.now(timezone.utc)
+        if not is_fx_session_expected_open(now):
+            return []
+        by_asset = {t.asset: t for t in yahoo_fx_ticks}
+        stale_seconds = max(60, int(get_settings().stale_threshold_seconds_rolling_24h))
+        out: list[QuoteTick] = []
+        for _symbol, pair in FX_SYMBOLS.items():
+            primary = by_asset.get(pair)
+            needs_fallback = primary is None
+            if primary is not None:
+                p_ts = primary.source_timestamp
+                if p_ts.tzinfo is None:
+                    p_ts = p_ts.replace(tzinfo=timezone.utc)
+                needs_fallback = (now - p_ts).total_seconds() > stale_seconds
+            if not needs_fallback:
+                continue
+            base_ccy, quote_ccy = pair.split("/")
+            try:
+                page_html = self._get_text(GOOGLE_FINANCE_QUOTE_URL.format(code=f"{base_ccy}-{quote_ccy}"))
+                parsed = self._parse_google_fx_quote(page_html, base_ccy, quote_ccy)
+                if not parsed:
+                    continue
+                price, prev, pct, ts = parsed
+                if ts > (now + timedelta(seconds=FX_FALLBACK_MAX_CLOCK_SKEW_SECONDS)):
+                    logger.debug("FX fallback skipped (future timestamp): asset=%s ts=%s", pair, ts.isoformat())
+                    continue
+                if (now - ts).total_seconds() > 24 * 3600:
+                    logger.debug("FX fallback skipped (too old): asset=%s ts=%s", pair, ts.isoformat())
+                    continue
+                if primary is not None:
+                    p_ts = primary.source_timestamp
+                    if p_ts.tzinfo is None:
+                        p_ts = p_ts.replace(tzinfo=timezone.utc)
+                    min_gain = timedelta(seconds=FX_FALLBACK_MIN_FRESHNESS_GAIN_SECONDS)
+                    if ts <= (p_ts + min_gain):
+                        continue
+                out.append(
+                    QuoteTick(
+                        asset=pair,
+                        price=price,
+                        instrument_type="currency",
+                        unit="inr",
+                        source="google_finance_html",
+                        previous_close=prev,
+                        change_percent=pct,
+                        provider="google_finance",
+                        provider_priority=4,
+                        confidence_level=0.75,
+                        source_timestamp=ts,
+                        is_fallback=True,
+                        quality="fallback",
+                    )
+                )
+            except Exception:
+                logger.debug("FX fallback fetch failed for %s", pair, exc_info=True)
         return out
 
     def _fetch_bond_yields(self) -> List[QuoteTick]:
@@ -579,8 +684,9 @@ class MarketScraper(BaseScraper, QuoteProvider):
             records = self._fetch_all_quotes()
             logger.debug("Yahoo raw records: %d", len(records))
             index_ticks = self._parse_indices(records)
+            fx_ticks = self._parse_fx(records)
             all_ticks.extend(index_ticks)
-            all_ticks.extend(self._parse_fx(records))
+            all_ticks.extend(fx_ticks)
             try:
                 fallbacks = self._fetch_index_fallbacks(index_ticks)
                 if fallbacks:
@@ -588,6 +694,13 @@ class MarketScraper(BaseScraper, QuoteProvider):
                     all_ticks.extend(fallbacks)
             except Exception:
                 logger.debug("Index fallback scan failed", exc_info=True)
+            try:
+                fx_fallbacks = self._fetch_fx_google_fallbacks(fx_ticks)
+                if fx_fallbacks:
+                    logger.info("FX fallback quotes added: %d", len(fx_fallbacks))
+                    all_ticks.extend(fx_fallbacks)
+            except Exception:
+                logger.debug("FX fallback scan failed", exc_info=True)
             logger.debug(
                 "Yahoo parsed ticks: indices=%d fx=%d",
                 len([t for t in all_ticks if t.instrument_type == "index"]),

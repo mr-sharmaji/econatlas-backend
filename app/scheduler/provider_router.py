@@ -35,7 +35,7 @@ class QuoteProvider(ABC):
 
 def select_best_quotes(ticks: Iterable[QuoteTick]) -> list[QuoteTick]:
     """Select best quote per (asset, instrument_type) by provider priority then recency.
-    Freshness override: for index quotes only, allow newer fallback ticks to replace
+    Freshness override: for index/currency quotes, allow newer fallback ticks to replace
     stale primary ticks when the timestamp gap is significant."""
     freshness_override = timedelta(minutes=8)
     best: dict[tuple[str, str], QuoteTick] = {}
@@ -55,11 +55,11 @@ def select_best_quotes(ticks: Iterable[QuoteTick]) -> list[QuoteTick]:
         if cur_ts.tzinfo is None:
             cur_ts = cur_ts.replace(tzinfo=timezone.utc)
         if (
-            tick.instrument_type == "index"
+            tick.instrument_type in {"index", "currency"}
             and tick.provider_priority > prev.provider_priority
             and (cur_ts - prev_ts) >= freshness_override
         ):
-            # Prefer significantly fresher index fallback over delayed primary feed.
+            # Prefer significantly fresher fallback over delayed primary feed.
             best[key] = tick
             continue
         if tick.provider_priority == prev.provider_priority:
