@@ -273,20 +273,19 @@ def _pick_previous_close(meta: dict) -> tuple[float | None, str | None]:
 
 
 class MarketScraper(BaseScraper, QuoteProvider):
-    def _promote_stale_index_fallbacks(
+    def _promote_delayed_index_fallbacks(
         self,
         selected: list[QuoteTick],
         all_ticks: list[QuoteTick],
     ) -> list[QuoteTick]:
-        """If an open-session index is stale, prefer fallback provider ticks.
+        """If an open-session index feed is delayed, prefer fallback provider ticks.
 
-        Some free primary feeds can stay delayed during active sessions.
-        When stale is detected, we promote available fallback ticks so UI
-        reflects actively refreshed fallback coverage rather than stale primary.
+        Some free primary feeds can lag during active sessions. Once delay
+        crosses promote threshold, use fallback to keep quotes live.
         """
         now = datetime.now(timezone.utc)
         status = get_market_status(now)
-        stale_threshold = max(1, int(get_settings().stale_threshold_seconds_market))
+        promote_threshold = max(1, int(get_settings().index_fallback_promote_seconds))
 
         fallback_by_asset: dict[str, QuoteTick] = {}
         for tick in all_ticks:
@@ -325,7 +324,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
             if tick_ts.tzinfo is None:
                 tick_ts = tick_ts.replace(tzinfo=timezone.utc)
             age_seconds = (now - tick_ts).total_seconds()
-            if age_seconds <= stale_threshold:
+            if age_seconds <= promote_threshold:
                 promoted.append(tick)
                 continue
 
@@ -339,8 +338,9 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 fb_ts = fb_ts.replace(tzinfo=timezone.utc)
             chosen = fb if fb_ts > tick_ts else replace(fb, source_timestamp=now)
             logger.info(
-                "Promoted stale index to fallback: asset=%s primary_ts=%s fallback_provider=%s fallback_ts=%s chosen_ts=%s",
+                "Promoted delayed index to fallback: asset=%s age_seconds=%.1f primary_ts=%s fallback_provider=%s fallback_ts=%s chosen_ts=%s",
                 tick.asset,
+                age_seconds,
                 tick_ts.isoformat(),
                 fb.provider,
                 fb_ts.isoformat(),
@@ -654,7 +654,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
     def _fetch_index_fallbacks(self, yahoo_index_ticks: list[QuoteTick]) -> list[QuoteTick]:
         by_asset = {t.asset: t for t in yahoo_index_ticks}
         now = datetime.now(timezone.utc)
-        stale_seconds = max(60, int(get_settings().stale_threshold_seconds_market))
+        promote_seconds = max(60, int(get_settings().index_fallback_promote_seconds))
         status = get_market_status(now)
         out: list[QuoteTick] = []
         for asset, cfg in GOOGLE_INDEX_FALLBACKS.items():
@@ -667,7 +667,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 p_ts = primary.source_timestamp
                 if p_ts.tzinfo is None:
                     p_ts = p_ts.replace(tzinfo=timezone.utc)
-                needs_fallback = (now - p_ts).total_seconds() > stale_seconds
+                needs_fallback = (now - p_ts).total_seconds() > promote_seconds
             if not needs_fallback:
                 continue
             try:
@@ -903,7 +903,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
         except Exception:
             logger.exception("Bond yield fetch failed")
         selected = select_best_quotes(all_ticks)
-        selected = self._promote_stale_index_fallbacks(selected, all_ticks)
+        selected = self._promote_delayed_index_fallbacks(selected, all_ticks)
         selected = self._apply_fx_sanity_guard(selected, all_ticks)
         logger.debug("Provider routing selected %d/%d ticks", len(selected), len(all_ticks))
         return selected

@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # Tick freshness/staleness thresholds
     stale_threshold_seconds_market: int = 600
     stale_threshold_seconds_rolling_24h: int = 900
+    # Promote fallback index providers when primary index ticks are older than this.
+    # Keeps delayed free feeds responsive during open sessions.
+    index_fallback_promote_seconds: int = 180
     # Free feeds for Japan indices are often delayed; allow a wider stale window so
     # "live delayed" data is not incorrectly marked as stale.
     stale_threshold_seconds_tse_session: int = 1800
