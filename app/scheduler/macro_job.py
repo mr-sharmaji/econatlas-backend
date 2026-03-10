@@ -29,6 +29,8 @@ FRED_DIRECT: Dict[str, List[Tuple[str, str]]] = {
     ],
     "EU": [
         ("inflation", "CP0000EZ19M086NEST"),
+        # Euro Area real GDP level; converted to YoY % via _compute_growth_from_level.
+        ("gdp_growth", "CLVMNACSCAB1GQEA19"),
         ("unemployment", "LRHUTTTTEZM156S"),
         ("repo_rate", "ECBDFR"),
     ],
@@ -38,6 +40,12 @@ FRED_DIRECT: Dict[str, List[Tuple[str, str]]] = {
         ("unemployment", "LRHUTTTTJPM156S"),
         ("repo_rate", "IRSTCB01JPM156N"),
     ],
+}
+
+# Series IDs that are levels (not growth rates) but should be exposed as growth.
+# Value is lag periods used for growth calc (quarterly YoY => 4).
+FRED_GROWTH_FROM_LEVEL: Dict[str, int] = {
+    "CLVMNACSCAB1GQEA19": 4,
 }
 
 FRED_CPI: Dict[str, str] = {
@@ -117,6 +125,36 @@ class MacroScraper(BaseScraper):
             return None
         yoy = round(((latest_val - year_ago) / year_ago) * 100, 2)
         return yoy, latest_dt
+
+    def _compute_growth_from_level(self, series_id: str, lag_periods: int) -> Optional[Tuple[float, datetime]]:
+        rows = self._fetch_fred_csv(series_id)
+        if len(rows) <= lag_periods:
+            return None
+        parsed: list[tuple[datetime, float]] = []
+        for d, v in rows:
+            try:
+                dt = datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                parsed.append((dt, float(v)))
+            except ValueError:
+                continue
+        if len(parsed) <= lag_periods:
+            return None
+        latest_dt, latest_val = parsed[-1]
+        prev_dt, prev_val = parsed[-1 - lag_periods]
+        if prev_val == 0:
+            return None
+        growth = round(((latest_val - prev_val) / prev_val) * 100, 2)
+        logger.debug(
+            "Computed growth from level: series=%s latest=%s@%s prev=%s@%s lag=%d growth=%s",
+            series_id,
+            latest_val,
+            latest_dt.date().isoformat(),
+            prev_val,
+            prev_dt.date().isoformat(),
+            lag_periods,
+            growth,
+        )
+        return growth, latest_dt
 
     def _world_bank(self, country: str, indicator: str) -> Optional[Tuple[float, datetime]]:
         wb_country = WORLD_BANK_COUNTRY.get(country, country)
@@ -350,7 +388,10 @@ class MacroScraper(BaseScraper):
 
             for name, series in FRED_DIRECT.get(country, []):
                 try:
-                    result = self._fred_latest(series)
+                    if series in FRED_GROWTH_FROM_LEVEL and name == "gdp_growth":
+                        result = self._compute_growth_from_level(series, FRED_GROWTH_FROM_LEVEL[series])
+                    else:
+                        result = self._fred_latest(series)
                     if result:
                         val, ts = result
                         items.append({
