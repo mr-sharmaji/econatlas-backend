@@ -83,6 +83,14 @@ class TaxRuleSetResponse(BaseModel):
     tds: TdsRulesResponse
 
 
+class TaxHelperPointsResponse(BaseModel):
+    hub: list[str]
+    income_tax: list[str]
+    capital_gains: list[str]
+    advance_tax: list[str]
+    tds: list[str]
+
+
 class TaxConfigResponse(BaseModel):
     version: str
     hash: str
@@ -90,5 +98,6 @@ class TaxConfigResponse(BaseModel):
     default_fy: str
     last_synced_at: datetime | None = None
     disclaimer: str
+    helper_points: TaxHelperPointsResponse
     rounding_policy: TaxRoundingPolicyResponse
     rules_by_fy: dict[str, TaxRuleSetResponse]

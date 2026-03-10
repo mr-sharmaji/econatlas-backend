@@ -10,6 +10,9 @@ from app.schemas.tax_schema import TaxConfigResponse
 from app.services import tax_fy, tax_official_source, tax_service
 
 _REQUIRED_CALCULATORS = {"income_tax", "capital_gains", "advance_tax", "tds"}
+_HELPER_POINT_KEYS = {"hub", "income_tax", "capital_gains", "advance_tax", "tds"}
+_MAX_HELPERS_PER_SECTION = 6
+_MAX_HELPER_TEXT_LENGTH = 220
 
 
 @dataclass
@@ -64,6 +67,28 @@ def _validate_semantics(payload: dict[str, Any]) -> tuple[dict[str, Any] | None,
     rules_by_fy = normalized.get("rules_by_fy") or {}
     if not isinstance(rules_by_fy, dict) or not rules_by_fy:
         return None, ["rules_by_fy_empty"]
+
+    helper_points = normalized.get("helper_points") or {}
+    if not isinstance(helper_points, dict):
+        return None, ["helper_points_invalid"]
+    helper_keys = set(helper_points.keys())
+    missing_helper_keys = sorted(_HELPER_POINT_KEYS.difference(helper_keys))
+    if missing_helper_keys:
+        errors.append(f"helper_points_missing_sections: {', '.join(missing_helper_keys)}")
+    for key in sorted(_HELPER_POINT_KEYS):
+        rows = helper_points.get(key)
+        if not isinstance(rows, list) or not rows:
+            errors.append(f"helper_points_empty: {key}")
+            continue
+        if len(rows) > _MAX_HELPERS_PER_SECTION:
+            errors.append(f"helper_points_too_many: {key}")
+        for idx, row in enumerate(rows):
+            text = str(row or "").strip()
+            if not text:
+                errors.append(f"helper_points_blank: {key}[{idx}]")
+                continue
+            if len(text) > _MAX_HELPER_TEXT_LENGTH:
+                errors.append(f"helper_points_too_long: {key}[{idx}]")
 
     supported_raw = normalized.get("supported_fy") or []
     supported_ids: set[str] = set()

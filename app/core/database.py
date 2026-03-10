@@ -152,6 +152,7 @@ async def init_pool() -> asyncpg.Pool:
                 default_fy TEXT NOT NULL,
                 disclaimer TEXT NOT NULL,
                 supported_fy JSONB NOT NULL,
+                helper_points JSONB NOT NULL DEFAULT '{"hub":[],"income_tax":[],"capital_gains":[],"advance_tax":[],"tds":[]}'::jsonb,
                 rounding_policy JSONB NOT NULL,
                 rules_by_fy JSONB NOT NULL,
                 content_hash TEXT NOT NULL,
@@ -170,6 +171,22 @@ async def init_pool() -> asyncpg.Pool:
         )
         await conn.execute(
             "ALTER TABLE tax_config_versions ADD COLUMN IF NOT EXISTS source_mode TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE tax_config_versions ADD COLUMN IF NOT EXISTS helper_points JSONB"
+        )
+        await conn.execute(
+            """
+            UPDATE tax_config_versions
+            SET helper_points = '{"hub":[],"income_tax":[],"capital_gains":[],"advance_tax":[],"tds":[]}'::jsonb
+            WHERE helper_points IS NULL
+            """
+        )
+        await conn.execute(
+            "ALTER TABLE tax_config_versions ALTER COLUMN helper_points SET DEFAULT '{\"hub\":[],\"income_tax\":[],\"capital_gains\":[],\"advance_tax\":[],\"tds\":[]}'::jsonb"
+        )
+        await conn.execute(
+            "ALTER TABLE tax_config_versions ALTER COLUMN helper_points SET NOT NULL"
         )
         await conn.execute(
             "ALTER TABLE tax_config_versions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ"

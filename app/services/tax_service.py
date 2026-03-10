@@ -8,6 +8,13 @@ from typing import Any
 from app.core.database import get_pool
 
 _CONFIG_TABLE = "tax_config_versions"
+_DEFAULT_HELPER_POINTS = {
+    "hub": [],
+    "income_tax": [],
+    "capital_gains": [],
+    "advance_tax": [],
+    "tds": [],
+}
 
 
 class TaxConfigNotFoundError(RuntimeError):
@@ -40,6 +47,7 @@ def _payload_for_hash(payload: dict[str, Any]) -> dict[str, Any]:
         "supported_fy": payload.get("supported_fy"),
         "default_fy": payload.get("default_fy"),
         "disclaimer": payload.get("disclaimer"),
+        "helper_points": payload.get("helper_points"),
         "rounding_policy": payload.get("rounding_policy"),
         "rules_by_fy": payload.get("rules_by_fy"),
     }
@@ -57,6 +65,7 @@ def _normalize_config_payload_from_row(row: Any) -> dict[str, Any]:
         "default_fy": row["default_fy"],
         "last_synced_at": _as_iso(row["last_sync_success_at"]),
         "disclaimer": row["disclaimer"],
+        "helper_points": _as_json(row["helper_points"], fallback=dict(_DEFAULT_HELPER_POINTS)),
         "rounding_policy": _as_json(row["rounding_policy"], fallback={}),
         "rules_by_fy": _as_json(row["rules_by_fy"], fallback={}),
     }
@@ -86,7 +95,7 @@ async def _get_active_or_latest_non_archived_row() -> Any:
     row = await pool.fetchrow(
         f"""
         SELECT version, default_fy, disclaimer, supported_fy, rounding_policy,
-               rules_by_fy, content_hash, source, source_mode,
+               helper_points, rules_by_fy, content_hash, source, source_mode,
                is_active, archived_at,
                last_validation_status, last_validation_reason,
                last_sync_attempt_at, last_sync_success_at, updated_at
@@ -101,7 +110,7 @@ async def _get_active_or_latest_non_archived_row() -> Any:
         row = await pool.fetchrow(
             f"""
             SELECT version, default_fy, disclaimer, supported_fy, rounding_policy,
-                   rules_by_fy, content_hash, source, source_mode,
+                   helper_points, rules_by_fy, content_hash, source, source_mode,
                    is_active, archived_at,
                    last_validation_status, last_validation_reason,
                    last_sync_attempt_at, last_sync_success_at, updated_at
@@ -120,7 +129,7 @@ async def get_tax_config_row_by_version(*, version: str, include_archived: bool 
     row = await pool.fetchrow(
         f"""
         SELECT version, default_fy, disclaimer, supported_fy, rounding_policy,
-               rules_by_fy, content_hash, source, source_mode,
+               helper_points, rules_by_fy, content_hash, source, source_mode,
                is_active, archived_at,
                last_validation_status, last_validation_reason,
                last_sync_attempt_at, last_sync_success_at, updated_at
@@ -148,7 +157,7 @@ async def get_latest_staged_config_row(*, source_mode: str | None = "official_we
     row = await pool.fetchrow(
         f"""
         SELECT version, default_fy, disclaimer, supported_fy, rounding_policy,
-               rules_by_fy, content_hash, source, source_mode,
+               helper_points, rules_by_fy, content_hash, source, source_mode,
                is_active, archived_at,
                last_validation_status, last_validation_reason,
                last_sync_attempt_at, last_sync_success_at, updated_at
@@ -185,6 +194,7 @@ async def upsert_tax_config(
     version = str(payload.get("version") or "").strip()
     default_fy = str(payload.get("default_fy") or "").strip()
     disclaimer = str(payload.get("disclaimer") or "").strip()
+    helper_points = payload.get("helper_points")
     supported_fy = payload.get("supported_fy")
     rounding_policy = payload.get("rounding_policy")
     rules_by_fy = payload.get("rules_by_fy")
@@ -195,6 +205,8 @@ async def upsert_tax_config(
         raise ValueError("Tax config default_fy is required.")
     if not disclaimer:
         raise ValueError("Tax config disclaimer is required.")
+    if not isinstance(helper_points, dict):
+        raise ValueError("Tax config helper_points must be an object.")
     if not isinstance(supported_fy, list) or not supported_fy:
         raise ValueError("Tax config supported_fy must be a non-empty list.")
     if not isinstance(rounding_policy, dict):
@@ -209,6 +221,7 @@ async def upsert_tax_config(
         "supported_fy": supported_fy,
         "default_fy": default_fy,
         "disclaimer": disclaimer,
+        "helper_points": helper_points,
         "rounding_policy": rounding_policy,
         "rules_by_fy": rules_by_fy,
     }
@@ -221,13 +234,13 @@ async def upsert_tax_config(
                 f"""
                 INSERT INTO {_CONFIG_TABLE} (
                     version, default_fy, disclaimer, supported_fy,
-                    rounding_policy, rules_by_fy, content_hash,
+                    helper_points, rounding_policy, rules_by_fy, content_hash,
                     source, source_mode, is_active,
                     created_at, updated_at, archived_at
                 )
                 VALUES (
                     $1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7,
-                    $8, $9, $10,
+                    $8, $9, $10, $11,
                     NOW(), NOW(), NULL
                 )
                 ON CONFLICT (version)
@@ -235,6 +248,7 @@ async def upsert_tax_config(
                     default_fy = EXCLUDED.default_fy,
                     disclaimer = EXCLUDED.disclaimer,
                     supported_fy = EXCLUDED.supported_fy,
+                    helper_points = EXCLUDED.helper_points,
                     rounding_policy = EXCLUDED.rounding_policy,
                     rules_by_fy = EXCLUDED.rules_by_fy,
                     content_hash = EXCLUDED.content_hash,
@@ -248,6 +262,7 @@ async def upsert_tax_config(
                 default_fy,
                 disclaimer,
                 json.dumps(supported_fy),
+                json.dumps(helper_points),
                 json.dumps(rounding_policy),
                 json.dumps(rules_by_fy),
                 content_hash,

@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS tax_config_versions (
     default_fy TEXT NOT NULL,
     disclaimer TEXT NOT NULL,
     supported_fy JSONB NOT NULL,
+    helper_points JSONB NOT NULL DEFAULT '{"hub":[],"income_tax":[],"capital_gains":[],"advance_tax":[],"tds":[]}'::jsonb,
     rounding_policy JSONB NOT NULL,
     rules_by_fy JSONB NOT NULL,
     content_hash TEXT NOT NULL,

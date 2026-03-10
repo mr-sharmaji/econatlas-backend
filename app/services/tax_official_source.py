@@ -578,6 +578,94 @@ def _pick_nearest_ruleset(mapping: dict[str, Any], fy_id: str) -> Any:
     return mapping[upper[1]]
 
 
+def _format_indian_rupees(value: float) -> str:
+    rounded = int(round(float(value)))
+    negative = rounded < 0
+    digits = str(abs(rounded))
+    if len(digits) > 3:
+        head = digits[:-3]
+        tail = digits[-3:]
+        groups: list[str] = []
+        while len(head) > 2:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            groups.insert(0, head)
+        digits = ",".join([*groups, tail])
+    return f"{'-' if negative else ''}₹{digits}"
+
+
+def _pct_label(rate: float) -> str:
+    value = float(rate) * 100.0
+    if abs(value - round(value)) < 1e-6:
+        return f"{int(round(value))}%"
+    return f"{value:.2f}%"
+
+
+def _build_helper_points(
+    *,
+    default_fy: str,
+    rules_by_fy: dict[str, dict[str, Any]],
+) -> dict[str, list[str]]:
+    rule_set = rules_by_fy.get(default_fy) or next(iter(rules_by_fy.values()))
+    income = rule_set["income_tax"]
+    capital = rule_set["capital_gains"]
+    advance = rule_set["advance_tax"]
+    tds = rule_set["tds"]
+
+    income_new_rebate = income["rebate"]["new"]
+    income_old_rebate = income["rebate"]["old"]
+    income_new_std = income["standard_deduction"]["new"]
+    income_old_std = income["standard_deduction"]["old"]
+
+    equity = capital["assets"]["equity"]
+    debt = capital["assets"]["debt_mf"]
+
+    installments = list(advance["installments"])
+    tds_sections = list(tds["sections"])
+
+    first_installment = installments[0] if installments else None
+    final_installment = installments[-1] if installments else None
+    main_tds = tds_sections[0] if tds_sections else None
+
+    return {
+        "hub": [
+            f"Rules auto-sync from ClearTax for {default_fy}.",
+            "Pick your calculator based on salary, gains, advance tax, or TDS estimate.",
+            "Results are estimates for planning and should be validated before filing.",
+        ],
+        "income_tax": [
+            f"New regime rebate applies up to {_format_indian_rupees(income_new_rebate['threshold'])}; old regime rebate up to {_format_indian_rupees(income_old_rebate['threshold'])}.",
+            f"Standard deduction: new {_format_indian_rupees(income_new_std)}, old {_format_indian_rupees(income_old_std)}.",
+            "Switch regime to compare tax quickly before final filing.",
+        ],
+        "capital_gains": [
+            f"Equity gains use {_pct_label(equity['stcg_rate'])} (STCG) and {_pct_label(equity['ltcg_rate'])} (LTCG) with {_format_indian_rupees(equity['ltcg_exemption'])} LTCG exemption.",
+            f"Use holding period to classify short vs long term (equity cutoff: {equity['holding_period_months']} months).",
+            f"Debt MF is estimated at top slab {_pct_label(debt['stcg_rate'])} under section 50AA treatment.",
+        ],
+        "advance_tax": [
+            "Enter total annual tax and tax already paid to see current shortfall.",
+            (
+                f"Advance tax schedule runs from {first_installment['label']} ({first_installment['due_date']})"
+                f" to {final_installment['label']} ({final_installment['due_date']})."
+                if first_installment and final_installment
+                else "Advance tax schedule follows quarterly cumulative targets."
+            ),
+            "Paying by the next due milestone helps avoid section 234C interest.",
+        ],
+        "tds": [
+            "Use this to estimate net amount you may receive after TDS deduction.",
+            (
+                f"Typical section {main_tds['section']} uses {_pct_label(main_tds['rate'])} above {_format_indian_rupees(main_tds['threshold'])}."
+                if main_tds
+                else "TDS rate and threshold depend on the selected section."
+            ),
+            "Select the closest section to your payment type for a better estimate.",
+        ],
+    }
+
+
 async def _fetch_sources(
     *,
     source_urls: dict[str, str],
@@ -711,6 +799,10 @@ async def fetch_official_tax_bundle(
         for fy_id in source_fys
     ]
     default_fy = selected_taxcalc_fy if selected_taxcalc_fy in rules_by_fy else source_fys[-1]
+    helper_points = _build_helper_points(
+        default_fy=default_fy,
+        rules_by_fy=rules_by_fy,
+    )
 
     version = f"cleartax-{now.strftime('%Y%m%d%H%M')}"
     config_payload = {
@@ -722,6 +814,7 @@ async def fetch_official_tax_bundle(
             "Rules sourced from ClearTax tax content pages. "
             "Debt mutual fund gains are treated under section 50AA with top-slab estimator."
         ),
+        "helper_points": helper_points,
         "rounding_policy": {
             "currency_scale": 2,
             "percentage_scale": 2,
