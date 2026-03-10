@@ -17,6 +17,12 @@ _LIVE_SOURCE = "investorgain_webnode"
 _SYNC_TTL_SECONDS = 180
 _LIVE_REPORT_ID = 331
 _LIVE_BASE_URL = "https://webnodejs.investorgain.com/cloud/new/report/data-read"
+_DETAIL_BASE_URL = "https://www.investorgain.com"
+_DETAIL_PRICE_BAND_CACHE: dict[str, str | None] = {}
+_PRICE_RANGE_RE = re.compile(
+    r"(?:₹|rs\.?\s*)?\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*(?:to|-|–)\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)",
+    re.IGNORECASE,
+)
 
 
 def _normalize_status(status: str | None) -> str:
@@ -74,6 +80,160 @@ def _to_float(value: object | None) -> float | None:
         return float(m.group(0))
     except ValueError:
         return None
+
+
+def _format_price_value(value: float) -> str:
+    if abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    text = f"{value:.2f}".rstrip("0").rstrip(".")
+    return text
+
+
+def _format_price_band(low: float, high: float) -> str:
+    lo, hi = sorted((float(low), float(high)))
+    return f"₹ {_format_price_value(lo)} - {_format_price_value(hi)}"
+
+
+def _extract_price_range(value: object | None) -> tuple[float, float] | None:
+    text = _strip_text(value)
+    if not text:
+        return None
+    match = _PRICE_RANGE_RE.search(text)
+    if match:
+        low = _to_float(match.group(1))
+        high = _to_float(match.group(2))
+        if low is not None and high is not None:
+            lo, hi = sorted((low, high))
+            return lo, hi
+
+    lowered = text.lower()
+    if "-" not in text and "–" not in text and "to" not in lowered:
+        return None
+    nums = [n for n in re.findall(r"\d+(?:\.\d+)?", text.replace(",", ""))]
+    if len(nums) < 2:
+        return None
+    try:
+        low = float(nums[0])
+        high = float(nums[1])
+    except ValueError:
+        return None
+    lo, hi = sorted((low, high))
+    return lo, hi
+
+
+def _extract_price_band_from_detail_html(html_text: str) -> str | None:
+    if not html_text:
+        return None
+    strict_patterns = (
+        re.compile(
+            r"Price\s*Band</h5><p[^>]*>\s*₹\s*([0-9][0-9,]*(?:\.\d+)?)\s*(?:to|-|–)\s*₹?\s*([0-9][0-9,]*(?:\.\d+)?)",
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r"Price\s*Band[^₹]{0,220}₹\s*([0-9][0-9,]*(?:\.\d+)?)\s*(?:to|-|–)\s*₹?\s*([0-9][0-9,]*(?:\.\d+)?)",
+            re.IGNORECASE | re.DOTALL,
+        ),
+    )
+
+    for pattern in strict_patterns:
+        match = pattern.search(html_text)
+        if not match:
+            continue
+        low = _to_float(match.group(1))
+        high = _to_float(match.group(2))
+        if low is None or high is None:
+            continue
+        return _format_price_band(low, high)
+
+    fallback = re.search(
+        r"₹\s*([0-9][0-9,]*(?:\.\d+)?)\s*(?:to|-|–)\s*₹?\s*([0-9][0-9,]*(?:\.\d+)?)\s*(?:Per\s+Share|per\s+share)",
+        html_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if fallback:
+        low = _to_float(fallback.group(1))
+        high = _to_float(fallback.group(2))
+        if low is not None and high is not None:
+            return _format_price_band(low, high)
+    return None
+
+
+def _detail_path_for_row(row: dict) -> str:
+    raw_slug = _strip_text(row.get("~urlrewrite_folder_name"))
+    if not raw_slug:
+        name_html = str(row.get("Name") or "")
+        href_match = re.search(r'href=["\']([^"\']+)["\']', name_html, re.IGNORECASE)
+        if href_match:
+            raw_slug = href_match.group(1)
+    if not raw_slug:
+        return ""
+
+    path = raw_slug.strip()
+    path = re.sub(r"^https?://[^/]+", "", path, flags=re.IGNORECASE)
+    path = path.strip().strip("/")
+    if not path:
+        return ""
+    if not path.lower().startswith("gmp/"):
+        path = f"gmp/{path}"
+    return path
+
+
+def _detail_cache_key(row: dict) -> str:
+    path = _detail_path_for_row(row)
+    if path:
+        return path
+    raw_id = _strip_text(row.get("~id"))
+    return raw_id
+
+
+def _detail_urls_for_row(row: dict) -> list[str]:
+    path = _detail_path_for_row(row)
+    raw_id = _strip_text(row.get("~id"))
+    urls: list[str] = []
+    if path:
+        urls.append(f"{_DETAIL_BASE_URL}/{path}/")
+        if raw_id and not path.endswith(f"/{raw_id}"):
+            urls.append(f"{_DETAIL_BASE_URL}/{path}/{raw_id}/")
+    return urls
+
+
+def _fetch_detail_price_band(row: dict) -> str | None:
+    key = _detail_cache_key(row)
+    if key and key in _DETAIL_PRICE_BAND_CACHE:
+        return _DETAIL_PRICE_BAND_CACHE[key]
+
+    detail_band: str | None = None
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*;q=0.8"}
+    for url in _detail_urls_for_row(row):
+        try:
+            response = requests.get(url, headers=headers, timeout=12)
+            response.raise_for_status()
+            detail_band = _extract_price_band_from_detail_html(response.text)
+            if detail_band:
+                break
+        except Exception:
+            continue
+
+    if key:
+        _DETAIL_PRICE_BAND_CACHE[key] = detail_band
+    return detail_band
+
+
+def _normalize_price_band(raw_price: object | None, detail_price_band: str | None) -> str | None:
+    detail_range = _extract_price_range(detail_price_band)
+    if detail_range is not None:
+        return _format_price_band(detail_range[0], detail_range[1])
+
+    source_range = _extract_price_range(raw_price)
+    if source_range is not None:
+        return _format_price_band(source_range[0], source_range[1])
+
+    single = _to_float(raw_price)
+    if single is not None:
+        return _format_price_band(single, single)
+
+    text = _strip_text(raw_price)
+    return text or None
 
 
 def _parse_subscription(value: object | None) -> float | None:
@@ -224,10 +384,14 @@ def _fetch_rows_for_status(source_code: str, status: str, today_ist: date) -> li
         gmp_percent = _to_float(row.get("~gmp_percent_calc"))
         if gmp_percent is None:
             gmp_percent = _to_float(row.get("GMP"))
+        price_band = _normalize_price_band(
+            row.get("Price (₹)"),
+            _fetch_detail_price_band(row),
+        )
         listing_price = _parse_listing_price(row)
         listing_gain_pct = _listing_gain_pct(
             listing_price=listing_price,
-            price_band=row.get("Price (₹)"),
+            price_band=price_band,
         )
         outcome_state = "listed" if listing_price is not None else None
 
@@ -239,7 +403,7 @@ def _fetch_rows_for_status(source_code: str, status: str, today_ist: date) -> li
                 "status": status,
                 "ipo_type": ipo_type,
                 "issue_size_cr": _to_float(row.get("IPO Size (₹ in cr)")),
-                "price_band": _strip_text(row.get("Price (₹)")) or None,
+                "price_band": price_band,
                 "gmp_percent": gmp_percent,
                 "subscription_multiple": _parse_subscription(row.get("Sub")),
                 "listing_price": listing_price,
@@ -489,6 +653,7 @@ async def get_ipos(*, status: str = "open", limit: int = 20) -> dict:
     items: list[dict] = []
     for row in rows:
         item = record_to_dict(row)
+        item["price_band"] = _normalize_price_band(item.get("price_band"), None)
         listed = item.get("listing_price")
         if item.get("listing_gain_pct") is None:
             item["listing_gain_pct"] = _listing_gain_pct(
