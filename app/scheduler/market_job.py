@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple
 import requests
 
 from app.core.database import parse_ts
+from app.core.config import get_settings
 from app.scheduler.base import BaseScraper
 from app.scheduler.provider_router import QuoteProvider, QuoteTick, select_best_quotes
 from app.scheduler.trading_calendar import (
@@ -36,6 +37,7 @@ YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 FX_USD_BASE_URL = "https://open.er-api.com/v6/latest/USD"
 GIFT_NIFTY_URL = "https://giftcitynifty.com/gift-nifty-intraday-price-data/"
+GOOGLE_FINANCE_QUOTE_URL = "https://www.google.com/finance/quote/{code}"
 
 INDEX_SYMBOLS = {
     "^GSPC": "S&P500",
@@ -103,6 +105,15 @@ BOND_SERIES: List[Tuple[str, str]] = [
     ("Germany 10Y Bond Yield", "IRLTLT01DEM156N"),
     ("Japan 10Y Bond Yield", "IRLTLT01JPM156N"),
 ]
+
+GOOGLE_INDEX_FALLBACKS: dict[str, dict[str, str]] = {
+    "Sensex": {
+        "code": "SENSEX:INDEXBOM",
+        "token": '"SENSEX","INDEXBOM"',
+    },
+}
+INDEX_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
+INDEX_FALLBACK_MIN_FRESHNESS_GAIN_SECONDS = 120
 
 # Asset → exchange for correct trading-date assignment (avoid Monday close stored as Tuesday UTC)
 ASSET_EXCHANGE: Dict[str, str] = {
@@ -367,6 +378,84 @@ class MarketScraper(BaseScraper, QuoteProvider):
             logger.exception("Gift Nifty scrape failed")
         return None
 
+    def _parse_google_index_quote(self, page_html: str, token: str) -> tuple[float, float | None, float | None, datetime] | None:
+        # Google Finance inline payload shape:
+        # ["SENSEX","INDEXBOM"],...,[price,change,pct,...],null,prev_close,...,[source_ts]
+        pattern = re.compile(
+            rf"\[{re.escape(token)}\][\s\S]{{0,420}}?"
+            r"\[\s*(?P<price>-?\d+(?:\.\d+)?)\s*,\s*(?P<chg>-?\d+(?:\.\d+)?)\s*,\s*(?P<pct>-?\d+(?:\.\d+)?)\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]"
+            r"\s*,\s*null\s*,\s*(?P<prev>-?\d+(?:\.\d+)?)\s*,\s*null\s*,\s*null\s*,\s*null\s*,\s*\[(?P<ts>\d{10})\]",
+            re.IGNORECASE,
+        )
+        m = pattern.search(page_html)
+        if not m:
+            return None
+        try:
+            price = float(m.group("price"))
+            pct = float(m.group("pct"))
+            prev = float(m.group("prev"))
+            ts = datetime.fromtimestamp(int(m.group("ts")), tz=timezone.utc)
+            return (price, prev, pct, ts)
+        except (TypeError, ValueError, OSError):
+            return None
+
+    def _fetch_index_fallbacks(self, yahoo_index_ticks: list[QuoteTick]) -> list[QuoteTick]:
+        by_asset = {t.asset: t for t in yahoo_index_ticks}
+        now = datetime.now(timezone.utc)
+        stale_seconds = max(60, int(get_settings().stale_threshold_seconds_market))
+        out: list[QuoteTick] = []
+        for asset, cfg in GOOGLE_INDEX_FALLBACKS.items():
+            primary = by_asset.get(asset)
+            needs_fallback = primary is None
+            if primary is not None:
+                p_ts = primary.source_timestamp
+                if p_ts.tzinfo is None:
+                    p_ts = p_ts.replace(tzinfo=timezone.utc)
+                needs_fallback = (now - p_ts).total_seconds() > stale_seconds
+            if not needs_fallback:
+                continue
+            try:
+                url = GOOGLE_FINANCE_QUOTE_URL.format(code=cfg["code"])
+                html_text = self._get_text(url)
+                parsed = self._parse_google_index_quote(html_text, cfg["token"])
+                if not parsed:
+                    continue
+                price, prev, pct, ts = parsed
+                # Timestamp sanity: avoid provider clock glitches and stale snapshots.
+                if ts > (now + timedelta(seconds=INDEX_FALLBACK_MAX_CLOCK_SKEW_SECONDS)):
+                    logger.debug("Index fallback skipped (future timestamp): asset=%s ts=%s", asset, ts.isoformat())
+                    continue
+                if (now - ts).total_seconds() > 24 * 3600:
+                    logger.debug("Index fallback skipped (too old): asset=%s ts=%s", asset, ts.isoformat())
+                    continue
+                if primary is not None:
+                    p_ts = primary.source_timestamp
+                    if p_ts.tzinfo is None:
+                        p_ts = p_ts.replace(tzinfo=timezone.utc)
+                    min_gain = timedelta(seconds=INDEX_FALLBACK_MIN_FRESHNESS_GAIN_SECONDS)
+                    if ts <= (p_ts + min_gain):
+                        continue
+                out.append(
+                    QuoteTick(
+                        asset=asset,
+                        price=price,
+                        instrument_type="index",
+                        unit="points",
+                        source="google_finance_html",
+                        previous_close=prev,
+                        change_percent=round(pct, 2) if pct is not None else _pct_change(price, prev),
+                        provider="google_finance",
+                        provider_priority=4,
+                        confidence_level=0.8,
+                        source_timestamp=ts,
+                        is_fallback=True,
+                        quality="fallback",
+                    )
+                )
+            except Exception:
+                logger.debug("Index fallback fetch failed for %s", asset, exc_info=True)
+        return out
+
     def _fetch_bond_yields(self) -> List[QuoteTick]:
         items: list[QuoteTick] = []
         for name, series_id in BOND_SERIES:
@@ -458,8 +547,16 @@ class MarketScraper(BaseScraper, QuoteProvider):
         try:
             records = self._fetch_all_quotes()
             logger.debug("Yahoo raw records: %d", len(records))
-            all_ticks.extend(self._parse_indices(records))
+            index_ticks = self._parse_indices(records)
+            all_ticks.extend(index_ticks)
             all_ticks.extend(self._parse_fx(records))
+            try:
+                fallbacks = self._fetch_index_fallbacks(index_ticks)
+                if fallbacks:
+                    logger.info("Index fallback quotes added: %d", len(fallbacks))
+                    all_ticks.extend(fallbacks)
+            except Exception:
+                logger.debug("Index fallback scan failed", exc_info=True)
             logger.debug(
                 "Yahoo parsed ticks: indices=%d fx=%d",
                 len([t for t in all_ticks if t.instrument_type == "index"]),
