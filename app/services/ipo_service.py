@@ -145,6 +145,19 @@ def _parse_listing_price(row: dict) -> float | None:
         value = _to_float(raw)
         if value is not None:
             return value
+
+    # Listed rows often embed listing outcome inside Name HTML, e.g. "L@112.00 (0%)".
+    for key in ("Name", "~ipo_name", "ipo_name"):
+        raw = row.get(key)
+        text = _strip_text(raw)
+        if not text:
+            continue
+        match = re.search(r"\bL@\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)\b", text)
+        if match:
+            try:
+                return float(match.group(1).replace(",", ""))
+            except ValueError:
+                continue
     return None
 
 
