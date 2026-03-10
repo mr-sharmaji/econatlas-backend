@@ -107,10 +107,34 @@ BOND_SERIES: List[Tuple[str, str]] = [
 ]
 
 GOOGLE_INDEX_FALLBACKS: dict[str, dict[str, str]] = {
+    "S&P500": {"code": ".INX:INDEXSP", "token": '".INX","INDEXSP"'},
+    "NASDAQ": {"code": ".IXIC:INDEXNASDAQ", "token": '".IXIC","INDEXNASDAQ"'},
+    "Nasdaq 100": {"code": "NDX:INDEXNASDAQ", "token": '"NDX","INDEXNASDAQ"'},
+    "Dow Jones": {"code": ".DJI:INDEXDJX", "token": '".DJI","INDEXDJX"'},
+    "CBOE VIX": {"code": "VIX:INDEXCBOE", "token": '"VIX","INDEXCBOE"'},
+    "S&P 500 Tech": {"code": "XLK:NYSEARCA", "token": '"XLK","NYSEARCA"'},
+    "S&P 500 Financials": {"code": "XLF:NYSEARCA", "token": '"XLF","NYSEARCA"'},
+    "S&P 500 Energy": {"code": "XLE:NYSEARCA", "token": '"XLE","NYSEARCA"'},
+    "Nifty 50": {"code": "NIFTY_50:INDEXNSE", "token": '"NIFTY_50","INDEXNSE"'},
     "Sensex": {
         "code": "SENSEX:INDEXBOM",
         "token": '"SENSEX","INDEXBOM"',
     },
+    "Nifty Bank": {"code": "NIFTY_BANK:INDEXNSE", "token": '"NIFTY_BANK","INDEXNSE"'},
+    "Nifty 500": {"code": "NIFTY_500:INDEXNSE", "token": '"NIFTY_500","INDEXNSE"'},
+    "Nifty IT": {"code": "NIFTY_IT:INDEXNSE", "token": '"NIFTY_IT","INDEXNSE"'},
+    "Nifty Midcap 150": {"code": "NIFTY_MIDCAP_150:INDEXNSE", "token": '"NIFTY_MIDCAP_150","INDEXNSE"'},
+    "Nifty Smallcap 250": {"code": "NIFTY_SMALLCAP_250:INDEXNSE", "token": '"NIFTY_SMALLCAP_250","INDEXNSE"'},
+    "Nifty Auto": {"code": "NIFTY_AUTO:INDEXNSE", "token": '"NIFTY_AUTO","INDEXNSE"'},
+    "Nifty Pharma": {"code": "NIFTY_PHARMA:INDEXNSE", "token": '"NIFTY_PHARMA","INDEXNSE"'},
+    "Nifty Metal": {"code": "NIFTY_METAL:INDEXNSE", "token": '"NIFTY_METAL","INDEXNSE"'},
+    "India VIX": {"code": "INDIA_VIX:INDEXNSE", "token": '"INDIA_VIX","INDEXNSE"'},
+    "FTSE 100": {"code": "UKX:INDEXFTSE", "token": '"UKX","INDEXFTSE"'},
+    "DAX": {"code": "DAX:INDEXDB", "token": '"DAX","INDEXDB"'},
+    "CAC 40": {"code": "PX1:INDEXEURO", "token": '"PX1","INDEXEURO"'},
+    "Euro Stoxx 50": {"code": "SX5E:INDEXSTOXX", "token": '"SX5E","INDEXSTOXX"'},
+    "Nikkei 225": {"code": "NIKKEI_225:INDEXNIKKEI", "token": '"NIKKEI_225","INDEXNIKKEI"'},
+    "TOPIX": {"code": "TOPIX:INDEXTOPIX", "token": '"TOPIX","INDEXTOPIX"'},
 }
 INDEX_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
 INDEX_FALLBACK_MIN_FRESHNESS_GAIN_SECONDS = 120
@@ -380,11 +404,11 @@ class MarketScraper(BaseScraper, QuoteProvider):
 
     def _parse_google_index_quote(self, page_html: str, token: str) -> tuple[float, float | None, float | None, datetime] | None:
         # Google Finance inline payload shape:
-        # ["SENSEX","INDEXBOM"],...,[price,change,pct,...],null,prev_close,...,[source_ts]
+        # ["/m/...",[TOKEN],"...",[price,change,pct,...],..., [source_ts], ...]
         pattern = re.compile(
-            rf"\[{re.escape(token)}\][\s\S]{{0,420}}?"
+            rf'\["/[^"]+",\[{re.escape(token)}\][\s\S]{{0,520}}?'
             r"\[\s*(?P<price>-?\d+(?:\.\d+)?)\s*,\s*(?P<chg>-?\d+(?:\.\d+)?)\s*,\s*(?P<pct>-?\d+(?:\.\d+)?)\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]"
-            r"\s*,\s*null\s*,\s*(?P<prev>-?\d+(?:\.\d+)?)\s*,\s*null\s*,\s*null\s*,\s*null\s*,\s*\[(?P<ts>\d{10})\]",
+            r"[\s\S]{0,260}?\[(?P<ts>\d{10})\]",
             re.IGNORECASE,
         )
         m = pattern.search(page_html)
@@ -392,9 +416,12 @@ class MarketScraper(BaseScraper, QuoteProvider):
             return None
         try:
             price = float(m.group("price"))
+            chg = float(m.group("chg"))
             pct = float(m.group("pct"))
-            prev = float(m.group("prev"))
             ts = datetime.fromtimestamp(int(m.group("ts")), tz=timezone.utc)
+            block = page_html[m.start():m.end() + 180]
+            m_prev = re.search(r"\]\s*,\s*null\s*,\s*(-?\d+(?:\.\d+)?)\s*,", block)
+            prev = float(m_prev.group(1)) if m_prev else round(price - chg, 4)
             return (price, prev, pct, ts)
         except (TypeError, ValueError, OSError):
             return None
@@ -403,8 +430,12 @@ class MarketScraper(BaseScraper, QuoteProvider):
         by_asset = {t.asset: t for t in yahoo_index_ticks}
         now = datetime.now(timezone.utc)
         stale_seconds = max(60, int(get_settings().stale_threshold_seconds_market))
+        status = get_market_status(now)
         out: list[QuoteTick] = []
         for asset, cfg in GOOGLE_INDEX_FALLBACKS.items():
+            exchange = ASSET_EXCHANGE.get(asset, NYSE)
+            if not is_exchange_expected_open(exchange, now, status=status):
+                continue
             primary = by_asset.get(asset)
             needs_fallback = primary is None
             if primary is not None:
