@@ -89,6 +89,8 @@ async def init_pool() -> asyncpg.Pool:
                     continue
                 if "IDX_MARKET_PRICES_INTRADAY_ASSET_TYPE_SOURCE_TS_PROVIDER_UNIQUE" in up:
                     continue
+                if "IDX_IPO_SNAPSHOTS_ARCHIVED_AT" in up:
+                    continue
                 if up.startswith("CREATE") or up.startswith("ALTER") or up.startswith("DROP"):
                     await conn.execute(stmt)
             logger.info("Schema init executed from sql/init.sql")
