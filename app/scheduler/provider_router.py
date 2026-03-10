@@ -37,7 +37,9 @@ def select_best_quotes(ticks: Iterable[QuoteTick]) -> list[QuoteTick]:
     """Select best quote per (asset, instrument_type) by provider priority then recency.
     Freshness override: for index/currency quotes, allow newer fallback ticks to replace
     stale primary ticks when the timestamp gap is significant."""
-    freshness_override = timedelta(minutes=8)
+    # Keep primary provider preference, but allow fresher fallbacks to win quickly
+    # when primary feeds lag (common during active cash sessions).
+    freshness_override = timedelta(minutes=2)
     best: dict[tuple[str, str], QuoteTick] = {}
     for tick in ticks:
         key = (tick.asset, tick.instrument_type)

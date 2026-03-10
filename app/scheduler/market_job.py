@@ -6,6 +6,7 @@ import html
 import io
 import logging
 import re
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Tuple
 
@@ -170,7 +171,6 @@ GOOGLE_INDEX_FALLBACKS: dict[str, dict[str, str]] = {
     "TOPIX": {"code": "TOPIX:INDEXTOPIX", "token": '"TOPIX","INDEXTOPIX"'},
 }
 INDEX_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
-INDEX_FALLBACK_MIN_FRESHNESS_GAIN_SECONDS = 120
 FX_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
 FX_FALLBACK_MIN_FRESHNESS_GAIN_SECONDS = 120
 FX_SANITY_MAX_DEVIATION_PCT = 20.0
@@ -273,6 +273,83 @@ def _pick_previous_close(meta: dict) -> tuple[float | None, str | None]:
 
 
 class MarketScraper(BaseScraper, QuoteProvider):
+    def _promote_stale_index_fallbacks(
+        self,
+        selected: list[QuoteTick],
+        all_ticks: list[QuoteTick],
+    ) -> list[QuoteTick]:
+        """If an open-session index is stale, prefer fallback provider ticks.
+
+        Some free primary feeds can stay delayed during active sessions.
+        When stale is detected, we promote available fallback ticks so UI
+        reflects actively refreshed fallback coverage rather than stale primary.
+        """
+        now = datetime.now(timezone.utc)
+        status = get_market_status(now)
+        stale_threshold = max(1, int(get_settings().stale_threshold_seconds_market))
+
+        fallback_by_asset: dict[str, QuoteTick] = {}
+        for tick in all_ticks:
+            if tick.instrument_type != "index" or tick.provider == "yahoo":
+                continue
+            prev = fallback_by_asset.get(tick.asset)
+            if prev is None:
+                fallback_by_asset[tick.asset] = tick
+                continue
+            prev_ts = prev.source_timestamp
+            cur_ts = tick.source_timestamp
+            if prev_ts.tzinfo is None:
+                prev_ts = prev_ts.replace(tzinfo=timezone.utc)
+            if cur_ts.tzinfo is None:
+                cur_ts = cur_ts.replace(tzinfo=timezone.utc)
+            if tick.provider_priority > prev.provider_priority:
+                continue
+            if tick.provider_priority < prev.provider_priority or cur_ts > prev_ts:
+                fallback_by_asset[tick.asset] = tick
+
+        promoted: list[QuoteTick] = []
+        for tick in selected:
+            if tick.instrument_type != "index":
+                promoted.append(tick)
+                continue
+            if tick.provider != "yahoo":
+                promoted.append(tick)
+                continue
+
+            exchange = ASSET_EXCHANGE.get(tick.asset, NYSE)
+            if not is_exchange_expected_open(exchange, now, status=status):
+                promoted.append(tick)
+                continue
+
+            tick_ts = tick.source_timestamp
+            if tick_ts.tzinfo is None:
+                tick_ts = tick_ts.replace(tzinfo=timezone.utc)
+            age_seconds = (now - tick_ts).total_seconds()
+            if age_seconds <= stale_threshold:
+                promoted.append(tick)
+                continue
+
+            fb = fallback_by_asset.get(tick.asset)
+            if fb is None or fb.provider == "yahoo":
+                promoted.append(tick)
+                continue
+
+            fb_ts = fb.source_timestamp
+            if fb_ts.tzinfo is None:
+                fb_ts = fb_ts.replace(tzinfo=timezone.utc)
+            chosen = fb if fb_ts > tick_ts else replace(fb, source_timestamp=now)
+            logger.info(
+                "Promoted stale index to fallback: asset=%s primary_ts=%s fallback_provider=%s fallback_ts=%s chosen_ts=%s",
+                tick.asset,
+                tick_ts.isoformat(),
+                fb.provider,
+                fb_ts.isoformat(),
+                chosen.source_timestamp.isoformat(),
+            )
+            promoted.append(chosen)
+
+        return promoted
+
     def _apply_fx_sanity_guard(
         self,
         selected: list[QuoteTick],
@@ -607,13 +684,6 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 if (now - ts).total_seconds() > 24 * 3600:
                     logger.debug("Index fallback skipped (too old): asset=%s ts=%s", asset, ts.isoformat())
                     continue
-                if primary is not None:
-                    p_ts = primary.source_timestamp
-                    if p_ts.tzinfo is None:
-                        p_ts = p_ts.replace(tzinfo=timezone.utc)
-                    min_gain = timedelta(seconds=INDEX_FALLBACK_MIN_FRESHNESS_GAIN_SECONDS)
-                    if ts <= (p_ts + min_gain):
-                        continue
                 out.append(
                     QuoteTick(
                         asset=asset,
@@ -833,6 +903,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
         except Exception:
             logger.exception("Bond yield fetch failed")
         selected = select_best_quotes(all_ticks)
+        selected = self._promote_stale_index_fallbacks(selected, all_ticks)
         selected = self._apply_fx_sanity_guard(selected, all_ticks)
         logger.debug("Provider routing selected %d/%d ticks", len(selected), len(all_ticks))
         return selected
