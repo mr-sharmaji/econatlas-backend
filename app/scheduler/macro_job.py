@@ -29,7 +29,6 @@ FRED_DIRECT: Dict[str, List[Tuple[str, str]]] = {
     ],
     "EU": [
         ("inflation", "CP0000EZ19M086NEST"),
-        ("gdp_growth", "EUNGDPRQPSMEI"),
         ("unemployment", "LRHUTTTTEZM156S"),
         ("repo_rate", "ECBDFR"),
     ],

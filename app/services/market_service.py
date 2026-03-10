@@ -236,7 +236,15 @@ def _compute_phase(asset: str, instrument_type: str, last_tick: datetime | None,
     if last_tick is None:
         return PHASE_STALE, True
     s = get_settings()
-    threshold = s.stale_threshold_seconds_rolling_24h if instrument_type in _ROLLING_24H_TYPES else s.stale_threshold_seconds_market
+    if instrument_type in _ROLLING_24H_TYPES:
+        threshold = s.stale_threshold_seconds_rolling_24h
+    else:
+        threshold = s.stale_threshold_seconds_market
+        # Japan index/bond free feeds are often delayed by ~15-20 minutes.
+        # Use a wider stale window so active TSE sessions are not misclassified as stale.
+        meta = get_asset_meta(asset)
+        if meta is not None and meta.exchange == "TSE":
+            threshold = max(threshold, int(s.stale_threshold_seconds_tse_session))
     age = (now_utc - last_tick).total_seconds()
     if age <= max(1, threshold):
         return PHASE_LIVE, False
@@ -419,7 +427,13 @@ async def get_latest_prices(
                 d["last_tick_timestamp"] = _to_iso(last_ts)
                 d["ingested_at"] = _to_iso(_normalize_dt(rolling.get("ingested_at")))
                 d["data_quality"] = "fallback" if rolling.get("is_fallback") else "primary"
-                phase, is_stale = _compute_phase(asset, inst, last_ts, now_utc, status=status)
+                provider = str(rolling.get("provider") or "")
+                # ER API is a daily reference-rate source for unsupported Yahoo pairs
+                # (e.g. SAR/INR, MXN/INR). Mark as closed/reference instead of stale.
+                if inst == "currency" and provider == "er_api":
+                    phase, is_stale = PHASE_CLOSED, False
+                else:
+                    phase, is_stale = _compute_phase(asset, inst, last_ts, now_utc, status=status)
                 d["market_phase"] = phase
                 d["is_stale"] = is_stale
                 logger.debug(

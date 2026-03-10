@@ -53,7 +53,7 @@ INDIA_STOCKS: tuple[StockDef, ...] = (
     StockDef("WIPRO.NS", "Wipro", "IT"),
     StockDef("TECHM.NS", "Tech Mahindra", "IT"),
     StockDef("M&M.NS", "Mahindra & Mahindra", "Auto"),
-    StockDef("TATAMOTORS.NS", "Tata Motors", "Auto"),
+    StockDef("TATAPOWER.NS", "Tata Power", "Utilities"),
     StockDef("TATASTEEL.NS", "Tata Steel", "Materials"),
     StockDef("JSWSTEEL.NS", "JSW Steel", "Materials"),
     StockDef("GRASIM.NS", "Grasim", "Materials"),
