@@ -450,76 +450,75 @@ def _extract_tds_rules(
     *,
     fy_start_year: int,
 ) -> dict[str, Any]:
-    current_194a = re.search(
-        r"194A\s+on bank/post office deposits\s+Rs\.?\s*([0-9,]+)\s+([0-9.]+)%",
-        tds_text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    current_194c = re.search(
-        r"194C\s+Payment to contractors or sub-contractors\s+Rs\.?\s*([0-9,]+).*?"
-        r"([0-9.]+)%\s*for individuals and HUF",
-        tds_text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    current_194j = re.search(
-        r"194J\(b\)\s+Fees\s*[\u2013\-]\s*All other Professional Services\s+Rs\.?\s*([0-9,]+)\s+([0-9.]+)%",
-        tds_text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if not (current_194a and current_194c and current_194j):
-        raise ValueError("Unable to parse required TDS sections from TDS chart source.")
+    _ = changes_2025_text
+    _ = fy_start_year
 
-    threshold_194a_change = re.search(
-        r"194A - Interest other than Interest on securities.*?"
-        r"\(ii\)\s*([0-9,]+).*?"
-        r"\(ii\)\s*([0-9,]+)",
-        changes_2025_text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    threshold_194j_change = re.search(
-        r"194J - Fee for professional or technical services\s*([0-9,]+)\s*([0-9,]+)",
-        changes_2025_text,
-        re.IGNORECASE | re.DOTALL,
-    )
+    lines = [line.strip() for line in tds_text.splitlines() if line.strip()]
 
-    if threshold_194a_change and threshold_194j_change:
-        before_194a = _to_number(threshold_194a_change.group(1))
-        after_194a = _to_number(threshold_194a_change.group(2))
-        before_194j = _to_number(threshold_194j_change.group(1))
-        after_194j = _to_number(threshold_194j_change.group(2))
-    else:
-        before_194a = after_194a = _to_number(current_194a.group(1))
-        before_194j = after_194j = _to_number(current_194j.group(1))
+    def find_line_index(*patterns: str) -> int:
+        for idx, line in enumerate(lines):
+            for pattern in patterns:
+                if re.fullmatch(pattern, line, re.IGNORECASE):
+                    return idx
+        raise ValueError(f"Unable to locate TDS section in source: {patterns!r}")
 
-    use_after = fy_start_year >= 2025
-    threshold_194a = after_194a if use_after else before_194a
-    threshold_194j = after_194j if use_after else before_194j
+    def read_row(start_idx: int) -> tuple[str, str, str]:
+        if start_idx + 3 >= len(lines):
+            raise ValueError("Incomplete TDS row while parsing section table.")
+        label = lines[start_idx + 1]
+        threshold_line = lines[start_idx + 2]
+        rate_line = lines[start_idx + 3]
+        return label, threshold_line, rate_line
 
-    return {
-        "sections": [
-            {
-                "section": "194A",
-                "label": "Interest",
-                "rate": _rate_fraction(current_194a.group(2)),
-                "threshold": threshold_194a,
-                "resident_only": True,
-            },
-            {
-                "section": "194C",
-                "label": "Contract Payment",
-                "rate": _rate_fraction(current_194c.group(2)),
-                "threshold": _to_number(current_194c.group(1)),
-                "resident_only": True,
-            },
-            {
-                "section": "194J",
-                "label": "Professional Fee",
-                "rate": _rate_fraction(current_194j.group(2)),
-                "threshold": threshold_194j,
-                "resident_only": True,
-            },
-        ]
+    def parse_threshold(raw: str) -> float:
+        matches = re.findall(
+            r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(lakh|lakhs|crore|crores)?",
+            raw,
+            re.IGNORECASE,
+        )
+        if not matches:
+            return 0.0
+        values = [_parse_indian_amount(f"{num} {unit or ''}".strip()) for num, unit in matches]
+        return float(min(values))
+
+    def parse_rate(raw: str) -> float:
+        if re.search(r"slab rates?", raw, re.IGNORECASE):
+            return 0.0
+        match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%", raw, re.IGNORECASE)
+        if not match:
+            raise ValueError(f"Unable to parse TDS rate from: {raw}")
+        return _rate_fraction(match.group(1))
+
+    def build_section(
+        code: str,
+        *,
+        row_index_patterns: tuple[str, ...],
+    ) -> dict[str, Any]:
+        idx = find_line_index(*row_index_patterns)
+        label, threshold_raw, rate_raw = read_row(idx)
+        return {
+            "section": code,
+            "label": label,
+            "rate": parse_rate(rate_raw),
+            "threshold": parse_threshold(threshold_raw),
+            "resident_only": True,
+        }
+
+    parsed_sections = {
+        "192": build_section("192", row_index_patterns=(r"192",)),
+        "194A": build_section("194A", row_index_patterns=(r"194A",)),
+        "194C": build_section("194C", row_index_patterns=(r"194C",)),
+        "194H": build_section("194H", row_index_patterns=(r"194H",)),
+        "194I": build_section("194I", row_index_patterns=(r"194I\(b\)",)),
+        "194J": build_section("194J", row_index_patterns=(r"194J\(b\)",)),
+        "194-IA": build_section("194-IA", row_index_patterns=(r"194IA",)),
     }
+
+    ordered_codes = ["192", "194A", "194C", "194H", "194I", "194J", "194-IA"]
+    sections = [parsed_sections[code] for code in ordered_codes]
+    if any(not section["label"] for section in sections):
+        raise ValueError("Parsed TDS sections contain empty labels.")
+    return {"sections": sections}
 
 
 def _extract_advance_tax_rules(advance_text: str) -> dict[str, Any]:
@@ -626,7 +625,10 @@ def _build_helper_points(
 
     first_installment = installments[0] if installments else None
     final_installment = installments[-1] if installments else None
-    main_tds = tds_sections[0] if tds_sections else None
+    main_tds = next(
+        (row for row in tds_sections if float(row.get("rate", 0.0)) > 0.0),
+        tds_sections[0] if tds_sections else None,
+    )
 
     return {
         "hub": [
