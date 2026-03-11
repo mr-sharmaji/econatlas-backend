@@ -420,19 +420,87 @@ def _fetch_rows_for_status(source_code: str, status: str, today_ist: date) -> li
     return parsed
 
 
+def _feed_priority(source_code: str) -> int:
+    code = (source_code or "").strip().lower()
+    priorities = {
+        "open": 1,
+        "current": 2,
+        "close": 3,
+        "listed": 4,
+    }
+    return priorities.get(code, 0)
+
+
+def _status_merge_priority(status: str) -> int:
+    normalized = _normalize_status(status)
+    if normalized == "closed":
+        return 3
+    if normalized == "upcoming":
+        return 2
+    if normalized == "open":
+        return 1
+    return 0
+
+
+def _pick_best_live_row(
+    existing: tuple[dict, int],
+    candidate: tuple[dict, int],
+) -> tuple[dict, int]:
+    existing_row, existing_feed_priority = existing
+    candidate_row, candidate_feed_priority = candidate
+
+    existing_has_listing = existing_row.get("listing_price") is not None
+    candidate_has_listing = candidate_row.get("listing_price") is not None
+    if candidate_has_listing != existing_has_listing:
+        return candidate if candidate_has_listing else existing
+
+    existing_ts = existing_row.get("source_timestamp")
+    candidate_ts = candidate_row.get("source_timestamp")
+    existing_ts_ok = isinstance(existing_ts, datetime)
+    candidate_ts_ok = isinstance(candidate_ts, datetime)
+    if existing_ts_ok and candidate_ts_ok:
+        if candidate_ts > existing_ts:
+            return candidate
+        if candidate_ts < existing_ts:
+            return existing
+    elif candidate_ts_ok and not existing_ts_ok:
+        return candidate
+    elif existing_ts_ok and not candidate_ts_ok:
+        return existing
+
+    if candidate_feed_priority > existing_feed_priority:
+        return candidate
+    if candidate_feed_priority < existing_feed_priority:
+        return existing
+
+    if _status_merge_priority(str(candidate_row.get("status"))) > _status_merge_priority(
+        str(existing_row.get("status"))
+    ):
+        return candidate
+    return existing
+
+
 def _fetch_live_rows() -> list[dict]:
     today_ist = datetime.now(_IST).date()
-    combined: list[dict] = []
-    seen: set[str] = set()
-    for source_code, status in (("open", "open"), ("current", "upcoming")):
+    merged: dict[str, tuple[dict, int]] = {}
+    # Include "close" and "listed" so closed IPO lifecycle + listing outcomes stay fresh.
+    for source_code, status in (
+        ("open", "open"),
+        ("current", "upcoming"),
+        ("close", "closed"),
+        ("listed", "closed"),
+    ):
+        feed_priority = _feed_priority(source_code)
         rows = _fetch_rows_for_status(source_code=source_code, status=status, today_ist=today_ist)
         for row in rows:
             symbol = str(row["symbol"])
-            if symbol in seen:
-                continue
-            seen.add(symbol)
-            combined.append(row)
-    return combined
+            existing = merged.get(symbol)
+            candidate = (row, feed_priority)
+            if existing is None:
+                merged[symbol] = candidate
+            else:
+                merged[symbol] = _pick_best_live_row(existing, candidate)
+    return [entry[0] for entry in merged.values()]
 
 
 async def _sync_live_rows(force: bool = False) -> None:
@@ -481,9 +549,9 @@ async def _sync_live_rows(force: bool = False) -> None:
                         price_band = EXCLUDED.price_band,
                         gmp_percent = EXCLUDED.gmp_percent,
                         subscription_multiple = EXCLUDED.subscription_multiple,
-                        listing_price = EXCLUDED.listing_price,
-                        listing_gain_pct = EXCLUDED.listing_gain_pct,
-                        outcome_state = EXCLUDED.outcome_state,
+                        listing_price = COALESCE(EXCLUDED.listing_price, ipo_snapshots.listing_price),
+                        listing_gain_pct = COALESCE(EXCLUDED.listing_gain_pct, ipo_snapshots.listing_gain_pct),
+                        outcome_state = COALESCE(EXCLUDED.outcome_state, ipo_snapshots.outcome_state),
                         open_date = EXCLUDED.open_date,
                         close_date = EXCLUDED.close_date,
                         listing_date = EXCLUDED.listing_date,
