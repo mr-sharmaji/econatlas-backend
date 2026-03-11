@@ -884,6 +884,15 @@ def _build_helper_points(
         (row for row in tds_payment_types if float(row.get("rate_individual", 0.0)) > 0.0),
         tds_payment_types[0] if tds_payment_types else None,
     )
+    if main_tds and float(main_tds.get("threshold") or 0.0) > 0.0:
+        tds_threshold_point = (
+            f"TDS applies once payment crosses the threshold "
+            f"(for example {_format_indian_rupees(float(main_tds['threshold']))} for some payment types)."
+        )
+    else:
+        tds_threshold_point = (
+            "TDS applicability depends on payment-type threshold; amounts below threshold may not attract TDS."
+        )
 
     return {
         "hub": [
@@ -916,7 +925,7 @@ def _build_helper_points(
         ],
         "tds": [
             "Use this for both perspectives: what you receive and what you deduct/deposit.",
-            "Choose the payment type first because each one has different thresholds and rates.",
+            tds_threshold_point,
             "PAN availability and recipient type can change the final TDS amount.",
         ],
     }

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from app.core.database import get_pool
+from app.services import tax_fy
 
 _CONFIG_TABLE = "tax_config_versions"
 _DEFAULT_HELPER_POINTS = {
@@ -180,6 +181,17 @@ async def get_tax_config_payload() -> dict[str, Any]:
     if row is None:
         raise TaxConfigNotFoundError("Tax config not seeded in database.")
     payload = _normalize_config_payload_from_row(row)
+    supported_fy = payload.get("supported_fy")
+    if not isinstance(supported_fy, list):
+        supported_fy = []
+    rules_by_fy = payload.get("rules_by_fy")
+    available_rule_ids = set(rules_by_fy.keys()) if isinstance(rules_by_fy, dict) else set()
+    resolved_default = tax_fy.resolve_default_fy(
+        supported_fy=supported_fy,
+        available_rule_ids=available_rule_ids or None,
+    )
+    if resolved_default:
+        payload["default_fy"] = resolved_default
     payload["hash"] = compute_config_hash(payload)
     return payload
 

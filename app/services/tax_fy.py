@@ -46,6 +46,41 @@ def fy_window_ids(*, now_utc: datetime | None = None) -> tuple[str, str, str]:
     return (prev, current, nxt)
 
 
+def resolve_default_fy(
+    *,
+    supported_fy: list[dict] | list[str],
+    available_rule_ids: set[str] | None = None,
+    now_utc: datetime | None = None,
+) -> str:
+    current_start = current_fy_start_year(now_utc=now_utc)
+    candidates: list[tuple[str, int]] = []
+    for item in supported_fy:
+        if isinstance(item, dict):
+            fy_id = str(item.get("id") or "").strip()
+        else:
+            fy_id = str(item or "").strip()
+        if not fy_id:
+            continue
+        try:
+            start_year = fy_start_year(fy_id)
+        except ValueError:
+            continue
+        if available_rule_ids is not None and fy_id not in available_rule_ids:
+            continue
+        candidates.append((fy_id, start_year))
+
+    if not candidates:
+        return ""
+
+    current_fy = fy_id_from_start_year(current_start)
+    if any(fy_id == current_fy for fy_id, _ in candidates):
+        return current_fy
+
+    # Pick nearest start year to the current FY; tie-breaker favors more recent FY.
+    nearest = min(candidates, key=lambda row: (abs(row[1] - current_start), -row[1]))
+    return nearest[0]
+
+
 def trim_payload_to_window(
     payload: dict,
     *,
