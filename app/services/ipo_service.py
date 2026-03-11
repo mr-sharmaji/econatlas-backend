@@ -8,6 +8,7 @@ from html import unescape
 
 import requests
 
+from app.core.config import get_settings
 from app.core.database import get_pool, parse_ts, record_to_dict
 
 logger = logging.getLogger(__name__)
@@ -15,10 +16,15 @@ logger = logging.getLogger(__name__)
 _IST = timezone(timedelta(hours=5, minutes=30))
 _LIVE_SOURCE = "investorgain_webnode"
 _SYNC_TTL_SECONDS = 180
+_DEFAULT_STALE_THRESHOLD_SECONDS = 900
 _LIVE_REPORT_ID = 331
 _LIVE_BASE_URL = "https://webnodejs.investorgain.com/cloud/new/report/data-read"
 _DETAIL_BASE_URL = "https://www.investorgain.com"
 _DETAIL_PRICE_BAND_CACHE: dict[str, str | None] = {}
+_SYNC_LOCK: asyncio.Lock | None = None
+_REFRESH_TASK: asyncio.Task[None] | None = None
+_LAST_STALE_CHECK_AT: datetime | None = None
+_STALE_CHECK_MIN_INTERVAL_SECONDS = 30
 _PRICE_RANGE_RE = re.compile(
     r"(?:₹|rs\.?\s*)?\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*(?:to|-|–)\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)",
     re.IGNORECASE,
@@ -276,6 +282,23 @@ def _parse_source_ts(value: object | None, today_ist: date) -> datetime:
         except ValueError:
             continue
     return datetime.now(timezone.utc)
+
+
+def _sync_lock() -> asyncio.Lock:
+    global _SYNC_LOCK
+    if _SYNC_LOCK is None:
+        _SYNC_LOCK = asyncio.Lock()
+    return _SYNC_LOCK
+
+
+def _stale_threshold_seconds() -> int:
+    settings = get_settings()
+    value = int(getattr(settings, "ipo_stale_threshold_seconds", _DEFAULT_STALE_THRESHOLD_SECONDS))
+    return max(60, value)
+
+
+def _task_running(task: asyncio.Task[None] | None) -> bool:
+    return task is not None and not task.done()
 
 
 def _parse_listing_price(row: dict) -> float | None:
@@ -661,6 +684,61 @@ async def _sync_live_rows(force: bool = False) -> None:
     logger.info("IPO live sync complete: %d active rows upserted", len(rows))
 
 
+async def _is_cache_stale() -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        latest_ingested = await conn.fetchval(
+            """
+            SELECT MAX(ingested_at)
+            FROM ipo_snapshots
+            WHERE source = $1
+            """,
+            _LIVE_SOURCE,
+        )
+    if not isinstance(latest_ingested, datetime):
+        return True
+    if latest_ingested.tzinfo is None:
+        latest_ingested = latest_ingested.replace(tzinfo=timezone.utc)
+    age_seconds = (datetime.now(timezone.utc) - latest_ingested).total_seconds()
+    return age_seconds >= _stale_threshold_seconds()
+
+
+async def _refresh_if_stale(reason: str) -> None:
+    global _REFRESH_TASK
+    try:
+        if not await _is_cache_stale():
+            return
+        logger.info("IPO cache stale; running background refresh (reason=%s)", reason)
+        await sync_ipo_cache(force=False)
+    except Exception:
+        logger.exception("IPO background stale refresh failed (reason=%s)", reason)
+    finally:
+        _REFRESH_TASK = None
+
+
+def _schedule_stale_refresh_check(reason: str) -> None:
+    global _REFRESH_TASK, _LAST_STALE_CHECK_AT
+    if _task_running(_REFRESH_TASK):
+        return
+    now_utc = datetime.now(timezone.utc)
+    if (
+        isinstance(_LAST_STALE_CHECK_AT, datetime)
+        and (now_utc - _LAST_STALE_CHECK_AT).total_seconds() < _STALE_CHECK_MIN_INTERVAL_SECONDS
+    ):
+        return
+    _LAST_STALE_CHECK_AT = now_utc
+    _REFRESH_TASK = asyncio.create_task(
+        _refresh_if_stale(reason),
+        name="ipo-stale-refresh",
+    )
+
+
+async def sync_ipo_cache(*, force: bool = False) -> None:
+    """Public sync entrypoint for scheduler + API warmup paths."""
+    async with _sync_lock():
+        await _sync_live_rows(force=force)
+
+
 def _recommendation(status: str, gmp_percent: float | None, subscription_multiple: float | None) -> tuple[str, str]:
     gmp = float(gmp_percent or 0.0)
     sub = float(subscription_multiple or 0.0)
@@ -690,7 +768,7 @@ def _recommendation(status: str, gmp_percent: float | None, subscription_multipl
 
 async def get_ipos(*, status: str = "open", limit: int = 20) -> dict:
     status = _normalize_status(status)
-    await _sync_live_rows()
+    _schedule_stale_refresh_check("get_ipos")
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -752,7 +830,7 @@ async def get_ipos(*, status: str = "open", limit: int = 20) -> dict:
 
 
 async def get_ipo_alerts(device_id: str) -> list[str]:
-    await _sync_live_rows()
+    _schedule_stale_refresh_check("get_ipo_alerts")
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -768,7 +846,7 @@ async def get_ipo_alerts(device_id: str) -> list[str]:
 
 
 async def put_ipo_alerts(device_id: str, symbols: list[str]) -> list[str]:
-    await _sync_live_rows()
+    _schedule_stale_refresh_check("put_ipo_alerts")
     normalized = _normalize_symbols(symbols)
     pool = await get_pool()
     async with pool.acquire() as conn:

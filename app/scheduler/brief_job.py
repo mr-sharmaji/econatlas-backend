@@ -9,6 +9,7 @@ from typing import Iterable
 import requests
 
 from app.scheduler.base import BaseScraper
+from app.scheduler.job_executors import get_job_executor
 from app.services import brief_service
 
 logger = logging.getLogger(__name__)
@@ -206,7 +207,10 @@ def _fetch_brief_rows_sync() -> list[dict]:
 async def run_brief_job() -> None:
     try:
         loop = asyncio.get_event_loop()
-        rows = await loop.run_in_executor(None, _fetch_brief_rows_sync)
+        rows = await loop.run_in_executor(
+            get_job_executor("brief"),
+            _fetch_brief_rows_sync,
+        )
         count = await brief_service.upsert_stock_snapshots(rows)
         logger.info("Brief stock job complete: %d snapshots upserted", count)
     except Exception:

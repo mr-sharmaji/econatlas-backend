@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 
 from app.core.database import parse_ts
 from app.scheduler.base import BaseScraper
+from app.scheduler.job_executors import get_job_executor
 from app.scheduler.provider_router import QuoteProvider
 from app.scheduler.trading_calendar import get_trading_date, is_trading_day_commodities, NYSE
 from app.services import market_service
@@ -263,7 +264,10 @@ async def run_commodity_job() -> None:
     try:
         logger.debug("Commodity job cycle started")
         loop = asyncio.get_event_loop()
-        fetched_rows, calendar_says_open = await loop.run_in_executor(None, _fetch_commodity_rows_sync)
+        fetched_rows, calendar_says_open = await loop.run_in_executor(
+            get_job_executor("commodity"),
+            _fetch_commodity_rows_sync,
+        )
         logger.debug("Commodity job fetched_rows=%d calendar_says_open=%s", len(fetched_rows), calendar_says_open)
         if not fetched_rows:
             logger.debug("Commodity job exiting early: no fetched rows")

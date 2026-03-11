@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     macro_interval_minutes: int = 1
     news_interval_minutes: int = 30
     brief_interval_minutes: int = 5
+    ipo_interval_minutes: int = 5
+    ipo_stale_threshold_seconds: int = 900
     tax_sync_enabled: bool = True
     tax_sync_interval_minutes: int = 1440
     tax_sync_timeout_seconds: int = 30

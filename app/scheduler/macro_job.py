@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from app.scheduler.base import BaseScraper
+from app.scheduler.job_executors import get_job_executor
 from app.services import macro_service
 
 logger = logging.getLogger(__name__)
@@ -566,7 +567,10 @@ def _fetch_macro_items_sync() -> list:
 async def run_macro_job() -> None:
     try:
         loop = asyncio.get_event_loop()
-        items = await loop.run_in_executor(None, _fetch_macro_items_sync)
+        items = await loop.run_in_executor(
+            get_job_executor("macro"),
+            _fetch_macro_items_sync,
+        )
         pruned = await macro_service.delete_rows_newer_than_source_timestamps(
             items,
             sources={"fred_api", "world_bank"},

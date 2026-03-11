@@ -14,6 +14,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from app.scheduler.base import BaseScraper
+from app.scheduler.job_executors import get_job_executor
 from app.services import event_service, news_service
 
 logger = logging.getLogger(__name__)
@@ -310,7 +311,10 @@ def _fetch_news_data_sync() -> tuple:
 async def run_news_job() -> None:
     try:
         loop = asyncio.get_event_loop()
-        records, events = await loop.run_in_executor(None, _fetch_news_data_sync)
+        records, events = await loop.run_in_executor(
+            get_job_executor("news"),
+            _fetch_news_data_sync,
+        )
         accepted = 0
         for rec in records:
             try:

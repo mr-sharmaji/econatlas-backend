@@ -7,6 +7,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.core.config import get_settings
+from app.scheduler.job_executors import shutdown_job_executors
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ def _get_intervals() -> dict:
         "commodity_seconds": getattr(settings, "commodity_interval_seconds", None),
         "commodity_minutes": getattr(settings, "commodity_interval_minutes", 1),
         "brief_minutes": getattr(settings, "brief_interval_minutes", 5),
+        "ipo_minutes": getattr(settings, "ipo_interval_minutes", 5),
         "macro_minutes": getattr(settings, "macro_interval_minutes", 1),
         "news_minutes": getattr(settings, "news_interval_minutes", 30),
         "tax_enabled": getattr(settings, "tax_sync_enabled", True),
@@ -65,6 +67,14 @@ async def _run_brief() -> None:
     logger.debug("Scheduler tick: brief stock job finished")
 
 
+async def _run_ipo() -> None:
+    logger.debug("Scheduler tick: IPO job started")
+    from app.services import ipo_service
+
+    await ipo_service.sync_ipo_cache(force=False)
+    logger.debug("Scheduler tick: IPO job finished")
+
+
 async def _run_tax() -> None:
     logger.debug("Scheduler tick: tax job started")
     from app.scheduler.tax_job import run_tax_job
@@ -77,11 +87,12 @@ async def _run_tax() -> None:
 
 
 async def _startup_collection() -> None:
-    """Run all jobs once at startup (market, commodity, brief, macro, tax, then news)."""
+    """Run all jobs once at startup (market, commodity, brief, IPO, macro, tax, then news)."""
     logger.info("Running startup data collection...")
     await _run_market()
     await _run_commodity()
     await _run_brief()
+    await _run_ipo()
     await _run_macro()
     await _run_tax()
     await _run_news()
@@ -113,13 +124,24 @@ def start_scheduler() -> None:
         logger.info("Scheduler: commodity every %dm", intervals["commodity_minutes"])
 
     _scheduler.add_job(_run_brief, "interval", minutes=intervals["brief_minutes"], id="brief", replace_existing=True)
+    _scheduler.add_job(
+        _run_ipo,
+        "interval",
+        minutes=intervals["ipo_minutes"],
+        id="ipo",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=120,
+    )
     _scheduler.add_job(_run_macro, "interval", minutes=intervals["macro_minutes"], id="macro", replace_existing=True)
     _scheduler.add_job(_run_news, "interval", minutes=intervals["news_minutes"], id="news", replace_existing=True)
     if intervals["tax_enabled"]:
         _scheduler.add_job(_run_tax, "interval", minutes=intervals["tax_minutes"], id="tax", replace_existing=True)
     logger.info(
-        "Scheduler: brief=%dm macro=%dm news=%dm tax=%s",
+        "Scheduler: brief=%dm ipo=%dm macro=%dm news=%dm tax=%s",
         intervals["brief_minutes"],
+        intervals["ipo_minutes"],
         intervals["macro_minutes"],
         intervals["news_minutes"],
         f"{intervals['tax_minutes']}m" if intervals["tax_enabled"] else "disabled",
@@ -140,4 +162,5 @@ def stop_scheduler() -> None:
     if _scheduler is not None:
         _scheduler.shutdown(wait=False)
         _scheduler = None
+        shutdown_job_executors()
         logger.info("Scheduler stopped.")

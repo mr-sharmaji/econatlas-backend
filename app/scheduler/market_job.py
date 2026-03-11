@@ -15,6 +15,7 @@ import requests
 from app.core.database import parse_ts
 from app.core.config import get_settings
 from app.scheduler.base import BaseScraper
+from app.scheduler.job_executors import get_job_executor
 from app.scheduler.provider_router import QuoteProvider, QuoteTick, select_best_quotes
 from app.scheduler.trading_calendar import (
     get_trading_date,
@@ -1220,7 +1221,10 @@ async def run_market_job() -> None:
     try:
         logger.debug("Market job cycle started")
         loop = asyncio.get_event_loop()
-        fetched_rows, calendar_says_open = await loop.run_in_executor(None, _fetch_market_rows_sync)
+        fetched_rows, calendar_says_open = await loop.run_in_executor(
+            get_job_executor("market"),
+            _fetch_market_rows_sync,
+        )
         logger.debug("Market job fetched_rows=%d calendar_says_open=%s", len(fetched_rows), calendar_says_open)
         if not fetched_rows:
             logger.debug("Market job exiting early: no fetched rows")
