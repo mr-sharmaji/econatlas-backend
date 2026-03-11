@@ -260,7 +260,7 @@ async def run_tax_sync_cycle(
     )
     version = str(staged["version"])
 
-    semantically_validated, pass1_errors = _validate_semantics(staged["payload"])
+    semantically_validated, pass1_errors = _validate_semantics(staged)
     if pass1_errors:
         reason = "; ".join(pass1_errors[:8])
         await tax_service.mark_config_validation(
