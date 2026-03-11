@@ -411,6 +411,16 @@ def _fetch_rows_for_status(source_code: str, status: str, today_ist: date) -> li
             row.get("Price (₹)"),
             _fetch_detail_price_band(row),
         )
+        open_date = _parse_date_value(row.get("~Srt_Open"))
+        close_date = _parse_date_value(row.get("~Srt_Close"))
+        listing_date = _parse_date_value(row.get("~Str_Listing"))
+        derived_status = _derive_ipo_status(
+            source_status=status,
+            today_ist=today_ist,
+            open_date=open_date,
+            close_date=close_date,
+            listing_date=listing_date,
+        )
         listing_price = _parse_listing_price(row)
         listing_gain_pct = _listing_gain_pct(
             listing_price=listing_price,
@@ -423,7 +433,7 @@ def _fetch_rows_for_status(source_code: str, status: str, today_ist: date) -> li
                 "symbol": symbol,
                 "company_name": company_name,
                 "market": "IN",
-                "status": status,
+                "status": derived_status,
                 "ipo_type": ipo_type,
                 "issue_size_cr": _to_float(row.get("IPO Size (₹ in cr)")),
                 "price_band": price_band,
@@ -432,9 +442,9 @@ def _fetch_rows_for_status(source_code: str, status: str, today_ist: date) -> li
                 "listing_price": listing_price,
                 "listing_gain_pct": listing_gain_pct,
                 "outcome_state": outcome_state,
-                "open_date": _parse_date_value(row.get("~Srt_Open")),
-                "close_date": _parse_date_value(row.get("~Srt_Close")),
-                "listing_date": _parse_date_value(row.get("~Str_Listing")),
+                "open_date": open_date,
+                "close_date": close_date,
+                "listing_date": listing_date,
                 "source_timestamp": _parse_source_ts(row.get("Updated-On"), today_ist),
                 "ingested_at": datetime.now(timezone.utc),
                 "source": _LIVE_SOURCE,
@@ -463,6 +473,39 @@ def _status_merge_priority(status: str) -> int:
     if normalized == "open":
         return 1
     return 0
+
+
+def _derive_ipo_status(
+    *,
+    source_status: str,
+    today_ist: date,
+    open_date: date | None,
+    close_date: date | None,
+    listing_date: date | None,
+) -> str:
+    """Normalize IPO status from dates so Open/Upcoming tabs stay accurate."""
+    normalized = _normalize_status(source_status)
+    if normalized == "closed":
+        return "closed"
+
+    if listing_date is not None and listing_date <= today_ist:
+        return "closed"
+    if close_date is not None and close_date < today_ist:
+        return "closed"
+
+    if open_date is not None and close_date is not None:
+        if today_ist < open_date:
+            return "upcoming"
+        if open_date <= today_ist <= close_date:
+            return "open"
+        return "closed"
+
+    if open_date is not None:
+        return "open" if open_date <= today_ist else "upcoming"
+    if close_date is not None:
+        return "open" if close_date >= today_ist else "closed"
+
+    return normalized
 
 
 def _pick_best_live_row(
@@ -617,17 +660,21 @@ async def _sync_live_rows(force: bool = False) -> None:
                     symbols,
                 )
 
-            # Date-driven lifecycle close to retain recently completed IPOs.
+            # Date-driven lifecycle normalization for open/upcoming/closed tabs.
             await conn.execute(
                 """
                 UPDATE ipo_snapshots
-                SET status = 'closed'
+                SET status = CASE
+                    WHEN listing_date IS NOT NULL AND listing_date <= $1::date THEN 'closed'
+                    WHEN close_date IS NOT NULL AND close_date < $1::date THEN 'closed'
+                    WHEN open_date IS NOT NULL AND close_date IS NOT NULL AND open_date <= $1::date AND close_date >= $1::date THEN 'open'
+                    WHEN open_date IS NOT NULL AND close_date IS NOT NULL AND open_date > $1::date THEN 'upcoming'
+                    WHEN open_date IS NOT NULL AND close_date IS NULL AND open_date <= $1::date THEN 'open'
+                    WHEN open_date IS NOT NULL AND close_date IS NULL AND open_date > $1::date THEN 'upcoming'
+                    WHEN open_date IS NULL AND close_date IS NOT NULL AND close_date >= $1::date THEN 'open'
+                    ELSE status
+                END
                 WHERE archived_at IS NULL
-                  AND status <> 'closed'
-                  AND (
-                    (close_date IS NOT NULL AND close_date < $1::date)
-                    OR (listing_date IS NOT NULL AND listing_date <= $1::date)
-                  )
                 """,
                 today_ist,
             )
