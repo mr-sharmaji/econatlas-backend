@@ -876,6 +876,7 @@ def _build_helper_points(
 
     installments = list(advance["installments"])
     tds_payment_types = list(tds.get("payment_types") or [])
+    advance_threshold = float(advance.get("interest_threshold") or 10000.0)
 
     first_installment = installments[0] if installments else None
     final_installment = installments[-1] if installments else None
@@ -886,7 +887,7 @@ def _build_helper_points(
 
     return {
         "hub": [
-            f"Use the same financial year ({default_fy}) across calculators for consistent estimates.",
+            "Use the same financial year across calculators for consistent estimates.",
             "Pick your calculator based on salary, gains, advance tax, or TDS estimate.",
             "Results are estimates for planning and should be validated before filing.",
         ],
@@ -901,7 +902,10 @@ def _build_helper_points(
             f"Property and other non-equity assets typically move from slab-based STCG to {_pct_label(property_asset['ltcg_rate'])} LTCG.",
         ],
         "advance_tax": [
-            "Advance tax usually applies when annual tax liability crosses the threshold.",
+            (
+                f"Advance tax usually applies when net tax payable exceeds "
+                f"{_format_indian_rupees(advance_threshold)}."
+            ),
             (
                 f"Advance tax schedule runs from {first_installment['label']} ({first_installment['due_date']})"
                 f" to {final_installment['label']} ({final_installment['due_date']})."
@@ -912,12 +916,8 @@ def _build_helper_points(
         ],
         "tds": [
             "Use this for both perspectives: what you receive and what you deduct/deposit.",
-            (
-                f"Typical payment type {main_tds['section_code']} uses {_pct_label(main_tds['rate_individual'])} above {_format_indian_rupees(main_tds['threshold'])}."
-                if main_tds
-                else "TDS rate and threshold depend on the selected payment type."
-            ),
-            "Choose the exact payment type for a clearer threshold and rate outcome.",
+            "Choose the payment type first because each one has different thresholds and rates.",
+            "PAN availability and recipient type can change the final TDS amount.",
         ],
     }
 
