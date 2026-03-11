@@ -926,7 +926,7 @@ def _build_helper_points(
         "tds": [
             "Use this for both perspectives: what you receive and what you deduct/deposit.",
             tds_threshold_point,
-            "PAN availability and recipient type can change the final TDS amount.",
+            "Applied rate can change with PAN availability and recipient type.",
         ],
     }
 
