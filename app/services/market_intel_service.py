@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 
 from app.core.asset_catalog import (
     benchmark_for_region,
-    default_watchlist_assets,
     get_asset_meta,
     list_asset_catalog,
 )
@@ -57,11 +56,7 @@ async def get_or_seed_watchlist(device_id: str) -> list[str]:
             device_id,
         )
     assets = [str(r["asset"]) for r in rows]
-    if assets:
-        return assets
-    defaults = default_watchlist_assets()
-    await put_watchlist(device_id=device_id, assets=defaults)
-    return defaults
+    return assets
 
 
 async def put_watchlist(device_id: str, assets: list[str]) -> list[str]:

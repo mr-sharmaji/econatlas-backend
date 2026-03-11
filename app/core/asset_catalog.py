@@ -93,7 +93,7 @@ ASSET_CATALOG: tuple[AssetCatalogItem, ...] = (
     AssetCatalogItem("platinum", "commodity", "PL=F", "Commodities", "NYSE", "rolling_24h", 820, "commodity", "usd_per_troy_ounce", False, "gold"),
     AssetCatalogItem("palladium", "commodity", "PA=F", "Commodities", "NYSE", "rolling_24h", 830, "commodity", "usd_per_troy_ounce", False, "gold"),
     AssetCatalogItem("copper", "commodity", "HG=F", "Commodities", "NYSE", "rolling_24h", 840, "commodity", "usd_per_pound", False, "gold"),
-    AssetCatalogItem("crude oil", "commodity", "CL=F", "Commodities", "NYSE", "rolling_24h", 850, "commodity", "usd_per_barrel", False, "gold"),
+    AssetCatalogItem("crude oil", "commodity", "CL=F", "Commodities", "NYSE", "rolling_24h", 850, "commodity", "usd_per_barrel", True, "gold"),
     AssetCatalogItem("natural gas", "commodity", "NG=F", "Commodities", "NYSE", "rolling_24h", 860, "commodity", "usd_per_mmbtu", False, "gold"),
     # Bonds
     AssetCatalogItem("India 10Y Bond Yield", "bond_yield", "INDIRLTLT01STM", "India", "NSE", "session", 800, "bond_yield", "percent", False, "India 10Y Bond Yield"),
@@ -134,6 +134,7 @@ def default_watchlist_assets() -> list[str]:
         "USD/INR",
         "gold",
         "silver",
+        "crude oil",
     ]
 
 
