@@ -157,6 +157,14 @@ def _validate_semantics(payload: dict[str, Any]) -> tuple[dict[str, Any] | None,
                 errors.append(f"{fy}:{asset_key}: gains rates out of range")
             if holding <= 0:
                 errors.append(f"{fy}:{asset_key}: holding_period_months must be > 0")
+            stcg_mode = str(asset_rule.get("stcg_mode") or "fixed").strip().lower()
+            ltcg_mode = str(asset_rule.get("ltcg_mode") or "fixed").strip().lower()
+            if stcg_mode not in {"fixed", "slab"}:
+                errors.append(f"{fy}:{asset_key}: invalid stcg_mode")
+            if ltcg_mode not in {"fixed", "slab", "none"}:
+                errors.append(f"{fy}:{asset_key}: invalid ltcg_mode")
+            if bool(asset_rule.get("always_short_term")) and ltcg_mode != "none":
+                errors.append(f"{fy}:{asset_key}: always_short_term requires ltcg_mode=none")
 
         installments = list(advance.get("installments") or [])
         if not installments:
@@ -169,17 +177,46 @@ def _validate_semantics(payload: dict[str, Any]) -> tuple[dict[str, Any] | None,
             prev_percent = percent
         if installments and abs(prev_percent - 100.0) > 1e-6:
             errors.append(f"{fy}: advance_tax final cumulative_percent must be 100")
+        interest_234c = float(advance.get("interest_rate_234c") or 0.0)
+        interest_234b = float(advance.get("interest_rate_234b") or 0.0)
+        interest_threshold = float(advance.get("interest_threshold") or 0.0)
+        if interest_234c < 0 or interest_234c > 1:
+            errors.append(f"{fy}: advance_tax interest_rate_234c out of range")
+        if interest_234b < 0 or interest_234b > 1:
+            errors.append(f"{fy}: advance_tax interest_rate_234b out of range")
+        if interest_threshold < 0:
+            errors.append(f"{fy}: advance_tax interest_threshold must be >= 0")
 
-        sections = list(tds.get("sections") or [])
-        if not sections:
-            errors.append(f"{fy}: tds sections empty")
-        for idx, section in enumerate(sections):
-            rate = float(section.get("rate") or 0.0)
-            threshold = float(section.get("threshold") or 0.0)
-            if rate < 0 or rate > 1:
-                errors.append(f"{fy}:tds section[{idx}] rate out of range")
+        payment_types = list(tds.get("payment_types") or [])
+        if not payment_types:
+            errors.append(f"{fy}: tds payment_types empty")
+        defaults = tds.get("defaults") or {}
+        if not isinstance(defaults, dict):
+            errors.append(f"{fy}: tds defaults invalid")
+        for idx, payment_type in enumerate(payment_types):
+            value = str(payment_type.get("value") or "").strip()
+            section_code = str(payment_type.get("section_code") or "").strip()
+            rate_ind = float(payment_type.get("rate_individual") or 0.0)
+            rate_other = float(payment_type.get("rate_other") or 0.0)
+            rate_no_pan = float(payment_type.get("rate_no_pan") or 0.0)
+            threshold = float(payment_type.get("threshold") or 0.0)
+            if not value or not section_code:
+                errors.append(f"{fy}:tds payment_types[{idx}] missing value/section_code")
+            if rate_ind < 0 or rate_ind > 1:
+                errors.append(f"{fy}:tds payment_types[{idx}] rate_individual out of range")
+            if rate_other < 0 or rate_other > 1:
+                errors.append(f"{fy}:tds payment_types[{idx}] rate_other out of range")
+            if rate_no_pan < 0 or rate_no_pan > 1:
+                errors.append(f"{fy}:tds payment_types[{idx}] rate_no_pan out of range")
             if threshold < 0:
-                errors.append(f"{fy}:tds section[{idx}] threshold must be >= 0")
+                errors.append(f"{fy}:tds payment_types[{idx}] threshold must be >= 0")
+            for sidx, subtype in enumerate(list(payment_type.get("sub_type_options") or [])):
+                for key in ("rate_individual", "rate_other", "rate_no_pan"):
+                    sval = float(subtype.get(key) or 0.0)
+                    if sval < 0 or sval > 1:
+                        errors.append(
+                            f"{fy}:tds payment_types[{idx}] sub_type_options[{sidx}] {key} out of range"
+                        )
 
     if errors:
         return None, errors

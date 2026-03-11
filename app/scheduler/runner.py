@@ -77,14 +77,14 @@ async def _run_tax() -> None:
 
 
 async def _startup_collection() -> None:
-    """Run all jobs once at startup (market, commodity, macro first; news last)."""
+    """Run all jobs once at startup (market, commodity, brief, macro, tax, then news)."""
     logger.info("Running startup data collection...")
     await _run_market()
     await _run_commodity()
     await _run_brief()
     await _run_macro()
-    await _run_news()
     await _run_tax()
+    await _run_news()
     logger.info("Startup data collection complete.")
 
 

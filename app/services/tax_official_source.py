@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urljoin
 
 import httpx
 
@@ -21,6 +23,7 @@ class OfficialTaxSourceUrls:
     tax_calculator: str = "https://cleartax.in/paytax/taxcalculator"
     capital_gains: str = "https://cleartax.in/s/capital-gains-income"
     tds_rate_chart: str = "https://cleartax.in/s/tds-rate-chart"
+    tds_calculator: str = "https://cleartax.in/s/tds-calculator"
     advance_tax: str = "https://cleartax.in/s/advance-tax"
 
 
@@ -423,102 +426,339 @@ def _extract_capital_gains_rules(capital_text: str, *, top_slab_rate: float) -> 
     ltcg_rate = _rate_fraction(ltcg_match.group(1))
     exemption = _parse_indian_amount(f"{ltcg_match.group(2)} {ltcg_match.group(3)}")
     debt_holding = 9_999 if debt_is_short else int(holding_match.group(2))
+    stcg_equity = _rate_fraction(stcg_match.group(1))
 
-    return {
-        "assets": {
-            "equity": {
-                "holding_period_months": equity_holding,
-                "stcg_rate": _rate_fraction(stcg_match.group(1)),
-                "ltcg_rate": ltcg_rate,
-                "ltcg_exemption": exemption,
-                "section": "111A/112A",
-            },
-            "debt_mf": {
-                "holding_period_months": debt_holding,
-                "stcg_rate": top_slab_rate,
-                "ltcg_rate": top_slab_rate,
-                "ltcg_exemption": 0.0,
-                "section": "50AA (deemed STCG; estimator uses top slab rate)",
-            },
-        }
+    assets = {
+        "listed_equity": {
+            "holding_period_months": equity_holding,
+            "stcg_rate": stcg_equity,
+            "ltcg_rate": ltcg_rate,
+            "ltcg_exemption": exemption,
+            "section": "111A/112A",
+            "stcg_mode": "fixed",
+            "ltcg_mode": "fixed",
+            "always_short_term": False,
+            "note": "STT-paid listed equity shares.",
+        },
+        "equity_mf": {
+            "holding_period_months": equity_holding,
+            "stcg_rate": stcg_equity,
+            "ltcg_rate": ltcg_rate,
+            "ltcg_exemption": exemption,
+            "section": "111A/112A",
+            "stcg_mode": "fixed",
+            "ltcg_mode": "fixed",
+            "always_short_term": False,
+            "note": "Equity-oriented mutual funds.",
+        },
+        "business_trust_units": {
+            "holding_period_months": equity_holding,
+            "stcg_rate": stcg_equity,
+            "ltcg_rate": ltcg_rate,
+            "ltcg_exemption": exemption,
+            "section": "111A/112A",
+            "stcg_mode": "fixed",
+            "ltcg_mode": "fixed",
+            "always_short_term": False,
+            "note": "Units of business trusts such as REIT/InvIT.",
+        },
+        "immovable_property": {
+            "holding_period_months": int(holding_match.group(2)),
+            "stcg_rate": top_slab_rate,
+            "ltcg_rate": ltcg_rate,
+            "ltcg_exemption": 0.0,
+            "section": "50/112",
+            "stcg_mode": "slab",
+            "ltcg_mode": "fixed",
+            "always_short_term": False,
+            "note": "Land, building, and house property.",
+        },
+        "unlisted_shares": {
+            "holding_period_months": int(holding_match.group(2)),
+            "stcg_rate": top_slab_rate,
+            "ltcg_rate": ltcg_rate,
+            "ltcg_exemption": 0.0,
+            "section": "112",
+            "stcg_mode": "slab",
+            "ltcg_mode": "fixed",
+            "always_short_term": False,
+            "note": "Unlisted shares are taxed at slab for STCG and fixed rate for LTCG.",
+        },
+        "listed_bonds_debentures": {
+            "holding_period_months": equity_holding,
+            "stcg_rate": top_slab_rate,
+            "ltcg_rate": ltcg_rate,
+            "ltcg_exemption": 0.0,
+            "section": "112",
+            "stcg_mode": "slab",
+            "ltcg_mode": "fixed",
+            "always_short_term": False,
+            "note": "Listed bonds and debentures (non-debt-special category).",
+        },
+        "gold_other_assets": {
+            "holding_period_months": int(holding_match.group(2)),
+            "stcg_rate": top_slab_rate,
+            "ltcg_rate": ltcg_rate,
+            "ltcg_exemption": 0.0,
+            "section": "112",
+            "stcg_mode": "slab",
+            "ltcg_mode": "fixed",
+            "always_short_term": False,
+            "note": "Gold and other non-equity capital assets.",
+        },
+        "debt_like_special": {
+            "holding_period_months": debt_holding,
+            "stcg_rate": top_slab_rate,
+            "ltcg_rate": top_slab_rate,
+            "ltcg_exemption": 0.0,
+            "section": "50AA",
+            "stcg_mode": "slab",
+            "ltcg_mode": "none",
+            "always_short_term": True,
+            "note": "Debt MF / MLD / unlisted debt-like assets treated as short term.",
+        },
     }
 
+    return {"assets": assets}
 
-def _extract_tds_rules(
-    tds_text: str,
-    changes_2025_text: str,
+
+_TDS_TOP15_CODES = [
+    "192A",
+    "193",
+    "194",
+    "194A(other)",
+    "194A(banks)",
+    "194A(senior)",
+    "194C",
+    "194D",
+    "194H",
+    "194I",
+    "194I(a)",
+    "194IA",
+    "194J",
+    "194K",
+    "194O",
+]
+
+
+def _parse_js_number(raw: str) -> float:
+    return float(raw.strip())
+
+
+def _extract_next_data(raw_html: str) -> dict[str, Any]:
+    match = re.search(
+        r'<script[^>]*id="__NEXT_DATA__"[^>]*>(?P<data>.*?)</script>',
+        raw_html,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        raise ValueError("Unable to parse __NEXT_DATA__ payload from ClearTax calculator page.")
+    payload = html.unescape(match.group("data"))
+    return json.loads(payload)
+
+
+def _normalize_script_url(src: str) -> str:
+    text = src.strip()
+    if text.startswith("http://") or text.startswith("https://"):
+        return text
+    if text.startswith("//"):
+        return f"https:{text}"
+    if text.startswith("/"):
+        return urljoin("https://assets1.cleartax-cdn.com", text)
+    return text
+
+
+async def _fetch_tds_formula_script(
     *,
-    fy_start_year: int,
+    tds_calculator_html: str,
+    timeout_seconds: int,
+) -> tuple[str, str]:
+    script_urls = [
+        _normalize_script_url(url)
+        for url in re.findall(r'<script[^>]+src="([^"]+)"', tds_calculator_html, re.IGNORECASE)
+        if "/_next/static/chunks/" in url
+    ]
+    if not script_urls:
+        raise ValueError("Unable to locate ClearTax chunk scripts for TDS formula parsing.")
+
+    timeout = httpx.Timeout(float(timeout_seconds))
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=_REQUEST_HEADERS) as client:
+        for script_url in script_urls:
+            try:
+                resp = await client.get(script_url)
+                resp.raise_for_status()
+            except Exception:
+                continue
+            if 'case"TDS_FORMULA":return function(e){' in resp.text:
+                return script_url, resp.text
+    raise ValueError("Unable to locate TDS_FORMULA script in ClearTax chunk assets.")
+
+
+def _extract_tds_case_block(*, formula_body: str, payment_code: str) -> str:
+    match = re.search(
+        rf'case"{re.escape(payment_code)}":(?P<body>.*?)(?:break;|$)',
+        formula_body,
+        re.DOTALL,
+    )
+    if not match:
+        raise ValueError(f"Missing TDS formula block for payment type: {payment_code}")
+    return match.group("body")
+
+
+def _extract_tds_formula_body(script_text: str) -> str:
+    start_token = 'case"TDS_FORMULA":return function(e){'
+    start = script_text.find(start_token)
+    if start < 0:
+        raise ValueError("TDS_FORMULA entry not found in ClearTax script.")
+    body_start = start + len(start_token)
+    end = script_text.find("var p=", body_start)
+    if end < 0:
+        end = script_text.find("return p", body_start)
+    if end < 0:
+        raise ValueError("Unable to parse TDS formula function body.")
+    return script_text[body_start:end]
+
+
+def _clean_tds_description(label: str) -> str:
+    text = re.sub(r"^\s*[0-9A-Z()\-]+(?:\([^)]+\))?\s*-\s*", "", label.strip())
+    text = re.sub(r"\s*\(applicable.*?\)$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*\(w\.e\.f\..*?\)$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:140]
+
+
+def _section_code_for_value(value: str) -> str:
+    match = re.match(r"^([0-9A-Z]+(?:-[0-9A-Z]+)?)", value.strip(), re.IGNORECASE)
+    return (match.group(1) if match else value).upper()
+
+
+def _build_tds_rules_from_formula(
+    *,
+    fields: dict[str, Any],
+    formula_body: str,
 ) -> dict[str, Any]:
-    _ = changes_2025_text
-    _ = fy_start_year
+    raw_payment_options = list((fields.get("paymentType") or {}).get("options") or [])
+    options_by_code = {str(o.get("value") or ""): o for o in raw_payment_options}
 
-    lines = [line.strip() for line in tds_text.splitlines() if line.strip()]
+    fees_options = list((fields.get("fees194J") or {}).get("options") or [])
+    fee_by_value = {str(o.get("value") or ""): str(o.get("label") or "").strip() for o in fees_options}
 
-    def find_line_index(*patterns: str) -> int:
-        for idx, line in enumerate(lines):
-            for pattern in patterns:
-                if re.fullmatch(pattern, line, re.IGNORECASE):
-                    return idx
-        raise ValueError(f"Unable to locate TDS section in source: {patterns!r}")
-
-    def read_row(start_idx: int) -> tuple[str, str, str]:
-        if start_idx + 3 >= len(lines):
-            raise ValueError("Incomplete TDS row while parsing section table.")
-        label = lines[start_idx + 1]
-        threshold_line = lines[start_idx + 2]
-        rate_line = lines[start_idx + 3]
-        return label, threshold_line, rate_line
-
-    def parse_threshold(raw: str) -> float:
-        matches = re.findall(
-            r"([0-9][0-9,]*(?:\.[0-9]+)?)\s*(lakh|lakhs|crore|crores)?",
-            raw,
-            re.IGNORECASE,
+    payment_types: list[dict[str, Any]] = []
+    for order, payment_code in enumerate(_TDS_TOP15_CODES, start=1):
+        option = options_by_code.get(payment_code)
+        if not option:
+            raise ValueError(f"ClearTax payment type missing in calculator payload: {payment_code}")
+        label = str(option.get("label") or payment_code).strip()
+        block = _extract_tds_case_block(formula_body=formula_body, payment_code=payment_code)
+        rate_rows = re.findall(
+            r"U\(i,r,([0-9.]+),([0-9.]+),([0-9.]+)\)",
+            block,
         )
-        if not matches:
-            return 0.0
-        values = [_parse_indian_amount(f"{num} {unit or ''}".strip()) for num, unit in matches]
-        return float(min(values))
+        if not rate_rows:
+            raise ValueError(f"Unable to parse rates for payment type: {payment_code}")
 
-    def parse_rate(raw: str) -> float:
-        if re.search(r"slab rates?", raw, re.IGNORECASE):
-            return 0.0
-        match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*%", raw, re.IGNORECASE)
-        if not match:
-            raise ValueError(f"Unable to parse TDS rate from: {raw}")
-        return _rate_fraction(match.group(1))
+        threshold_value = 0.0
+        threshold_individual: float | None = None
+        threshold_other: float | None = None
+        always_apply = "u=-1" in block
+        threshold_match = re.search(r"u=([0-9.eE+-]+)", block)
+        if threshold_match:
+            threshold_value = _parse_js_number(threshold_match.group(1))
+        if payment_code == "194O":
+            threshold_individual = threshold_value if threshold_value > 0 else 500000.0
+            threshold_other = 0.0
 
-    def build_section(
-        code: str,
-        *,
-        row_index_patterns: tuple[str, ...],
-    ) -> dict[str, Any]:
-        idx = find_line_index(*row_index_patterns)
-        label, threshold_raw, rate_raw = read_row(idx)
-        return {
-            "section": code,
-            "label": label,
-            "rate": parse_rate(rate_raw),
-            "threshold": parse_threshold(threshold_raw),
-            "resident_only": True,
-        }
+        primary = rate_rows[0]
+        rate_other = _parse_js_number(primary[0]) / 100.0
+        rate_individual = _parse_js_number(primary[1]) / 100.0
+        rate_no_pan = _parse_js_number(primary[2]) / 100.0
 
-    parsed_sections = {
-        "192": build_section("192", row_index_patterns=(r"192",)),
-        "194A": build_section("194A", row_index_patterns=(r"194A",)),
-        "194C": build_section("194C", row_index_patterns=(r"194C",)),
-        "194H": build_section("194H", row_index_patterns=(r"194H",)),
-        "194I": build_section("194I", row_index_patterns=(r"194I\(b\)",)),
-        "194J": build_section("194J", row_index_patterns=(r"194J\(b\)",)),
-        "194-IA": build_section("194-IA", row_index_patterns=(r"194IA",)),
+        sub_type_options: list[dict[str, Any]] = []
+        if payment_code == "194J" and len(rate_rows) >= 2:
+            others = rate_rows[0]
+            actual = rate_rows[1]
+            sub_type_options = [
+                {
+                    "value": "others",
+                    "label": fee_by_value.get("others", "Others"),
+                    "rate_individual": _parse_js_number(others[1]) / 100.0,
+                    "rate_other": _parse_js_number(others[0]) / 100.0,
+                    "rate_no_pan": _parse_js_number(others[2]) / 100.0,
+                },
+                {
+                    "value": "actualFees",
+                    "label": fee_by_value.get("actualFees", "Technical services"),
+                    "rate_individual": _parse_js_number(actual[1]) / 100.0,
+                    "rate_other": _parse_js_number(actual[0]) / 100.0,
+                    "rate_no_pan": _parse_js_number(actual[2]) / 100.0,
+                },
+            ]
+
+        payment_types.append(
+            {
+                "value": payment_code,
+                "section_code": _section_code_for_value(payment_code),
+                "label": label,
+                "description": _clean_tds_description(label),
+                "threshold": threshold_value,
+                "threshold_individual": threshold_individual,
+                "threshold_other": threshold_other,
+                "always_apply": always_apply,
+                "rate_individual": rate_individual,
+                "rate_other": rate_other,
+                "rate_no_pan": rate_no_pan,
+                "sub_type_options": sub_type_options,
+                "ui_order": order,
+            }
+        )
+
+    sections_by_code: dict[str, dict[str, Any]] = {}
+    for row in payment_types:
+        code = str(row["section_code"])
+        existing = sections_by_code.get(code)
+        if existing is None or float(row["threshold"]) < float(existing["threshold"]):
+            sections_by_code[code] = {
+                "section": code,
+                "label": str(row["label"]),
+                "rate": float(row["rate_individual"]),
+                "threshold": float(row["threshold"]),
+                "resident_only": True,
+            }
+
+    defaults = {
+        "pan": str((fields.get("pan") or {}).get("value") or "yes"),
+        "recipient": str((fields.get("recipient") or {}).get("value") or "individual"),
+        "fees194j": str((fields.get("fees194J") or {}).get("value") or "others"),
+    }
+    return {
+        "sections": list(sections_by_code.values()),
+        "payment_types": payment_types,
+        "defaults": defaults,
     }
 
-    ordered_codes = ["192", "194A", "194C", "194H", "194I", "194J", "194-IA"]
-    sections = [parsed_sections[code] for code in ordered_codes]
-    if any(not section["label"] for section in sections):
-        raise ValueError("Parsed TDS sections contain empty labels.")
-    return {"sections": sections}
+
+async def _extract_tds_rules_from_calculator(
+    *,
+    tds_calculator_html: str,
+    timeout_seconds: int,
+) -> tuple[dict[str, Any], str]:
+    next_data = _extract_next_data(tds_calculator_html)
+    fields = (
+        (((next_data.get("props") or {}).get("pageProps") or {}).get("postData") or {})
+        .get("data", {})
+        .get("calculatorData", {})
+        .get("parameters", {})
+        .get("fields", {})
+    )
+    if not isinstance(fields, dict) or not fields:
+        raise ValueError("Unable to parse ClearTax calculator field metadata.")
+
+    formula_url, script_text = await _fetch_tds_formula_script(
+        tds_calculator_html=tds_calculator_html,
+        timeout_seconds=timeout_seconds,
+    )
+    formula_body = _extract_tds_formula_body(script_text)
+    return _build_tds_rules_from_formula(fields=fields, formula_body=formula_body), formula_url
 
 
 def _extract_advance_tax_rules(advance_text: str) -> dict[str, Any]:
@@ -552,10 +792,24 @@ def _extract_advance_tax_rules(advance_text: str) -> dict[str, Any]:
     )
     if not interest_match:
         raise ValueError("Unable to parse section 234C interest rate from advance-tax source.")
+    interest_234b_match = re.search(
+        r"section\s*234B[^0-9]*([0-9.]+)%\s*per month",
+        advance_text,
+        re.IGNORECASE,
+    )
+    threshold_match = re.search(
+        r"advance tax[^.\n]*exceeds?\s*Rs\.?\s*([0-9,]+)",
+        advance_text,
+        re.IGNORECASE,
+    )
 
     return {
         "installments": rows,
         "interest_rate_234c": _rate_fraction(interest_match.group(1)),
+        "interest_rate_234b": _rate_fraction(
+            interest_234b_match.group(1) if interest_234b_match else interest_match.group(1)
+        ),
+        "interest_threshold": _to_number(threshold_match.group(1)) if threshold_match else 10000.0,
     }
 
 
@@ -617,53 +871,53 @@ def _build_helper_points(
     income_new_std = income["standard_deduction"]["new"]
     income_old_std = income["standard_deduction"]["old"]
 
-    equity = capital["assets"]["equity"]
-    debt = capital["assets"]["debt_mf"]
+    equity = capital["assets"].get("listed_equity") or next(iter(capital["assets"].values()))
+    property_asset = capital["assets"].get("immovable_property") or equity
 
     installments = list(advance["installments"])
-    tds_sections = list(tds["sections"])
+    tds_payment_types = list(tds.get("payment_types") or [])
 
     first_installment = installments[0] if installments else None
     final_installment = installments[-1] if installments else None
     main_tds = next(
-        (row for row in tds_sections if float(row.get("rate", 0.0)) > 0.0),
-        tds_sections[0] if tds_sections else None,
+        (row for row in tds_payment_types if float(row.get("rate_individual", 0.0)) > 0.0),
+        tds_payment_types[0] if tds_payment_types else None,
     )
 
     return {
         "hub": [
-            f"Rules auto-sync from ClearTax for {default_fy}.",
+            f"Use the same financial year ({default_fy}) across calculators for consistent estimates.",
             "Pick your calculator based on salary, gains, advance tax, or TDS estimate.",
             "Results are estimates for planning and should be validated before filing.",
         ],
         "income_tax": [
             f"New regime rebate applies up to {_format_indian_rupees(income_new_rebate['threshold'])}; old regime rebate up to {_format_indian_rupees(income_old_rebate['threshold'])}.",
             f"Standard deduction: new {_format_indian_rupees(income_new_std)}, old {_format_indian_rupees(income_old_std)}.",
-            "Switch regime to compare tax quickly before final filing.",
+            "Pick regime first, then enter annual income and compare quickly.",
         ],
         "capital_gains": [
-            f"Equity gains use {_pct_label(equity['stcg_rate'])} (STCG) and {_pct_label(equity['ltcg_rate'])} (LTCG) with {_format_indian_rupees(equity['ltcg_exemption'])} LTCG exemption.",
-            f"Use holding period to classify short vs long term (equity cutoff: {equity['holding_period_months']} months).",
-            f"Debt MF is estimated at top slab {_pct_label(debt['stcg_rate'])} under section 50AA treatment.",
+            f"Listed equity gains use {_pct_label(equity['stcg_rate'])} (STCG) and {_pct_label(equity['ltcg_rate'])} (LTCG) with {_format_indian_rupees(equity['ltcg_exemption'])} LTCG exemption.",
+            "Choose the exact asset class first because holding-period and rates vary by asset.",
+            f"Property and other non-equity assets typically move from slab-based STCG to {_pct_label(property_asset['ltcg_rate'])} LTCG.",
         ],
         "advance_tax": [
-            "Enter total annual tax and tax already paid to see current shortfall.",
+            "Advance tax usually applies when annual tax liability crosses the threshold.",
             (
                 f"Advance tax schedule runs from {first_installment['label']} ({first_installment['due_date']})"
                 f" to {final_installment['label']} ({final_installment['due_date']})."
                 if first_installment and final_installment
                 else "Advance tax schedule follows quarterly cumulative targets."
             ),
-            "Paying by the next due milestone helps avoid section 234C interest.",
+            "Paying on time helps avoid additional 234B and 234C interest.",
         ],
         "tds": [
-            "Use this to estimate net amount you may receive after TDS deduction.",
+            "Use this for both perspectives: what you receive and what you deduct/deposit.",
             (
-                f"Typical section {main_tds['section']} uses {_pct_label(main_tds['rate'])} above {_format_indian_rupees(main_tds['threshold'])}."
+                f"Typical payment type {main_tds['section_code']} uses {_pct_label(main_tds['rate_individual'])} above {_format_indian_rupees(main_tds['threshold'])}."
                 if main_tds
-                else "TDS rate and threshold depend on the selected section."
+                else "TDS rate and threshold depend on the selected payment type."
             ),
-            "Select the closest section to your payment type for a better estimate.",
+            "Choose the exact payment type for a clearer threshold and rate outcome.",
         ],
     }
 
@@ -711,7 +965,7 @@ async def fetch_official_tax_bundle(
         "income_changes_2024": OFFICIAL_TAX_SOURCE_URLS.income_changes_2024,
         "tax_calculator": OFFICIAL_TAX_SOURCE_URLS.tax_calculator,
         "capital_gains": OFFICIAL_TAX_SOURCE_URLS.capital_gains,
-        "tds_rate_chart": OFFICIAL_TAX_SOURCE_URLS.tds_rate_chart,
+        "tds_calculator": OFFICIAL_TAX_SOURCE_URLS.tds_calculator,
         "advance_tax": OFFICIAL_TAX_SOURCE_URLS.advance_tax,
     }
 
@@ -724,7 +978,6 @@ async def fetch_official_tax_bundle(
     changes_2024_text = _clean_text(raw_html["income_changes_2024"])
     taxcalc_text = _clean_text(raw_html["tax_calculator"])
     capital_text = _clean_text(raw_html["capital_gains"])
-    tds_text = _clean_text(raw_html["tds_rate_chart"])
     advance_text = _clean_text(raw_html["advance_tax"])
 
     fy2025_new_slabs, fy2024_new_slabs = _extract_new_slabs_fy_2025_and_2024(changes_2025_text)
@@ -743,6 +996,11 @@ async def fetch_official_tax_bundle(
     top_old_rate = max(float(row["rate"]) for row in old_slabs)
     capital_rules = _extract_capital_gains_rules(capital_text, top_slab_rate=top_old_rate)
     advance_rules = _extract_advance_tax_rules(advance_text)
+    tds_rules, tds_formula_url = await _extract_tds_rules_from_calculator(
+        tds_calculator_html=raw_html["tds_calculator"],
+        timeout_seconds=timeout_seconds,
+    )
+    resolved_urls["tds_calculator_formula"] = tds_formula_url
 
     new_slabs_by_fy: dict[str, list[dict[str, float]]] = {
         _format_fy_id(2024): fy2024_new_slabs,
@@ -764,10 +1022,8 @@ async def fetch_official_tax_bundle(
 
     rules_by_fy: dict[str, dict[str, Any]] = {}
     for fy_id in source_fys:
-        fy_start_year = tax_fy.fy_start_year(fy_id)
         new_slabs = _pick_nearest_ruleset(new_slabs_by_fy, fy_id)
         new_rebate = _pick_nearest_ruleset(new_rebate_by_fy, fy_id)
-        tds_rules = _extract_tds_rules(tds_text, changes_2025_text, fy_start_year=fy_start_year)
         rules_by_fy[fy_id] = {
             "income_tax": {
                 "standard_deduction": {

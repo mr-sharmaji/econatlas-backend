@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaxFinancialYearResponse(BaseModel):
@@ -47,6 +47,10 @@ class CapitalGainsAssetRuleResponse(BaseModel):
     ltcg_rate: float
     ltcg_exemption: float = 0.0
     section: str
+    stcg_mode: str = "fixed"
+    ltcg_mode: str = "fixed"
+    always_short_term: bool = False
+    note: str = ""
 
 
 class CapitalGainsRulesResponse(BaseModel):
@@ -62,6 +66,8 @@ class AdvanceTaxInstallmentResponse(BaseModel):
 class AdvanceTaxRulesResponse(BaseModel):
     installments: list[AdvanceTaxInstallmentResponse]
     interest_rate_234c: float
+    interest_rate_234b: float = 0.01
+    interest_threshold: float = 10000
 
 
 class TdsSectionRuleResponse(BaseModel):
@@ -72,8 +78,39 @@ class TdsSectionRuleResponse(BaseModel):
     resident_only: bool = True
 
 
+class TdsSubTypeRuleResponse(BaseModel):
+    value: str
+    label: str
+    rate_individual: float
+    rate_other: float
+    rate_no_pan: float
+
+
+class TdsPaymentTypeRuleResponse(BaseModel):
+    value: str
+    section_code: str
+    label: str
+    description: str
+    threshold: float = 0.0
+    threshold_individual: float | None = None
+    threshold_other: float | None = None
+    always_apply: bool = False
+    rate_individual: float
+    rate_other: float
+    rate_no_pan: float
+    sub_type_options: list[TdsSubTypeRuleResponse] = Field(default_factory=list)
+
+
+class TdsDefaultsResponse(BaseModel):
+    pan: str = "yes"
+    recipient: str = "individual"
+    fees194j: str = "others"
+
+
 class TdsRulesResponse(BaseModel):
-    sections: list[TdsSectionRuleResponse]
+    sections: list[TdsSectionRuleResponse] = Field(default_factory=list)
+    payment_types: list[TdsPaymentTypeRuleResponse] = Field(default_factory=list)
+    defaults: TdsDefaultsResponse = Field(default_factory=TdsDefaultsResponse)
 
 
 class TaxRuleSetResponse(BaseModel):
