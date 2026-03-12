@@ -665,6 +665,120 @@ class DiscoverMutualFundScraper(BaseScraper):
         out.sort(key=lambda item: (float(item.get("score") or 0.0), float(item.get("returns_3y") or -9999.0)), reverse=True)
         return out
 
+    def _enrich_from_mfapi(self, rows: dict[str, dict], *, max_enrich: int = 200) -> None:
+        """Enrich fund_age_years and risk metrics from mfapi.in for funds missing data.
+
+        Only enriches up to max_enrich funds to avoid rate-limiting. Prioritises
+        funds with missing fund_age_years, std_dev, sharpe, or sortino.
+        """
+        import math
+        import time
+
+        needs_enrichment = [
+            code for code, row in rows.items()
+            if row.get("fund_age_years") is None
+            or (row.get("std_dev") is None and row.get("returns_1y") is not None)
+        ]
+        if not needs_enrichment:
+            return
+
+        # Limit to avoid excessive API calls
+        to_enrich = needs_enrichment[:max_enrich]
+        logger.info("mfapi.in enrichment: %d / %d funds need data", len(to_enrich), len(needs_enrichment))
+
+        enriched = 0
+        for i, code in enumerate(to_enrich):
+            try:
+                resp = requests.get(f"https://api.mfapi.in/mf/{code}", timeout=10)
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                meta = data.get("meta", {})
+                nav_data = data.get("data", [])
+
+                row = rows[code]
+
+                # Fund age from inception date
+                inception = meta.get("scheme_start_date", {}).get("date")
+                if inception and row.get("fund_age_years") is None:
+                    try:
+                        # mfapi format: "01-01-2013" (DD-MM-YYYY) or ISO
+                        if "-" in str(inception) and len(str(inception)) == 10:
+                            parts = str(inception).split("-")
+                            if len(parts[0]) == 2:  # DD-MM-YYYY
+                                inception_date = datetime(int(parts[2]), int(parts[1]), int(parts[0]),
+                                                          tzinfo=timezone.utc)
+                            else:  # YYYY-MM-DD
+                                inception_date = datetime(int(parts[0]), int(parts[1]), int(parts[2]),
+                                                          tzinfo=timezone.utc)
+                            age_days = (datetime.now(timezone.utc) - inception_date).days
+                            row["fund_age_years"] = round(age_days / 365.25, 1)
+                    except (ValueError, IndexError):
+                        pass
+
+                # AMC from meta if missing
+                if not row.get("amc") and meta.get("fund_house"):
+                    row["amc"] = meta["fund_house"]
+
+                # Category from meta if missing
+                if not row.get("category") and meta.get("scheme_category"):
+                    row["category"] = meta["scheme_category"]
+
+                # Compute std_dev, sharpe, sortino from NAV history if missing
+                if nav_data and len(nav_data) >= 30 and row.get("std_dev") is None:
+                    try:
+                        # Parse NAVs (most recent first in mfapi)
+                        navs = []
+                        for pt in nav_data[:365]:  # Last ~1 year
+                            try:
+                                navs.append(float(pt.get("nav", 0)))
+                            except (TypeError, ValueError):
+                                continue
+                        navs.reverse()  # Oldest first
+
+                        if len(navs) >= 30:
+                            # Daily returns
+                            daily_returns = [(navs[j] / navs[j - 1]) - 1.0
+                                             for j in range(1, len(navs))
+                                             if navs[j - 1] > 0]
+
+                            if daily_returns:
+                                mean_ret = sum(daily_returns) / len(daily_returns)
+                                variance = sum((r - mean_ret) ** 2 for r in daily_returns) / len(daily_returns)
+                                std_daily = math.sqrt(variance) if variance > 0 else 0
+                                std_annual = std_daily * math.sqrt(252)
+                                row["std_dev"] = round(std_annual * 100, 2)  # as percentage
+
+                                # Annualized return
+                                total_return = (navs[-1] / navs[0]) - 1.0 if navs[0] > 0 else 0
+                                n_years = len(navs) / 252.0
+                                ann_return = ((1 + total_return) ** (1.0 / n_years) - 1.0) * 100 if n_years > 0 else 0
+
+                                risk_free = 6.5  # approx Indian risk-free rate
+                                if std_annual > 0:
+                                    row["sharpe"] = round((ann_return - risk_free) / (std_annual * 100), 2)
+
+                                    # Sortino: downside deviation only
+                                    downside = [r for r in daily_returns if r < 0]
+                                    if downside:
+                                        down_var = sum(r ** 2 for r in downside) / len(daily_returns)
+                                        down_dev = math.sqrt(down_var) * math.sqrt(252) * 100
+                                        if down_dev > 0:
+                                            row["sortino"] = round((ann_return - risk_free) / down_dev, 2)
+                    except Exception:
+                        pass  # Skip on any calculation error
+
+                enriched += 1
+                if (i + 1) % 25 == 0:
+                    logger.info("mfapi.in enrichment progress: %d / %d", i + 1, len(to_enrich))
+
+            except Exception:
+                logger.debug("mfapi.in fetch failed for %s", code)
+
+            time.sleep(0.5)  # Rate limit
+
+        logger.info("mfapi.in enrichment complete: %d funds enriched", enriched)
+
     def fetch_all(self) -> list[dict]:
         amfi_rows = self._parse_amfi_fallback()
         et_rows = self._parse_etmoney_candidates()
@@ -733,6 +847,13 @@ class DiscoverMutualFundScraper(BaseScraper):
             base_row["primary_source"] = "etmoney_web"
             base_row["secondary_source"] = "amfi_nav_file"
             merged[best_code] = base_row
+
+        # Enrich missing data from mfapi.in (fund_age, risk metrics)
+        direct_codes = {code for code, row in merged.items()
+                        if str(row.get("plan_type") or "").lower() == "direct"}
+        direct_merged = {code: row for code, row in merged.items() if code in direct_codes}
+        self._enrich_from_mfapi(direct_merged)
+        merged.update(direct_merged)
 
         rows = [row for row in merged.values() if str(row.get("plan_type") or "").lower() == "direct"]
         return self._compute_scores(rows)

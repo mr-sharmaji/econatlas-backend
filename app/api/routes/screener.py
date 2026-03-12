@@ -214,6 +214,32 @@ async def get_discover_mutual_funds(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.get("/stocks/{symbol}/detail", response_model=DiscoverStockItemResponse)
+async def get_stock_detail(symbol: str) -> DiscoverStockItemResponse:
+    try:
+        data = await discover_service.get_stock_by_symbol(symbol=symbol)
+        if data is None:
+            raise HTTPException(status_code=404, detail=f"Stock {symbol} not found")
+        return DiscoverStockItemResponse(**data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/mutual-funds/{scheme_code}/detail", response_model=DiscoverMutualFundItemResponse)
+async def get_mf_detail(scheme_code: str) -> DiscoverMutualFundItemResponse:
+    try:
+        data = await discover_service.get_mf_by_scheme_code(scheme_code=scheme_code)
+        if data is None:
+            raise HTTPException(status_code=404, detail=f"MF {scheme_code} not found")
+        return DiscoverMutualFundItemResponse(**data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.get("/stocks/{symbol}/history", response_model=PriceHistoryResponse)
 async def get_stock_history(
     symbol: str,

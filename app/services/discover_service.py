@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timezone
 from typing import Literal
 
@@ -10,6 +11,34 @@ STOCK_TABLE = "discover_stock_snapshots"
 MF_TABLE = "discover_mutual_fund_snapshots"
 
 SourceStatus = Literal["primary", "fallback", "limited"]
+
+
+def _clean_mf_display_name(name: str) -> str:
+    """Strip plan type and option suffixes from MF scheme name for cleaner display."""
+    result = name
+    # Remove common suffixes (order matters — longer patterns first)
+    patterns = [
+        r'\s*[-–]\s*Direct\s+Plan\s*[-–]\s*Growth\s+Option\s*',
+        r'\s*[-–]\s*Direct\s+Plan\s*[-–]\s*Growth\s*',
+        r'\s*[-–]\s*Direct\s+Plan\s*[-–]\s*IDCW\s+Option\s*',
+        r'\s*[-–]\s*Direct\s+Plan\s*[-–]\s*IDCW\s*',
+        r'\s*[-–]\s*Direct\s+Plan\s*[-–]\s*Dividend\s+Option\s*',
+        r'\s*[-–]\s*Direct\s+Plan\s*',
+        r'\s*[-–]\s*GROWTH\s+OPTION\s*[-–]\s*Direct\s+Plan\s*',
+        r'\s*[-–]\s*Growth\s+Direct\s*',
+        r'\s*[-–]\s*IDCW\s+Direct\s+Plan\s*',
+        r'\s*[-–]\s*Direct\s*Plan\s*',
+        r'\s*[-–]\s*Direct\s+Growth\s*',
+        r'\s*\bDirect\s*[Pp]lan\b\s*',
+        r'\s*\bDIRECT\s*PLAN\b\s*',
+        r'\s*[-–]\s*Growth\s*$',
+        r'\s*[-–]\s*GROWTH\s*$',
+    ]
+    for p in patterns:
+        result = re.sub(p, '', result, flags=re.IGNORECASE).strip()
+    # Trim trailing dashes and whitespace
+    result = re.sub(r'\s*[-–]+\s*$', '', result).strip()
+    return result if result else name
 
 
 def _to_float(value) -> float | None:
@@ -233,6 +262,7 @@ def _decorate_mf_row(row: dict, category_stats: dict | None = None) -> dict:
     item = dict(row)
     item["source_status"] = _normalize_source_status(item.get("source_status"))
     item["score_breakdown"] = _mf_breakdown_payload(item)
+    item["display_name"] = _clean_mf_display_name(item.get("scheme_name", ""))
     tags = item.get("tags")
     item["tags"] = tags if isinstance(tags, list) else []
     item["why_ranked"] = _mf_why_ranked(item, category_stats)
@@ -937,15 +967,17 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
 async def get_discover_home_data() -> dict:
     pool = await get_pool()
 
-    # Top stocks by score
+    # Top stocks by score (sector-diversified)
     top_stock_rows = await pool.fetch(
         f"""
-        SELECT symbol, display_name, sector, last_price, percent_change, score,
-               high_52w, low_52w, market_cap
-        FROM {STOCK_TABLE}
-        WHERE market = 'IN'
-        ORDER BY score DESC NULLS LAST, symbol ASC
-        LIMIT 8
+        SELECT * FROM (
+            SELECT symbol, display_name, sector, last_price, percent_change, score,
+                   high_52w, low_52w, market_cap,
+                   ROW_NUMBER() OVER (PARTITION BY COALESCE(sector, 'Other') ORDER BY score DESC) AS rn
+            FROM {STOCK_TABLE}
+            WHERE market = 'IN' AND source_status IN ('primary', 'fallback') AND score >= 50
+        ) sub WHERE rn <= 2
+        ORDER BY score DESC LIMIT 8
         """
     )
     top_stocks = []
@@ -954,21 +986,23 @@ async def get_discover_home_data() -> dict:
         d["quality_tier"] = _compute_quality_tier(_to_float(d.get("score")))
         top_stocks.append(d)
 
-    # Top mutual funds by score
+    # Top mutual funds by score (category-diversified)
     top_mf_rows = await pool.fetch(
         f"""
-        SELECT scheme_code, scheme_name, category, score, returns_1y,
-               category_rank, category_total, fund_age_years, expense_ratio,
-               returns_3y, returns_5y
-        FROM {MF_TABLE}
-        ORDER BY score DESC NULLS LAST, scheme_name ASC
-        LIMIT 8
+        SELECT * FROM (
+            SELECT scheme_code, scheme_name, category, score, returns_1y,
+                   ROW_NUMBER() OVER (PARTITION BY COALESCE(category, 'Other') ORDER BY score DESC) AS rn
+            FROM {MF_TABLE}
+            WHERE plan_type = 'direct' AND (returns_1y IS NOT NULL OR returns_3y IS NOT NULL) AND score >= 50
+        ) sub WHERE rn <= 2
+        ORDER BY score DESC LIMIT 8
         """
     )
     top_mutual_funds = []
     for r in top_mf_rows:
         d = record_to_dict(r)
         d["quality_badges"] = _compute_quality_badges(d)
+        d["display_name"] = _clean_mf_display_name(d.get("scheme_name", ""))
         top_mutual_funds.append(d)
 
     # Trending stocks by traded_value
@@ -1007,13 +1041,65 @@ async def get_discover_home_data() -> dict:
     }
 
 
+async def get_stock_by_symbol(*, symbol: str) -> dict | None:
+    """Fetch a single stock snapshot by symbol and return decorated data."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        f"SELECT * FROM {STOCK_TABLE} WHERE symbol = $1",
+        symbol,
+    )
+    if row is None:
+        return None
+    d = record_to_dict(row)
+    # Fetch sector stats for decoration
+    sector = str(d.get("sector") or "Other")
+    sector_stats_rows = await pool.fetch(
+        f"""
+        SELECT AVG(pe_ratio) AS avg_pe, AVG(roe) AS avg_roe
+        FROM {STOCK_TABLE}
+        WHERE sector = $1 AND pe_ratio IS NOT NULL
+        """,
+        sector,
+    )
+    stats = record_to_dict(sector_stats_rows[0]) if sector_stats_rows else {}
+    return _decorate_stock_row(d, stats)
+
+
+async def get_mf_by_scheme_code(*, scheme_code: str) -> dict | None:
+    """Fetch a single MF snapshot by scheme_code and return decorated data."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        f"SELECT * FROM {MF_TABLE} WHERE scheme_code = $1",
+        scheme_code,
+    )
+    if row is None:
+        return None
+    d = record_to_dict(row)
+    # Fetch category stats for decoration
+    category = str(d.get("category") or "Other")
+    cat_stats_rows = await pool.fetch(
+        f"""
+        SELECT AVG(returns_1y) AS avg_returns_1y,
+               AVG(returns_3y) AS avg_returns_3y,
+               AVG(returns_5y) AS avg_returns_5y,
+               COUNT(*) AS total
+        FROM {MF_TABLE}
+        WHERE category = $1
+        """,
+        category,
+    )
+    stats = record_to_dict(cat_stats_rows[0]) if cat_stats_rows else {}
+    return _decorate_mf_row(d, stats)
+
+
 async def get_stock_price_history(*, symbol: str, days: int = 365) -> list[dict]:
     pool = await get_pool()
     rows = await pool.fetch(
         """
         SELECT trade_date, close
         FROM discover_stock_price_history
-        WHERE symbol = $1 AND trade_date >= CURRENT_DATE - $2
+        WHERE symbol = $1
+          AND trade_date >= CURRENT_DATE - make_interval(days => $2)
         ORDER BY trade_date ASC
         """,
         symbol,
@@ -1028,7 +1114,8 @@ async def get_mf_nav_history(*, scheme_code: str, days: int = 365) -> list[dict]
         """
         SELECT nav_date, nav
         FROM discover_mf_nav_history
-        WHERE scheme_code = $1 AND nav_date >= CURRENT_DATE - $2
+        WHERE scheme_code = $1
+          AND nav_date >= CURRENT_DATE - make_interval(days => $2)
         ORDER BY nav_date ASC
         """,
         scheme_code,

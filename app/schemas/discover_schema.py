@@ -70,6 +70,7 @@ class DiscoverMutualFundScoreBreakdown(BaseModel):
 class DiscoverMutualFundItemResponse(BaseModel):
     scheme_code: str
     scheme_name: str
+    display_name: str | None = None
     amc: str | None = None
     category: str | None = None
     sub_category: str | None = None
@@ -184,6 +185,7 @@ class DiscoverHomeStockItem(BaseModel):
 class DiscoverHomeMutualFundItem(BaseModel):
     scheme_code: str
     scheme_name: str
+    display_name: str | None = None
     category: str | None = None
     score: float
     returns_1y: float | None = None

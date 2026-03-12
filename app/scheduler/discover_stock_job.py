@@ -30,6 +30,91 @@ IST = ZoneInfo("Asia/Kolkata")
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 
 
+# Mapping from Screener.in / NSE industry terms to broad sector categories
+_SECTOR_MAPPING: dict[str, str] = {
+    # Energy
+    "oil": "Energy", "gas": "Energy", "petroleum": "Energy", "crude": "Energy",
+    "energy": "Energy", "power": "Energy", "renewable": "Energy",
+    "electric utilities": "Utilities", "utilities": "Utilities",
+    # IT
+    "information technology": "IT", "software": "IT", "it ": "IT",
+    "computer": "IT", "digital": "IT",
+    # Financials
+    "bank": "Financials", "finance": "Financials", "insurance": "Financials",
+    "nbfc": "Financials", "financial": "Financials", "credit": "Financials",
+    # Healthcare
+    "pharma": "Healthcare", "healthcare": "Healthcare", "hospital": "Healthcare",
+    "drug": "Healthcare", "medical": "Healthcare", "biotech": "Healthcare",
+    # Consumer
+    "fmcg": "Consumer", "consumer": "Consumer", "retail": "Consumer",
+    "food": "Consumer", "beverage": "Consumer", "textile": "Consumer",
+    "apparel": "Consumer", "personal care": "Consumer",
+    # Auto
+    "auto": "Auto", "automobile": "Auto", "vehicle": "Auto",
+    "tyre": "Auto", "tire": "Auto",
+    # Industrials
+    "capital goods": "Industrials", "industrial": "Industrials",
+    "engineering": "Industrials", "construction": "Industrials",
+    "infrastructure": "Industrials", "cement": "Industrials",
+    "defence": "Industrials", "defense": "Industrials",
+    # Materials
+    "metals": "Materials", "steel": "Materials", "aluminium": "Materials",
+    "mining": "Materials", "chemicals": "Materials", "paper": "Materials",
+    "fertilizer": "Materials", "plastic": "Materials",
+    # Telecom
+    "telecom": "Telecom", "communication": "Telecom",
+    # Real Estate
+    "real estate": "Real Estate", "realty": "Real Estate", "housing": "Real Estate",
+    # Media
+    "media": "Media", "entertainment": "Media",
+}
+
+# Expanded curated sector mapping for common stocks not in INDIA_STOCKS
+_EXTRA_SECTOR_MAP: dict[str, str] = {
+    "ATGL": "Energy", "NTPCGREEN": "Energy", "JSWENERGY": "Energy",
+    "ADANIENERGY": "Energy", "CESC": "Energy", "NHPC": "Energy",
+    "TORNTPOWER": "Utilities", "SJVN": "Energy",
+    "DOMS": "Consumer", "JINDALSAW": "Materials", "JINDALSTEL": "Materials",
+    "TATASTEEL": "Materials", "HINDALCO": "Materials", "VEDL": "Materials",
+    "NMDC": "Materials", "COALINDIA": "Energy",
+    "DABUR": "Consumer", "GODREJCP": "Consumer", "MARICO": "Consumer",
+    "PIDILITIND": "Consumer", "COLPAL": "Consumer", "BRITANNIA": "Consumer",
+    "PAGEIND": "Consumer", "VBL": "Consumer", "TRENT": "Consumer",
+    "IRCTC": "Consumer", "ZOMATO": "Consumer", "NYKAA": "Consumer",
+    "DMART": "Consumer", "TITAN": "Consumer",
+    "SBICARD": "Financials", "CHOLAFIN": "Financials", "MUTHOOTFIN": "Financials",
+    "MANAPPURAM": "Financials", "PEL": "Financials", "CANFINHOME": "Financials",
+    "ICICIGI": "Financials", "SBILIFE": "Financials", "HDFCLIFE": "Financials",
+    "MAXHEALTH": "Healthcare", "FORTIS": "Healthcare", "LALPATHLAB": "Healthcare",
+    "METROPOLIS": "Healthcare", "AUROPHARMA": "Healthcare", "ALKEM": "Healthcare",
+    "LAURUSLABS": "Healthcare", "GLENMARK": "Healthcare", "IPCALAB": "Healthcare",
+    "MPHASIS": "IT", "COFORGE": "IT", "LTTS": "IT", "PERSISTENT": "IT",
+    "MFSL": "Financials", "NAUKRI": "IT", "PAYTM": "IT",
+    "MOTHERSON": "Auto", "BALKRISIND": "Auto", "ASHOKLEY": "Auto",
+    "ESCORTS": "Auto", "TVSMTR": "Auto", "TIINDIA": "Auto",
+    "GODREJPROP": "Real Estate", "DLF": "Real Estate", "OBEROIRLTY": "Real Estate",
+    "PRESTIGE": "Real Estate", "PHOENIXLTD": "Real Estate",
+    "INDUSTOWER": "Telecom", "TATACOMM": "Telecom",
+    "ABB": "Industrials", "SIEMENS": "Industrials", "HAVELLS": "Industrials",
+    "POLYCAB": "Industrials", "VOLTAS": "Industrials", "CGPOWER": "Industrials",
+    "BEL": "Industrials", "HAL": "Industrials", "CONCOR": "Industrials",
+    "IRFC": "Financials", "PFC": "Financials", "RECLTD": "Financials",
+    "ULTRACEMCO": "Industrials", "AMBUJACEM": "Industrials", "SHREECEM": "Industrials",
+    "DELHIVERY": "Industrials", "PIIND": "Materials", "AARTI": "Materials",
+    "DEEPAKNTR": "Materials", "UPL": "Materials", "SRF": "Materials",
+    "PVRINOX": "Media", "SUNTV": "Media", "ZEEL": "Media",
+}
+
+
+def _map_screener_sector(raw: str) -> str:
+    """Map a raw Screener.in sector/industry string to a broad sector category."""
+    lowered = raw.strip().lower()
+    for keyword, sector in _SECTOR_MAPPING.items():
+        if keyword in lowered:
+            return sector
+    return raw.strip().title()  # Use the raw value title-cased as fallback
+
+
 @dataclass(frozen=True)
 class DiscoverStockDef:
     nse_symbol: str
@@ -217,12 +302,17 @@ class DiscoverStockScraper(BaseScraper):
 
             display_name = str(row.get("NAME OF COMPANY") or symbol).strip() or symbol
             core = self._core_symbol_map.get(symbol)
+            # Determine sector: curated > extra map > "Other"
+            if core:
+                sector = core.sector
+            else:
+                sector = _EXTRA_SECTOR_MAP.get(symbol, "Other")
             out.append(
                 DiscoverStockDef(
                     nse_symbol=symbol,
                     yahoo_symbol=f"{symbol}.NS",
                     display_name=core.display_name if core else display_name,
-                    sector=core.sector if core else "Diversified",
+                    sector=sector,
                     fundamentals_enabled=core is not None,
                 )
             )
@@ -382,6 +472,16 @@ class DiscoverStockScraper(BaseScraper):
                     "market_cap": self._extract_labeled_number(text, ["Market Cap"]),
                     "dividend_yield": self._extract_labeled_number(text, ["Dividend Yield"]),
                 }
+
+                # Extract sector/industry from Screener.in page
+                sector_match = re.search(
+                    r"(?:Sector|Industry)\s*[:\s]+([A-Za-z &\-/]+?)(?:\s{2,}|\s*\d|\s*$)",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+                if sector_match:
+                    raw_sector = sector_match.group(1).strip()
+                    fundamentals["_screener_sector"] = raw_sector
 
                 # 52-week High / Low: pattern like "High / Low ₹ 1,234 / ₹ 567"
                 hl_match = re.search(
@@ -646,17 +746,23 @@ class DiscoverStockScraper(BaseScraper):
                 "dividend_yield": None,
             }
             fundamentals_source = "unavailable"
-        fundamentals_count = sum(1 for value in fundamentals.values() if value is not None)
+        fundamentals_count = sum(1 for k, v in fundamentals.items() if v is not None and not k.startswith("_"))
 
         source_status = "primary" if (fundamentals_source == "screener_in" and fundamentals_count >= 2) else "fallback"
         if fundamentals_count == 0 and quote_source not in {"nse_quote_api", "nse_bhavcopy"}:
             source_status = "limited"
 
+        # Use Screener.in sector if stock had default "Diversified" sector
+        sector = stock.sector
+        screener_sector = fundamentals.pop("_screener_sector", None)
+        if sector in ("Diversified", "Other") and screener_sector:
+            sector = _map_screener_sector(screener_sector)
+
         return {
             "market": "IN",
             "symbol": stock.nse_symbol,
             "display_name": stock.display_name,
-            "sector": stock.sector,
+            "sector": sector,
             "last_price": quote["last_price"],
             "point_change": quote.get("point_change"),
             "percent_change": quote.get("percent_change"),
