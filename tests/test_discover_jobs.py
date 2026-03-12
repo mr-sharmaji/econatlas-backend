@@ -77,9 +77,43 @@ class DiscoverStockJobTests(unittest.TestCase):
         scraper._ensure_nse_session = lambda: self.fail("NSE session should not be attempted during cooldown")
         self.assertIsNone(scraper._fetch_nse_quote("INFY"))
 
+    def test_fetch_one_keeps_primary_when_screener_fundamentals_available(self) -> None:
+        scraper = DiscoverStockScraper()
+        stock = type(
+            "Stock",
+            (),
+            {"nse_symbol": "INFY", "yahoo_symbol": "INFY.NS", "display_name": "Infosys", "sector": "IT"},
+        )()
+
+        scraper._fetch_nse_quote = lambda symbol: None
+        scraper._fetch_yahoo_quote = lambda symbol: {
+            "last_price": 100.0,
+            "point_change": 1.0,
+            "percent_change": 1.0,
+            "volume": 1000,
+            "traded_value": 100000.0,
+            "source_timestamp": datetime.now(timezone.utc),
+            "source": "yahoo_finance_api",
+        }
+        scraper._fetch_screener_fundamentals = lambda symbol: (
+            {
+                "pe_ratio": 20.0,
+                "roe": 18.0,
+                "roce": 20.0,
+                "debt_to_equity": None,
+                "price_to_book": None,
+                "eps": None,
+            },
+            "screener_in",
+        )
+
+        row = scraper._fetch_one(stock)
+        self.assertIsNotNone(row)
+        self.assertEqual("primary", row["source_status"])
+
 
 class DiscoverMutualFundJobTests(unittest.TestCase):
-    def test_compute_scores_assigns_limited_when_advanced_missing(self) -> None:
+    def test_compute_scores_assigns_fallback_when_advanced_missing(self) -> None:
         scraper = DiscoverMutualFundScraper()
         rows = [
             {
@@ -120,7 +154,7 @@ class DiscoverMutualFundJobTests(unittest.TestCase):
         scored = scraper._compute_scores(rows)
         lookup = {r["scheme_code"]: r for r in scored}
 
-        self.assertEqual("limited", lookup["1001"]["source_status"])
+        self.assertEqual("fallback", lookup["1001"]["source_status"])
         self.assertGreaterEqual(lookup["1002"]["score"], 0)
         self.assertLessEqual(lookup["1002"]["score"], 100)
 

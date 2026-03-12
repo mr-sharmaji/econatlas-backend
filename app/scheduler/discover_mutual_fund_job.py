@@ -344,8 +344,6 @@ class DiscoverMutualFundScraper(BaseScraper):
             )
             if status == "primary" and not has_advanced:
                 status = "fallback"
-            if not has_advanced and status == "fallback":
-                status = "limited"
 
             tags: list[str] = []
             ret3 = self._to_float(row.get("returns_3y"))

@@ -353,11 +353,12 @@ class DiscoverStockScraper(BaseScraper):
         fundamentals, fundamentals_source = self._fetch_screener_fundamentals(stock.nse_symbol)
         fundamentals_count = sum(1 for value in fundamentals.values() if value is not None)
 
-        source_status = "primary"
-        if quote_source != "nse_quote_api":
-            source_status = "fallback"
-        if fundamentals_count < 2:
-            source_status = "limited" if quote_source != "nse_quote_api" else "fallback"
+        # Source health is driven primarily by fundamentals coverage from Screener.
+        # Quote source can vary (NSE/Yahoo) without reducing to fallback when core
+        # fundamentals are available.
+        source_status = "primary" if (fundamentals_source == "screener_in" and fundamentals_count >= 2) else "fallback"
+        if fundamentals_count == 0 and quote_source != "nse_quote_api":
+            source_status = "limited"
 
         return {
             "market": "IN",
