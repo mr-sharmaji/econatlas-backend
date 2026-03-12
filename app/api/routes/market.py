@@ -92,7 +92,7 @@ async def list_market_prices(
 
 @router.get("/status", response_model=MarketStatusResponse)
 async def market_status(response: Response) -> MarketStatusResponse:
-    """Return whether markets are currently live (NSE and/or NYSE in session). Cached server-side and via Cache-Control."""
+    """Return session status across India/US/Europe/Japan + FX/commodities. Cached server-side and via Cache-Control."""
     status = get_market_status()
     max_age = get_settings().market_status_cache_seconds
     if max_age > 0:

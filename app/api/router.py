@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import assets, brief, commodities, events, health, ipo, macro, market, news, ops, screener, tax, watchlist
+from app.api.routes import assets, brief, commodities, events, feedback, health, ipo, macro, market, news, ops, screener, tax, watchlist
 
 api_router = APIRouter()
 
@@ -17,3 +17,4 @@ api_router.include_router(screener.router)
 api_router.include_router(brief.router)
 api_router.include_router(ipo.router)
 api_router.include_router(tax.router)
+api_router.include_router(feedback.router)

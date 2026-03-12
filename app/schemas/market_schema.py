@@ -37,11 +37,17 @@ class MarketPriceListResponse(BaseModel):
 
 
 class MarketStatusResponse(BaseModel):
-    """Whether NSE and NYSE are currently in a trading session (market live)."""
+    """Session status across regional and asset-class market windows."""
 
     nse_open: bool
     nyse_open: bool
     gift_nifty_open: bool = False
+    india_open: bool = False
+    us_open: bool = False
+    europe_open: bool = False
+    japan_open: bool = False
+    fx_open: bool = False
+    commodities_open: bool = False
     live: bool
 
 

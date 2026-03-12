@@ -324,8 +324,8 @@ def get_recent_trading_dates(utc_now: datetime, exchange: str, count: int) -> li
 
 
 def get_market_status(utc_now: datetime | None = None) -> dict:
-    """Return whether NSE and NYSE are currently in a trading session (market 'live').
-    Returns e.g. {"nse_open": bool, "nyse_open": bool, "live": bool}.
+    """Return current session status across core regions and sessions.
+    Returns keys such as nse_open, nyse_open, europe_open, japan_open, fx_open, commodities_open, live.
     Result is cached for market_status_cache_seconds to reduce calendar lookups."""
     global _status_cache, _status_cache_until
     ttl = get_settings().market_status_cache_seconds
@@ -360,11 +360,34 @@ def get_market_status(utc_now: datetime | None = None) -> dict:
     nse_open = _is_open(nse, nse_date, NSE)
     nyse_open = _is_open(nyse, nyse_date, NYSE)
     gift_nifty_open = is_gift_nifty_open(now)
+    lse_open = is_exchange_expected_open(LSE, now)
+    xetra_open = is_exchange_expected_open(XETRA, now)
+    euronext_open = is_exchange_expected_open(EURONEXT, now)
+    europe_open = lse_open or xetra_open or euronext_open
+    japan_open = is_exchange_expected_open(TSE, now)
+    fx_open = is_fx_session_expected_open(now)
+    commodities_open = is_commodity_session_expected_open(now)
+    india_open = nse_open
+    us_open = nyse_open
     result = {
         "nse_open": nse_open,
         "nyse_open": nyse_open,
         "gift_nifty_open": gift_nifty_open,
-        "live": nse_open or nyse_open or gift_nifty_open,
+        "india_open": india_open,
+        "us_open": us_open,
+        "europe_open": europe_open,
+        "japan_open": japan_open,
+        "fx_open": fx_open,
+        "commodities_open": commodities_open,
+        "live": (
+            nse_open
+            or nyse_open
+            or gift_nifty_open
+            or europe_open
+            or japan_open
+            or fx_open
+            or commodities_open
+        ),
     }
     if ttl > 0:
         _status_cache = result

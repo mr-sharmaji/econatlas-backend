@@ -185,6 +185,23 @@ ON device_ipo_alerts (device_id, symbol);
 CREATE INDEX IF NOT EXISTS idx_device_ipo_alerts_device
 ON device_ipo_alerts (device_id);
 
+-- User feedback submissions from app settings
+CREATE TABLE IF NOT EXISTS feedback_submissions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    device_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    message TEXT NOT NULL,
+    app_version TEXT,
+    platform TEXT,
+    status TEXT NOT NULL DEFAULT 'received',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_submissions_created_at
+ON feedback_submissions (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feedback_submissions_category
+ON feedback_submissions (category);
+
 -- Tax configuration (DB-backed; no hardcoded backend rule constants)
 CREATE TABLE IF NOT EXISTS tax_config_versions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
