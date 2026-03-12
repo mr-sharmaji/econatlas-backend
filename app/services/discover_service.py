@@ -63,14 +63,17 @@ def _normalize_source_status(value: str | None) -> SourceStatus:
 def _resolve_batch_source_status(rows: list[dict]) -> SourceStatus:
     if not rows:
         return "limited"
-    # Worst case in batch drives the batch-level badge.
-    rank = {"limited": 0, "fallback": 1, "primary": 2}
-    worst = "primary"
+    counts = {"primary": 0, "fallback": 0, "limited": 0}
     for row in rows:
         cur = _normalize_source_status(row.get("source_status"))
-        if rank[cur] < rank[worst]:
-            worst = cur
-    return worst
+        counts[cur] += 1
+    total = max(1, len(rows))
+    primary_ratio = counts["primary"] / total
+    if primary_ratio >= 0.6:
+        return "primary"
+    if counts["fallback"] > 0 or counts["primary"] > 0:
+        return "fallback"
+    return "limited"
 
 
 def _stock_breakdown_payload(row: dict) -> dict:
