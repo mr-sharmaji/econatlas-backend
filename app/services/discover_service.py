@@ -33,6 +33,9 @@ def _clean_mf_display_name(name: str) -> str:
         r'\s*\bDIRECT\s*PLAN\b\s*',
         r'\s*[-–]\s*Growth\s*$',
         r'\s*[-–]\s*GROWTH\s*$',
+        r'\s*[-–]\s*Direct\s*$',
+        r'\s*-GROWTH\s+OPTION\s*',
+        r'\s*[-–]\s*GROWTH\s+OPTION\s*',
     ]
     for p in patterns:
         result = re.sub(p, '', result, flags=re.IGNORECASE).strip()
@@ -386,7 +389,7 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
                     score, score_return, score_risk, score_cost, score_consistency,
                     score_breakdown, tags, source_status, source_timestamp, ingested_at,
-                    primary_source, secondary_source
+                    primary_source, secondary_source, fund_age_years
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -394,7 +397,7 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     $13, $14, $15, $16, $17, $18,
                     $19, $20, $21, $22, $23,
                     $24, $25, $26, $27, NOW(),
-                    $28, $29
+                    $28, $29, $30
                 )
                 ON CONFLICT (scheme_code)
                 DO UPDATE SET
@@ -406,15 +409,15 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     option_type = EXCLUDED.option_type,
                     nav = EXCLUDED.nav,
                     nav_date = EXCLUDED.nav_date,
-                    expense_ratio = EXCLUDED.expense_ratio,
-                    aum_cr = EXCLUDED.aum_cr,
+                    expense_ratio = COALESCE(EXCLUDED.expense_ratio, discover_mutual_fund_snapshots.expense_ratio),
+                    aum_cr = COALESCE(EXCLUDED.aum_cr, discover_mutual_fund_snapshots.aum_cr),
                     risk_level = EXCLUDED.risk_level,
                     returns_1y = EXCLUDED.returns_1y,
                     returns_3y = EXCLUDED.returns_3y,
                     returns_5y = EXCLUDED.returns_5y,
-                    std_dev = EXCLUDED.std_dev,
-                    sharpe = EXCLUDED.sharpe,
-                    sortino = EXCLUDED.sortino,
+                    std_dev = COALESCE(EXCLUDED.std_dev, discover_mutual_fund_snapshots.std_dev),
+                    sharpe = COALESCE(EXCLUDED.sharpe, discover_mutual_fund_snapshots.sharpe),
+                    sortino = COALESCE(EXCLUDED.sortino, discover_mutual_fund_snapshots.sortino),
                     score = EXCLUDED.score,
                     score_return = EXCLUDED.score_return,
                     score_risk = EXCLUDED.score_risk,
@@ -426,7 +429,8 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     source_timestamp = EXCLUDED.source_timestamp,
                     ingested_at = NOW(),
                     primary_source = EXCLUDED.primary_source,
-                    secondary_source = EXCLUDED.secondary_source
+                    secondary_source = EXCLUDED.secondary_source,
+                    fund_age_years = COALESCE(EXCLUDED.fund_age_years, discover_mutual_fund_snapshots.fund_age_years)
                 """,
                 str(row.get("scheme_code") or ""),
                 str(row.get("scheme_name") or ""),
@@ -457,6 +461,7 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 parse_ts(row.get("source_timestamp")) or datetime.now(timezone.utc),
                 row.get("primary_source"),
                 row.get("secondary_source"),
+                _to_float(row.get("fund_age_years")),
             )
             count += 1
     return count

@@ -439,7 +439,8 @@ class DiscoverStockScraper(BaseScraper):
 
     def _extract_labeled_number(self, text: str, labels: list[str]) -> float | None:
         for label in labels:
-            patt = rf"{re.escape(label)}\s*[:\-]?\s*([\-]?[0-9][0-9,]*(?:\.[0-9]+)?)"
+            # Allow optional currency symbols (₹, Rs, Rs.) and "in Rs" between label and number
+            patt = rf"{re.escape(label)}\s*(?:in\s+)?[:\-]?\s*(?:[₹]|Rs\.?\s*)?\s*([\-]?[0-9][0-9,]*(?:\.[0-9]+)?)"
             match = re.search(patt, text, flags=re.IGNORECASE)
             if not match:
                 continue
@@ -462,12 +463,19 @@ class DiscoverStockScraper(BaseScraper):
                 text = unescape(re.sub(r"<[^>]+>", " ", html))
                 text = re.sub(r"\s+", " ", text)
 
+                book_value = self._extract_labeled_number(text, ["Book Value"])
+                current_price = self._extract_labeled_number(text, ["Current Price"])
+
                 fundamentals = {
                     "pe_ratio": self._extract_labeled_number(text, ["Stock P/E", "P/E"]),
                     "roe": self._extract_labeled_number(text, ["ROE", "Return on equity"]),
                     "roce": self._extract_labeled_number(text, ["ROCE", "Return on capital employed"]),
                     "debt_to_equity": self._extract_labeled_number(text, ["Debt to equity", "Debt to Equity"]),
-                    "price_to_book": self._extract_labeled_number(text, ["Price to book value", "P/B"]),
+                    "price_to_book": (
+                        round(current_price / book_value, 2)
+                        if current_price and book_value and book_value > 0
+                        else None
+                    ),
                     "eps": self._extract_labeled_number(text, ["EPS", "Earnings Per Share"]),
                     "market_cap": self._extract_labeled_number(text, ["Market Cap"]),
                     "dividend_yield": self._extract_labeled_number(text, ["Dividend Yield"]),
