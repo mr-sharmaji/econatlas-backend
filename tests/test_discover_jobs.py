@@ -12,7 +12,7 @@ os.environ.setdefault(
 )
 
 from app.scheduler.discover_mutual_fund_job import DiscoverMutualFundScraper
-from app.scheduler.discover_stock_job import CORE_UNIVERSE, DiscoverStockScraper
+from app.scheduler.discover_stock_job import CORE_UNIVERSE, DiscoverStockDef, DiscoverStockScraper
 
 
 class DiscoverStockJobTests(unittest.TestCase):
@@ -159,6 +159,34 @@ class DiscoverStockJobTests(unittest.TestCase):
         self.assertIn("ABC", quotes)
         self.assertNotIn("GBOND", quotes)
         self.assertIsNotNone(source_ts)
+
+    def test_fetch_all_retries_missing_symbols_after_bhavcopy(self) -> None:
+        scraper = DiscoverStockScraper()
+        scraper._build_effective_universe = lambda: (
+            DiscoverStockDef("AAA", "AAA.NS", "AAA", "Diversified", False),
+            DiscoverStockDef("BBB", "BBB.NS", "BBB", "Diversified", False),
+        )
+        scraper._fetch_latest_bhavcopy_quotes = lambda: (
+            {
+                "AAA": {
+                    "last_price": 100.0,
+                    "point_change": 1.0,
+                    "percent_change": 1.0,
+                    "volume": 100,
+                    "traded_value": 10000.0,
+                    "source_timestamp": datetime.now(timezone.utc),
+                }
+            },
+            datetime.now(timezone.utc),
+        )
+        scraper._build_snapshot_row = lambda stock, quote, source: {"symbol": stock.nse_symbol, "source": source}
+        scraper._fetch_one = lambda stock: {"symbol": stock.nse_symbol, "source": "fallback"} if stock.nse_symbol == "BBB" else None
+        scraper._compute_scores = lambda rows: rows
+        scraper._missing_quote_retry_limit = 10
+
+        rows = scraper.fetch_all()
+        symbols = {row["symbol"] for row in rows}
+        self.assertEqual({"AAA", "BBB"}, symbols)
 
 
 class DiscoverMutualFundJobTests(unittest.TestCase):

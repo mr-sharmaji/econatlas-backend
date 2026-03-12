@@ -80,6 +80,10 @@ class DiscoverStockScraper(BaseScraper):
             300,
             int(getattr(self.settings, "discover_stock_universe_cache_ttl_seconds", 21600)),
         )
+        self._missing_quote_retry_limit = max(
+            0,
+            int(getattr(self.settings, "discover_stock_missing_quote_retry_limit", 400)),
+        )
         self._core_symbol_map = {row.nse_symbol: row for row in CORE_UNIVERSE}
         self._universe_cache: tuple[DiscoverStockDef, ...] | None = None
         self._universe_cache_at: datetime | None = None
@@ -545,11 +549,25 @@ class DiscoverStockScraper(BaseScraper):
         bulk_quotes, _ = self._fetch_latest_bhavcopy_quotes()
         raw_rows: list[dict] = []
         if bulk_quotes:
+            missing: list[DiscoverStockDef] = []
             for stock in universe:
                 quote = bulk_quotes.get(stock.nse_symbol)
                 if quote is None:
+                    missing.append(stock)
                     continue
                 raw_rows.append(self._build_snapshot_row(stock, quote, "nse_bhavcopy"))
+            if missing and self._missing_quote_retry_limit > 0:
+                retry_batch = missing[: self._missing_quote_retry_limit]
+                logger.warning(
+                    "Bhavcopy missing %d/%d symbols; retrying fallback quotes for %d symbols",
+                    len(missing),
+                    len(universe),
+                    len(retry_batch),
+                )
+                for stock in retry_batch:
+                    item = self._fetch_one(stock)
+                    if item is not None:
+                        raw_rows.append(item)
         else:
             # If bhavcopy is unavailable, keep serving a smaller reliable subset.
             fallback_universe = CORE_UNIVERSE if len(universe) > len(CORE_UNIVERSE) else universe
@@ -557,6 +575,12 @@ class DiscoverStockScraper(BaseScraper):
                 item = self._fetch_one(stock)
                 if item is not None:
                     raw_rows.append(item)
+            if len(raw_rows) < len(fallback_universe):
+                logger.warning(
+                    "Fallback quote path updated %d/%d symbols",
+                    len(raw_rows),
+                    len(fallback_universe),
+                )
         return self._compute_scores(raw_rows)
 
 

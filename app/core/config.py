@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     discover_stock_daily_hour_ist: int = 16
     discover_stock_daily_minute_ist: int = 0
     discover_stock_daily_days: str = "mon-fri"
+    discover_stock_retry_enabled: bool = True
+    discover_stock_retry_hour_ist: int = 16
+    discover_stock_retry_minute_ist: int = 20
     discover_mutual_fund_interval_minutes: int = 60
     discover_mf_daily_hour_ist: int = 22
     discover_mf_daily_minute_ist: int = 0
@@ -50,6 +53,7 @@ class Settings(BaseSettings):
     discover_stock_bhavcopy_url_template: str = "https://archives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{yyyymmdd}_F_0000.csv.zip"
     discover_stock_bhavcopy_lookback_days: int = 7
     discover_stock_universe_cache_ttl_seconds: int = 21600
+    discover_stock_missing_quote_retry_limit: int = 400
     discover_mf_primary_url: str = "https://www.etmoney.com"
     discover_mf_fallback_url: str = "https://www.amfiindia.com/spages/NAVAll.txt"
 
