@@ -175,6 +175,9 @@ INDEX_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
 FX_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
 FX_FALLBACK_MIN_FRESHNESS_GAIN_SECONDS = 120
 FX_SANITY_MAX_DEVIATION_PCT = 20.0
+# During NSE session, keep a tighter promote window so delayed Yahoo ticks
+# are replaced quickly by fallback providers.
+NSE_INDEX_FALLBACK_PROMOTE_SECONDS = 90
 
 # Asset → exchange for correct trading-date assignment (avoid Monday close stored as Tuesday UTC)
 ASSET_EXCHANGE: Dict[str, str] = {
@@ -274,6 +277,13 @@ def _pick_previous_close(meta: dict) -> tuple[float | None, str | None]:
 
 
 class MarketScraper(BaseScraper, QuoteProvider):
+    def _effective_index_fallback_threshold_seconds(self, asset: str, base_threshold: int) -> int:
+        threshold = max(1, int(base_threshold))
+        exchange = ASSET_EXCHANGE.get(asset, NYSE)
+        if exchange == NSE:
+            threshold = min(threshold, NSE_INDEX_FALLBACK_PROMOTE_SECONDS)
+        return threshold
+
     def _promote_delayed_index_fallbacks(
         self,
         selected: list[QuoteTick],
@@ -286,7 +296,11 @@ class MarketScraper(BaseScraper, QuoteProvider):
         """
         now = datetime.now(timezone.utc)
         status = get_market_status(now)
-        promote_threshold = max(1, int(get_settings().index_fallback_promote_seconds))
+        cfg = get_settings()
+        promote_threshold = max(
+            1,
+            min(int(cfg.index_fallback_promote_seconds), int(cfg.live_max_age_seconds)),
+        )
 
         fallback_by_asset: dict[str, QuoteTick] = {}
         for tick in all_ticks:
@@ -325,11 +339,23 @@ class MarketScraper(BaseScraper, QuoteProvider):
             if tick_ts.tzinfo is None:
                 tick_ts = tick_ts.replace(tzinfo=timezone.utc)
             age_seconds = (now - tick_ts).total_seconds()
-            if age_seconds <= promote_threshold:
+            threshold = self._effective_index_fallback_threshold_seconds(tick.asset, promote_threshold)
+            if age_seconds <= threshold:
                 promoted.append(tick)
                 continue
 
             fb = fallback_by_asset.get(tick.asset)
+            if fb is None:
+                cfg = GOOGLE_INDEX_FALLBACKS.get(tick.asset)
+                if cfg is not None:
+                    try:
+                        fetched = self._fetch_google_index_fallback_for_asset(tick.asset, cfg, now)
+                    except Exception:
+                        logger.debug("On-demand index fallback fetch failed for %s", tick.asset, exc_info=True)
+                        fetched = None
+                    if fetched is not None:
+                        fallback_by_asset[tick.asset] = fetched
+                        fb = fetched
             if fb is None or fb.provider == "yahoo":
                 promoted.append(tick)
                 continue
@@ -652,10 +678,49 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 continue
         return None
 
+    def _fetch_google_index_fallback_for_asset(
+        self,
+        asset: str,
+        cfg: dict[str, str],
+        now: datetime,
+    ) -> QuoteTick | None:
+        url = GOOGLE_FINANCE_QUOTE_URL.format(code=cfg["code"])
+        html_text = self._get_text(url)
+        parsed = self._parse_google_index_quote(html_text, cfg["token"])
+        if not parsed:
+            return None
+        price, prev, pct, ts = parsed
+        # Timestamp sanity: avoid provider clock glitches and stale snapshots.
+        if ts > (now + timedelta(seconds=INDEX_FALLBACK_MAX_CLOCK_SKEW_SECONDS)):
+            logger.debug("Index fallback skipped (future timestamp): asset=%s ts=%s", asset, ts.isoformat())
+            return None
+        if (now - ts).total_seconds() > 24 * 3600:
+            logger.debug("Index fallback skipped (too old): asset=%s ts=%s", asset, ts.isoformat())
+            return None
+        return QuoteTick(
+            asset=asset,
+            price=price,
+            instrument_type="index",
+            unit="points",
+            source="google_finance_html",
+            previous_close=prev,
+            change_percent=round(pct, 2) if pct is not None else _pct_change(price, prev),
+            provider="google_finance",
+            provider_priority=4,
+            confidence_level=0.8,
+            source_timestamp=ts,
+            is_fallback=True,
+            quality="fallback",
+        )
+
     def _fetch_index_fallbacks(self, yahoo_index_ticks: list[QuoteTick]) -> list[QuoteTick]:
         by_asset = {t.asset: t for t in yahoo_index_ticks}
         now = datetime.now(timezone.utc)
-        promote_seconds = max(60, int(get_settings().index_fallback_promote_seconds))
+        cfg = get_settings()
+        promote_seconds = max(
+            60,
+            min(int(cfg.index_fallback_promote_seconds), int(cfg.live_max_age_seconds)),
+        )
         status = get_market_status(now)
         out: list[QuoteTick] = []
         for asset, cfg in GOOGLE_INDEX_FALLBACKS.items():
@@ -668,40 +733,14 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 p_ts = primary.source_timestamp
                 if p_ts.tzinfo is None:
                     p_ts = p_ts.replace(tzinfo=timezone.utc)
-                needs_fallback = (now - p_ts).total_seconds() > promote_seconds
+                threshold = self._effective_index_fallback_threshold_seconds(asset, promote_seconds)
+                needs_fallback = (now - p_ts).total_seconds() > threshold
             if not needs_fallback:
                 continue
             try:
-                url = GOOGLE_FINANCE_QUOTE_URL.format(code=cfg["code"])
-                html_text = self._get_text(url)
-                parsed = self._parse_google_index_quote(html_text, cfg["token"])
-                if not parsed:
-                    continue
-                price, prev, pct, ts = parsed
-                # Timestamp sanity: avoid provider clock glitches and stale snapshots.
-                if ts > (now + timedelta(seconds=INDEX_FALLBACK_MAX_CLOCK_SKEW_SECONDS)):
-                    logger.debug("Index fallback skipped (future timestamp): asset=%s ts=%s", asset, ts.isoformat())
-                    continue
-                if (now - ts).total_seconds() > 24 * 3600:
-                    logger.debug("Index fallback skipped (too old): asset=%s ts=%s", asset, ts.isoformat())
-                    continue
-                out.append(
-                    QuoteTick(
-                        asset=asset,
-                        price=price,
-                        instrument_type="index",
-                        unit="points",
-                        source="google_finance_html",
-                        previous_close=prev,
-                        change_percent=round(pct, 2) if pct is not None else _pct_change(price, prev),
-                        provider="google_finance",
-                        provider_priority=4,
-                        confidence_level=0.8,
-                        source_timestamp=ts,
-                        is_fallback=True,
-                        quality="fallback",
-                    )
-                )
+                fallback_tick = self._fetch_google_index_fallback_for_asset(asset, cfg, now)
+                if fallback_tick is not None:
+                    out.append(fallback_tick)
             except Exception:
                 logger.debug("Index fallback fetch failed for %s", asset, exc_info=True)
         return out
@@ -711,7 +750,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
         if not is_fx_session_expected_open(now):
             return []
         by_asset = {t.asset: t for t in yahoo_fx_ticks}
-        stale_seconds = max(60, int(get_settings().stale_threshold_seconds_rolling_24h))
+        stale_seconds = max(60, int(get_settings().live_max_age_seconds))
         out: list[QuoteTick] = []
         for _symbol, pair in FX_SYMBOLS.items():
             primary = by_asset.get(pair)

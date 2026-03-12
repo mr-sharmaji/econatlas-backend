@@ -291,6 +291,7 @@ async def get_data_health() -> dict:
         _add_health_bucket(by_type[inst], phase, latency)
 
     avg_latency = round(sum(latency_values) / len(latency_values), 2) if latency_values else None
+    stale_by_type = {k: int(v["stale"]) for k, v in sorted(by_type.items())}
     return {
         "timestamp": now,
         "total_assets": len(latest),
@@ -298,5 +299,6 @@ async def get_data_health() -> dict:
         "avg_latency_seconds": avg_latency,
         "by_region": {k: _finalize_bucket(v) for k, v in sorted(by_region.items())},
         "by_instrument_type": {k: _finalize_bucket(v) for k, v in sorted(by_type.items())},
+        "stale_by_instrument_type": stale_by_type,
         "quality_counts": dict(sorted(quality_counts.items())),
     }

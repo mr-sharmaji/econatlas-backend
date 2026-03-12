@@ -75,6 +75,7 @@ class DataHealthResponse(BaseModel):
     avg_latency_seconds: float | None = None
     by_region: dict[str, RegionHealthResponse]
     by_instrument_type: dict[str, RegionHealthResponse]
+    stale_by_instrument_type: dict[str, int]
     quality_counts: dict[str, int]
 
 

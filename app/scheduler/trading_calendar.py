@@ -29,6 +29,10 @@ XETRA = "XETRA"
 EURONEXT = "EURONEXT"
 TSE = "TSE"
 
+SESSION_OPEN = "open"
+SESSION_BREAK = "break"
+SESSION_CLOSED = "closed"
+
 # exchange_calendars canonical names: XBOM = BSE (India, same tz/session as NSE); XNYS = NYSE (US).
 # Package has no XNSE; XBOM is the India exchange calendar in gerrymanoim/exchange_calendars.
 _NSE_CALENDAR_NAME = "XBOM"
@@ -412,23 +416,32 @@ def is_fx_session_expected_open(utc_now: datetime) -> bool:
 
 
 def is_commodity_session_expected_open(utc_now: datetime) -> bool:
-    """Best-effort commodity futures session check in New York local time.
-    Approx window: Sun 18:00 -> Fri 17:00 ET with daily 17:00-18:00 maintenance break."""
+    """Best-effort commodity futures session check in New York local time."""
+    return get_commodity_session_state(utc_now) == SESSION_OPEN
+
+
+def get_commodity_session_state(utc_now: datetime) -> str:
+    """Commodity futures state in New York local time: open | break | closed.
+
+    Window: Sun 18:00 -> Fri 17:00 ET with daily maintenance break 17:00-18:00 ET.
+    """
     now = utc_now if utc_now.tzinfo is not None else utc_now.replace(tzinfo=timezone.utc)
     ny = now.astimezone(_NYSE_TZ)
     wd = ny.weekday()  # Mon=0 ... Sun=6
     t = ny.timetz().replace(tzinfo=None)
     if wd == 5:  # Saturday
-        return False
+        return SESSION_CLOSED
     if wd == 6:  # Sunday
-        return t >= dtime(18, 0)
+        return SESSION_OPEN if t >= dtime(18, 0) else SESSION_CLOSED
     if wd == 4:  # Friday
-        return t < dtime(17, 0)
-    # Mon-Thu: open except daily break.
-    return not (dtime(17, 0) <= t < dtime(18, 0))
+        return SESSION_OPEN if t < dtime(17, 0) else SESSION_CLOSED
+    # Mon-Thu: open except daily maintenance break.
+    if dtime(17, 0) <= t < dtime(18, 0):
+        return SESSION_BREAK
+    return SESSION_OPEN
 
 
-def _is_local_window_open(
+def _local_window_state(
     utc_now: datetime,
     *,
     tz: ZoneInfo,
@@ -436,31 +449,36 @@ def _is_local_window_open(
     end: dtime,
     weekdays: set[int] | None = None,
     breaks: list[tuple[dtime, dtime]] | None = None,
-) -> bool:
+) -> str:
     local = utc_now.astimezone(tz)
     wd = local.weekday()
     if weekdays is not None and wd not in weekdays:
-        return False
+        return SESSION_CLOSED
     t = local.timetz().replace(tzinfo=None)
     if not (start <= t <= end):
-        return False
+        return SESSION_CLOSED
     for b_start, b_end in breaks or []:
         if b_start <= t < b_end:
-            return False
-    return True
+            return SESSION_BREAK
+    return SESSION_OPEN
 
 
 def is_exchange_expected_open(exchange: str, utc_now: datetime, status: dict | None = None) -> bool:
     """Best-effort expected-open check for region-aware phase computation."""
+    return get_exchange_session_state(exchange, utc_now, status=status) == SESSION_OPEN
+
+
+def get_exchange_session_state(exchange: str, utc_now: datetime, status: dict | None = None) -> str:
+    """Best-effort exchange state: open | break | closed."""
     now = utc_now if utc_now.tzinfo is not None else utc_now.replace(tzinfo=timezone.utc)
     if exchange == NSE:
         st = status or get_market_status(now)
-        return bool(st.get("nse_open"))
+        return SESSION_OPEN if bool(st.get("nse_open")) else SESSION_CLOSED
     if exchange == NYSE:
         st = status or get_market_status(now)
-        return bool(st.get("nyse_open"))
+        return SESSION_OPEN if bool(st.get("nyse_open")) else SESSION_CLOSED
     if exchange == LSE:
-        return _is_local_window_open(
+        return _local_window_state(
             now,
             tz=_LSE_TZ,
             start=dtime(8, 0),
@@ -468,7 +486,7 @@ def is_exchange_expected_open(exchange: str, utc_now: datetime, status: dict | N
             weekdays={0, 1, 2, 3, 4},
         )
     if exchange == XETRA:
-        return _is_local_window_open(
+        return _local_window_state(
             now,
             tz=_XETRA_TZ,
             start=dtime(9, 0),
@@ -476,7 +494,7 @@ def is_exchange_expected_open(exchange: str, utc_now: datetime, status: dict | N
             weekdays={0, 1, 2, 3, 4},
         )
     if exchange == EURONEXT:
-        return _is_local_window_open(
+        return _local_window_state(
             now,
             tz=_EURONEXT_TZ,
             start=dtime(9, 0),
@@ -484,7 +502,7 @@ def is_exchange_expected_open(exchange: str, utc_now: datetime, status: dict | N
             weekdays={0, 1, 2, 3, 4},
         )
     if exchange == TSE:
-        return _is_local_window_open(
+        return _local_window_state(
             now,
             tz=_TSE_TZ,
             start=dtime(9, 0),
@@ -492,4 +510,4 @@ def is_exchange_expected_open(exchange: str, utc_now: datetime, status: dict | N
             weekdays={0, 1, 2, 3, 4},
             breaks=[(dtime(11, 30), dtime(12, 30))],
         )
-    return False
+    return SESSION_CLOSED

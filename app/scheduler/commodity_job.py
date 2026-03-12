@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime, timezone
+import re
+from datetime import date, datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
 from app.core.database import parse_ts
+from app.core.config import get_settings
 from app.scheduler.base import BaseScraper
 from app.scheduler.job_executors import get_job_executor
 from app.scheduler.provider_router import QuoteProvider
@@ -16,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 FX_USD_BASE_URL = "https://open.er-api.com/v6/latest/USD"
+GOOGLE_FINANCE_QUOTE_URL = "https://www.google.com/finance/quote/{code}"
 
 SYMBOLS = {
     "GC=F": ("gold", "usd_per_troy_ounce"),
@@ -26,6 +29,17 @@ SYMBOLS = {
     "NG=F": ("natural gas", "usd_per_mmbtu"),
     "HG=F": ("copper", "usd_per_pound"),
 }
+
+GOOGLE_COMMODITY_FALLBACKS = {
+    "GC=F": {"code": "GCW00:COMEX", "token": '"GCW00","COMEX"'},
+    "SI=F": {"code": "SIW00:COMEX", "token": '"SIW00","COMEX"'},
+    "PL=F": {"code": "PLW00:NYMEX", "token": '"PLW00","NYMEX"'},
+    "PA=F": {"code": "PAW00:NYMEX", "token": '"PAW00","NYMEX"'},
+    "CL=F": {"code": "CLW00:NYMEX", "token": '"CLW00","NYMEX"'},
+    "NG=F": {"code": "NGW00:NYMEX", "token": '"NGW00","NYMEX"'},
+    "HG=F": {"code": "HGW00:COMEX", "token": '"HGW00","COMEX"'},
+}
+COMMODITY_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
 
 
 def _pick_previous_close(meta: dict) -> tuple[float | None, str | None]:
@@ -119,12 +133,195 @@ class CommodityScraper(BaseScraper, QuoteProvider):
         logger.debug("Commodity fetch complete: %d/%d symbols", len(items), len(SYMBOLS))
         return items
 
+    @staticmethod
+    def _parse_google_quote(page_html: str, token: str) -> tuple[float, float | None, float | None, datetime] | None:
+        pattern = re.compile(
+            rf'\["/[^"]+",\[{re.escape(token)}\][\s\S]{{0,520}}?'
+            r"\[\s*(?P<price>-?\d+(?:\.\d+)?)\s*,\s*(?P<chg>-?\d+(?:\.\d+)?)\s*,\s*(?P<pct>-?\d+(?:\.\d+)?)\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\]"
+            r"[\s\S]{0,260}?\[(?P<ts>\d{10})\]",
+            re.IGNORECASE,
+        )
+        m = pattern.search(page_html)
+        if not m:
+            return None
+        try:
+            price = float(m.group("price"))
+            chg = float(m.group("chg"))
+            pct = float(m.group("pct"))
+            ts = datetime.fromtimestamp(int(m.group("ts")), tz=timezone.utc)
+            block = page_html[m.start():m.end() + 180]
+            m_prev = re.search(r"\]\s*,\s*null\s*,\s*(-?\d+(?:\.\d+)?)\s*,", block)
+            prev = float(m_prev.group(1)) if m_prev else round(price - chg, 6)
+            return (price, prev, pct, ts)
+        except (TypeError, ValueError, OSError):
+            return None
+
+    def _fetch_google_fallbacks(self, yahoo_rows: List[Dict]) -> List[Dict]:
+        now = datetime.now(timezone.utc)
+        live_max_age_seconds = max(60, int(get_settings().live_max_age_seconds))
+        by_asset = {str(r.get("asset") or ""): r for r in yahoo_rows}
+        out: list[dict] = []
+
+        for symbol, (asset, unit) in SYMBOLS.items():
+            primary = by_asset.get(asset)
+            needs_fallback = primary is None
+            if primary is not None:
+                p_ts = parse_ts(primary.get("source_timestamp"))
+                if p_ts is not None:
+                    if p_ts.tzinfo is None:
+                        p_ts = p_ts.replace(tzinfo=timezone.utc)
+                    needs_fallback = (now - p_ts).total_seconds() > live_max_age_seconds
+            if not needs_fallback:
+                continue
+
+            cfg = GOOGLE_COMMODITY_FALLBACKS.get(symbol)
+            if cfg is None:
+                continue
+            try:
+                html_text = self._get_text(GOOGLE_FINANCE_QUOTE_URL.format(code=cfg["code"]))
+                parsed = self._parse_google_quote(html_text, cfg["token"])
+                if not parsed:
+                    continue
+                price, prev, pct, ts = parsed
+                if ts > (now + timedelta(seconds=COMMODITY_FALLBACK_MAX_CLOCK_SKEW_SECONDS)):
+                    logger.debug("Commodity fallback skipped (future timestamp): asset=%s ts=%s", asset, ts.isoformat())
+                    continue
+                if (now - ts).total_seconds() > 24 * 3600:
+                    logger.debug("Commodity fallback skipped (too old): asset=%s ts=%s", asset, ts.isoformat())
+                    continue
+                out.append(
+                    {
+                        "asset": asset,
+                        "price": float(price),
+                        "unit": unit,
+                        "source": "google_finance_html",
+                        "change_percent": round(float(pct), 2) if pct is not None else None,
+                        "previous_close": float(prev) if prev is not None else None,
+                        "source_timestamp": ts.isoformat(),
+                        "provider": "google_finance",
+                        "provider_priority": 4,
+                        "confidence_level": 0.8,
+                        "is_fallback": True,
+                        "quality": "fallback",
+                    }
+                )
+            except Exception:
+                logger.debug("Commodity Google fallback fetch failed for %s", asset, exc_info=True)
+        return out
+
+    @staticmethod
+    def _select_best_quotes(rows: list[dict]) -> list[dict]:
+        best: dict[str, dict] = {}
+        for row in rows:
+            asset = str(row.get("asset") or "")
+            if not asset:
+                continue
+            prev = best.get(asset)
+            if prev is None:
+                best[asset] = row
+                continue
+            cur_prio = int(row.get("provider_priority") or 99)
+            prev_prio = int(prev.get("provider_priority") or 99)
+            if cur_prio < prev_prio:
+                best[asset] = row
+                continue
+            if cur_prio > prev_prio:
+                continue
+            cur_ts = parse_ts(row.get("source_timestamp"))
+            prev_ts = parse_ts(prev.get("source_timestamp"))
+            if cur_ts is None or prev_ts is None:
+                continue
+            if cur_ts.tzinfo is None:
+                cur_ts = cur_ts.replace(tzinfo=timezone.utc)
+            if prev_ts.tzinfo is None:
+                prev_ts = prev_ts.replace(tzinfo=timezone.utc)
+            if cur_ts > prev_ts:
+                best[asset] = row
+        return list(best.values())
+
+    def _promote_delayed_primary_with_fallback(self, selected: list[dict], all_rows: list[dict]) -> list[dict]:
+        now = datetime.now(timezone.utc)
+        live_max_age_seconds = max(60, int(get_settings().live_max_age_seconds))
+        fallback_by_asset: dict[str, dict] = {}
+        for row in all_rows:
+            if str(row.get("provider") or "") == "yahoo":
+                continue
+            asset = str(row.get("asset") or "")
+            if not asset:
+                continue
+            prev = fallback_by_asset.get(asset)
+            if prev is None:
+                fallback_by_asset[asset] = row
+                continue
+            cur_ts = parse_ts(row.get("source_timestamp"))
+            prev_ts = parse_ts(prev.get("source_timestamp"))
+            if cur_ts is None or prev_ts is None:
+                continue
+            if cur_ts.tzinfo is None:
+                cur_ts = cur_ts.replace(tzinfo=timezone.utc)
+            if prev_ts.tzinfo is None:
+                prev_ts = prev_ts.replace(tzinfo=timezone.utc)
+            if cur_ts > prev_ts:
+                fallback_by_asset[asset] = row
+
+        out: list[dict] = []
+        for row in selected:
+            if str(row.get("provider") or "") != "yahoo":
+                out.append(row)
+                continue
+            asset = str(row.get("asset") or "")
+            tick_ts = parse_ts(row.get("source_timestamp"))
+            if tick_ts is None:
+                out.append(row)
+                continue
+            if tick_ts.tzinfo is None:
+                tick_ts = tick_ts.replace(tzinfo=timezone.utc)
+            age_seconds = (now - tick_ts).total_seconds()
+            if age_seconds <= live_max_age_seconds:
+                out.append(row)
+                continue
+
+            fb = fallback_by_asset.get(asset)
+            if fb is None:
+                out.append(row)
+                continue
+            fb_ts = parse_ts(fb.get("source_timestamp"))
+            if fb_ts is None:
+                out.append(row)
+                continue
+            if fb_ts.tzinfo is None:
+                fb_ts = fb_ts.replace(tzinfo=timezone.utc)
+            if fb_ts <= tick_ts:
+                out.append(row)
+                continue
+            logger.info(
+                "Promoted delayed commodity to fallback: asset=%s age_seconds=%.1f primary_ts=%s fallback_provider=%s fallback_ts=%s",
+                asset,
+                age_seconds,
+                tick_ts.isoformat(),
+                fb.get("provider"),
+                fb_ts.isoformat(),
+            )
+            out.append(fb)
+        return out
+
     def fetch_quotes(self) -> List[Dict]:
         try:
-            return self._fetch_yahoo()
+            yahoo_rows = self._fetch_yahoo()
         except Exception:
             logger.exception("Commodity Yahoo fetch failed")
-            return []
+            yahoo_rows = []
+        all_rows = list(yahoo_rows)
+        try:
+            fallback_rows = self._fetch_google_fallbacks(yahoo_rows)
+            if fallback_rows:
+                logger.info("Commodity fallback quotes added: %d", len(fallback_rows))
+                all_rows.extend(fallback_rows)
+        except Exception:
+            logger.debug("Commodity fallback scan failed", exc_info=True)
+        selected = self._select_best_quotes(all_rows)
+        selected = self._promote_delayed_primary_with_fallback(selected, all_rows)
+        return selected
 
     def fetch_all(self) -> List[Dict]:
         return self.fetch_quotes()

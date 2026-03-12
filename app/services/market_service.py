@@ -6,9 +6,12 @@ from app.core.config import get_settings
 from app.core.database import get_pool, parse_ts, record_to_dict
 from app.scheduler.trading_calendar import (
     get_market_status,
-    is_exchange_expected_open,
-    is_commodity_session_expected_open,
+    get_exchange_session_state,
+    get_commodity_session_state,
     is_fx_session_expected_open,
+    SESSION_OPEN,
+    SESSION_BREAK,
+    SESSION_CLOSED,
 )
 
 logger = logging.getLogger(__name__)
@@ -196,21 +199,21 @@ def _normalize_dt(value) -> datetime | None:
     return dt
 
 
-def _is_expected_open(asset: str, instrument_type: str, now_utc: datetime, status: dict | None = None) -> bool:
+def _session_state(asset: str, instrument_type: str, now_utc: datetime, status: dict | None = None) -> str:
     if instrument_type == "currency":
-        return is_fx_session_expected_open(now_utc)
+        return SESSION_OPEN if is_fx_session_expected_open(now_utc) else SESSION_CLOSED
     if instrument_type == "commodity":
-        return is_commodity_session_expected_open(now_utc)
+        return get_commodity_session_state(now_utc)
     meta = get_asset_meta(asset)
     if meta is not None and meta.session_policy == "predictive":
         st = status or get_market_status(now_utc)
-        return bool(st.get("gift_nifty_open"))
+        return SESSION_OPEN if bool(st.get("gift_nifty_open")) else SESSION_CLOSED
     if meta is not None and meta.session_policy == "session":
-        return is_exchange_expected_open(meta.exchange, now_utc, status=status)
+        return get_exchange_session_state(meta.exchange, now_utc, status=status)
     st = status or get_market_status(now_utc)
     if instrument_type == "index":
         if asset == "Gift Nifty":
-            return bool(st.get("gift_nifty_open"))
+            return SESSION_OPEN if bool(st.get("gift_nifty_open")) else SESSION_CLOSED
         india_indices = {
             "Sensex",
             "Nifty 50",
@@ -221,32 +224,40 @@ def _is_expected_open(asset: str, instrument_type: str, now_utc: datetime, statu
             "Nifty Smallcap 250",
         }
         if asset in india_indices:
-            return bool(st.get("nse_open"))
-        return bool(st.get("nyse_open"))
+            return SESSION_OPEN if bool(st.get("nse_open")) else SESSION_CLOSED
+        return SESSION_OPEN if bool(st.get("nyse_open")) else SESSION_CLOSED
     if instrument_type == "bond_yield":
         if asset == "India 10Y Bond Yield":
-            return bool(st.get("nse_open"))
-        return bool(st.get("nyse_open"))
-    return bool(st.get("nyse_open"))
+            return SESSION_OPEN if bool(st.get("nse_open")) else SESSION_CLOSED
+        return SESSION_OPEN if bool(st.get("nyse_open")) else SESSION_CLOSED
+    return SESSION_OPEN if bool(st.get("nyse_open")) else SESSION_CLOSED
 
 
 def _compute_phase(asset: str, instrument_type: str, last_tick: datetime | None, now_utc: datetime, status: dict | None = None) -> tuple[str, bool]:
-    if not _is_expected_open(asset, instrument_type, now_utc, status=status):
+    live_max_age = max(1, int(get_settings().live_max_age_seconds))
+    # FX is treated as continuously referenceable: never "closed", only live/stale.
+    if instrument_type == "currency":
+        if last_tick is None:
+            return PHASE_STALE, True
+        age = (now_utc - last_tick).total_seconds()
+        if age <= live_max_age:
+            return PHASE_LIVE, False
+        return PHASE_STALE, True
+    session_state = _session_state(asset, instrument_type, now_utc, status=status)
+    if session_state == SESSION_CLOSED:
         return PHASE_CLOSED, False
+    if session_state == SESSION_BREAK:
+        logger.debug(
+            "Asset in maintenance/lunch break; marking stale: asset=%s type=%s tick=%s",
+            asset,
+            instrument_type,
+            _to_iso(last_tick),
+        )
+        return PHASE_STALE, True
     if last_tick is None:
         return PHASE_STALE, True
-    s = get_settings()
-    if instrument_type in _ROLLING_24H_TYPES:
-        threshold = s.stale_threshold_seconds_rolling_24h
-    else:
-        threshold = s.stale_threshold_seconds_market
-        # Japan index/bond free feeds are often delayed by ~15-20 minutes.
-        # Use a wider stale window so active TSE sessions are not misclassified as stale.
-        meta = get_asset_meta(asset)
-        if meta is not None and meta.exchange == "TSE":
-            threshold = max(threshold, int(s.stale_threshold_seconds_tse_session))
     age = (now_utc - last_tick).total_seconds()
-    if age <= max(1, threshold):
+    if age <= live_max_age:
         return PHASE_LIVE, False
     return PHASE_STALE, True
 
@@ -427,13 +438,7 @@ async def get_latest_prices(
                 d["last_tick_timestamp"] = _to_iso(last_ts)
                 d["ingested_at"] = _to_iso(_normalize_dt(rolling.get("ingested_at")))
                 d["data_quality"] = "fallback" if rolling.get("is_fallback") else "primary"
-                provider = str(rolling.get("provider") or "")
-                # ER API is a daily reference-rate source for unsupported Yahoo pairs
-                # (e.g. SAR/INR, MXN/INR). Mark as closed/reference instead of stale.
-                if inst == "currency" and provider == "er_api":
-                    phase, is_stale = PHASE_CLOSED, False
-                else:
-                    phase, is_stale = _compute_phase(asset, inst, last_ts, now_utc, status=status)
+                phase, is_stale = _compute_phase(asset, inst, last_ts, now_utc, status=status)
                 d["market_phase"] = phase
                 d["is_stale"] = is_stale
                 logger.debug(

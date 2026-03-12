@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     market_status_cache_seconds: int = 30
 
     # Tick freshness/staleness thresholds
+    live_max_age_seconds: int = 120
     stale_threshold_seconds_market: int = 600
     stale_threshold_seconds_rolling_24h: int = 900
     # Promote fallback index providers when primary index ticks are older than this.
