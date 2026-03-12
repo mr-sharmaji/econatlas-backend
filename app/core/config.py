@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     discover_stock_nse_timeout_seconds: int = 4
     discover_stock_nse_cooldown_seconds: int = 300
     discover_stock_screener_timeout_seconds: int = 8
+    discover_stock_universe_target_size: int = 150
     discover_mf_primary_url: str = "https://www.etmoney.com"
     discover_mf_fallback_url: str = "https://www.amfiindia.com/spages/NAVAll.txt"
 

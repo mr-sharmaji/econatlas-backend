@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 NSE_HOME_URL = "https://www.nseindia.com"
 NSE_QUOTE_URL = "https://www.nseindia.com/api/quote-equity"
+NSE_INDEX_URL = "https://www.nseindia.com/api/equity-stockIndices"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 
 
@@ -28,6 +29,7 @@ class DiscoverStockDef:
     yahoo_symbol: str
     display_name: str
     sector: str
+    fundamentals_enabled: bool = True
 
 
 def _build_universe() -> tuple[DiscoverStockDef, ...]:
@@ -45,12 +47,150 @@ def _build_universe() -> tuple[DiscoverStockDef, ...]:
                 yahoo_symbol=y_symbol,
                 display_name=item.display_name,
                 sector=item.sector,
+                fundamentals_enabled=True,
             )
         )
     return tuple(rows)
 
 
 UNIVERSE = _build_universe()
+
+# Static NIFTY 500 seed symbols to keep stock coverage expanded even if
+# NSE index-constituent calls are temporarily blocked.
+NIFTY500_SEED_SYMBOLS: tuple[str, ...] = (
+    "ATGL",
+    "M&M",
+    "JINDALSAW",
+    "NTPCGREEN",
+    "DOMS",
+    "ETERNAL",
+    "DIXON",
+    "JSWENERGY",
+    "TVSMOTOR",
+    "BSE",
+    "GUJGASLTD",
+    "NATIONALUM",
+    "ASHOKLEY",
+    "VEDL",
+    "HAPPSTMNDS",
+    "INDIGO",
+    "GODREJCP",
+    "BEL",
+    "MCX",
+    "MAXHEALTH",
+    "MUTHOOTFIN",
+    "AMBER",
+    "KAYNES",
+    "MAZDOCK",
+    "VBL",
+    "COFORGE",
+    "SUZLON",
+    "CUMMINSIND",
+    "HFCL",
+    "NETWEB",
+    "BHEL",
+    "IDEA",
+    "HINDCOPPER",
+    "KPRMILL",
+    "SWIGGY",
+    "HAL",
+    "ABB",
+    "POLYCAB",
+    "RECLTD",
+    "CHOLAFIN",
+    "WAAREEENER",
+    "BAJAJ-AUTO",
+    "PFC",
+    "POWERINDIA",
+    "TEJASNET",
+    "TRENT",
+    "IOC",
+    "NLCINDIA",
+    "CHENNPETRO",
+    "SRF",
+    "HINDPETRO",
+    "MARICO",
+    "TMPV",
+    "CANBK",
+    "FACT",
+    "INDHOTEL",
+    "MOTHERSON",
+    "OIL",
+    "NAUKRI",
+    "AUROPHARMA",
+    "PERSISTENT",
+    "APLAPOLLO",
+    "CESC",
+    "PETRONET",
+    "ASTRAL",
+    "KEC",
+    "CGPOWER",
+    "UNIONBANK",
+    "HINDZINC",
+    "AMBUJACEM",
+    "MRPL",
+    "GAIL",
+    "INDUSTOWER",
+    "JINDALSTEL",
+    "BANKBARODA",
+    "DATAPATTNS",
+    "ANGELONE",
+    "KEI",
+    "GLENMARK",
+    "IDFCFIRSTB",
+    "BHARATFORG",
+    "GVT&D",
+    "FEDERALBNK",
+    "SOLARINDS",
+    "HDFCAMC",
+    "PAYTM",
+    "LUPIN",
+    "FORTIS",
+    "MGL",
+    "CEATLTD",
+    "CDSL",
+    "RVNL",
+    "FORCEMOT",
+    "JUBLFOOD",
+    "SCI",
+    "CONCOR",
+    "RPOWER",
+    "POLICYBZR",
+    "PGEL",
+    "DLF",
+    "GSPL",
+    "BDL",
+    "INOXWIND",
+    "IRCTC",
+    "YESBANK",
+    "NMDC",
+    "COLPAL",
+    "AUBANK",
+    "GMRAIRPORT",
+    "SUPREMEIND",
+    "GESHIP",
+    "PNB",
+    "RADICO",
+    "REDINGTON",
+    "J&KBANK",
+    "VMM",
+    "SAIL",
+    "TORNTPHARM",
+    "GRSE",
+    "IRFC",
+    "APARINDS",
+    "AARTIIND",
+    "MFSL",
+    "DMART",
+    "TORNTPOWER",
+    "LAURUSLABS",
+    "PREMIERENE",
+    "PPLPHARMA",
+    "LICHSGFIN",
+    "MANAPPURAM",
+    "NHPC",
+    "KALYANKJIL",
+)
 
 
 class DiscoverStockScraper(BaseScraper):
@@ -62,6 +202,9 @@ class DiscoverStockScraper(BaseScraper):
         self._nse_timeout = max(1, int(getattr(self.settings, "discover_stock_nse_timeout_seconds", 4)))
         self._nse_cooldown = max(30, int(getattr(self.settings, "discover_stock_nse_cooldown_seconds", 300)))
         self._screener_timeout = max(2, int(getattr(self.settings, "discover_stock_screener_timeout_seconds", 8)))
+        default_target = max(len(UNIVERSE), 150)
+        configured_target = int(getattr(self.settings, "discover_stock_universe_target_size", default_target))
+        self._universe_target_size = max(len(UNIVERSE), min(configured_target, 500))
 
     def _nse_on_cooldown(self) -> bool:
         if self._nse_disabled_until is None:
@@ -151,6 +294,77 @@ class DiscoverStockScraper(BaseScraper):
             self._activate_nse_cooldown(reason=f"quote fetch failed for {symbol}")
             logger.debug("NSE quote fetch failed for %s", symbol, exc_info=True)
             return None
+
+    def _fetch_nifty500_constituents(self) -> list[DiscoverStockDef]:
+        if self._universe_target_size <= len(UNIVERSE) or self._nse_on_cooldown():
+            return []
+        try:
+            self._ensure_nse_session()
+            headers = {
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": f"{NSE_HOME_URL}/market-data/live-equity-market?symbol=NIFTY%20500",
+                "X-Requested-With": "XMLHttpRequest",
+            }
+            resp = self.session.get(
+                NSE_INDEX_URL,
+                params={"index": "NIFTY 500"},
+                headers=headers,
+                timeout=self._nse_timeout,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            rows = payload.get("data") or []
+            out: list[DiscoverStockDef] = []
+            for row in rows:
+                symbol = str(row.get("symbol") or "").strip().upper()
+                if not symbol or symbol == "NIFTY 500":
+                    continue
+                meta = row.get("meta") or {}
+                display_name = str(meta.get("companyName") or symbol).strip() or symbol
+                sector = str(meta.get("industry") or "Diversified").strip() or "Diversified"
+                out.append(
+                    DiscoverStockDef(
+                        nse_symbol=symbol,
+                        yahoo_symbol=f"{symbol}.NS",
+                        display_name=display_name,
+                        sector=sector,
+                        fundamentals_enabled=False,
+                    )
+                )
+            return out
+        except Exception:
+            logger.debug("Failed to fetch NSE NIFTY 500 constituents", exc_info=True)
+            return []
+
+    def _build_effective_universe(self) -> tuple[DiscoverStockDef, ...]:
+        rows = list(UNIVERSE)
+        seen = {item.nse_symbol for item in rows}
+        for symbol in NIFTY500_SEED_SYMBOLS:
+            if len(rows) >= self._universe_target_size:
+                break
+            normalized = str(symbol or "").strip().upper()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            rows.append(
+                DiscoverStockDef(
+                    nse_symbol=normalized,
+                    yahoo_symbol=f"{normalized}.NS",
+                    display_name=normalized,
+                    sector="Diversified",
+                    fundamentals_enabled=False,
+                )
+            )
+        extras = self._fetch_nifty500_constituents()
+        for item in extras:
+            if len(rows) >= self._universe_target_size:
+                break
+            if item.nse_symbol in seen:
+                continue
+            seen.add(item.nse_symbol)
+            rows.append(item)
+        return tuple(rows)
 
     def _fetch_yahoo_quote(self, yahoo_symbol: str) -> dict | None:
         try:
@@ -350,7 +564,18 @@ class DiscoverStockScraper(BaseScraper):
         if quote is None:
             return None
 
-        fundamentals, fundamentals_source = self._fetch_screener_fundamentals(stock.nse_symbol)
+        if bool(getattr(stock, "fundamentals_enabled", True)):
+            fundamentals, fundamentals_source = self._fetch_screener_fundamentals(stock.nse_symbol)
+        else:
+            fundamentals = {
+                "pe_ratio": None,
+                "roe": None,
+                "roce": None,
+                "debt_to_equity": None,
+                "price_to_book": None,
+                "eps": None,
+            }
+            fundamentals_source = "unavailable"
         fundamentals_count = sum(1 for value in fundamentals.values() if value is not None)
 
         # Source health is driven primarily by fundamentals coverage from Screener.
@@ -383,8 +608,9 @@ class DiscoverStockScraper(BaseScraper):
         }
 
     def fetch_all(self) -> list[dict]:
+        universe = self._build_effective_universe()
         raw_rows: list[dict] = []
-        for stock in UNIVERSE:
+        for stock in universe:
             item = self._fetch_one(stock)
             if item is not None:
                 raw_rows.append(item)

@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from html import unescape
 from typing import Any
 
 import requests
@@ -60,6 +61,136 @@ class DiscoverMutualFundScraper(BaseScraper):
             if key in text:
                 return label
         return text.title()
+
+    def _infer_risk_from_category(self, category: str | None, sub_category: str | None) -> str | None:
+        text = f"{category or ''} {sub_category or ''}".strip().lower()
+        if not text:
+            return None
+        if any(token in text for token in ("overnight", "liquid", "ultra short", "money market", "arbitrage")):
+            return "Low"
+        if any(
+            token in text
+            for token in (
+                "gilt",
+                "banking and psu",
+                "corporate bond",
+                "short duration",
+                "low duration",
+                "floater",
+                "retirement",
+            )
+        ):
+            return "Moderately Low"
+        if any(
+            token in text
+            for token in (
+                "small cap",
+                "sectoral",
+                "thematic",
+                "focused",
+                "international",
+                "aggressive hybrid",
+            )
+        ):
+            return "High"
+        if any(token in text for token in ("mid cap", "multi cap", "flexi cap", "elss", "value", "contra")):
+            return "Moderately High"
+        if any(token in text for token in ("large cap", "index", "balanced hybrid", "dynamic asset allocation")):
+            return "Moderate"
+        if "equity" in text:
+            return "Moderately High"
+        if "hybrid" in text:
+            return "Moderate"
+        if "debt" in text:
+            return "Moderately Low"
+        return None
+
+    @staticmethod
+    def _extract_json_object_after_marker(text: str, marker: str) -> dict[str, Any] | None:
+        idx = text.find(marker)
+        if idx < 0:
+            return None
+        start = text.find("{", idx)
+        if start < 0:
+            return None
+
+        depth = 0
+        in_string = False
+        escaped = False
+        for pos in range(start, len(text)):
+            ch = text[pos]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    raw = text[start : pos + 1]
+                    try:
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, dict):
+                            return parsed
+                    except json.JSONDecodeError:
+                        return None
+                    return None
+        return None
+
+    @staticmethod
+    def _extract_attr(tag_text: str, attr_name: str) -> str | None:
+        pattern = rf'{re.escape(attr_name)}\s*=\s*"([^"]*)"'
+        match = re.search(pattern, tag_text, flags=re.IGNORECASE)
+        if not match:
+            return None
+        return unescape(match.group(1)).strip() or None
+
+    def _normalize_fund_name_key(self, text: str) -> str:
+        value = unescape(str(text or "")).strip().lower()
+        if not value:
+            return ""
+        value = value.replace("&", " and ")
+        value = re.sub(r"\([^)]*\)", " ", value)
+        value = re.sub(
+            r"\b(direct|regular|plan|growth|idcw|dividend|payout|reinvestment|reinvest|option|bonus|daily|weekly|monthly|quarterly|annual|retail)\b",
+            " ",
+            value,
+            flags=re.IGNORECASE,
+        )
+        value = re.sub(r"[-_/]", " ", value)
+        value = re.sub(r"\s+", " ", value).strip()
+        return value
+
+    def _normalize_heading_labels(self, main: str | None, sub: str | None) -> tuple[str | None, str | None]:
+        main_value = (main or "").strip()
+        sub_value = (sub or "").strip()
+        text = f"{main_value} {sub_value}".lower()
+
+        if "equity scheme" in text or "elss" in text or "large cap" in text or "small cap" in text:
+            return "Equity", sub_value or main_value or None
+        if "hybrid scheme" in text or "hybrid" in text or "arbitrage" in text:
+            return "Hybrid", sub_value or main_value or None
+        if "debt scheme" in text or "gilt" in text or "duration" in text or "money market" in text:
+            return "Debt", sub_value or main_value or None
+        if "index" in text or "etf" in text:
+            return "Index", sub_value or main_value or None
+        if "solution oriented" in text:
+            return "Solution Oriented", sub_value or None
+        if "other scheme" in text:
+            if "index" in text or "etf" in text:
+                return "Index", sub_value or None
+            return "Other", sub_value or None
+
+        compact_main = re.sub(r"\s*schemes?\s*", " ", main_value, flags=re.IGNORECASE).strip()
+        return compact_main or None, sub_value or None
 
     def _extract_etmoney_json_blobs(self, html: str) -> list[dict]:
         blobs: list[dict] = []
@@ -185,7 +316,83 @@ class DiscoverMutualFundScraper(BaseScraper):
                 sub = right.strip()
             else:
                 main = inside.strip()
-        return main or None, sub or None
+        return self._normalize_heading_labels(main, sub)
+
+    def _parse_etmoney_category_pages(self) -> dict[str, dict]:
+        out: dict[str, dict] = {}
+        base = self.settings.discover_mf_primary_url.rstrip("/")
+        try:
+            explore_html = self._get_text(f"{base}/mutual-funds/explore", timeout=16)
+        except Exception:
+            logger.debug("ET Money explore fetch failed", exc_info=True)
+            return out
+
+        category_links = sorted(
+            {
+                link
+                for link in re.findall(r'href="(/mutual-funds/(?:equity|debt|hybrid|other|solution-oriented)/[^"]+/\d+)"', explore_html)
+                if link
+            }
+        )
+
+        for rel_link in category_links:
+            url = f"{base}{rel_link}"
+            try:
+                html = self._get_text(url, timeout=14)
+            except Exception:
+                logger.debug("ET Money category fetch failed url=%s", url, exc_info=True)
+                continue
+
+            category_payload = self._extract_json_object_after_marker(html, "var category =")
+            category = None
+            sub_category = None
+            if category_payload:
+                primary = str(category_payload.get("primary") or "").strip().lower()
+                if primary == "equity":
+                    category = "Equity"
+                elif primary == "debt":
+                    category = "Debt"
+                elif primary == "hybrid":
+                    category = "Hybrid"
+                elif primary:
+                    category = str(primary).title()
+                sub_category = str(category_payload.get("displayName") or "").strip() or None
+
+            return_map = self._extract_json_object_after_marker(html, "var mfSchemeCalculatorReturnMap =") or {}
+            for match in re.finditer(r'<li[^>]*class="[^"]*mfFund-list[^"]*"[^>]*>', html, flags=re.IGNORECASE):
+                tag = match.group(0)
+                sid = self._extract_attr(tag, "data-sid")
+                fund_name = self._extract_attr(tag, "data-fundname")
+                if not sid or not fund_name:
+                    continue
+
+                metrics = return_map.get(str(sid)) if isinstance(return_map, dict) else None
+                xirr = metrics.get("xirrDurationWise") if isinstance(metrics, dict) else {}
+                if not isinstance(xirr, dict):
+                    xirr = {}
+
+                def _xirr_pct(key: str) -> float | None:
+                    value = self._to_float(xirr.get(key))
+                    if value is None:
+                        return None
+                    return round(value * 100.0, 2)
+
+                risk = self._infer_risk_from_category(category, sub_category)
+                out[self._normalize_fund_name_key(fund_name)] = {
+                    "et_scheme_id": str(sid),
+                    "scheme_name": fund_name,
+                    "category": category,
+                    "sub_category": sub_category,
+                    "risk_level": risk,
+                    "returns_1y": _xirr_pct("365"),
+                    "returns_3y": _xirr_pct("1095"),
+                    "returns_5y": _xirr_pct("1825"),
+                    "source_status": "primary",
+                    "source_timestamp": datetime.now(timezone.utc),
+                    "primary_source": "etmoney_web",
+                    "secondary_source": "amfi_nav_file",
+                }
+        return out
 
     def _parse_amfi_fallback(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -196,12 +403,17 @@ class DiscoverMutualFundScraper(BaseScraper):
             return out
 
         current_category = ""
+        current_amc = None
         for raw_line in text.splitlines():
             line = raw_line.strip()
             if not line:
                 continue
             if ";" not in line:
-                current_category = line
+                header = line.lower()
+                if re.search(r"schemes?\s*\(", line, flags=re.IGNORECASE):
+                    current_category = line
+                elif "mutual fund" in header:
+                    current_amc = line
                 continue
             parts = [p.strip() for p in line.split(";")]
             if len(parts) < 6:
@@ -226,7 +438,10 @@ class DiscoverMutualFundScraper(BaseScraper):
             elif "idcw" in name_lower or "dividend" in name_lower:
                 option_type = "IDCW"
 
-            amc = scheme_name.split(" - ", 1)[0].strip() if " - " in scheme_name else None
+            amc = current_amc
+            if not amc and " - " in scheme_name:
+                amc = scheme_name.split(" - ", 1)[0].strip()
+            inferred_risk = self._infer_risk_from_category(category, sub_category)
             out[scheme_code] = {
                 "scheme_code": scheme_code,
                 "scheme_name": scheme_name,
@@ -239,7 +454,7 @@ class DiscoverMutualFundScraper(BaseScraper):
                 "nav_date": nav_date_raw,
                 "expense_ratio": None,
                 "aum_cr": None,
-                "risk_level": None,
+                "risk_level": inferred_risk,
                 "returns_1y": None,
                 "returns_3y": None,
                 "returns_5y": None,
@@ -383,6 +598,7 @@ class DiscoverMutualFundScraper(BaseScraper):
     def fetch_all(self) -> list[dict]:
         amfi_rows = self._parse_amfi_fallback()
         et_rows = self._parse_etmoney_candidates()
+        et_rows_by_name = self._parse_etmoney_category_pages()
 
         merged: dict[str, dict] = {}
         for code, row in amfi_rows.items():
@@ -403,6 +619,50 @@ class DiscoverMutualFundScraper(BaseScraper):
                 "primary_source": "etmoney_web",
                 "secondary_source": "amfi_nav_file",
             }
+
+        amfi_name_index: dict[str, list[str]] = {}
+        for code, row in merged.items():
+            key = self._normalize_fund_name_key(str(row.get("scheme_name") or ""))
+            if not key:
+                continue
+            amfi_name_index.setdefault(key, []).append(code)
+
+        for key, et_row in et_rows_by_name.items():
+            if not key:
+                continue
+            candidate_codes = amfi_name_index.get(key) or []
+            if not candidate_codes:
+                candidate_codes = [
+                    code
+                    for known_key, codes in amfi_name_index.items()
+                    if known_key and (known_key in key or key in known_key)
+                    for code in codes
+                ]
+            if not candidate_codes:
+                continue
+
+            def _candidate_priority(code: str) -> tuple[int, int]:
+                name = str(merged.get(code, {}).get("scheme_name") or "").lower()
+                growth_bias = 2 if "growth" in name else 0
+                direct_bias = 1 if "direct" in name else 0
+                return (growth_bias + direct_bias, -len(name))
+
+            best_code = sorted(candidate_codes, key=_candidate_priority, reverse=True)[0]
+            base_row = dict(merged[best_code])
+
+            if et_row.get("category"):
+                base_row["category"] = et_row.get("category")
+            if et_row.get("sub_category"):
+                base_row["sub_category"] = et_row.get("sub_category")
+            for metric_key in ("returns_1y", "returns_3y", "returns_5y", "risk_level"):
+                if et_row.get(metric_key) is not None:
+                    base_row[metric_key] = et_row.get(metric_key)
+
+            base_row["source_status"] = "primary"
+            base_row["source_timestamp"] = datetime.now(timezone.utc)
+            base_row["primary_source"] = "etmoney_web"
+            base_row["secondary_source"] = "amfi_nav_file"
+            merged[best_code] = base_row
 
         rows = [row for row in merged.values() if str(row.get("plan_type") or "").lower() == "direct"]
         return self._compute_scores(rows)

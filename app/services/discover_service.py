@@ -499,11 +499,17 @@ async def list_discover_mutual_funds(
 
     preset_norm = str(preset or "all").strip().lower()
     if preset_norm == "large-cap":
-        conds.append("LOWER(COALESCE(category, '')) LIKE '%large%'")
+        conds.append(
+            "(LOWER(COALESCE(category, '')) LIKE '%large%' OR LOWER(COALESCE(sub_category, '')) LIKE '%large%')"
+        )
     elif preset_norm == "flexi-cap":
-        conds.append("LOWER(COALESCE(category, '')) LIKE '%flexi%'")
+        conds.append(
+            "(LOWER(COALESCE(category, '')) LIKE '%flexi%' OR LOWER(COALESCE(sub_category, '')) LIKE '%flexi%')"
+        )
     elif preset_norm == "index":
-        conds.append("LOWER(COALESCE(category, '')) LIKE '%index%'")
+        conds.append(
+            "(LOWER(COALESCE(category, '')) LIKE '%index%' OR LOWER(COALESCE(sub_category, '')) LIKE '%index%')"
+        )
     elif preset_norm == "low-risk":
         conds.append(
             "(LOWER(COALESCE(risk_level, '')) IN ('low','moderately low') OR COALESCE(std_dev, 999) <= 8)"
@@ -513,17 +519,26 @@ async def list_discover_mutual_funds(
         q = f"%{search.strip()}%"
         _add("(scheme_name ILIKE ${idx} OR amc ILIKE ${idx})", q)
     if category and category.strip() and category.strip().lower() != "all":
-        _add("category = ${idx}", category.strip())
+        q = f"%{category.strip().lower()}%"
+        _add("(LOWER(COALESCE(category, '')) LIKE ${idx} OR LOWER(COALESCE(sub_category, '')) LIKE ${idx})", q)
     if risk_level and risk_level.strip() and risk_level.strip().lower() != "all":
-        _add("LOWER(COALESCE(risk_level, '')) = LOWER(${idx})", risk_level.strip())
+        risk_norm = risk_level.strip().lower()
+        if risk_norm == "low":
+            conds.append("LOWER(COALESCE(risk_level, '')) IN ('low', 'moderately low')")
+        elif risk_norm == "moderate":
+            conds.append("LOWER(COALESCE(risk_level, '')) IN ('moderate', 'moderately low', 'moderately high')")
+        elif risk_norm == "high":
+            conds.append("LOWER(COALESCE(risk_level, '')) IN ('high', 'very high', 'moderately high')")
+        else:
+            _add("LOWER(COALESCE(risk_level, '')) = LOWER(${idx})", risk_level.strip())
     if min_score is not None:
         _add("score >= ${idx}", float(min_score))
     if min_aum_cr is not None:
         _add("aum_cr >= ${idx}", float(min_aum_cr))
     if max_expense_ratio is not None:
-        _add("expense_ratio <= ${idx}", float(max_expense_ratio))
+        _add("(expense_ratio <= ${idx} OR expense_ratio IS NULL)", float(max_expense_ratio))
     if min_return_3y is not None:
-        _add("returns_3y >= ${idx}", float(min_return_3y))
+        _add("(returns_3y >= ${idx} OR returns_3y IS NULL)", float(min_return_3y))
     if source_status and source_status.strip().lower() != "all":
         _add("source_status = ${idx}", _normalize_source_status(source_status))
 

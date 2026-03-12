@@ -10,7 +10,7 @@ os.environ.setdefault(
 )
 
 from app.scheduler.discover_mutual_fund_job import DiscoverMutualFundScraper
-from app.scheduler.discover_stock_job import DiscoverStockScraper
+from app.scheduler.discover_stock_job import DiscoverStockScraper, UNIVERSE
 
 
 class DiscoverStockJobTests(unittest.TestCase):
@@ -111,8 +111,30 @@ class DiscoverStockJobTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual("primary", row["source_status"])
 
+    def test_build_effective_universe_expands_with_seed_when_nse_constituents_unavailable(self) -> None:
+        scraper = DiscoverStockScraper()
+        scraper._universe_target_size = len(UNIVERSE) + 10
+        scraper._fetch_nifty500_constituents = lambda: []
+        expanded = scraper._build_effective_universe()
+        self.assertGreaterEqual(len(expanded), len(UNIVERSE) + 10)
+
 
 class DiscoverMutualFundJobTests(unittest.TestCase):
+    def test_parse_amfi_fallback_uses_scheme_category_not_amc_line(self) -> None:
+        scraper = DiscoverMutualFundScraper()
+        scraper._get_text = lambda *_args, **_kwargs: (
+            "Scheme Code;ISIN Div Payout/ ISIN Growth;ISIN Div Reinvestment;Scheme Name;Net Asset Value;Date\n"
+            "Open Ended Schemes(Debt Scheme - Banking and PSU Fund)\n"
+            "Aditya Birla Sun Life Mutual Fund\n"
+            "119551;INF209KA12Z1;INF209KA13Z9;Aditya Birla Sun Life Banking & PSU Debt Fund  - DIRECT - IDCW;111.1072;11-Mar-2026\n"
+        )
+        rows = scraper._parse_amfi_fallback()
+        self.assertIn("119551", rows)
+        row = rows["119551"]
+        self.assertEqual("Debt", row["category"])
+        self.assertEqual("Banking and PSU Fund", row["sub_category"])
+        self.assertEqual("Aditya Birla Sun Life Mutual Fund", row["amc"])
+
     def test_compute_scores_assigns_fallback_when_advanced_missing(self) -> None:
         scraper = DiscoverMutualFundScraper()
         rows = [
