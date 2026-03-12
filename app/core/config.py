@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     news_interval_minutes: int = 30
     brief_interval_minutes: int = 5
     discover_stock_interval_minutes: int = 60
+    discover_stock_daily_hour_ist: int = 16
+    discover_stock_daily_minute_ist: int = 0
+    discover_stock_daily_days: str = "mon-fri"
     discover_mutual_fund_interval_minutes: int = 60
     ipo_interval_minutes: int = 5
     ipo_stale_threshold_seconds: int = 900
@@ -40,7 +43,10 @@ class Settings(BaseSettings):
     discover_stock_nse_timeout_seconds: int = 4
     discover_stock_nse_cooldown_seconds: int = 300
     discover_stock_screener_timeout_seconds: int = 8
-    discover_stock_universe_target_size: int = 150
+    discover_stock_universe_url: str = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+    discover_stock_bhavcopy_url_template: str = "https://archives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{yyyymmdd}_F_0000.csv.zip"
+    discover_stock_bhavcopy_lookback_days: int = 7
+    discover_stock_universe_cache_ttl_seconds: int = 21600
     discover_mf_primary_url: str = "https://www.etmoney.com"
     discover_mf_fallback_url: str = "https://www.amfiindia.com/spages/NAVAll.txt"
 

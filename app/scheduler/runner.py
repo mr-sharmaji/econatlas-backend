@@ -22,7 +22,9 @@ def _get_intervals() -> dict:
         "commodity_seconds": getattr(settings, "commodity_interval_seconds", None),
         "commodity_minutes": getattr(settings, "commodity_interval_minutes", 1),
         "brief_minutes": getattr(settings, "brief_interval_minutes", 5),
-        "discover_stock_minutes": getattr(settings, "discover_stock_interval_minutes", 60),
+        "discover_stock_daily_hour_ist": getattr(settings, "discover_stock_daily_hour_ist", 16),
+        "discover_stock_daily_minute_ist": getattr(settings, "discover_stock_daily_minute_ist", 0),
+        "discover_stock_daily_days": getattr(settings, "discover_stock_daily_days", "mon-fri"),
         "discover_mf_minutes": getattr(settings, "discover_mutual_fund_interval_minutes", 60),
         "ipo_minutes": getattr(settings, "ipo_interval_minutes", 5),
         "macro_minutes": getattr(settings, "macro_interval_minutes", 1),
@@ -149,13 +151,16 @@ def start_scheduler() -> None:
     _scheduler.add_job(_run_brief, "interval", minutes=intervals["brief_minutes"], id="brief", replace_existing=True)
     _scheduler.add_job(
         _run_discover_stock,
-        "interval",
-        minutes=intervals["discover_stock_minutes"],
+        "cron",
+        day_of_week=intervals["discover_stock_daily_days"],
+        hour=intervals["discover_stock_daily_hour_ist"],
+        minute=intervals["discover_stock_daily_minute_ist"],
+        timezone="Asia/Kolkata",
         id="discover_stock",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=180,
+        misfire_grace_time=10800,
     )
     _scheduler.add_job(
         _run_discover_mutual_funds,
@@ -182,9 +187,11 @@ def start_scheduler() -> None:
     if intervals["tax_enabled"]:
         _scheduler.add_job(_run_tax, "interval", minutes=intervals["tax_minutes"], id="tax", replace_existing=True)
     logger.info(
-        "Scheduler: brief=%dm discover_stock=%dm discover_mf=%dm ipo=%dm macro=%dm news=%dm tax=%s",
+        "Scheduler: brief=%dm discover_stock=%s %02d:%02d IST discover_mf=%dm ipo=%dm macro=%dm news=%dm tax=%s",
         intervals["brief_minutes"],
-        intervals["discover_stock_minutes"],
+        intervals["discover_stock_daily_days"],
+        intervals["discover_stock_daily_hour_ist"],
+        intervals["discover_stock_daily_minute_ist"],
         intervals["discover_mf_minutes"],
         intervals["ipo_minutes"],
         intervals["macro_minutes"],

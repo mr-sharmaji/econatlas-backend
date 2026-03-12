@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import io
+import zipfile
 from datetime import datetime, timedelta, timezone
 import os
 
@@ -10,7 +12,7 @@ os.environ.setdefault(
 )
 
 from app.scheduler.discover_mutual_fund_job import DiscoverMutualFundScraper
-from app.scheduler.discover_stock_job import DiscoverStockScraper, UNIVERSE
+from app.scheduler.discover_stock_job import CORE_UNIVERSE, DiscoverStockScraper
 
 
 class DiscoverStockJobTests(unittest.TestCase):
@@ -111,12 +113,52 @@ class DiscoverStockJobTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual("primary", row["source_status"])
 
-    def test_build_effective_universe_expands_with_seed_when_nse_constituents_unavailable(self) -> None:
+    def test_fetch_nse_master_universe_parses_equity_series(self) -> None:
         scraper = DiscoverStockScraper()
-        scraper._universe_target_size = len(UNIVERSE) + 10
-        scraper._fetch_nifty500_constituents = lambda: []
-        expanded = scraper._build_effective_universe()
-        self.assertGreaterEqual(len(expanded), len(UNIVERSE) + 10)
+        scraper._get_text = lambda *_args, **_kwargs: (
+            "SYMBOL,NAME OF COMPANY, SERIES\n"
+            "ABC,ABC LIMITED,EQ\n"
+            "XYZ,XYZ LIMITED,BE\n"
+            "GBOND,GOLD BOND,GB\n"
+        )
+        parsed = scraper._fetch_nse_master_universe()
+        symbols = {row.nse_symbol for row in parsed}
+        self.assertIn("ABC", symbols)
+        self.assertIn("XYZ", symbols)
+        self.assertNotIn("GBOND", symbols)
+
+    def test_build_effective_universe_falls_back_to_core_on_fetch_failure(self) -> None:
+        scraper = DiscoverStockScraper()
+        scraper._fetch_nse_master_universe = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+        parsed = scraper._build_effective_universe()
+        self.assertEqual(len(parsed), len(CORE_UNIVERSE))
+
+    def test_fetch_latest_bhavcopy_quotes_parses_zip_payload(self) -> None:
+        scraper = DiscoverStockScraper()
+        csv_text = (
+            "TradDt,BizDt,Sgmt,Src,FinInstrmTp,FinInstrmId,ISIN,TckrSymb,SctySrs,XpryDt,FininstrmActlXpryDt,StrkPric,OptnTp,FinInstrmNm,OpnPric,HghPric,LwPric,ClsPric,LastPric,PrvsClsgPric,UndrlygPric,SttlmPric,OpnIntrst,ChngInOpnIntrst,TtlTradgVol,TtlTrfVal,TtlNbOfTxsExctd,SsnId,NewBrdLotQty,Rmks,Rsvd1,Rsvd2,Rsvd3,Rsvd4\n"
+            "2026-03-12,2026-03-12,CM,NSE,STK,1,INE000A01011,ABC,EQ,,,,,ABC LTD,10,11,9,10.5,10.5,10,10.5,,,1000,10500,10,F1,1,,,,,\n"
+            "2026-03-12,2026-03-12,CM,NSE,STK,2,INE000A01012,GBOND,GB,,,,,GOLD BOND,100,101,99,100,100,99,100,,,10,1000,1,F1,1,,,,,\n"
+        )
+
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("bhavcopy.csv", csv_text)
+        payload_bytes = payload.getvalue()
+
+        class _Resp:
+            status_code = 200
+            content = payload_bytes
+
+            def raise_for_status(self) -> None:
+                return None
+
+        scraper.session.get = lambda *_args, **_kwargs: _Resp()
+        scraper._bhavcopy_lookback_days = 0
+        quotes, source_ts = scraper._fetch_latest_bhavcopy_quotes()
+        self.assertIn("ABC", quotes)
+        self.assertNotIn("GBOND", quotes)
+        self.assertIsNotNone(source_ts)
 
 
 class DiscoverMutualFundJobTests(unittest.TestCase):

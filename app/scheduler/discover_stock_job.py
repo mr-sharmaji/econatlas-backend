@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
 import re
+import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from html import unescape
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -19,7 +23,10 @@ logger = logging.getLogger(__name__)
 
 NSE_HOME_URL = "https://www.nseindia.com"
 NSE_QUOTE_URL = "https://www.nseindia.com/api/quote-equity"
-NSE_INDEX_URL = "https://www.nseindia.com/api/equity-stockIndices"
+NSE_EQUITY_MASTER_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+NSE_BHAVCOPY_URL_TMPL = "https://archives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{yyyymmdd}_F_0000.csv.zip"
+NSE_STOCK_SERIES = {"EQ", "BE", "BZ"}
+IST = ZoneInfo("Asia/Kolkata")
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 
 
@@ -32,7 +39,7 @@ class DiscoverStockDef:
     fundamentals_enabled: bool = True
 
 
-def _build_universe() -> tuple[DiscoverStockDef, ...]:
+def _build_core_universe() -> tuple[DiscoverStockDef, ...]:
     rows: list[DiscoverStockDef] = []
     seen: set[str] = set()
     for item in INDIA_STOCKS:
@@ -53,144 +60,7 @@ def _build_universe() -> tuple[DiscoverStockDef, ...]:
     return tuple(rows)
 
 
-UNIVERSE = _build_universe()
-
-# Static NIFTY 500 seed symbols to keep stock coverage expanded even if
-# NSE index-constituent calls are temporarily blocked.
-NIFTY500_SEED_SYMBOLS: tuple[str, ...] = (
-    "ATGL",
-    "M&M",
-    "JINDALSAW",
-    "NTPCGREEN",
-    "DOMS",
-    "ETERNAL",
-    "DIXON",
-    "JSWENERGY",
-    "TVSMOTOR",
-    "BSE",
-    "GUJGASLTD",
-    "NATIONALUM",
-    "ASHOKLEY",
-    "VEDL",
-    "HAPPSTMNDS",
-    "INDIGO",
-    "GODREJCP",
-    "BEL",
-    "MCX",
-    "MAXHEALTH",
-    "MUTHOOTFIN",
-    "AMBER",
-    "KAYNES",
-    "MAZDOCK",
-    "VBL",
-    "COFORGE",
-    "SUZLON",
-    "CUMMINSIND",
-    "HFCL",
-    "NETWEB",
-    "BHEL",
-    "IDEA",
-    "HINDCOPPER",
-    "KPRMILL",
-    "SWIGGY",
-    "HAL",
-    "ABB",
-    "POLYCAB",
-    "RECLTD",
-    "CHOLAFIN",
-    "WAAREEENER",
-    "BAJAJ-AUTO",
-    "PFC",
-    "POWERINDIA",
-    "TEJASNET",
-    "TRENT",
-    "IOC",
-    "NLCINDIA",
-    "CHENNPETRO",
-    "SRF",
-    "HINDPETRO",
-    "MARICO",
-    "TMPV",
-    "CANBK",
-    "FACT",
-    "INDHOTEL",
-    "MOTHERSON",
-    "OIL",
-    "NAUKRI",
-    "AUROPHARMA",
-    "PERSISTENT",
-    "APLAPOLLO",
-    "CESC",
-    "PETRONET",
-    "ASTRAL",
-    "KEC",
-    "CGPOWER",
-    "UNIONBANK",
-    "HINDZINC",
-    "AMBUJACEM",
-    "MRPL",
-    "GAIL",
-    "INDUSTOWER",
-    "JINDALSTEL",
-    "BANKBARODA",
-    "DATAPATTNS",
-    "ANGELONE",
-    "KEI",
-    "GLENMARK",
-    "IDFCFIRSTB",
-    "BHARATFORG",
-    "GVT&D",
-    "FEDERALBNK",
-    "SOLARINDS",
-    "HDFCAMC",
-    "PAYTM",
-    "LUPIN",
-    "FORTIS",
-    "MGL",
-    "CEATLTD",
-    "CDSL",
-    "RVNL",
-    "FORCEMOT",
-    "JUBLFOOD",
-    "SCI",
-    "CONCOR",
-    "RPOWER",
-    "POLICYBZR",
-    "PGEL",
-    "DLF",
-    "GSPL",
-    "BDL",
-    "INOXWIND",
-    "IRCTC",
-    "YESBANK",
-    "NMDC",
-    "COLPAL",
-    "AUBANK",
-    "GMRAIRPORT",
-    "SUPREMEIND",
-    "GESHIP",
-    "PNB",
-    "RADICO",
-    "REDINGTON",
-    "J&KBANK",
-    "VMM",
-    "SAIL",
-    "TORNTPHARM",
-    "GRSE",
-    "IRFC",
-    "APARINDS",
-    "AARTIIND",
-    "MFSL",
-    "DMART",
-    "TORNTPOWER",
-    "LAURUSLABS",
-    "PREMIERENE",
-    "PPLPHARMA",
-    "LICHSGFIN",
-    "MANAPPURAM",
-    "NHPC",
-    "KALYANKJIL",
-)
+CORE_UNIVERSE = _build_core_universe()
 
 
 class DiscoverStockScraper(BaseScraper):
@@ -202,9 +72,17 @@ class DiscoverStockScraper(BaseScraper):
         self._nse_timeout = max(1, int(getattr(self.settings, "discover_stock_nse_timeout_seconds", 4)))
         self._nse_cooldown = max(30, int(getattr(self.settings, "discover_stock_nse_cooldown_seconds", 300)))
         self._screener_timeout = max(2, int(getattr(self.settings, "discover_stock_screener_timeout_seconds", 8)))
-        default_target = max(len(UNIVERSE), 150)
-        configured_target = int(getattr(self.settings, "discover_stock_universe_target_size", default_target))
-        self._universe_target_size = max(len(UNIVERSE), min(configured_target, 500))
+        self._bhavcopy_lookback_days = max(
+            1,
+            int(getattr(self.settings, "discover_stock_bhavcopy_lookback_days", 7)),
+        )
+        self._universe_cache_ttl_seconds = max(
+            300,
+            int(getattr(self.settings, "discover_stock_universe_cache_ttl_seconds", 21600)),
+        )
+        self._core_symbol_map = {row.nse_symbol: row for row in CORE_UNIVERSE}
+        self._universe_cache: tuple[DiscoverStockDef, ...] | None = None
+        self._universe_cache_at: datetime | None = None
 
     def _nse_on_cooldown(self) -> bool:
         if self._nse_disabled_until is None:
@@ -295,76 +173,132 @@ class DiscoverStockScraper(BaseScraper):
             logger.debug("NSE quote fetch failed for %s", symbol, exc_info=True)
             return None
 
-    def _fetch_nifty500_constituents(self) -> list[DiscoverStockDef]:
-        if self._universe_target_size <= len(UNIVERSE) or self._nse_on_cooldown():
-            return []
+    @staticmethod
+    def _parse_float(value: object) -> float | None:
         try:
-            self._ensure_nse_session()
-            headers = {
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": f"{NSE_HOME_URL}/market-data/live-equity-market?symbol=NIFTY%20500",
-                "X-Requested-With": "XMLHttpRequest",
-            }
-            resp = self.session.get(
-                NSE_INDEX_URL,
-                params={"index": "NIFTY 500"},
-                headers=headers,
-                timeout=self._nse_timeout,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-            rows = payload.get("data") or []
-            out: list[DiscoverStockDef] = []
-            for row in rows:
-                symbol = str(row.get("symbol") or "").strip().upper()
-                if not symbol or symbol == "NIFTY 500":
-                    continue
-                meta = row.get("meta") or {}
-                display_name = str(meta.get("companyName") or symbol).strip() or symbol
-                sector = str(meta.get("industry") or "Diversified").strip() or "Diversified"
-                out.append(
-                    DiscoverStockDef(
-                        nse_symbol=symbol,
-                        yahoo_symbol=f"{symbol}.NS",
-                        display_name=display_name,
-                        sector=sector,
-                        fundamentals_enabled=False,
-                    )
+            if value is None:
+                return None
+            text = str(value).replace(",", "").strip()
+            if not text:
+                return None
+            return float(text)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_int(value: object) -> int | None:
+        try:
+            if value is None:
+                return None
+            text = str(value).replace(",", "").strip()
+            if not text:
+                return None
+            return int(float(text))
+        except (TypeError, ValueError):
+            return None
+
+    def _fetch_nse_master_universe(self) -> tuple[DiscoverStockDef, ...]:
+        url = str(getattr(self.settings, "discover_stock_universe_url", NSE_EQUITY_MASTER_URL)).strip() or NSE_EQUITY_MASTER_URL
+        text = self._get_text(url, timeout=20)
+        reader = csv.DictReader(io.StringIO(text))
+        out: list[DiscoverStockDef] = []
+        seen: set[str] = set()
+        for row in reader:
+            symbol = str(row.get("SYMBOL") or "").strip().upper()
+            if not symbol or symbol in seen:
+                continue
+            series = str(row.get(" SERIES") or row.get("SERIES") or "").strip().upper()
+            if series and series not in NSE_STOCK_SERIES:
+                continue
+
+            display_name = str(row.get("NAME OF COMPANY") or symbol).strip() or symbol
+            core = self._core_symbol_map.get(symbol)
+            out.append(
+                DiscoverStockDef(
+                    nse_symbol=symbol,
+                    yahoo_symbol=f"{symbol}.NS",
+                    display_name=core.display_name if core else display_name,
+                    sector=core.sector if core else "Diversified",
+                    fundamentals_enabled=core is not None,
                 )
-            return out
-        except Exception:
-            logger.debug("Failed to fetch NSE NIFTY 500 constituents", exc_info=True)
-            return []
+            )
+            seen.add(symbol)
+        return tuple(out)
 
     def _build_effective_universe(self) -> tuple[DiscoverStockDef, ...]:
-        rows = list(UNIVERSE)
-        seen = {item.nse_symbol for item in rows}
-        for symbol in NIFTY500_SEED_SYMBOLS:
-            if len(rows) >= self._universe_target_size:
-                break
-            normalized = str(symbol or "").strip().upper()
-            if not normalized or normalized in seen:
+        now = datetime.now(timezone.utc)
+        if self._universe_cache and self._universe_cache_at is not None:
+            age = (now - self._universe_cache_at).total_seconds()
+            if age <= self._universe_cache_ttl_seconds:
+                return self._universe_cache
+        try:
+            universe = self._fetch_nse_master_universe()
+            if universe:
+                self._universe_cache = universe
+                self._universe_cache_at = now
+                return universe
+        except Exception:
+            logger.debug("Failed to build full NSE universe from master file", exc_info=True)
+        if self._universe_cache:
+            return self._universe_cache
+        return CORE_UNIVERSE
+
+    def _fetch_latest_bhavcopy_quotes(self) -> tuple[dict[str, dict], datetime | None]:
+        base_url = str(getattr(self.settings, "discover_stock_bhavcopy_url_template", NSE_BHAVCOPY_URL_TMPL)).strip()
+        if not base_url:
+            base_url = NSE_BHAVCOPY_URL_TMPL
+
+        now_ist = datetime.now(IST)
+        for day_offset in range(self._bhavcopy_lookback_days + 1):
+            d = (now_ist - timedelta(days=day_offset)).date()
+            yyyymmdd = d.strftime("%Y%m%d")
+            url = base_url.format(yyyymmdd=yyyymmdd)
+            try:
+                resp = self.session.get(url, timeout=20)
+                if resp.status_code == 404:
+                    continue
+                resp.raise_for_status()
+                with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+                    csv_names = [name for name in archive.namelist() if name.lower().endswith(".csv")]
+                    if not csv_names:
+                        continue
+                    payload = archive.read(csv_names[0]).decode("utf-8", errors="ignore")
+                rows = csv.DictReader(io.StringIO(payload))
+            except Exception:
+                logger.debug("Failed to load NSE bhavcopy url=%s", url, exc_info=True)
                 continue
-            seen.add(normalized)
-            rows.append(
-                DiscoverStockDef(
-                    nse_symbol=normalized,
-                    yahoo_symbol=f"{normalized}.NS",
-                    display_name=normalized,
-                    sector="Diversified",
-                    fundamentals_enabled=False,
-                )
-            )
-        extras = self._fetch_nifty500_constituents()
-        for item in extras:
-            if len(rows) >= self._universe_target_size:
-                break
-            if item.nse_symbol in seen:
-                continue
-            seen.add(item.nse_symbol)
-            rows.append(item)
-        return tuple(rows)
+
+            source_ts = datetime.combine(d, time(hour=16, minute=0), tzinfo=IST).astimezone(timezone.utc)
+            out: dict[str, dict] = {}
+            for row in rows:
+                symbol = str(row.get("TckrSymb") or "").strip().upper()
+                if not symbol:
+                    continue
+                series = str(row.get("SctySrs") or "").strip().upper()
+                if series not in NSE_STOCK_SERIES:
+                    continue
+                last_price = self._parse_float(row.get("ClsPric"))
+                prev_close = self._parse_float(row.get("PrvsClsgPric"))
+                if last_price is None or last_price <= 0:
+                    continue
+                point_change = None
+                pct_change = None
+                if prev_close is not None and prev_close != 0:
+                    point_change = round(last_price - prev_close, 2)
+                    pct_change = round(((last_price - prev_close) / prev_close) * 100.0, 2)
+
+                out[symbol] = {
+                    "last_price": last_price,
+                    "point_change": point_change,
+                    "percent_change": pct_change,
+                    "volume": self._parse_int(row.get("TtlTradgVol")),
+                    "traded_value": self._parse_float(row.get("TtlTrfVal")),
+                    "source_timestamp": source_ts,
+                    "source": "nse_bhavcopy",
+                }
+            if out:
+                return out, source_ts
+        return {}, None
 
     def _fetch_yahoo_quote(self, yahoo_symbol: str) -> dict | None:
         try:
@@ -555,15 +489,7 @@ class DiscoverStockScraper(BaseScraper):
         out.sort(key=lambda item: (float(item.get("score") or 0.0), float(item.get("percent_change") or 0.0)), reverse=True)
         return out
 
-    def _fetch_one(self, stock: DiscoverStockDef) -> dict | None:
-        quote = self._fetch_nse_quote(stock.nse_symbol)
-        quote_source = "nse_quote_api"
-        if quote is None:
-            quote = self._fetch_yahoo_quote(stock.yahoo_symbol)
-            quote_source = "yahoo_finance_api"
-        if quote is None:
-            return None
-
+    def _build_snapshot_row(self, stock: DiscoverStockDef, quote: dict, quote_source: str) -> dict:
         if bool(getattr(stock, "fundamentals_enabled", True)):
             fundamentals, fundamentals_source = self._fetch_screener_fundamentals(stock.nse_symbol)
         else:
@@ -578,11 +504,8 @@ class DiscoverStockScraper(BaseScraper):
             fundamentals_source = "unavailable"
         fundamentals_count = sum(1 for value in fundamentals.values() if value is not None)
 
-        # Source health is driven primarily by fundamentals coverage from Screener.
-        # Quote source can vary (NSE/Yahoo) without reducing to fallback when core
-        # fundamentals are available.
         source_status = "primary" if (fundamentals_source == "screener_in" and fundamentals_count >= 2) else "fallback"
-        if fundamentals_count == 0 and quote_source != "nse_quote_api":
+        if fundamentals_count == 0 and quote_source not in {"nse_quote_api", "nse_bhavcopy"}:
             source_status = "limited"
 
         return {
@@ -607,13 +530,33 @@ class DiscoverStockScraper(BaseScraper):
             "secondary_source": quote_source,
         }
 
+    def _fetch_one(self, stock: DiscoverStockDef) -> dict | None:
+        quote = self._fetch_nse_quote(stock.nse_symbol)
+        quote_source = "nse_quote_api"
+        if quote is None:
+            quote = self._fetch_yahoo_quote(stock.yahoo_symbol)
+            quote_source = "yahoo_finance_api"
+        if quote is None:
+            return None
+        return self._build_snapshot_row(stock, quote, quote_source)
+
     def fetch_all(self) -> list[dict]:
         universe = self._build_effective_universe()
+        bulk_quotes, _ = self._fetch_latest_bhavcopy_quotes()
         raw_rows: list[dict] = []
-        for stock in universe:
-            item = self._fetch_one(stock)
-            if item is not None:
-                raw_rows.append(item)
+        if bulk_quotes:
+            for stock in universe:
+                quote = bulk_quotes.get(stock.nse_symbol)
+                if quote is None:
+                    continue
+                raw_rows.append(self._build_snapshot_row(stock, quote, "nse_bhavcopy"))
+        else:
+            # If bhavcopy is unavailable, keep serving a smaller reliable subset.
+            fallback_universe = CORE_UNIVERSE if len(universe) > len(CORE_UNIVERSE) else universe
+            for stock in fallback_universe:
+                item = self._fetch_one(stock)
+                if item is not None:
+                    raw_rows.append(item)
         return self._compute_scores(raw_rows)
 
 
