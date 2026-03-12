@@ -272,6 +272,25 @@ def _pick_previous_close(meta: dict) -> tuple[float | None, str | None]:
     return None, None
 
 
+def _within_post_close_grace(exchange: str, now_utc: datetime, tick_ts: datetime | None) -> bool:
+    if tick_ts is None:
+        return False
+    grace_seconds = max(0, int(get_settings().session_post_close_grace_seconds))
+    if grace_seconds == 0:
+        return False
+    ts = tick_ts if tick_ts.tzinfo is not None else tick_ts.replace(tzinfo=timezone.utc)
+    now = now_utc if now_utc.tzinfo is not None else now_utc.replace(tzinfo=timezone.utc)
+    age_seconds = (now - ts).total_seconds()
+    if age_seconds < 0:
+        age_seconds = 0
+    if age_seconds > grace_seconds:
+        return False
+    try:
+        return get_trading_date(now, exchange) == get_trading_date(ts, exchange)
+    except Exception:
+        return True
+
+
 class MarketScraper(BaseScraper, QuoteProvider):
     def _effective_index_fallback_threshold_seconds(self, asset: str, base_threshold: int) -> int:
         _ = asset
@@ -321,7 +340,8 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 continue
 
             exchange = ASSET_EXCHANGE.get(tick.asset, NYSE)
-            if not is_exchange_expected_open(exchange, now, status=status):
+            exchange_open = is_exchange_expected_open(exchange, now, status=status)
+            if not exchange_open and not _within_post_close_grace(exchange, now, tick.source_timestamp):
                 promoted.append(tick)
                 continue
 
@@ -713,9 +733,11 @@ class MarketScraper(BaseScraper, QuoteProvider):
         out: list[QuoteTick] = []
         for asset, cfg in GOOGLE_INDEX_FALLBACKS.items():
             exchange = ASSET_EXCHANGE.get(asset, NYSE)
-            if not is_exchange_expected_open(exchange, now, status=status):
-                continue
             primary = by_asset.get(asset)
+            exchange_open = is_exchange_expected_open(exchange, now, status=status)
+            if not exchange_open:
+                if primary is None or not _within_post_close_grace(exchange, now, primary.source_timestamp):
+                    continue
             needs_fallback = primary is None
             if primary is not None:
                 p_ts = primary.source_timestamp
@@ -1207,6 +1229,9 @@ def build_market_intraday_rows_for_open(
     for r in market_rows:
         instrument_type = r.get("instrument_type") or "index"
         exchange = ASSET_EXCHANGE.get(r["asset"], NYSE)
+        source_dt = parse_ts(r.get("source_timestamp")) if r.get("source_timestamp") else None
+        if source_dt is not None and source_dt.tzinfo is None:
+            source_dt = source_dt.replace(tzinfo=timezone.utc)
         include = False
         if instrument_type == "currency":
             include = True
@@ -1214,8 +1239,9 @@ def build_market_intraday_rows_for_open(
             include = bool(status.get("gift_nifty_open"))
         elif exchange in {NSE, NYSE, LSE, XETRA, EURONEXT, TSE}:
             include = is_exchange_expected_open(exchange, now_utc, status=status)
+            if not include and _within_post_close_grace(exchange, now_utc, source_dt):
+                include = True
         if include:
-            source_dt = parse_ts(r.get("source_timestamp")) if r.get("source_timestamp") else None
             if source_dt is None:
                 source_dt = datetime.now(timezone.utc)
             ts_rounded = market_service._round_to_minute(source_dt).isoformat()

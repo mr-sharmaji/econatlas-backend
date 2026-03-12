@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # Promote fallback index providers when primary index ticks are older than this.
     # Keeps delayed free feeds responsive during open sessions.
     index_fallback_promote_seconds: int = 120
+    # Allow a short post-close window to capture final close snapshots from
+    # free providers and persist them to intraday.
+    session_post_close_grace_seconds: int = 7200
     # Free feeds for Japan indices are often delayed; allow a wider stale window so
     # "live delayed" data is not incorrectly marked as stale.
     stale_threshold_seconds_tse_session: int = 1800
