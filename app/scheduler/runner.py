@@ -25,7 +25,9 @@ def _get_intervals() -> dict:
         "discover_stock_daily_hour_ist": getattr(settings, "discover_stock_daily_hour_ist", 16),
         "discover_stock_daily_minute_ist": getattr(settings, "discover_stock_daily_minute_ist", 0),
         "discover_stock_daily_days": getattr(settings, "discover_stock_daily_days", "mon-fri"),
-        "discover_mf_minutes": getattr(settings, "discover_mutual_fund_interval_minutes", 60),
+        "discover_mf_daily_hour_ist": getattr(settings, "discover_mf_daily_hour_ist", 22),
+        "discover_mf_daily_minute_ist": getattr(settings, "discover_mf_daily_minute_ist", 0),
+        "discover_mf_daily_days": getattr(settings, "discover_mf_daily_days", "mon-fri"),
         "ipo_minutes": getattr(settings, "ipo_interval_minutes", 5),
         "macro_minutes": getattr(settings, "macro_interval_minutes", 1),
         "news_minutes": getattr(settings, "news_interval_minutes", 30),
@@ -164,13 +166,16 @@ def start_scheduler() -> None:
     )
     _scheduler.add_job(
         _run_discover_mutual_funds,
-        "interval",
-        minutes=intervals["discover_mf_minutes"],
+        "cron",
+        day_of_week=intervals["discover_mf_daily_days"],
+        hour=intervals["discover_mf_daily_hour_ist"],
+        minute=intervals["discover_mf_daily_minute_ist"],
+        timezone="Asia/Kolkata",
         id="discover_mutual_funds",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
-        misfire_grace_time=180,
+        misfire_grace_time=10800,
     )
     _scheduler.add_job(
         _run_ipo,
@@ -187,12 +192,14 @@ def start_scheduler() -> None:
     if intervals["tax_enabled"]:
         _scheduler.add_job(_run_tax, "interval", minutes=intervals["tax_minutes"], id="tax", replace_existing=True)
     logger.info(
-        "Scheduler: brief=%dm discover_stock=%s %02d:%02d IST discover_mf=%dm ipo=%dm macro=%dm news=%dm tax=%s",
+        "Scheduler: brief=%dm discover_stock=%s %02d:%02d IST discover_mf=%s %02d:%02d IST ipo=%dm macro=%dm news=%dm tax=%s",
         intervals["brief_minutes"],
         intervals["discover_stock_daily_days"],
         intervals["discover_stock_daily_hour_ist"],
         intervals["discover_stock_daily_minute_ist"],
-        intervals["discover_mf_minutes"],
+        intervals["discover_mf_daily_days"],
+        intervals["discover_mf_daily_hour_ist"],
+        intervals["discover_mf_daily_minute_ist"],
         intervals["ipo_minutes"],
         intervals["macro_minutes"],
         intervals["news_minutes"],

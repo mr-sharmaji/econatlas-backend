@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     discover_stock_daily_minute_ist: int = 0
     discover_stock_daily_days: str = "mon-fri"
     discover_mutual_fund_interval_minutes: int = 60
+    discover_mf_daily_hour_ist: int = 22
+    discover_mf_daily_minute_ist: int = 0
+    discover_mf_daily_days: str = "mon-fri"
     ipo_interval_minutes: int = 5
     ipo_stale_threshold_seconds: int = 900
     tax_sync_enabled: bool = True
