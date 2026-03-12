@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 from typing import Literal
 
@@ -43,6 +44,11 @@ def _to_date(value) -> date | None:
         except ValueError:
             continue
     return None
+
+
+def _to_jsonb(value, default):
+    payload = value if value is not None else default
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
 
 
 def _normalize_source_status(value: str | None) -> SourceStatus:
@@ -225,8 +231,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("score_momentum")) or 0.0,
                 _to_float(row.get("score_liquidity")) or 0.0,
                 _to_float(row.get("score_fundamentals")) or 0.0,
-                row.get("score_breakdown") or _stock_breakdown_payload(row),
-                row.get("tags") or [],
+                _to_jsonb(row.get("score_breakdown"), _stock_breakdown_payload(row)),
+                _to_jsonb(row.get("tags"), []),
                 _normalize_source_status(row.get("source_status")),
                 parse_ts(row.get("source_timestamp")) or datetime.now(timezone.utc),
                 row.get("primary_source"),
@@ -317,8 +323,8 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("score_risk")) or 0.0,
                 _to_float(row.get("score_cost")) or 0.0,
                 _to_float(row.get("score_consistency")) or 0.0,
-                row.get("score_breakdown") or _mf_breakdown_payload(row),
-                row.get("tags") or [],
+                _to_jsonb(row.get("score_breakdown"), _mf_breakdown_payload(row)),
+                _to_jsonb(row.get("tags"), []),
                 _normalize_source_status(row.get("source_status")),
                 parse_ts(row.get("source_timestamp")) or datetime.now(timezone.utc),
                 row.get("primary_source"),
