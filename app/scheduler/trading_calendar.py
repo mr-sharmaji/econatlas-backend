@@ -195,9 +195,9 @@ def _gift_special_sessions() -> dict[date, list[tuple[dtime, dtime]]]:
 
 def _in_window(t: dtime, start: dtime, end: dtime) -> bool:
     if end >= start:
-        return start <= t <= end
+        return start <= t < end
     # Cross-midnight window (e.g., 16:35 -> 02:45)
-    return t >= start or t <= end
+    return t >= start or t < end
 
 
 def is_gift_nifty_open(utc_now: datetime) -> bool:
@@ -216,7 +216,7 @@ def is_gift_nifty_open(utc_now: datetime) -> bool:
     # Previous-date cross-midnight special windows
     prev_d = d - timedelta(days=1)
     for start, end in specials.get(prev_d, []):
-        if end < start and t <= end:
+        if end < start and t < end:
             return True
     if d in specials or prev_d in specials:
         return False
@@ -225,13 +225,13 @@ def is_gift_nifty_open(utc_now: datetime) -> bool:
     wd = local.weekday()  # Mon=0 ... Sun=6
 
     # Session 1: weekday daytime
-    if wd <= 4 and s1_open <= t <= s1_close:
+    if wd <= 4 and s1_open <= t < s1_close:
         return True
     # Session 2 evening: Mon-Fri and Sunday
     if wd in {0, 1, 2, 3, 4, 6} and t >= s2_open:
         return True
     # Session 2 after midnight continuation: Tue-Sat
-    if wd in {1, 2, 3, 4, 5} and t <= s2_close:
+    if wd in {1, 2, 3, 4, 5} and t < s2_close:
         return True
     return False
 
@@ -352,7 +352,7 @@ def get_market_status(utc_now: datetime | None = None) -> dict:
             # exchange_calendars returns UTC timestamps; compare with now
             open_dt = _to_utc(open_ts)
             close_dt = _to_utc(close_ts)
-            return open_dt <= now <= close_dt
+            return open_dt <= now < close_dt
         except Exception:
             return _fallback_is_open(exchange, now)
 
@@ -455,7 +455,7 @@ def _local_window_state(
     if weekdays is not None and wd not in weekdays:
         return SESSION_CLOSED
     t = local.timetz().replace(tzinfo=None)
-    if not (start <= t <= end):
+    if not (start <= t < end):
         return SESSION_CLOSED
     for b_start, b_end in breaks or []:
         if b_start <= t < b_end:

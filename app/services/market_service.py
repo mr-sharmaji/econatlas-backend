@@ -199,6 +199,13 @@ def _normalize_dt(value) -> datetime | None:
     return dt
 
 
+def _live_max_age_for_instrument(instrument_type: str) -> int:
+    settings = get_settings()
+    if instrument_type in _ROLLING_24H_TYPES:
+        return settings.effective_rolling_live_max_age_seconds()
+    return settings.effective_session_live_max_age_seconds()
+
+
 def _session_state(asset: str, instrument_type: str, now_utc: datetime, status: dict | None = None) -> str:
     if instrument_type == "currency":
         return SESSION_OPEN if is_fx_session_expected_open(now_utc) else SESSION_CLOSED
@@ -234,7 +241,7 @@ def _session_state(asset: str, instrument_type: str, now_utc: datetime, status: 
 
 
 def _compute_phase(asset: str, instrument_type: str, last_tick: datetime | None, now_utc: datetime, status: dict | None = None) -> tuple[str, bool]:
-    live_max_age = max(1, int(get_settings().live_max_age_seconds))
+    live_max_age = _live_max_age_for_instrument(instrument_type)
     # FX is treated as continuously referenceable: never "closed", only live/stale.
     if instrument_type == "currency":
         if last_tick is None:

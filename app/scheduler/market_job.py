@@ -6,7 +6,6 @@ import html
 import io
 import logging
 import re
-from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Tuple
 
@@ -175,9 +174,6 @@ INDEX_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
 FX_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
 FX_FALLBACK_MIN_FRESHNESS_GAIN_SECONDS = 120
 FX_SANITY_MAX_DEVIATION_PCT = 20.0
-# During NSE session, keep a tighter promote window so delayed Yahoo ticks
-# are replaced quickly by fallback providers.
-NSE_INDEX_FALLBACK_PROMOTE_SECONDS = 90
 
 # Asset → exchange for correct trading-date assignment (avoid Monday close stored as Tuesday UTC)
 ASSET_EXCHANGE: Dict[str, str] = {
@@ -278,11 +274,8 @@ def _pick_previous_close(meta: dict) -> tuple[float | None, str | None]:
 
 class MarketScraper(BaseScraper, QuoteProvider):
     def _effective_index_fallback_threshold_seconds(self, asset: str, base_threshold: int) -> int:
-        threshold = max(1, int(base_threshold))
-        exchange = ASSET_EXCHANGE.get(asset, NYSE)
-        if exchange == NSE:
-            threshold = min(threshold, NSE_INDEX_FALLBACK_PROMOTE_SECONDS)
-        return threshold
+        _ = asset
+        return max(1, int(base_threshold))
 
     def _promote_delayed_index_fallbacks(
         self,
@@ -297,10 +290,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
         now = datetime.now(timezone.utc)
         status = get_market_status(now)
         cfg = get_settings()
-        promote_threshold = max(
-            1,
-            min(int(cfg.index_fallback_promote_seconds), int(cfg.live_max_age_seconds)),
-        )
+        promote_threshold = max(1, int(cfg.effective_session_live_max_age_seconds()))
 
         fallback_by_asset: dict[str, QuoteTick] = {}
         for tick in all_ticks:
@@ -363,17 +353,18 @@ class MarketScraper(BaseScraper, QuoteProvider):
             fb_ts = fb.source_timestamp
             if fb_ts.tzinfo is None:
                 fb_ts = fb_ts.replace(tzinfo=timezone.utc)
-            chosen = fb if fb_ts > tick_ts else replace(fb, source_timestamp=now)
+            if fb_ts <= tick_ts:
+                promoted.append(tick)
+                continue
             logger.info(
-                "Promoted delayed index to fallback: asset=%s age_seconds=%.1f primary_ts=%s fallback_provider=%s fallback_ts=%s chosen_ts=%s",
+                "Promoted delayed index to fallback: asset=%s age_seconds=%.1f primary_ts=%s fallback_provider=%s fallback_ts=%s",
                 tick.asset,
                 age_seconds,
                 tick_ts.isoformat(),
                 fb.provider,
                 fb_ts.isoformat(),
-                chosen.source_timestamp.isoformat(),
             )
-            promoted.append(chosen)
+            promoted.append(fb)
 
         return promoted
 
@@ -717,10 +708,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
         by_asset = {t.asset: t for t in yahoo_index_ticks}
         now = datetime.now(timezone.utc)
         cfg = get_settings()
-        promote_seconds = max(
-            60,
-            min(int(cfg.index_fallback_promote_seconds), int(cfg.live_max_age_seconds)),
-        )
+        promote_seconds = max(60, int(cfg.effective_session_live_max_age_seconds()))
         status = get_market_status(now)
         out: list[QuoteTick] = []
         for asset, cfg in GOOGLE_INDEX_FALLBACKS.items():
@@ -750,7 +738,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
         if not is_fx_session_expected_open(now):
             return []
         by_asset = {t.asset: t for t in yahoo_fx_ticks}
-        stale_seconds = max(60, int(get_settings().live_max_age_seconds))
+        stale_seconds = max(60, int(get_settings().effective_rolling_live_max_age_seconds()))
         out: list[QuoteTick] = []
         for _symbol, pair in FX_SYMBOLS.items():
             primary = by_asset.get(pair)

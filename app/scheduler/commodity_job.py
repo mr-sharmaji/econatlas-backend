@@ -158,7 +158,7 @@ class CommodityScraper(BaseScraper, QuoteProvider):
 
     def _fetch_google_fallbacks(self, yahoo_rows: List[Dict]) -> List[Dict]:
         now = datetime.now(timezone.utc)
-        live_max_age_seconds = max(60, int(get_settings().live_max_age_seconds))
+        live_max_age_seconds = max(60, int(get_settings().effective_rolling_live_max_age_seconds()))
         by_asset = {str(r.get("asset") or ""): r for r in yahoo_rows}
         out: list[dict] = []
 
@@ -241,7 +241,7 @@ class CommodityScraper(BaseScraper, QuoteProvider):
 
     def _promote_delayed_primary_with_fallback(self, selected: list[dict], all_rows: list[dict]) -> list[dict]:
         now = datetime.now(timezone.utc)
-        live_max_age_seconds = max(60, int(get_settings().live_max_age_seconds))
+        live_max_age_seconds = max(60, int(get_settings().effective_rolling_live_max_age_seconds()))
         fallback_by_asset: dict[str, dict] = {}
         for row in all_rows:
             if str(row.get("provider") or "") == "yahoo":

@@ -27,8 +27,14 @@ class Settings(BaseSettings):
     # Cache GET /market/status for this many seconds (reduces calendar lookups; status only changes at session boundaries).
     market_status_cache_seconds: int = 30
 
-    # Tick freshness/staleness thresholds
-    live_max_age_seconds: int = 120
+    # Tick freshness thresholds by instrument policy.
+    # Session assets: indices + bond yields.
+    session_live_max_age_seconds: int = 300
+    # Rolling assets: currencies + commodities.
+    rolling_live_max_age_seconds: int = 900
+    # Legacy single-threshold knob. If explicitly provided and typed thresholds
+    # are not set, this value is used for both paths.
+    live_max_age_seconds: int | None = None
     stale_threshold_seconds_market: int = 600
     stale_threshold_seconds_rolling_24h: int = 900
     # Promote fallback index providers when primary index ticks are older than this.
@@ -51,6 +57,28 @@ class Settings(BaseSettings):
     # Optional JSON overrides for special sessions (e.g. Diwali/muhurat).
     # Example: {"2026-11-12":[["18:00","19:00"]]}
     gift_nifty_special_sessions_json: str | None = None
+
+    @staticmethod
+    def _positive_seconds(value: int | None, default: int) -> int:
+        try:
+            parsed = int(value) if value is not None else int(default)
+        except (TypeError, ValueError):
+            parsed = int(default)
+        return max(1, parsed)
+
+    def effective_session_live_max_age_seconds(self) -> int:
+        if "session_live_max_age_seconds" in self.model_fields_set:
+            return self._positive_seconds(self.session_live_max_age_seconds, 300)
+        if self.live_max_age_seconds is not None:
+            return self._positive_seconds(self.live_max_age_seconds, 300)
+        return self._positive_seconds(self.session_live_max_age_seconds, 300)
+
+    def effective_rolling_live_max_age_seconds(self) -> int:
+        if "rolling_live_max_age_seconds" in self.model_fields_set:
+            return self._positive_seconds(self.rolling_live_max_age_seconds, 900)
+        if self.live_max_age_seconds is not None:
+            return self._positive_seconds(self.live_max_age_seconds, 900)
+        return self._positive_seconds(self.rolling_live_max_age_seconds, 900)
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
