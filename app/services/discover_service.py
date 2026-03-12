@@ -534,6 +534,11 @@ async def list_discover_stocks(
     max_debt_to_equity: float | None = None,
     min_volume: int | None = None,
     min_traded_value: float | None = None,
+    min_market_cap: float | None = None,
+    max_market_cap: float | None = None,
+    min_dividend_yield: float | None = None,
+    min_pb: float | None = None,
+    max_pb: float | None = None,
     source_status: str | None = None,
     sort_by: str = "score",
     sort_order: str = "desc",
@@ -607,6 +612,16 @@ async def list_discover_stocks(
         _add("volume >= ${idx}", int(min_volume))
     if min_traded_value is not None:
         _add("traded_value >= ${idx}", float(min_traded_value))
+    if min_market_cap is not None:
+        _add("market_cap >= ${idx}", float(min_market_cap))
+    if max_market_cap is not None:
+        _add("market_cap <= ${idx}", float(max_market_cap))
+    if min_dividend_yield is not None:
+        _add("dividend_yield >= ${idx}", float(min_dividend_yield))
+    if min_pb is not None:
+        _add("price_to_book >= ${idx}", float(min_pb))
+    if max_pb is not None:
+        _add("price_to_book <= ${idx}", float(max_pb))
     if source_status and source_status.strip().lower() != "all":
         _add("source_status = ${idx}", _normalize_source_status(source_status))
 
@@ -668,7 +683,10 @@ async def list_discover_mutual_funds(
     min_score: float | None = None,
     min_aum_cr: float | None = None,
     max_expense_ratio: float | None = None,
+    min_return_1y: float | None = None,
     min_return_3y: float | None = None,
+    min_return_5y: float | None = None,
+    min_fund_age: float | None = None,
     source_status: str | None = None,
     sort_by: str = "score",
     sort_order: str = "desc",
@@ -723,6 +741,49 @@ async def list_discover_mutual_funds(
         conds.append(
             "(LOWER(COALESCE(category, '')) ~ '(debt|bond|gilt|money market|liquid|overnight|ultra short)')"
         )
+    elif preset_norm == "equity":
+        conds.append(
+            "(category ILIKE '%equity%' OR sub_category ILIKE '%cap%' OR sub_category ILIKE '%elss%'"
+            " OR sub_category ILIKE '%value%' OR sub_category ILIKE '%focused%'"
+            " OR sub_category ILIKE '%sector%' OR sub_category ILIKE '%thematic%'"
+            " OR sub_category ILIKE '%index%')"
+        )
+    elif preset_norm == "hybrid":
+        conds.append("(category ILIKE '%hybrid%')")
+    elif preset_norm == "small-cap":
+        conds.append("(sub_category ILIKE '%small%cap%')")
+    elif preset_norm == "multi-cap":
+        conds.append("(sub_category ILIKE '%multi%cap%')")
+    elif preset_norm == "elss":
+        conds.append("(sub_category ILIKE '%elss%' OR sub_category ILIKE '%tax%sav%')")
+    elif preset_norm == "value-mf":
+        conds.append("(sub_category ILIKE '%value%')")
+    elif preset_norm == "focused":
+        conds.append("(sub_category ILIKE '%focused%')")
+    elif preset_norm == "sectoral":
+        conds.append("(sub_category ILIKE '%sector%' OR sub_category ILIKE '%thematic%')")
+    elif preset_norm == "short-duration":
+        conds.append("(sub_category ILIKE '%short%dur%')")
+    elif preset_norm == "corporate-bond":
+        conds.append("(sub_category ILIKE '%corporate%bond%')")
+    elif preset_norm == "banking-psu":
+        conds.append("(sub_category ILIKE '%banking%' AND sub_category ILIKE '%psu%')")
+    elif preset_norm == "gilt":
+        conds.append("(sub_category ILIKE '%gilt%')")
+    elif preset_norm == "liquid":
+        conds.append("(sub_category ILIKE '%liquid%')")
+    elif preset_norm == "overnight":
+        conds.append("(sub_category ILIKE '%overnight%')")
+    elif preset_norm == "dynamic-bond":
+        conds.append("(sub_category ILIKE '%dynamic%bond%')")
+    elif preset_norm == "money-market":
+        conds.append("(sub_category ILIKE '%money%market%')")
+    elif preset_norm == "aggressive-hybrid":
+        conds.append("(sub_category ILIKE '%aggressive%')")
+    elif preset_norm == "balanced-hybrid":
+        conds.append("(sub_category ILIKE '%balanced%' OR sub_category ILIKE '%equity%savings%')")
+    elif preset_norm == "conservative-hybrid":
+        conds.append("(sub_category ILIKE '%conservative%')")
 
     if search and search.strip():
         q = f"%{search.strip()}%"
@@ -746,8 +807,14 @@ async def list_discover_mutual_funds(
         _add("aum_cr >= ${idx}", float(min_aum_cr))
     if max_expense_ratio is not None:
         _add("(expense_ratio <= ${idx} OR expense_ratio IS NULL)", float(max_expense_ratio))
+    if min_return_1y is not None:
+        _add("(returns_1y >= ${idx} OR returns_1y IS NULL)", float(min_return_1y))
     if min_return_3y is not None:
         _add("(returns_3y >= ${idx} OR returns_3y IS NULL)", float(min_return_3y))
+    if min_return_5y is not None:
+        _add("(returns_5y >= ${idx} OR returns_5y IS NULL)", float(min_return_5y))
+    if min_fund_age is not None:
+        _add("(fund_age_years >= ${idx} OR fund_age_years IS NULL)", float(min_fund_age))
     if source_status and source_status.strip().lower() != "all":
         _add("source_status = ${idx}", _normalize_source_status(source_status))
 
@@ -1122,3 +1189,88 @@ async def get_mf_nav_history(*, scheme_code: str, days: int = 365) -> list[dict]
         days,
     )
     return [record_to_dict(r) for r in rows]
+
+
+async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
+    """Get peer stocks in the same sector, sorted by score descending."""
+    pool = await get_pool()
+    sector_stats = await _get_stock_sector_stats(pool)
+
+    target = await pool.fetchrow(
+        f"SELECT sector FROM {STOCK_TABLE} WHERE symbol = $1",
+        symbol,
+    )
+    if target is None:
+        return []
+
+    sector = target["sector"]
+    rows = await pool.fetch(
+        f"""
+        SELECT
+            symbol, display_name, market, sector,
+            last_price, point_change, percent_change, volume, traded_value,
+            pe_ratio, roe, roce, debt_to_equity, price_to_book, eps,
+            score, score_momentum, score_liquidity, score_fundamentals,
+            score_breakdown, tags, source_status, source_timestamp, ingested_at,
+            primary_source, secondary_source,
+            high_52w, low_52w, market_cap, dividend_yield
+        FROM {STOCK_TABLE}
+        WHERE sector = $1 AND symbol != $2
+        ORDER BY score DESC NULLS LAST
+        LIMIT $3
+        """,
+        sector,
+        symbol,
+        limit,
+    )
+
+    items = []
+    for r in rows:
+        d = record_to_dict(r)
+        s = str(d.get("sector") or "Other")
+        items.append(_decorate_stock_row(d, sector_stats.get(s)))
+    return items
+
+
+async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
+    """Get peer mutual funds in the same category, sorted by score descending."""
+    pool = await get_pool()
+    category_stats = await _get_mf_category_stats(pool)
+
+    target = await pool.fetchrow(
+        f"SELECT category FROM {MF_TABLE} WHERE scheme_code = $1",
+        scheme_code,
+    )
+    if target is None:
+        return []
+
+    cat = target["category"]
+    rows = await pool.fetch(
+        f"""
+        SELECT
+            scheme_code, scheme_name, amc, category, sub_category,
+            plan_type, option_type, nav, nav_date,
+            expense_ratio, aum_cr, risk_level,
+            returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
+            score, score_return, score_risk, score_cost, score_consistency,
+            score_breakdown, tags, source_status, source_timestamp, ingested_at,
+            primary_source, secondary_source,
+            category_rank, category_total, fund_age_years
+        FROM {MF_TABLE}
+        WHERE category = $1
+          AND scheme_code != $2
+          AND LOWER(COALESCE(plan_type, 'direct')) = 'direct'
+        ORDER BY score DESC NULLS LAST
+        LIMIT $3
+        """,
+        cat,
+        scheme_code,
+        limit,
+    )
+
+    items = []
+    for r in rows:
+        d = record_to_dict(r)
+        c = str(d.get("category") or "Other")
+        items.append(_decorate_mf_row(d, category_stats.get(c)))
+    return items

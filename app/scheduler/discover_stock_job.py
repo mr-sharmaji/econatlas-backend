@@ -665,7 +665,7 @@ class DiscoverStockScraper(BaseScraper):
             if metrics_used == 0:
                 total = combined_signal
             else:
-                total = (combined_signal * 0.5) + (fundamentals * 0.5)
+                total = (combined_signal * 0.30) + (fundamentals * 0.70)
 
             source_status = str(row.get("source_status") or "limited")
             if metrics_used == 0 and source_status == "primary":

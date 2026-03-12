@@ -1,9 +1,9 @@
-"""Backfill 1 year of daily stock price history for all discover stocks.
+"""Backfill 5 years of daily stock price history for all discover stocks.
 
 Fetches daily close prices from Yahoo Finance chart API and upserts into
 discover_stock_price_history table. Idempotent: uses ON CONFLICT DO NOTHING.
 
-Skips symbols that already have >= 200 rows (already backfilled).
+Skips symbols that already have >= 1000 rows (already backfilled).
 Processes in batches of 50 with a cooldown pause between batches.
 
 Usage:
@@ -31,7 +31,7 @@ from app.core.database import close_pool, get_pool, init_pool
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS?range=1y&interval=1d"
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS?range=5y&interval=1d"
 RATE_LIMIT_SECONDS = 4.0  # base delay between symbols
 BATCH_SIZE = 50  # pause longer after every N symbols
 BATCH_COOLDOWN = 30  # seconds to wait between batches
@@ -96,7 +96,7 @@ async def main() -> None:
     pool = await get_pool()
 
     try:
-        # 1. Fetch symbols that haven't been backfilled yet (< 200 rows = not done)
+        # 1. Fetch symbols that haven't been backfilled yet (< 1000 rows = not done)
         symbols = await pool.fetch("""
             SELECT s.symbol
             FROM discover_stock_snapshots s
@@ -105,7 +105,7 @@ async def main() -> None:
                 FROM discover_stock_price_history
                 GROUP BY symbol
             ) h ON h.symbol = s.symbol
-            WHERE COALESCE(h.cnt, 0) < 200
+            WHERE COALESCE(h.cnt, 0) < 1000
             ORDER BY s.symbol
         """)
         symbol_list = [row["symbol"] for row in symbols]

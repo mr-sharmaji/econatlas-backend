@@ -1,4 +1,4 @@
-"""Backfill 1 year of daily NAV history for all discover mutual funds.
+"""Backfill 5 years of daily NAV history for all discover mutual funds.
 
 Fetches NAV history from the public mfapi.in API and upserts into
 discover_mf_nav_history table. Idempotent: uses ON CONFLICT DO NOTHING.
@@ -61,7 +61,7 @@ def _fetch_mf_nav(scheme_code: int) -> list[tuple[int, datetime, float]]:
 
     payload = resp.json()
 
-    cutoff = datetime.now(tz=timezone.utc).date() - timedelta(days=365)
+    cutoff = datetime.now(tz=timezone.utc).date() - timedelta(days=1825)  # 5 years
     nav_entries = payload.get("data", [])
 
     rows: list[tuple[int, datetime, float]] = []

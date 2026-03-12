@@ -92,6 +92,22 @@ async def _run_discover_mutual_funds() -> None:
     logger.debug("Scheduler tick: discover mutual fund job finished")
 
 
+async def _run_discover_stock_price() -> None:
+    logger.debug("Scheduler tick: discover stock price daily job started")
+    from app.scheduler.discover_stock_price_job import run_discover_stock_price_job
+
+    await run_discover_stock_price_job()
+    logger.debug("Scheduler tick: discover stock price daily job finished")
+
+
+async def _run_discover_mf_nav() -> None:
+    logger.debug("Scheduler tick: discover MF NAV daily job started")
+    from app.scheduler.discover_mf_nav_job import run_discover_mf_nav_job
+
+    await run_discover_mf_nav_job()
+    logger.debug("Scheduler tick: discover MF NAV daily job finished")
+
+
 async def _run_ipo() -> None:
     logger.debug("Scheduler tick: IPO job started")
     from app.services import ipo_service
@@ -189,6 +205,34 @@ def start_scheduler() -> None:
         minute=intervals["discover_mf_daily_minute_ist"],
         timezone="Asia/Kolkata",
         id="discover_mutual_funds",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=10800,
+    )
+    # Daily stock price history update (runs 30 min after stock snapshot job)
+    _scheduler.add_job(
+        _run_discover_stock_price,
+        "cron",
+        day_of_week=intervals["discover_stock_daily_days"],
+        hour=intervals["discover_stock_daily_hour_ist"],
+        minute=intervals["discover_stock_daily_minute_ist"] + 30,
+        timezone="Asia/Kolkata",
+        id="discover_stock_price",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=10800,
+    )
+    # Daily MF NAV history update (runs 30 min after MF snapshot job)
+    _scheduler.add_job(
+        _run_discover_mf_nav,
+        "cron",
+        day_of_week=intervals["discover_mf_daily_days"],
+        hour=intervals["discover_mf_daily_hour_ist"],
+        minute=intervals["discover_mf_daily_minute_ist"] + 30,
+        timezone="Asia/Kolkata",
+        id="discover_mf_nav",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

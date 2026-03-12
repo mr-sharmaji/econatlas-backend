@@ -127,6 +127,11 @@ async def get_discover_stocks(
     max_debt_to_equity: float | None = Query(default=None, ge=0.0),
     min_volume: int | None = Query(default=None, ge=0),
     min_traded_value: float | None = Query(default=None, ge=0.0),
+    min_market_cap: float | None = Query(default=None, ge=0.0, description="Min market cap in Cr"),
+    max_market_cap: float | None = Query(default=None, ge=0.0, description="Max market cap in Cr"),
+    min_dividend_yield: float | None = Query(default=None, ge=0.0, description="Min dividend yield %"),
+    min_pb: float | None = Query(default=None, ge=0.0, description="Min P/B ratio"),
+    max_pb: float | None = Query(default=None, ge=0.0, description="Max P/B ratio"),
     source_status: str | None = Query(default=None, description="primary|fallback|limited"),
     sort_by: str = Query(default="score", description="score|change|volume|traded_value|pe|roe|price|market_cap"),
     sort_order: str = Query(default="desc", description="asc|desc"),
@@ -149,6 +154,11 @@ async def get_discover_stocks(
             max_debt_to_equity=max_debt_to_equity,
             min_volume=min_volume,
             min_traded_value=min_traded_value,
+            min_market_cap=min_market_cap,
+            max_market_cap=max_market_cap,
+            min_dividend_yield=min_dividend_yield,
+            min_pb=min_pb,
+            max_pb=max_pb,
             source_status=source_status,
             sort_by=sort_by,
             sort_order=sort_order,
@@ -169,7 +179,7 @@ async def get_discover_stocks(
 
 @router.get("/mutual-funds", response_model=DiscoverMutualFundListResponse)
 async def get_discover_mutual_funds(
-    preset: str = Query(default="all", description="all|large-cap|flexi-cap|index|low-risk|mid-cap|debt"),
+    preset: str = Query(default="all", description="all|equity|debt|hybrid|large-cap|mid-cap|small-cap|flexi-cap|multi-cap|elss|value-mf|focused|sectoral|index|low-risk|short-duration|corporate-bond|banking-psu|gilt|liquid|overnight|dynamic-bond|money-market|aggressive-hybrid|balanced-hybrid|conservative-hybrid"),
     search: str | None = Query(default=None),
     category: str | None = Query(default=None),
     risk_level: str | None = Query(default=None),
@@ -177,8 +187,11 @@ async def get_discover_mutual_funds(
     min_score: float | None = Query(default=None, ge=0.0, le=100.0),
     min_aum_cr: float | None = Query(default=None, ge=0.0),
     max_expense_ratio: float | None = Query(default=None, ge=0.0),
+    min_return_1y: float | None = Query(default=None, description="Min 1Y return %"),
     min_return_3y: float | None = Query(default=None),
+    min_return_5y: float | None = Query(default=None, description="Min 5Y return %"),
     min_returns_3y: float | None = Query(default=None, description="Deprecated alias for min_return_3y"),
+    min_fund_age: float | None = Query(default=None, ge=0.0, description="Min fund age in years"),
     source_status: str | None = Query(default=None, description="primary|fallback|limited"),
     sort_by: str = Query(default="score", description="score|returns_3y|returns_1y|returns_5y|aum|expense|nav|risk"),
     sort_order: str = Query(default="desc", description="asc|desc"),
@@ -195,7 +208,10 @@ async def get_discover_mutual_funds(
             min_score=min_score,
             min_aum_cr=min_aum_cr,
             max_expense_ratio=max_expense_ratio,
+            min_return_1y=min_return_1y,
             min_return_3y=min_return_3y if min_return_3y is not None else min_returns_3y,
+            min_return_5y=min_return_5y,
+            min_fund_age=min_fund_age,
             source_status=source_status,
             sort_by=sort_by,
             sort_order=sort_order,
@@ -268,6 +284,32 @@ async def get_mf_history(
             points=[PriceHistoryPoint(date=p["nav_date"], value=p["nav"]) for p in points],
             count=len(points),
         )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/stocks/{symbol}/peers")
+async def get_stock_peers(
+    symbol: str,
+    limit: int = Query(default=5, ge=1, le=20),
+) -> list[DiscoverStockItemResponse]:
+    """Get peer stocks in the same sector, sorted by score."""
+    try:
+        peers = await discover_service.get_stock_peers(symbol=symbol, limit=limit)
+        return [DiscoverStockItemResponse(**p) for p in peers]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/mutual-funds/{scheme_code}/peers")
+async def get_mf_peers(
+    scheme_code: str,
+    limit: int = Query(default=5, ge=1, le=20),
+) -> list[DiscoverMutualFundItemResponse]:
+    """Get peer mutual funds in the same category, sorted by score."""
+    try:
+        peers = await discover_service.get_mf_peers(scheme_code=scheme_code, limit=limit)
+        return [DiscoverMutualFundItemResponse(**p) for p in peers]
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
