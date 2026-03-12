@@ -26,6 +26,11 @@ class Settings(BaseSettings):
 
     # Cache GET /market/status for this many seconds (reduces calendar lookups; status only changes at session boundaries).
     market_status_cache_seconds: int = 30
+    # Automated India session detection (NSE/BSE-equivalent) for special sessions.
+    india_session_auto_enabled: bool = True
+    india_session_cache_seconds: int = 60
+    india_session_timeout_seconds: int = 10
+    india_session_primary_url: str = "https://www.nseindia.com/api/marketStatus"
 
     # Tick freshness thresholds by instrument policy.
     # Session assets: indices + bond yields.

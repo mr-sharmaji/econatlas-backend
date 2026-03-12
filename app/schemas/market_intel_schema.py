@@ -77,6 +77,9 @@ class DataHealthResponse(BaseModel):
     by_instrument_type: dict[str, RegionHealthResponse]
     stale_by_instrument_type: dict[str, int]
     quality_counts: dict[str, int]
+    india_session_source: str | None = None
+    india_session_window: str | None = None
+    india_session_fallback_reason: str | None = None
 
 
 class IpoItemResponse(BaseModel):

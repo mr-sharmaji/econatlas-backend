@@ -8,6 +8,7 @@ from app.core.asset_catalog import (
     list_asset_catalog,
 )
 from app.core.database import get_pool, parse_ts
+from app.scheduler.trading_calendar import get_india_session_diagnostics
 from app.services import market_service
 
 _QUALITY_SCORE = {
@@ -255,6 +256,7 @@ def _finalize_bucket(bucket: dict) -> dict:
 async def get_data_health() -> dict:
     latest = await market_service.get_latest_prices()
     now = datetime.now(timezone.utc)
+    india_diag = get_india_session_diagnostics(now)
 
     by_region: dict[str, dict] = {}
     by_type: dict[str, dict] = {}
@@ -301,4 +303,7 @@ async def get_data_health() -> dict:
         "by_instrument_type": {k: _finalize_bucket(v) for k, v in sorted(by_type.items())},
         "stale_by_instrument_type": stale_by_type,
         "quality_counts": dict(sorted(quality_counts.items())),
+        "india_session_source": india_diag.get("source"),
+        "india_session_window": india_diag.get("window"),
+        "india_session_fallback_reason": india_diag.get("fallback_reason"),
     }
