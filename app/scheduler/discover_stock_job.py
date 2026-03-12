@@ -451,6 +451,50 @@ class DiscoverStockScraper(BaseScraper):
                 continue
         return None
 
+    @staticmethod
+    def _extract_balance_sheet_de(html: str) -> float | None:
+        """Compute Debt-to-Equity from the balance sheet table on Screener.in.
+
+        D/E = Total Borrowings / (Equity Capital + Reserves).
+        Extracts the last column (most recent period) from each row.
+        """
+        bs_match = re.search(r'id="balance-sheet"', html)
+        if not bs_match:
+            return None
+        bs_chunk = html[bs_match.start(): bs_match.start() + 20000]
+
+        def _last_number(label: str) -> float | None:
+            """Find a balance-sheet row by label and return its last numeric value."""
+            idx = bs_chunk.find(label)
+            if idx < 0:
+                return None
+            # Walk forward to find the closing </td> of the label cell
+            close_td = bs_chunk.find("</td>", idx)
+            if close_td < 0:
+                return None
+            # Extract numbers only within this row — stop at next </tr>
+            after_start = close_td + 5
+            end_tr = bs_chunk.find("</tr>", after_start)
+            row_slice = bs_chunk[after_start: end_tr] if end_tr > 0 else bs_chunk[after_start: after_start + 2000]
+            nums = re.findall(r'<td[^>]*>\s*([\-]?[\d,]+(?:\.\d+)?)\s*</td>', row_slice)
+            if not nums:
+                return None
+            try:
+                return float(nums[-1].replace(",", ""))
+            except ValueError:
+                return None
+
+        borrowings = _last_number("Borrowings")
+        equity_capital = _last_number("Equity Capital")
+        reserves = _last_number("Reserves")
+
+        if borrowings is None:
+            return None
+        equity = (equity_capital or 0) + (reserves or 0)
+        if equity <= 0:
+            return None
+        return round(borrowings / equity, 2)
+
     def _fetch_screener_fundamentals(self, nse_symbol: str) -> tuple[dict, str]:
         base = self.settings.discover_stock_primary_url.rstrip("/")
         candidates = [
@@ -466,11 +510,14 @@ class DiscoverStockScraper(BaseScraper):
                 book_value = self._extract_labeled_number(text, ["Book Value"])
                 current_price = self._extract_labeled_number(text, ["Current Price"])
 
+                # Compute D/E from balance sheet (Borrowings / Equity)
+                debt_to_equity = self._extract_balance_sheet_de(html)
+
                 fundamentals = {
                     "pe_ratio": self._extract_labeled_number(text, ["Stock P/E", "P/E"]),
                     "roe": self._extract_labeled_number(text, ["ROE", "Return on equity"]),
                     "roce": self._extract_labeled_number(text, ["ROCE", "Return on capital employed"]),
-                    "debt_to_equity": self._extract_labeled_number(text, ["Debt to equity", "Debt to Equity"]),
+                    "debt_to_equity": debt_to_equity,
                     "price_to_book": (
                         round(current_price / book_value, 2)
                         if current_price and book_value and book_value > 0
