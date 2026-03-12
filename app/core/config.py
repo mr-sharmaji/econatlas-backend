@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     macro_interval_minutes: int = 1
     news_interval_minutes: int = 30
     brief_interval_minutes: int = 5
+    discover_stock_interval_minutes: int = 60
+    discover_mutual_fund_interval_minutes: int = 60
     ipo_interval_minutes: int = 5
     ipo_stale_threshold_seconds: int = 900
     tax_sync_enabled: bool = True
@@ -31,6 +33,12 @@ class Settings(BaseSettings):
     india_session_cache_seconds: int = 60
     india_session_timeout_seconds: int = 10
     india_session_primary_url: str = "https://www.nseindia.com/api/marketStatus"
+
+    # Discover data source URLs
+    discover_stock_primary_url: str = "https://www.screener.in"
+    discover_stock_fallback_url: str = "https://www.nseindia.com"
+    discover_mf_primary_url: str = "https://www.etmoney.com"
+    discover_mf_fallback_url: str = "https://www.amfiindia.com/spages/NAVAll.txt"
 
     # Tick freshness thresholds by instrument policy.
     # Session assets: indices + bond yields.

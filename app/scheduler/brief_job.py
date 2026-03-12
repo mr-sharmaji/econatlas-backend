@@ -192,9 +192,8 @@ class BriefStockScraper(BaseScraper):
 
     def fetch_all(self) -> list[dict]:
         india_rows = self._fetch_market("IN", INDIA_STOCKS)
-        us_rows = self._fetch_market("US", US_STOCKS)
-        logger.debug("Brief snapshot fetch complete: IN=%d US=%d", len(india_rows), len(us_rows))
-        return india_rows + us_rows
+        logger.debug("Brief snapshot fetch complete: IN=%d", len(india_rows))
+        return india_rows
 
 
 _scraper = BriefStockScraper()

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from app.core.database import get_pool, parse_ts, record_to_dict
 
 TABLE = "stock_snapshots"
-_VALID_MARKETS = {"IN", "US"}
+_VALID_MARKETS = {"IN"}
 
 
 def _normalize_market(market: str | None) -> str:

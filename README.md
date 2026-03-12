@@ -13,7 +13,7 @@ PostgreSQL (Docker or local)
 ```
 
 - **API**: REST endpoints for health, market prices, commodities, macro indicators, news, and events.
-- **Scheduler**: Background jobs (market, commodity, macro, news) run on an interval; data is written to PostgreSQL with one row per day for prices and proper handling of market holidays. Market and commodity jobs default to **every 30 seconds** for live accuracy when markets are open; set `MARKET_INTERVAL_SECONDS=0` and `COMMODITY_INTERVAL_SECONDS=0` to use minute-based intervals instead.
+- **Scheduler**: Background jobs (market, commodity, discover stock, discover mutual funds, macro, news) run on an interval; data is written to PostgreSQL with one row per day for prices and proper handling of market holidays. Market and commodity jobs default to **every 30 seconds** for live accuracy when markets are open; set `MARKET_INTERVAL_SECONDS=0` and `COMMODITY_INTERVAL_SECONDS=0` to use minute-based intervals instead.
 
 ## Tech Stack
 
@@ -115,6 +115,10 @@ If `market/latest` is empty, run `python scripts/backfill_last_session.py`, then
 | GET    | /watchlist          | Device-scoped watchlist (seeds defaults on first call) |
 | PUT    | /watchlist          | Replace ordered device watchlist                  |
 | GET    | /screener           | Smart screener ranked opportunities               |
+| GET    | /screener/overview  | Discover overview for `stocks` or `mutual_funds` |
+| GET    | /screener/stocks    | India stock discovery screener with filters       |
+| GET    | /screener/mutual-funds | India direct-plan mutual fund screener         |
+| GET    | /screener/compare   | Compare up to 3 discover items side-by-side       |
 | GET    | /commodities/intraday | Intraday points for 1D chart (last 24h; query `asset`) |
 | GET    | /commodities/latest | Latest price per commodity (gold, silver, oil…)   |
 | GET    | /commodities        | Commodity prices, optional filters, history      |

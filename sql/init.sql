@@ -139,6 +139,94 @@ ON stock_snapshots (market, traded_value DESC);
 CREATE INDEX IF NOT EXISTS idx_stock_snapshots_market_source_ts
 ON stock_snapshots (market, source_timestamp DESC);
 
+-- Discover stock snapshots (India-focused screener)
+CREATE TABLE IF NOT EXISTS discover_stock_snapshots (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    market TEXT NOT NULL DEFAULT 'IN',
+    symbol TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    sector TEXT,
+    last_price DOUBLE PRECISION NOT NULL,
+    point_change DOUBLE PRECISION,
+    percent_change DOUBLE PRECISION,
+    volume BIGINT,
+    traded_value DOUBLE PRECISION,
+    pe_ratio DOUBLE PRECISION,
+    roe DOUBLE PRECISION,
+    roce DOUBLE PRECISION,
+    debt_to_equity DOUBLE PRECISION,
+    price_to_book DOUBLE PRECISION,
+    eps DOUBLE PRECISION,
+    score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    score_momentum DOUBLE PRECISION NOT NULL DEFAULT 0,
+    score_liquidity DOUBLE PRECISION NOT NULL DEFAULT 0,
+    score_fundamentals DOUBLE PRECISION NOT NULL DEFAULT 0,
+    score_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb,
+    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+    source_status TEXT NOT NULL DEFAULT 'limited', -- primary | fallback | limited
+    source_timestamp TIMESTAMPTZ NOT NULL,
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    primary_source TEXT,
+    secondary_source TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_discover_stock_snapshots_symbol_unique
+ON discover_stock_snapshots (symbol);
+CREATE INDEX IF NOT EXISTS idx_discover_stock_snapshots_score
+ON discover_stock_snapshots (score DESC);
+CREATE INDEX IF NOT EXISTS idx_discover_stock_snapshots_sector
+ON discover_stock_snapshots (sector);
+CREATE INDEX IF NOT EXISTS idx_discover_stock_snapshots_source_ts
+ON discover_stock_snapshots (source_timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_discover_stock_snapshots_status
+ON discover_stock_snapshots (source_status);
+
+-- Discover mutual fund snapshots (India direct plans)
+CREATE TABLE IF NOT EXISTS discover_mutual_fund_snapshots (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scheme_code TEXT NOT NULL,
+    scheme_name TEXT NOT NULL,
+    amc TEXT,
+    category TEXT,
+    sub_category TEXT,
+    plan_type TEXT NOT NULL DEFAULT 'direct', -- direct | regular
+    option_type TEXT,
+    nav DOUBLE PRECISION NOT NULL,
+    nav_date DATE,
+    expense_ratio DOUBLE PRECISION,
+    aum_cr DOUBLE PRECISION,
+    risk_level TEXT,
+    returns_1y DOUBLE PRECISION,
+    returns_3y DOUBLE PRECISION,
+    returns_5y DOUBLE PRECISION,
+    std_dev DOUBLE PRECISION,
+    sharpe DOUBLE PRECISION,
+    sortino DOUBLE PRECISION,
+    score DOUBLE PRECISION NOT NULL DEFAULT 0,
+    score_return DOUBLE PRECISION NOT NULL DEFAULT 0,
+    score_risk DOUBLE PRECISION NOT NULL DEFAULT 0,
+    score_cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    score_consistency DOUBLE PRECISION NOT NULL DEFAULT 0,
+    score_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb,
+    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+    source_status TEXT NOT NULL DEFAULT 'limited', -- primary | fallback | limited
+    source_timestamp TIMESTAMPTZ NOT NULL,
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    primary_source TEXT,
+    secondary_source TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_discover_mutual_fund_scheme_code_unique
+ON discover_mutual_fund_snapshots (scheme_code);
+CREATE INDEX IF NOT EXISTS idx_discover_mutual_fund_score
+ON discover_mutual_fund_snapshots (score DESC);
+CREATE INDEX IF NOT EXISTS idx_discover_mutual_fund_category
+ON discover_mutual_fund_snapshots (category);
+CREATE INDEX IF NOT EXISTS idx_discover_mutual_fund_plan_type
+ON discover_mutual_fund_snapshots (plan_type);
+CREATE INDEX IF NOT EXISTS idx_discover_mutual_fund_source_ts
+ON discover_mutual_fund_snapshots (source_timestamp DESC);
+
 -- IPO snapshots for Overview IPO card
 CREATE TABLE IF NOT EXISTS ipo_snapshots (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

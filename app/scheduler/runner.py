@@ -22,6 +22,8 @@ def _get_intervals() -> dict:
         "commodity_seconds": getattr(settings, "commodity_interval_seconds", None),
         "commodity_minutes": getattr(settings, "commodity_interval_minutes", 1),
         "brief_minutes": getattr(settings, "brief_interval_minutes", 5),
+        "discover_stock_minutes": getattr(settings, "discover_stock_interval_minutes", 60),
+        "discover_mf_minutes": getattr(settings, "discover_mutual_fund_interval_minutes", 60),
         "ipo_minutes": getattr(settings, "ipo_interval_minutes", 5),
         "macro_minutes": getattr(settings, "macro_interval_minutes", 1),
         "news_minutes": getattr(settings, "news_interval_minutes", 30),
@@ -67,6 +69,22 @@ async def _run_brief() -> None:
     logger.debug("Scheduler tick: brief stock job finished")
 
 
+async def _run_discover_stock() -> None:
+    logger.debug("Scheduler tick: discover stock job started")
+    from app.scheduler.discover_stock_job import run_discover_stock_job
+
+    await run_discover_stock_job()
+    logger.debug("Scheduler tick: discover stock job finished")
+
+
+async def _run_discover_mutual_funds() -> None:
+    logger.debug("Scheduler tick: discover mutual fund job started")
+    from app.scheduler.discover_mutual_fund_job import run_discover_mutual_fund_job
+
+    await run_discover_mutual_fund_job()
+    logger.debug("Scheduler tick: discover mutual fund job finished")
+
+
 async def _run_ipo() -> None:
     logger.debug("Scheduler tick: IPO job started")
     from app.services import ipo_service
@@ -92,6 +110,8 @@ async def _startup_collection() -> None:
     await _run_market()
     await _run_commodity()
     await _run_brief()
+    await _run_discover_stock()
+    await _run_discover_mutual_funds()
     await _run_ipo()
     await _run_macro()
     await _run_tax()
@@ -125,6 +145,26 @@ def start_scheduler() -> None:
 
     _scheduler.add_job(_run_brief, "interval", minutes=intervals["brief_minutes"], id="brief", replace_existing=True)
     _scheduler.add_job(
+        _run_discover_stock,
+        "interval",
+        minutes=intervals["discover_stock_minutes"],
+        id="discover_stock",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=180,
+    )
+    _scheduler.add_job(
+        _run_discover_mutual_funds,
+        "interval",
+        minutes=intervals["discover_mf_minutes"],
+        id="discover_mutual_funds",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=180,
+    )
+    _scheduler.add_job(
         _run_ipo,
         "interval",
         minutes=intervals["ipo_minutes"],
@@ -139,8 +179,10 @@ def start_scheduler() -> None:
     if intervals["tax_enabled"]:
         _scheduler.add_job(_run_tax, "interval", minutes=intervals["tax_minutes"], id="tax", replace_existing=True)
     logger.info(
-        "Scheduler: brief=%dm ipo=%dm macro=%dm news=%dm tax=%s",
+        "Scheduler: brief=%dm discover_stock=%dm discover_mf=%dm ipo=%dm macro=%dm news=%dm tax=%s",
         intervals["brief_minutes"],
+        intervals["discover_stock_minutes"],
+        intervals["discover_mf_minutes"],
         intervals["ipo_minutes"],
         intervals["macro_minutes"],
         intervals["news_minutes"],
