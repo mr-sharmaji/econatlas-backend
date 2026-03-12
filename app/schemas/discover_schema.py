@@ -32,6 +32,11 @@ class DiscoverStockItemResponse(BaseModel):
     debt_to_equity: float | None = None
     price_to_book: float | None = None
     eps: float | None = None
+    high_52w: float | None = None
+    low_52w: float | None = None
+    market_cap: float | None = None
+    dividend_yield: float | None = None
+    quality_tier: str | None = None
     score: float
     score_momentum: float
     score_liquidity: float
@@ -81,6 +86,13 @@ class DiscoverMutualFundItemResponse(BaseModel):
     std_dev: float | None = None
     sharpe: float | None = None
     sortino: float | None = None
+    category_rank: int | None = None
+    category_total: int | None = None
+    fund_age_years: float | None = None
+    quality_badges: list[str] = Field(default_factory=list)
+    category_avg_returns_1y: float | None = None
+    category_avg_returns_3y: float | None = None
+    category_avg_returns_5y: float | None = None
     score: float
     score_return: float
     score_risk: float
@@ -132,17 +144,76 @@ class DiscoverOverviewResponse(BaseModel):
     data_freshness_minutes: float | None = None
 
 
-class ComparisonSummary(BaseModel):
-    winner: str
-    score_delta: float
-    metric_winners: dict[str, str] = Field(default_factory=dict)
+# --- Unified Search ---
+
+class SearchStockItem(BaseModel):
+    symbol: str
+    display_name: str
+    sector: str | None = None
+    last_price: float
+    percent_change: float | None = None
+    score: float
 
 
-class DiscoverCompareResponse(BaseModel):
+class SearchMutualFundItem(BaseModel):
+    scheme_code: str
+    scheme_name: str
+    category: str | None = None
+    nav: float
+    returns_3y: float | None = None
+    score: float
+
+
+class UnifiedSearchResponse(BaseModel):
+    stocks: list[SearchStockItem] = Field(default_factory=list)
+    mutual_funds: list[SearchMutualFundItem] = Field(default_factory=list)
+
+
+# --- Discover Home ---
+
+class DiscoverHomeStockItem(BaseModel):
+    symbol: str
+    display_name: str
+    sector: str | None = None
+    last_price: float
+    percent_change: float | None = None
+    score: float
+    quality_tier: str | None = None
+
+
+class DiscoverHomeMutualFundItem(BaseModel):
+    scheme_code: str
+    scheme_name: str
+    category: str | None = None
+    score: float
+    returns_1y: float | None = None
+    quality_badges: list[str] = Field(default_factory=list)
+
+
+class QuickCategory(BaseModel):
+    name: str
     segment: Literal["stocks", "mutual_funds"]
-    as_of: datetime | None = None
-    count: int
-    source_status: SourceStatus
-    stock_items: list[DiscoverStockItemResponse] = Field(default_factory=list)
-    mutual_fund_items: list[DiscoverMutualFundItemResponse] = Field(default_factory=list)
-    comparison_summary: ComparisonSummary | None = None
+    preset: str | None = None
+    filter_key: str | None = None
+    filter_value: str | None = None
+
+
+class DiscoverHomeResponse(BaseModel):
+    top_stocks: list[DiscoverHomeStockItem] = Field(default_factory=list)
+    top_mutual_funds: list[DiscoverHomeMutualFundItem] = Field(default_factory=list)
+    trending_stocks: list[DiscoverHomeStockItem] = Field(default_factory=list)
+    quick_categories: list[QuickCategory] = Field(default_factory=list)
+
+
+# --- Chart History ---
+
+class PriceHistoryPoint(BaseModel):
+    date: date
+    value: float
+
+
+class PriceHistoryResponse(BaseModel):
+    symbol: str | None = None
+    scheme_code: str | None = None
+    points: list[PriceHistoryPoint] = Field(default_factory=list)
+    count: int = 0

@@ -11,6 +11,7 @@ from typing import Any
 import requests
 
 from app.core.config import get_settings
+from app.core.database import get_pool
 from app.scheduler.base import BaseScraper
 from app.scheduler.job_executors import get_job_executor
 from app.services import discover_service
@@ -753,6 +754,21 @@ async def run_discover_mutual_fund_job() -> None:
         )
         count = await discover_service.upsert_discover_mutual_fund_snapshots(rows)
         logger.info("Discover mutual fund job complete: %d snapshots upserted", count)
+
+        # After upsert, compute category rank
+        pool = await get_pool()
+        await pool.execute("""
+            UPDATE discover_mutual_fund_snapshots AS t
+            SET category_rank = sub.rnk, category_total = sub.total
+            FROM (
+                SELECT scheme_code,
+                       RANK() OVER (PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
+                                    ORDER BY score DESC) AS rnk,
+                       COUNT(*) OVER (PARTITION BY COALESCE(NULLIF(category, ''), 'Other')) AS total
+                FROM discover_mutual_fund_snapshots
+            ) sub
+            WHERE t.scheme_code = sub.scheme_code
+        """)
     except requests.RequestException:
         logger.exception("Discover mutual fund job failed due to network exception")
     except Exception:

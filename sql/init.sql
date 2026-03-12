@@ -321,3 +321,47 @@ CREATE INDEX IF NOT EXISTS idx_tax_config_versions_archived_at
 ON tax_config_versions (archived_at);
 
 DROP TABLE IF EXISTS tax_validation_cases;
+
+-- ================================================================
+-- Discover enrichment: additional stock columns
+-- ================================================================
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS high_52w DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS low_52w DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS market_cap DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS dividend_yield DOUBLE PRECISION;
+
+-- Discover enrichment: additional MF columns
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS category_rank INTEGER;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS category_total INTEGER;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS fund_age_years DOUBLE PRECISION;
+
+-- Historical stock prices for charts
+CREATE TABLE IF NOT EXISTS discover_stock_price_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    symbol TEXT NOT NULL,
+    trade_date DATE NOT NULL,
+    close DOUBLE PRECISION NOT NULL,
+    volume BIGINT,
+    source TEXT,
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_discover_stock_price_history_uniq
+ON discover_stock_price_history (symbol, trade_date);
+CREATE INDEX IF NOT EXISTS idx_discover_stock_price_history_lookup
+ON discover_stock_price_history (symbol, trade_date DESC);
+
+-- Historical MF NAV for charts
+CREATE TABLE IF NOT EXISTS discover_mf_nav_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scheme_code TEXT NOT NULL,
+    nav_date DATE NOT NULL,
+    nav DOUBLE PRECISION NOT NULL,
+    source TEXT,
+    ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_discover_mf_nav_history_uniq
+ON discover_mf_nav_history (scheme_code, nav_date);
+CREATE INDEX IF NOT EXISTS idx_discover_mf_nav_history_lookup
+ON discover_mf_nav_history (scheme_code, nav_date DESC);

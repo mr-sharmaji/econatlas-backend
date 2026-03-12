@@ -379,7 +379,28 @@ class DiscoverStockScraper(BaseScraper):
                     "debt_to_equity": self._extract_labeled_number(text, ["Debt to equity", "Debt to Equity"]),
                     "price_to_book": self._extract_labeled_number(text, ["Price to book value", "P/B"]),
                     "eps": self._extract_labeled_number(text, ["EPS", "Earnings Per Share"]),
+                    "market_cap": self._extract_labeled_number(text, ["Market Cap"]),
+                    "dividend_yield": self._extract_labeled_number(text, ["Dividend Yield"]),
                 }
+
+                # 52-week High / Low: pattern like "High / Low ₹ 1,234 / ₹ 567"
+                hl_match = re.search(
+                    r"High\s*/\s*Low\s*[₹Rs.\s]*([\d,]+(?:\.\d+)?)\s*/\s*[₹Rs.\s]*([\d,]+(?:\.\d+)?)",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+                if hl_match:
+                    try:
+                        fundamentals["high_52w"] = float(hl_match.group(1).replace(",", ""))
+                    except ValueError:
+                        fundamentals["high_52w"] = None
+                    try:
+                        fundamentals["low_52w"] = float(hl_match.group(2).replace(",", ""))
+                    except ValueError:
+                        fundamentals["low_52w"] = None
+                else:
+                    fundamentals["high_52w"] = None
+                    fundamentals["low_52w"] = None
                 return fundamentals, "screener_in"
             except Exception:
                 logger.debug("Screener fundamentals fetch failed for %s url=%s", nse_symbol, url, exc_info=True)
@@ -391,6 +412,10 @@ class DiscoverStockScraper(BaseScraper):
             "debt_to_equity": None,
             "price_to_book": None,
             "eps": None,
+            "market_cap": None,
+            "high_52w": None,
+            "low_52w": None,
+            "dividend_yield": None,
         }, "unavailable"
 
     @staticmethod
@@ -615,6 +640,10 @@ class DiscoverStockScraper(BaseScraper):
                 "debt_to_equity": None,
                 "price_to_book": None,
                 "eps": None,
+                "market_cap": None,
+                "high_52w": None,
+                "low_52w": None,
+                "dividend_yield": None,
             }
             fundamentals_source = "unavailable"
         fundamentals_count = sum(1 for value in fundamentals.values() if value is not None)
@@ -639,6 +668,10 @@ class DiscoverStockScraper(BaseScraper):
             "debt_to_equity": fundamentals.get("debt_to_equity"),
             "price_to_book": fundamentals.get("price_to_book"),
             "eps": fundamentals.get("eps"),
+            "market_cap": fundamentals.get("market_cap"),
+            "high_52w": fundamentals.get("high_52w"),
+            "low_52w": fundamentals.get("low_52w"),
+            "dividend_yield": fundamentals.get("dividend_yield"),
             "source_status": source_status,
             "source_timestamp": quote.get("source_timestamp") or datetime.now(timezone.utc),
             "primary_source": fundamentals_source,

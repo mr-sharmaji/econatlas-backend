@@ -5,15 +5,22 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.discover_schema import (
-    ComparisonSummary,
-    DiscoverCompareResponse,
+    DiscoverHomeMutualFundItem,
+    DiscoverHomeResponse,
+    DiscoverHomeStockItem,
     DiscoverMutualFundItemResponse,
     DiscoverMutualFundListResponse,
     DiscoverOverviewResponse,
     DiscoverStockItemResponse,
     DiscoverStockListResponse,
+    PriceHistoryPoint,
+    PriceHistoryResponse,
+    QuickCategory,
     ScoreDistribution,
+    SearchMutualFundItem,
+    SearchStockItem,
     TopSegmentEntry,
+    UnifiedSearchResponse,
 )
 from app.schemas.market_intel_schema import ScreenerItemResponse, ScreenerResponse
 from app.services import discover_service, market_intel_service
@@ -75,6 +82,35 @@ async def get_discover_overview(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.get("/search", response_model=UnifiedSearchResponse)
+async def unified_search(
+    q: str = Query(..., min_length=1, description="Search query"),
+    limit: int = Query(default=10, ge=1, le=30),
+) -> UnifiedSearchResponse:
+    try:
+        payload = await discover_service.unified_search(query=q, limit=limit)
+        return UnifiedSearchResponse(
+            stocks=[SearchStockItem(**s) for s in payload.get("stocks", [])],
+            mutual_funds=[SearchMutualFundItem(**m) for m in payload.get("mutual_funds", [])],
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/home", response_model=DiscoverHomeResponse)
+async def get_discover_home() -> DiscoverHomeResponse:
+    try:
+        payload = await discover_service.get_discover_home_data()
+        return DiscoverHomeResponse(
+            top_stocks=[DiscoverHomeStockItem(**s) for s in payload.get("top_stocks", [])],
+            top_mutual_funds=[DiscoverHomeMutualFundItem(**m) for m in payload.get("top_mutual_funds", [])],
+            trending_stocks=[DiscoverHomeStockItem(**s) for s in payload.get("trending_stocks", [])],
+            quick_categories=[QuickCategory(**c) for c in payload.get("quick_categories", [])],
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.get("/stocks", response_model=DiscoverStockListResponse)
 async def get_discover_stocks(
     preset: str = Query(default="momentum", description="momentum|value|low-volatility|high-volume|breakout|quality|dividend"),
@@ -92,7 +128,7 @@ async def get_discover_stocks(
     min_volume: int | None = Query(default=None, ge=0),
     min_traded_value: float | None = Query(default=None, ge=0.0),
     source_status: str | None = Query(default=None, description="primary|fallback|limited"),
-    sort_by: str = Query(default="score", description="score|change|volume|traded_value|pe|roe|price"),
+    sort_by: str = Query(default="score", description="score|change|volume|traded_value|pe|roe|price|market_cap"),
     sort_order: str = Query(default="desc", description="asc|desc"),
     limit: int = Query(default=25, ge=1, le=250),
     offset: int = Query(default=0, ge=0),
@@ -144,7 +180,7 @@ async def get_discover_mutual_funds(
     min_return_3y: float | None = Query(default=None),
     min_returns_3y: float | None = Query(default=None, description="Deprecated alias for min_return_3y"),
     source_status: str | None = Query(default=None, description="primary|fallback|limited"),
-    sort_by: str = Query(default="score", description="score|returns_3y|returns_1y|aum|expense|nav|risk"),
+    sort_by: str = Query(default="score", description="score|returns_3y|returns_1y|returns_5y|aum|expense|nav|risk"),
     sort_order: str = Query(default="desc", description="asc|desc"),
     limit: int = Query(default=25, ge=1, le=250),
     offset: int = Query(default=0, ge=0),
@@ -178,26 +214,35 @@ async def get_discover_mutual_funds(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/compare", response_model=DiscoverCompareResponse)
-async def get_discover_compare(
-    segment: Literal["stocks", "mutual_funds"] = Query(default="stocks"),
-    ids: str = Query(default="", description="Comma-separated symbol(s) or scheme_code(s), max 3"),
-) -> DiscoverCompareResponse:
+@router.get("/stocks/{symbol}/history", response_model=PriceHistoryResponse)
+async def get_stock_history(
+    symbol: str,
+    days: int = Query(default=365, ge=7, le=1825),
+) -> PriceHistoryResponse:
     try:
-        id_list = [part.strip() for part in ids.split(",") if part.strip()]
-        payload = await discover_service.get_discover_compare(segment=segment, ids=id_list)
-        summary = payload.get("comparison_summary")
-        return DiscoverCompareResponse(
-            segment=payload["segment"],
-            as_of=payload.get("as_of"),
-            count=payload.get("count", 0),
-            source_status=payload.get("source_status") or "limited",
-            stock_items=[DiscoverStockItemResponse(**item) for item in payload.get("stock_items", [])],
-            mutual_fund_items=[
-                DiscoverMutualFundItemResponse(**item)
-                for item in payload.get("mutual_fund_items", [])
-            ],
-            comparison_summary=ComparisonSummary(**summary) if summary else None,
+        points = await discover_service.get_stock_price_history(symbol=symbol, days=days)
+        return PriceHistoryResponse(
+            symbol=symbol,
+            points=[PriceHistoryPoint(date=p["trade_date"], value=p["close"]) for p in points],
+            count=len(points),
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/mutual-funds/{scheme_code}/history", response_model=PriceHistoryResponse)
+async def get_mf_history(
+    scheme_code: str,
+    days: int = Query(default=365, ge=7, le=1825),
+) -> PriceHistoryResponse:
+    try:
+        points = await discover_service.get_mf_nav_history(scheme_code=scheme_code, days=days)
+        return PriceHistoryResponse(
+            scheme_code=scheme_code,
+            points=[PriceHistoryPoint(date=p["nav_date"], value=p["nav"]) for p in points],
+            count=len(points),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+

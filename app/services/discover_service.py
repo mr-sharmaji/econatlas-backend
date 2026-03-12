@@ -184,6 +184,40 @@ def _mf_why_ranked(row: dict, category_stats: dict | None = None) -> list[str]:
     return reasons[:4]
 
 
+def _compute_quality_tier(score: float | None) -> str:
+    s = score or 0.0
+    if s >= 80:
+        return "Strong"
+    if s >= 60:
+        return "Good"
+    if s >= 40:
+        return "Average"
+    return "Weak"
+
+
+def _compute_quality_badges(row: dict) -> list[str]:
+    badges: list[str] = []
+    category_rank = _to_int(row.get("category_rank"))
+    category_total = _to_int(row.get("category_total"))
+    if category_rank is not None and category_total is not None:
+        if category_rank <= max(1, int(category_total * 0.1)):
+            badges.append("Top Performer")
+    returns_1y = _to_float(row.get("returns_1y"))
+    returns_3y = _to_float(row.get("returns_3y"))
+    returns_5y = _to_float(row.get("returns_5y"))
+    if (returns_1y is not None and returns_1y > 0
+            and returns_3y is not None and returns_3y > 0
+            and returns_5y is not None and returns_5y > 0):
+        badges.append("Consistent Returns")
+    expense_ratio = _to_float(row.get("expense_ratio"))
+    if expense_ratio is not None and expense_ratio < 1.0:
+        badges.append("Cost Efficient")
+    fund_age_years = _to_float(row.get("fund_age_years"))
+    if fund_age_years is not None and fund_age_years >= 5:
+        badges.append("Proven Track Record")
+    return badges
+
+
 def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
     item = dict(row)
     item["source_status"] = _normalize_source_status(item.get("source_status"))
@@ -191,6 +225,7 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
     tags = item.get("tags")
     item["tags"] = tags if isinstance(tags, list) else []
     item["why_ranked"] = _stock_why_ranked(item, sector_stats)
+    item["quality_tier"] = _compute_quality_tier(_to_float(item.get("score")))
     return item
 
 
@@ -201,6 +236,15 @@ def _decorate_mf_row(row: dict, category_stats: dict | None = None) -> dict:
     tags = item.get("tags")
     item["tags"] = tags if isinstance(tags, list) else []
     item["why_ranked"] = _mf_why_ranked(item, category_stats)
+    item["quality_badges"] = _compute_quality_badges(item)
+    if category_stats:
+        item["category_avg_returns_1y"] = category_stats.get("avg_ret1y")
+        item["category_avg_returns_3y"] = category_stats.get("avg_ret3y")
+        item["category_avg_returns_5y"] = category_stats.get("avg_ret5y")
+    else:
+        item["category_avg_returns_1y"] = None
+        item["category_avg_returns_3y"] = None
+        item["category_avg_returns_5y"] = None
     return item
 
 
@@ -219,14 +263,16 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     volume, traded_value, pe_ratio, roe, roce, debt_to_equity, price_to_book, eps,
                     score, score_momentum, score_liquidity, score_fundamentals,
                     score_breakdown, tags, source_status, source_timestamp, ingested_at,
-                    primary_source, secondary_source
+                    primary_source, secondary_source,
+                    high_52w, low_52w, market_cap, dividend_yield
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
                     $8, $9, $10, $11, $12, $13, $14, $15,
                     $16, $17, $18, $19,
                     $20, $21, $22, $23, NOW(),
-                    $24, $25
+                    $24, $25,
+                    $26, $27, $28, $29
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -254,7 +300,11 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     source_timestamp = EXCLUDED.source_timestamp,
                     ingested_at = NOW(),
                     primary_source = EXCLUDED.primary_source,
-                    secondary_source = EXCLUDED.secondary_source
+                    secondary_source = EXCLUDED.secondary_source,
+                    high_52w = EXCLUDED.high_52w,
+                    low_52w = EXCLUDED.low_52w,
+                    market_cap = EXCLUDED.market_cap,
+                    dividend_yield = EXCLUDED.dividend_yield
                 """,
                 str(row.get("market") or "IN"),
                 str(row.get("symbol") or ""),
@@ -281,6 +331,10 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 parse_ts(row.get("source_timestamp")) or datetime.now(timezone.utc),
                 row.get("primary_source"),
                 row.get("secondary_source"),
+                _to_float(row.get("high_52w")),
+                _to_float(row.get("low_52w")),
+                _to_float(row.get("market_cap")),
+                _to_float(row.get("dividend_yield")),
             )
             count += 1
     return count
@@ -412,11 +466,13 @@ async def _get_stock_sector_stats(pool) -> dict[str, dict]:
 
 
 async def _get_mf_category_stats(pool) -> dict[str, dict]:
-    """Fetch per-category avg 3Y returns for contextual why_ranked."""
+    """Fetch per-category avg returns for contextual why_ranked."""
     rows = await pool.fetch(f"""
         SELECT
             COALESCE(NULLIF(category, ''), 'Other') AS category,
-            ROUND(AVG(returns_3y)::numeric, 1) AS avg_ret3y
+            ROUND(AVG(returns_1y)::numeric, 1) AS avg_ret1y,
+            ROUND(AVG(returns_3y)::numeric, 1) AS avg_ret3y,
+            ROUND(AVG(returns_5y)::numeric, 1) AS avg_ret5y
         FROM {MF_TABLE}
         WHERE returns_3y IS NOT NULL
         GROUP BY COALESCE(NULLIF(category, ''), 'Other')
@@ -425,7 +481,9 @@ async def _get_mf_category_stats(pool) -> dict[str, dict]:
     for r in rows:
         cat = str(r["category"])
         out[cat] = {
+            "avg_ret1y": float(r["avg_ret1y"]) if r["avg_ret1y"] is not None else None,
             "avg_ret3y": float(r["avg_ret3y"]) if r["avg_ret3y"] is not None else None,
+            "avg_ret5y": float(r["avg_ret5y"]) if r["avg_ret5y"] is not None else None,
         }
     return out
 
@@ -460,6 +518,7 @@ async def list_discover_stocks(
         "pe": "pe_ratio",
         "roe": "roe",
         "price": "last_price",
+        "market_cap": "market_cap",
     }
     order_col = allowed_sorts.get(str(sort_by or "").strip().lower(), "score")
     order_dir = _normalize_order(sort_order)
@@ -537,7 +596,8 @@ async def list_discover_stocks(
             pe_ratio, roe, roce, debt_to_equity, price_to_book, eps,
             score, score_momentum, score_liquidity, score_fundamentals,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,
-            primary_source, secondary_source
+            primary_source, secondary_source,
+            high_52w, low_52w, market_cap, dividend_yield
         FROM {STOCK_TABLE}
         WHERE {where_clause}
         ORDER BY {order_col} {order_dir} NULLS LAST, symbol ASC
@@ -589,6 +649,7 @@ async def list_discover_mutual_funds(
         "score": "score",
         "returns_3y": "returns_3y",
         "returns_1y": "returns_1y",
+        "returns_5y": "returns_5y",
         "aum": "aum_cr",
         "expense": "expense_ratio",
         "nav": "nav",
@@ -677,7 +738,8 @@ async def list_discover_mutual_funds(
             returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
             score, score_return, score_risk, score_cost, score_consistency,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,
-            primary_source, secondary_source
+            primary_source, secondary_source,
+            category_rank, category_total, fund_age_years
         FROM {MF_TABLE}
         {where_sql}
         ORDER BY {order_col} {order_dir} NULLS LAST, scheme_name ASC
@@ -838,151 +900,138 @@ async def get_discover_overview(
     }
 
 
-def _compute_stock_metric_winners(items: list[dict]) -> dict[str, str]:
-    winners: dict[str, str] = {}
-    higher_better = {"score": "score", "roe": "roe", "roce": "roce", "volume": "volume"}
-    lower_better = {"pe_ratio": "pe_ratio", "debt_to_equity": "debt_to_equity"}
-    for label, key in higher_better.items():
-        best_val, best_sym = None, None
-        for item in items:
-            v = _to_float(item.get(key))
-            if v is not None and (best_val is None or v > best_val):
-                best_val, best_sym = v, str(item.get("symbol") or "")
-        if best_sym:
-            winners[label] = best_sym
-    for label, key in lower_better.items():
-        best_val, best_sym = None, None
-        for item in items:
-            v = _to_float(item.get(key))
-            if v is not None and v > 0 and (best_val is None or v < best_val):
-                best_val, best_sym = v, str(item.get("symbol") or "")
-        if best_sym:
-            winners[label] = best_sym
-    return winners
-
-
-def _compute_mf_metric_winners(items: list[dict]) -> dict[str, str]:
-    winners: dict[str, str] = {}
-    higher_better = {"score": "score", "returns_3y": "returns_3y", "sharpe": "sharpe"}
-    lower_better = {"expense_ratio": "expense_ratio"}
-    for label, key in higher_better.items():
-        best_val, best_code = None, None
-        for item in items:
-            v = _to_float(item.get(key))
-            if v is not None and (best_val is None or v > best_val):
-                best_val, best_code = v, str(item.get("scheme_code") or "")
-        if best_code:
-            winners[label] = best_code
-    for label, key in lower_better.items():
-        best_val, best_code = None, None
-        for item in items:
-            v = _to_float(item.get(key))
-            if v is not None and v > 0 and (best_val is None or v < best_val):
-                best_val, best_code = v, str(item.get("scheme_code") or "")
-        if best_code:
-            winners[label] = best_code
-    return winners
-
-
-async def get_discover_compare(
-    *, segment: Literal["stocks", "mutual_funds"], ids: list[str]
-) -> dict:
-    clean_ids = [str(i).strip() for i in ids if str(i).strip()]
-    clean_ids = clean_ids[:3]
-    if not clean_ids:
-        return {
-            "segment": segment,
-            "as_of": None,
-            "count": 0,
-            "source_status": "limited",
-            "stock_items": [],
-            "mutual_fund_items": [],
-            "comparison_summary": None,
-        }
-
+async def unified_search(*, query: str, limit: int = 10) -> dict:
     pool = await get_pool()
-    if segment == "stocks":
-        sector_stats = await _get_stock_sector_stats(pool)
-        rows = await pool.fetch(
-            f"""
-            SELECT
-                symbol, display_name, market, sector,
-                last_price, point_change, percent_change, volume, traded_value,
-                pe_ratio, roe, roce, debt_to_equity, price_to_book, eps,
-                score, score_momentum, score_liquidity, score_fundamentals,
-                score_breakdown, tags, source_status, source_timestamp, ingested_at,
-                primary_source, secondary_source
-            FROM {STOCK_TABLE}
-            WHERE symbol = ANY($1::text[])
-            ORDER BY score DESC, symbol ASC
-            """,
-            clean_ids,
-        )
-        items = []
-        for r in rows:
-            d = record_to_dict(r)
-            s = str(d.get("sector") or "Other")
-            items.append(_decorate_stock_row(d, sector_stats.get(s)))
+    q = f"%{query.strip()}%"
 
-        summary = None
-        if len(items) >= 2:
-            best = max(items, key=lambda x: float(x.get("score") or 0))
-            worst = min(items, key=lambda x: float(x.get("score") or 0))
-            summary = {
-                "winner": str(best.get("symbol") or ""),
-                "score_delta": round(float(best.get("score") or 0) - float(worst.get("score") or 0), 2),
-                "metric_winners": _compute_stock_metric_winners(items),
-            }
-
-        return {
-            "segment": "stocks",
-            "as_of": await _as_of(STOCK_TABLE),
-            "count": len(items),
-            "source_status": _resolve_batch_source_status(items),
-            "stock_items": items,
-            "mutual_fund_items": [],
-            "comparison_summary": summary,
-        }
-
-    category_stats = await _get_mf_category_stats(pool)
-    rows = await pool.fetch(
+    stock_rows = await pool.fetch(
         f"""
-        SELECT
-            scheme_code, scheme_name, amc, category, sub_category,
-            plan_type, option_type, nav, nav_date,
-            expense_ratio, aum_cr, risk_level,
-            returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
-            score, score_return, score_risk, score_cost, score_consistency,
-            score_breakdown, tags, source_status, source_timestamp, ingested_at,
-            primary_source, secondary_source
-        FROM {MF_TABLE}
-        WHERE scheme_code = ANY($1::text[])
-        ORDER BY score DESC, scheme_name ASC
+        SELECT symbol, display_name, sector, last_price, percent_change, score
+        FROM {STOCK_TABLE}
+        WHERE symbol ILIKE $1 OR display_name ILIKE $1
+        ORDER BY score DESC NULLS LAST, symbol ASC
+        LIMIT $2
         """,
-        clean_ids,
+        q,
+        max(1, min(limit, 50)),
     )
-    items = []
-    for r in rows:
-        d = record_to_dict(r)
-        cat = str(d.get("category") or "Other")
-        items.append(_decorate_mf_row(d, category_stats.get(cat)))
 
-    summary = None
-    if len(items) >= 2:
-        best = max(items, key=lambda x: float(x.get("score") or 0))
-        worst = min(items, key=lambda x: float(x.get("score") or 0))
-        summary = {
-            "winner": str(best.get("scheme_code") or ""),
-            "score_delta": round(float(best.get("score") or 0) - float(worst.get("score") or 0), 2),
-            "metric_winners": _compute_mf_metric_winners(items),
-        }
+    mf_rows = await pool.fetch(
+        f"""
+        SELECT scheme_code, scheme_name, category, nav, returns_3y, score
+        FROM {MF_TABLE}
+        WHERE scheme_name ILIKE $1 OR scheme_code ILIKE $1
+        ORDER BY score DESC NULLS LAST, scheme_name ASC
+        LIMIT $2
+        """,
+        q,
+        max(1, min(limit, 50)),
+    )
 
     return {
-        "segment": "mutual_funds",
-        "as_of": await _as_of(MF_TABLE),
-        "count": len(items),
-        "source_status": _resolve_batch_source_status(items),
-        "stock_items": [],
-        "mutual_fund_items": items,
-        "comparison_summary": summary,
+        "stocks": [record_to_dict(r) for r in stock_rows],
+        "mutual_funds": [record_to_dict(r) for r in mf_rows],
     }
+
+
+async def get_discover_home_data() -> dict:
+    pool = await get_pool()
+
+    # Top stocks by score
+    top_stock_rows = await pool.fetch(
+        f"""
+        SELECT symbol, display_name, sector, last_price, percent_change, score,
+               high_52w, low_52w, market_cap
+        FROM {STOCK_TABLE}
+        WHERE market = 'IN'
+        ORDER BY score DESC NULLS LAST, symbol ASC
+        LIMIT 8
+        """
+    )
+    top_stocks = []
+    for r in top_stock_rows:
+        d = record_to_dict(r)
+        d["quality_tier"] = _compute_quality_tier(_to_float(d.get("score")))
+        top_stocks.append(d)
+
+    # Top mutual funds by score
+    top_mf_rows = await pool.fetch(
+        f"""
+        SELECT scheme_code, scheme_name, category, score, returns_1y,
+               category_rank, category_total, fund_age_years, expense_ratio,
+               returns_3y, returns_5y
+        FROM {MF_TABLE}
+        ORDER BY score DESC NULLS LAST, scheme_name ASC
+        LIMIT 8
+        """
+    )
+    top_mutual_funds = []
+    for r in top_mf_rows:
+        d = record_to_dict(r)
+        d["quality_badges"] = _compute_quality_badges(d)
+        top_mutual_funds.append(d)
+
+    # Trending stocks by traded_value
+    trending_stock_rows = await pool.fetch(
+        f"""
+        SELECT symbol, display_name, sector, last_price, percent_change, score,
+               high_52w, low_52w, market_cap
+        FROM {STOCK_TABLE}
+        WHERE market = 'IN'
+        ORDER BY traded_value DESC NULLS LAST, symbol ASC
+        LIMIT 8
+        """
+    )
+    trending_stocks = []
+    for r in trending_stock_rows:
+        d = record_to_dict(r)
+        d["quality_tier"] = _compute_quality_tier(_to_float(d.get("score")))
+        trending_stocks.append(d)
+
+    quick_categories = [
+        {"name": "Quality Stocks", "segment": "stocks", "preset": "quality"},
+        {"name": "Value Stocks", "segment": "stocks", "preset": "value"},
+        {"name": "High Volume", "segment": "stocks", "preset": "high-volume"},
+        {"name": "Large Cap Funds", "segment": "mutual_funds", "preset": "large-cap"},
+        {"name": "Flexi Cap Funds", "segment": "mutual_funds", "preset": "flexi-cap"},
+        {"name": "Low Risk Funds", "segment": "mutual_funds", "preset": "low-risk"},
+        {"name": "Index Funds", "segment": "mutual_funds", "preset": "index"},
+        {"name": "Debt Funds", "segment": "mutual_funds", "preset": "debt"},
+    ]
+
+    return {
+        "top_stocks": top_stocks,
+        "top_mutual_funds": top_mutual_funds,
+        "trending_stocks": trending_stocks,
+        "quick_categories": quick_categories,
+    }
+
+
+async def get_stock_price_history(*, symbol: str, days: int = 365) -> list[dict]:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT trade_date, close
+        FROM discover_stock_price_history
+        WHERE symbol = $1 AND trade_date >= CURRENT_DATE - $2
+        ORDER BY trade_date ASC
+        """,
+        symbol,
+        days,
+    )
+    return [record_to_dict(r) for r in rows]
+
+
+async def get_mf_nav_history(*, scheme_code: str, days: int = 365) -> list[dict]:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT nav_date, nav
+        FROM discover_mf_nav_history
+        WHERE scheme_code = $1 AND nav_date >= CURRENT_DATE - $2
+        ORDER BY nav_date ASC
+        """,
+        scheme_code,
+        days,
+    )
+    return [record_to_dict(r) for r in rows]
