@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # Discover data source URLs
     discover_stock_primary_url: str = "https://www.screener.in"
     discover_stock_fallback_url: str = "https://www.nseindia.com"
+    discover_stock_nse_timeout_seconds: int = 4
+    discover_stock_nse_cooldown_seconds: int = 300
+    discover_stock_screener_timeout_seconds: int = 8
     discover_mf_primary_url: str = "https://www.etmoney.com"
     discover_mf_fallback_url: str = "https://www.amfiindia.com/spages/NAVAll.txt"
 

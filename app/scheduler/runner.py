@@ -110,8 +110,11 @@ async def _startup_collection() -> None:
     await _run_market()
     await _run_commodity()
     await _run_brief()
-    await _run_discover_stock()
-    await _run_discover_mutual_funds()
+    # Discover stock can run long when NSE is slow; start both discover jobs together.
+    await asyncio.gather(
+        _run_discover_stock(),
+        _run_discover_mutual_funds(),
+    )
     await _run_ipo()
     await _run_macro()
     await _run_tax()

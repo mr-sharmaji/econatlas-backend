@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html import unescape
 
 import requests
@@ -58,19 +58,46 @@ class DiscoverStockScraper(BaseScraper):
         super().__init__()
         self.settings = get_settings()
         self._nse_ready = False
+        self._nse_disabled_until: datetime | None = None
+        self._nse_timeout = max(1, int(getattr(self.settings, "discover_stock_nse_timeout_seconds", 4)))
+        self._nse_cooldown = max(30, int(getattr(self.settings, "discover_stock_nse_cooldown_seconds", 300)))
+        self._screener_timeout = max(2, int(getattr(self.settings, "discover_stock_screener_timeout_seconds", 8)))
+
+    def _nse_on_cooldown(self) -> bool:
+        if self._nse_disabled_until is None:
+            return False
+        if datetime.now(timezone.utc) >= self._nse_disabled_until:
+            self._nse_disabled_until = None
+            return False
+        return True
+
+    def _activate_nse_cooldown(self, *, reason: str) -> None:
+        if self._nse_on_cooldown():
+            return
+        self._nse_ready = False
+        self._nse_disabled_until = datetime.now(timezone.utc) + timedelta(seconds=self._nse_cooldown)
+        logger.warning("NSE quote path disabled for %ds (%s); using Yahoo fallback", self._nse_cooldown, reason)
 
     def _ensure_nse_session(self) -> None:
         if self._nse_ready:
             return
+        if self._nse_on_cooldown():
+            raise RuntimeError("NSE session cooldown active")
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Referer": NSE_HOME_URL,
         }
-        self.session.get(NSE_HOME_URL, headers=headers, timeout=12)
-        self._nse_ready = True
+        try:
+            self.session.get(NSE_HOME_URL, headers=headers, timeout=self._nse_timeout)
+            self._nse_ready = True
+        except Exception:
+            self._activate_nse_cooldown(reason="session bootstrap failed")
+            raise
 
     def _fetch_nse_quote(self, symbol: str) -> dict | None:
+        if self._nse_on_cooldown():
+            return None
         try:
             self._ensure_nse_session()
             headers = {
@@ -83,7 +110,7 @@ class DiscoverStockScraper(BaseScraper):
                 NSE_QUOTE_URL,
                 params={"symbol": symbol},
                 headers=headers,
-                timeout=12,
+                timeout=self._nse_timeout,
             )
             resp.raise_for_status()
             payload = resp.json()
@@ -121,6 +148,7 @@ class DiscoverStockScraper(BaseScraper):
                 "source": "nse_quote_api",
             }
         except Exception:
+            self._activate_nse_cooldown(reason=f"quote fetch failed for {symbol}")
             logger.debug("NSE quote fetch failed for %s", symbol, exc_info=True)
             return None
 
@@ -188,7 +216,7 @@ class DiscoverStockScraper(BaseScraper):
         ]
         for url in candidates:
             try:
-                html = self._get_text(url, timeout=12)
+                html = self._get_text(url, timeout=self._screener_timeout)
                 text = unescape(re.sub(r"<[^>]+>", " ", html))
                 text = re.sub(r"\s+", " ", text)
 

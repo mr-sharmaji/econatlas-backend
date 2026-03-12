@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
 
 os.environ.setdefault(
@@ -70,6 +70,12 @@ class DiscoverStockJobTests(unittest.TestCase):
         self.assertGreaterEqual(lookup["AAA"]["score"], 0)
         self.assertLessEqual(lookup["AAA"]["score"], 100)
         self.assertIn("limited_data", lookup["AAA"]["tags"])
+
+    def test_fetch_nse_quote_skips_when_cooldown_is_active(self) -> None:
+        scraper = DiscoverStockScraper()
+        scraper._nse_disabled_until = datetime.now(timezone.utc) + timedelta(seconds=120)
+        scraper._ensure_nse_session = lambda: self.fail("NSE session should not be attempted during cooldown")
+        self.assertIsNone(scraper._fetch_nse_quote("INFY"))
 
 
 class DiscoverMutualFundJobTests(unittest.TestCase):
