@@ -27,7 +27,8 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 MFAPI_URL = "https://api.mfapi.in/mf/{scheme_code}"
-RATE_LIMIT_SECONDS = 0.5
+RATE_LIMIT_SECONDS = 1.5
+MAX_RETRIES = 4
 LOG_EVERY = 25
 
 INSERT_SQL = """
@@ -41,10 +42,23 @@ def _fetch_mf_nav(scheme_code: int) -> list[tuple[int, datetime, float]]:
     """Fetch NAV history from mfapi.in for a given scheme code.
 
     Returns a list of (scheme_code, nav_date, nav) tuples filtered to the last 365 days.
+    Retries with exponential backoff on 429 / 5xx responses.
     """
+    import time
+
     url = MFAPI_URL.format(scheme_code=scheme_code)
-    resp = requests.get(url, timeout=15)
-    resp.raise_for_status()
+    for attempt in range(MAX_RETRIES):
+        resp = requests.get(url, timeout=15)
+        if resp.status_code == 429 or resp.status_code >= 500:
+            wait = (2 ** attempt) * 5  # 5s, 10s, 20s, 40s
+            logger.warning("Got %d for %s – retrying in %ds (attempt %d/%d)", resp.status_code, scheme_code, wait, attempt + 1, MAX_RETRIES)
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        break
+    else:
+        resp.raise_for_status()
+
     payload = resp.json()
 
     cutoff = datetime.now(tz=timezone.utc).date() - timedelta(days=365)

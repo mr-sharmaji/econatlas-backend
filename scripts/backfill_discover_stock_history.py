@@ -27,7 +27,8 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS?range=1y&interval=1d"
-RATE_LIMIT_SECONDS = 0.3
+RATE_LIMIT_SECONDS = 2.0
+MAX_RETRIES = 4
 LOG_EVERY = 25
 
 INSERT_SQL = """
@@ -41,10 +42,23 @@ def _fetch_yahoo_chart(symbol: str) -> list[tuple[str, datetime, float, int | No
     """Fetch 1Y daily chart data from Yahoo Finance for a given symbol.
 
     Returns a list of (symbol, trade_date, close, volume) tuples.
+    Retries with exponential backoff on 429 / 5xx responses.
     """
+    import time
+
     url = YAHOO_CHART_URL.format(symbol=symbol)
-    resp = requests.get(url, timeout=15)
-    resp.raise_for_status()
+    for attempt in range(MAX_RETRIES):
+        resp = requests.get(url, timeout=15)
+        if resp.status_code == 429 or resp.status_code >= 500:
+            wait = (2 ** attempt) * 5  # 5s, 10s, 20s, 40s
+            logger.warning("Got %d for %s – retrying in %ds (attempt %d/%d)", resp.status_code, symbol, wait, attempt + 1, MAX_RETRIES)
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        break
+    else:
+        resp.raise_for_status()  # final attempt failed — raise
+
     data = resp.json()
 
     result = data["chart"]["result"][0]
