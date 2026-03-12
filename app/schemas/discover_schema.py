@@ -52,6 +52,7 @@ class DiscoverStockListResponse(BaseModel):
     source_status: SourceStatus
     items: list[DiscoverStockItemResponse]
     count: int
+    total_count: int | None = None
 
 
 class DiscoverMutualFundScoreBreakdown(BaseModel):
@@ -101,6 +102,20 @@ class DiscoverMutualFundListResponse(BaseModel):
     source_status: SourceStatus
     items: list[DiscoverMutualFundItemResponse]
     count: int
+    total_count: int | None = None
+
+
+class ScoreDistribution(BaseModel):
+    excellent: int = 0
+    good: int = 0
+    average: int = 0
+    poor: int = 0
+
+
+class TopSegmentEntry(BaseModel):
+    name: str
+    avg_score: float
+    count: int
 
 
 class DiscoverOverviewResponse(BaseModel):
@@ -110,6 +125,17 @@ class DiscoverOverviewResponse(BaseModel):
     source_status: SourceStatus
     leaders: list[str] = Field(default_factory=list)
     laggards: list[str] = Field(default_factory=list)
+    avg_score: float | None = None
+    score_distribution: ScoreDistribution | None = None
+    top_sectors: list[TopSegmentEntry] = Field(default_factory=list)
+    top_categories: list[TopSegmentEntry] = Field(default_factory=list)
+    data_freshness_minutes: float | None = None
+
+
+class ComparisonSummary(BaseModel):
+    winner: str
+    score_delta: float
+    metric_winners: dict[str, str] = Field(default_factory=dict)
 
 
 class DiscoverCompareResponse(BaseModel):
@@ -119,3 +145,4 @@ class DiscoverCompareResponse(BaseModel):
     source_status: SourceStatus
     stock_items: list[DiscoverStockItemResponse] = Field(default_factory=list)
     mutual_fund_items: list[DiscoverMutualFundItemResponse] = Field(default_factory=list)
+    comparison_summary: ComparisonSummary | None = None

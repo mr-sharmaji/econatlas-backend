@@ -469,7 +469,16 @@ class DiscoverMutualFundScraper(BaseScraper):
         return out
 
     @staticmethod
+    def _percentile_rank(values: list[float], target: float) -> float:
+        """Return 0-100 percentile rank of *target* within *values*."""
+        if not values:
+            return 50.0
+        below = sum(1 for v in values if v < target)
+        return (below / len(values)) * 100.0
+
+    @staticmethod
     def _risk_score(risk_level: str | None, std_dev: float | None) -> float:
+        """Blended risk score: 60% categorical + 40% continuous (when both available)."""
         mapping = {
             "low": 85.0,
             "moderately low": 75.0,
@@ -478,63 +487,111 @@ class DiscoverMutualFundScraper(BaseScraper):
             "high": 35.0,
             "very high": 20.0,
         }
+        categorical: float | None = None
         if risk_level:
             lowered = risk_level.strip().lower()
             for key, score in mapping.items():
                 if key in lowered:
-                    return score
+                    categorical = score
+                    break
+
+        continuous: float | None = None
         if std_dev is not None:
-            return max(0.0, min(100.0, 100.0 - (std_dev * 5.0)))
+            continuous = max(0.0, min(100.0, 100.0 - (std_dev * 5.0)))
+
+        if categorical is not None and continuous is not None:
+            return categorical * 0.60 + continuous * 0.40
+        if categorical is not None:
+            return categorical
+        if continuous is not None:
+            return continuous
         return 50.0
 
     @staticmethod
     def _cost_score(expense_ratio: float | None) -> float:
+        """Continuous cost score instead of tiered."""
         if expense_ratio is None:
             return 50.0
-        if expense_ratio <= 0.5:
-            return 95.0
-        if expense_ratio <= 1.0:
-            return 80.0
-        if expense_ratio <= 1.5:
-            return 60.0
-        if expense_ratio <= 2.0:
-            return 40.0
-        return 20.0
+        return max(0.0, min(100.0, 100.0 - (expense_ratio * 45.0)))
 
-    @staticmethod
-    def _consistency_score(sharpe: float | None, sortino: float | None) -> float:
+    def _consistency_score(
+        self,
+        sharpe: float | None,
+        sortino: float | None,
+        category_sharpes: list[float],
+        category_sortinos: list[float],
+    ) -> float:
+        """Percentile-rank Sharpe/Sortino within category peers."""
         values: list[float] = []
         if sharpe is not None:
-            values.append(max(0.0, min(100.0, sharpe * 35.0)))
+            if category_sharpes:
+                values.append(self._percentile_rank(category_sharpes, sharpe))
+            else:
+                values.append(max(0.0, min(100.0, sharpe * 35.0)))
         if sortino is not None:
-            values.append(max(0.0, min(100.0, sortino * 28.0)))
+            if category_sortinos:
+                values.append(self._percentile_rank(category_sortinos, sortino))
+            else:
+                values.append(max(0.0, min(100.0, sortino * 28.0)))
         if not values:
             return 50.0
         return sum(values) / len(values)
 
     def _return_score(self, rows: list[dict], current: dict) -> float:
+        """Blended return score: 3Y(50%) + 5Y(30%) + 1Y(20%) when available."""
         category = str(current.get("category") or "Other")
         bucket = [r for r in rows if str(r.get("category") or "Other") == category]
-        values = [self._to_float(r.get("returns_3y")) for r in bucket]
-        numeric = [v for v in values if v is not None]
-        cur = self._to_float(current.get("returns_3y"))
-        if cur is None:
-            cur = self._to_float(current.get("returns_1y"))
+
+        def _peer_percentile(key: str) -> float | None:
+            cur = self._to_float(current.get(key))
             if cur is None:
-                return 50.0
-            # 1Y proxy gets lower conviction.
-            return max(0.0, min(100.0, 30.0 + (cur * 3.0)))
-        if not numeric:
-            return max(0.0, min(100.0, 30.0 + (cur * 3.0)))
-        lo = min(numeric)
-        hi = max(numeric)
-        if hi - lo < 1e-6:
-            return 65.0
-        return max(0.0, min(100.0, ((cur - lo) / (hi - lo)) * 100.0))
+                return None
+            peer_vals = [self._to_float(r.get(key)) for r in bucket]
+            numeric = [v for v in peer_vals if v is not None]
+            if not numeric:
+                return max(0.0, min(100.0, 30.0 + (cur * 3.0)))
+            lo, hi = min(numeric), max(numeric)
+            if hi - lo < 1e-6:
+                return 65.0
+            return max(0.0, min(100.0, ((cur - lo) / (hi - lo)) * 100.0))
+
+        r3 = _peer_percentile("returns_3y")
+        r5 = _peer_percentile("returns_5y")
+        r1 = _peer_percentile("returns_1y")
+
+        # Weighted blend based on what's available
+        parts: list[tuple[float, float]] = []  # (score, weight)
+        if r3 is not None:
+            parts.append((r3, 0.50))
+        if r5 is not None:
+            parts.append((r5, 0.30))
+        if r1 is not None:
+            parts.append((r1, 0.20))
+
+        if not parts:
+            return 50.0
+        total_w = sum(w for _, w in parts)
+        return sum(s * w for s, w in parts) / total_w
 
     def _compute_scores(self, rows: list[dict]) -> list[dict]:
+        if not rows:
+            return []
+
+        # Pre-compute category-level Sharpe/Sortino lists for peer ranking
+        cat_sharpes: dict[str, list[float]] = {}
+        cat_sortinos: dict[str, list[float]] = {}
+        for r in rows:
+            cat = str(r.get("category") or "Other")
+            s = self._to_float(r.get("sharpe"))
+            if s is not None:
+                cat_sharpes.setdefault(cat, []).append(s)
+            t = self._to_float(r.get("sortino"))
+            if t is not None:
+                cat_sortinos.setdefault(cat, []).append(t)
+
         out: list[dict] = []
         for row in rows:
+            cat = str(row.get("category") or "Other")
             return_score = self._return_score(rows, row)
             risk_score = self._risk_score(
                 risk_level=str(row.get("risk_level") or "").strip() or None,
@@ -544,6 +601,8 @@ class DiscoverMutualFundScraper(BaseScraper):
             consistency_score = self._consistency_score(
                 self._to_float(row.get("sharpe")),
                 self._to_float(row.get("sortino")),
+                cat_sharpes.get(cat, []),
+                cat_sortinos.get(cat, []),
             )
             score = (
                 (return_score * 0.40)
@@ -551,6 +610,11 @@ class DiscoverMutualFundScraper(BaseScraper):
                 + (cost_score * 0.20)
                 + (consistency_score * 0.15)
             )
+
+            # AUM quality gate: small funds (< 100 Cr) get 10% penalty
+            aum = self._to_float(row.get("aum_cr"))
+            if aum is not None and aum < 100:
+                score *= 0.90
 
             status = str(row.get("source_status") or "limited")
             has_advanced = any(
@@ -564,10 +628,15 @@ class DiscoverMutualFundScraper(BaseScraper):
             ret3 = self._to_float(row.get("returns_3y"))
             if ret3 is not None and ret3 >= 12:
                 tags.append("strong_returns")
+            ret5 = self._to_float(row.get("returns_5y"))
+            if ret5 is not None and ret5 >= 12:
+                tags.append("consistent_performer")
             if cost_score >= 80:
                 tags.append("low_cost")
             if risk_score >= 75:
                 tags.append("lower_risk")
+            if aum is not None and aum < 100:
+                tags.append("small_fund")
             if status != "primary":
                 tags.append("limited_data")
             if not tags:

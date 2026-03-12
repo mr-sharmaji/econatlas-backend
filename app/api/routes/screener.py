@@ -5,12 +5,15 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.discover_schema import (
+    ComparisonSummary,
     DiscoverCompareResponse,
     DiscoverMutualFundItemResponse,
     DiscoverMutualFundListResponse,
     DiscoverOverviewResponse,
     DiscoverStockItemResponse,
     DiscoverStockListResponse,
+    ScoreDistribution,
+    TopSegmentEntry,
 )
 from app.schemas.market_intel_schema import ScreenerItemResponse, ScreenerResponse
 from app.services import discover_service, market_intel_service
@@ -54,14 +57,27 @@ async def get_discover_overview(
 ) -> DiscoverOverviewResponse:
     try:
         payload = await discover_service.get_discover_overview(segment=segment)
-        return DiscoverOverviewResponse(**payload)
+        dist = payload.get("score_distribution")
+        return DiscoverOverviewResponse(
+            segment=payload["segment"],
+            as_of=payload.get("as_of"),
+            total_items=payload["total_items"],
+            source_status=payload.get("source_status") or "limited",
+            leaders=payload.get("leaders", []),
+            laggards=payload.get("laggards", []),
+            avg_score=payload.get("avg_score"),
+            score_distribution=ScoreDistribution(**dist) if dist else None,
+            top_sectors=[TopSegmentEntry(**e) for e in payload.get("top_sectors", [])],
+            top_categories=[TopSegmentEntry(**e) for e in payload.get("top_categories", [])],
+            data_freshness_minutes=payload.get("data_freshness_minutes"),
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/stocks", response_model=DiscoverStockListResponse)
 async def get_discover_stocks(
-    preset: str = Query(default="momentum", description="momentum|value|low-volatility|high-volume|breakout"),
+    preset: str = Query(default="momentum", description="momentum|value|low-volatility|high-volume|breakout|quality|dividend"),
     search: str | None = Query(default=None),
     sector: str | None = Query(default=None),
     min_score: float | None = Query(default=None, ge=0.0, le=100.0),
@@ -109,6 +125,7 @@ async def get_discover_stocks(
             source_status=payload.get("source_status") or "limited",
             items=[DiscoverStockItemResponse(**item) for item in payload["items"]],
             count=payload["count"],
+            total_count=payload.get("total_count"),
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -116,7 +133,7 @@ async def get_discover_stocks(
 
 @router.get("/mutual-funds", response_model=DiscoverMutualFundListResponse)
 async def get_discover_mutual_funds(
-    preset: str = Query(default="all", description="all|large-cap|flexi-cap|index|low-risk"),
+    preset: str = Query(default="all", description="all|large-cap|flexi-cap|index|low-risk|mid-cap|debt"),
     search: str | None = Query(default=None),
     category: str | None = Query(default=None),
     risk_level: str | None = Query(default=None),
@@ -155,6 +172,7 @@ async def get_discover_mutual_funds(
             source_status=payload.get("source_status") or "limited",
             items=[DiscoverMutualFundItemResponse(**item) for item in payload["items"]],
             count=payload["count"],
+            total_count=payload.get("total_count"),
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -168,6 +186,7 @@ async def get_discover_compare(
     try:
         id_list = [part.strip() for part in ids.split(",") if part.strip()]
         payload = await discover_service.get_discover_compare(segment=segment, ids=id_list)
+        summary = payload.get("comparison_summary")
         return DiscoverCompareResponse(
             segment=payload["segment"],
             as_of=payload.get("as_of"),
@@ -178,6 +197,7 @@ async def get_discover_compare(
                 DiscoverMutualFundItemResponse(**item)
                 for item in payload.get("mutual_fund_items", [])
             ],
+            comparison_summary=ComparisonSummary(**summary) if summary else None,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

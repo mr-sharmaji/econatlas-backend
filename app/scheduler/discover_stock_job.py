@@ -397,42 +397,129 @@ class DiscoverStockScraper(BaseScraper):
     def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
         return max(lo, min(hi, value))
 
-    def _score_fundamentals(self, row: dict) -> tuple[float, int]:
-        parts: list[float] = []
+    @staticmethod
+    def _percentile_rank(values: list[float], target: float) -> float:
+        """Return 0-100 percentile rank of *target* within *values*."""
+        if not values:
+            return 50.0
+        below = sum(1 for v in values if v < target)
+        return (below / len(values)) * 100.0
+
+    @staticmethod
+    def _median(values: list[float]) -> float:
+        if not values:
+            return 0.0
+        s = sorted(values)
+        n = len(s)
+        mid = n // 2
+        return (s[mid] + s[mid - 1]) / 2.0 if n % 2 == 0 else s[mid]
+
+    def _score_fundamentals(
+        self,
+        row: dict,
+        sector_medians: dict[str, dict[str, float]],
+    ) -> tuple[float, int]:
+        """Weighted fundamentals score with sector-relative PE/PB."""
+        sector = str(row.get("sector") or "Other")
+        medians = sector_medians.get(sector, {})
+        parts: dict[str, float] = {}
         metrics_used = 0
 
+        # --- PE (lower is better, sector-relative) ---
         pe = row.get("pe_ratio")
         if pe is not None and pe > 0:
-            parts.append(self._clamp(100 - ((pe / 80) * 100)))
+            median_pe = medians.get("pe", 25.0)
+            ratio = pe / max(median_pe, 1.0)
+            parts["pe"] = self._clamp(100 - (ratio * 50))
             metrics_used += 1
 
+        # --- ROE (higher is better) ---
         roe = row.get("roe")
         if roe is not None:
-            parts.append(self._clamp(roe * 5))
+            parts["roe"] = self._clamp(roe * 4.5)
             metrics_used += 1
 
+        # --- ROCE (higher is better) ---
         roce = row.get("roce")
         if roce is not None:
-            parts.append(self._clamp(roce * 4.5))
+            parts["roce"] = self._clamp(roce * 4.0)
             metrics_used += 1
 
+        # --- Debt-to-Equity (lower is better) ---
         dte = row.get("debt_to_equity")
         if dte is not None:
-            parts.append(self._clamp(100 - (dte * 50)))
+            parts["dte"] = self._clamp(100 - (dte * 45))
             metrics_used += 1
 
+        # --- Price-to-Book (lower is better, sector-relative) ---
         pb = row.get("price_to_book")
         if pb is not None and pb > 0:
-            parts.append(self._clamp(100 - ((pb / 15) * 100)))
+            median_pb = medians.get("pb", 4.0)
+            ratio = pb / max(median_pb, 0.5)
+            parts["pb"] = self._clamp(100 - (ratio * 40))
             metrics_used += 1
 
         if not parts:
             return 50.0, metrics_used
-        return round(sum(parts) / len(parts), 2), metrics_used
+
+        # Weighted average: ROE 30%, ROCE 25%, PE 20%, D/E 15%, P/B 10%
+        weights = {"roe": 0.30, "roce": 0.25, "pe": 0.20, "dte": 0.15, "pb": 0.10}
+        total_w = 0.0
+        weighted_sum = 0.0
+        for key, score in parts.items():
+            w = weights.get(key, 0.10)
+            weighted_sum += score * w
+            total_w += w
+        result = weighted_sum / total_w if total_w > 0 else 50.0
+
+        # EPS quality gate: negative EPS caps fundamentals at 40
+        eps = row.get("eps")
+        if eps is not None and eps < 0:
+            result = min(result, 40.0)
+
+        return round(result, 2), metrics_used
 
     def _compute_scores(self, rows: list[dict]) -> list[dict]:
+        if not rows:
+            return []
+
+        # Pre-compute sector medians for PE and PB
+        sector_pe: dict[str, list[float]] = {}
+        sector_pb: dict[str, list[float]] = {}
+        for r in rows:
+            sector = str(r.get("sector") or "Other")
+            pe = r.get("pe_ratio")
+            if pe is not None and pe > 0:
+                sector_pe.setdefault(sector, []).append(float(pe))
+            pb = r.get("price_to_book")
+            if pb is not None and pb > 0:
+                sector_pb.setdefault(sector, []).append(float(pb))
+
+        # Overall medians as fallback for sectors with < 3 stocks
+        all_pe = [v for vals in sector_pe.values() for v in vals]
+        all_pb = [v for vals in sector_pb.values() for v in vals]
+        overall_pe_med = self._median(all_pe) if all_pe else 25.0
+        overall_pb_med = self._median(all_pb) if all_pb else 4.0
+
+        sector_medians: dict[str, dict[str, float]] = {}
+        all_sectors = set(str(r.get("sector") or "Other") for r in rows)
+        for sector in all_sectors:
+            pe_vals = sector_pe.get(sector, [])
+            pb_vals = sector_pb.get(sector, [])
+            sector_medians[sector] = {
+                "pe": self._median(pe_vals) if len(pe_vals) >= 3 else overall_pe_med,
+                "pb": self._median(pb_vals) if len(pb_vals) >= 3 else overall_pb_med,
+            }
+
+        # Pre-compute percentile data for momentum
+        all_pcts = [float(r.get("percent_change") or 0.0) for r in rows]
+
+        # Pre-compute max values for liquidity
         max_tv = max((float(r.get("traded_value") or 0.0) for r in rows), default=0.0)
         max_vol = max((float(r.get("volume") or 0.0) for r in rows), default=0.0)
+
+        # Track sector scores for sector_leader tag
+        sector_best: dict[str, tuple[float, str]] = {}
 
         out: list[dict] = []
         for row in rows:
@@ -440,15 +527,15 @@ class DiscoverStockScraper(BaseScraper):
             tv = float(row.get("traded_value") or 0.0)
             vol = float(row.get("volume") or 0.0)
 
-            momentum = self._clamp(50 + (pct * 10))
-            if abs(pct) >= 2:
-                momentum = self._clamp(momentum + 10)
+            # Percentile-based momentum
+            momentum = self._clamp(self._percentile_rank(all_pcts, pct))
 
+            # Weighted liquidity: 60% traded_value + 40% volume
             tv_norm = (tv / max_tv) if max_tv > 0 else 0.0
             vol_norm = (vol / max_vol) if max_vol > 0 else 0.0
-            liquidity = self._clamp(((tv_norm + vol_norm) / 2.0) * 100)
+            liquidity = self._clamp((tv_norm * 0.60 + vol_norm * 0.40) * 100)
 
-            fundamentals, metrics_used = self._score_fundamentals(row)
+            fundamentals, metrics_used = self._score_fundamentals(row, sector_medians)
             combined_signal = round((momentum + liquidity) / 2.0, 2)
             if metrics_used == 0:
                 total = combined_signal
@@ -468,14 +555,30 @@ class DiscoverStockScraper(BaseScraper):
                 tags.append("high_liquidity")
             if fundamentals >= 70:
                 tags.append("strong_fundamentals")
+            eps = row.get("eps")
+            if eps is not None and eps < 0:
+                tags.append("negative_eps")
+            # Check for undervalued: PE below sector median + strong fundamentals
+            pe = row.get("pe_ratio")
+            sector = str(row.get("sector") or "Other")
+            med_pe = sector_medians.get(sector, {}).get("pe", 25.0)
+            if pe is not None and pe > 0 and pe < med_pe and fundamentals >= 60:
+                tags.append("undervalued")
             if source_status != "primary":
                 tags.append("limited_data")
             if not tags:
                 tags.append("balanced")
 
+            score = round(self._clamp(total), 2)
+            symbol = str(row.get("symbol") or "")
+
+            # Track sector leader
+            if sector not in sector_best or score > sector_best[sector][0]:
+                sector_best[sector] = (score, symbol)
+
             enriched = {
                 **row,
-                "score": round(self._clamp(total), 2),
+                "score": score,
                 "score_momentum": round(momentum, 2),
                 "score_liquidity": round(liquidity, 2),
                 "score_fundamentals": round(fundamentals, 2),
@@ -489,6 +592,14 @@ class DiscoverStockScraper(BaseScraper):
                 "source_status": source_status,
             }
             out.append(enriched)
+
+        # Add sector_leader tag to the top scorer in each sector
+        for enriched in out:
+            symbol = str(enriched.get("symbol") or "")
+            sector = str(enriched.get("sector") or "Other")
+            best = sector_best.get(sector)
+            if best and best[1] == symbol and "sector_leader" not in enriched["tags"]:
+                enriched["tags"].insert(0, "sector_leader")
 
         out.sort(key=lambda item: (float(item.get("score") or 0.0), float(item.get("percent_change") or 0.0)), reverse=True)
         return out

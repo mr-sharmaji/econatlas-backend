@@ -98,68 +98,109 @@ def _mf_breakdown_payload(row: dict) -> dict:
     }
 
 
-def _stock_why_ranked(row: dict) -> list[str]:
+def _stock_why_ranked(row: dict, sector_stats: dict | None = None) -> list[str]:
     reasons: list[str] = []
     pct = _to_float(row.get("percent_change"))
     if pct is not None and pct >= 2.0:
-        reasons.append("Strong momentum above +2%.")
+        reasons.append(f"Strong momentum at +{pct:.1f}% today.")
     elif pct is not None and pct <= -2.0:
-        reasons.append("Large downside move; high-volatility signal.")
+        reasons.append(f"High-volatility signal at {pct:.1f}% today.")
+
     tv = _to_float(row.get("traded_value"))
     if tv is not None and tv >= 500_000_000:
-        reasons.append("High traded value supports liquidity.")
+        tv_cr = tv / 10_000_000
+        reasons.append(f"High traded value of {tv_cr:.0f} Cr supports liquidity.")
+
     roe = _to_float(row.get("roe"))
     if roe is not None and roe >= 15:
-        reasons.append("Healthy ROE profile.")
+        if sector_stats and sector_stats.get("avg_roe"):
+            reasons.append(f"ROE of {roe:.1f}% vs sector avg {sector_stats['avg_roe']:.1f}%.")
+        else:
+            reasons.append(f"ROE of {roe:.1f}% indicates strong profitability.")
+
+    roce = _to_float(row.get("roce"))
+    if roce is not None and roce >= 15 and len(reasons) < 3:
+        reasons.append(f"ROCE of {roce:.1f}% shows efficient capital use.")
+
     dte = _to_float(row.get("debt_to_equity"))
     if dte is not None and dte <= 0.6:
-        reasons.append("Conservative leverage profile.")
+        reasons.append(f"Conservative D/E ratio of {dte:.2f}.")
+
+    eps = _to_float(row.get("eps"))
+    if eps is not None and eps < 0:
+        reasons.append("Negative EPS — profitability concern.")
+
+    pe = _to_float(row.get("pe_ratio"))
+    if pe is not None and pe > 0 and sector_stats and sector_stats.get("median_pe"):
+        med = sector_stats["median_pe"]
+        if pe < med * 0.8:
+            reasons.append(f"PE of {pe:.1f} is below sector median of {med:.1f}.")
+
     status = _normalize_source_status(row.get("source_status"))
     if status != "primary":
         reasons.append("Some metrics are based on fallback or limited data.")
     if not reasons:
         reasons.append("Balanced rank across momentum, liquidity, and fundamentals.")
-    return reasons[:3]
+    return reasons[:4]
 
 
-def _mf_why_ranked(row: dict) -> list[str]:
+def _mf_why_ranked(row: dict, category_stats: dict | None = None) -> list[str]:
     reasons: list[str] = []
     ret3 = _to_float(row.get("returns_3y"))
     if ret3 is not None and ret3 >= 12:
-        reasons.append("Strong 3Y return profile.")
+        if category_stats and category_stats.get("avg_ret3y"):
+            reasons.append(f"3Y return of {ret3:.1f}% vs category avg {category_stats['avg_ret3y']:.1f}%.")
+        else:
+            reasons.append(f"Strong 3Y return of {ret3:.1f}%.")
+
+    ret5 = _to_float(row.get("returns_5y"))
+    if ret5 is not None and ret5 >= 12:
+        reasons.append(f"Consistent 5Y return of {ret5:.1f}%.")
+
     expense = _to_float(row.get("expense_ratio"))
     if expense is not None and expense <= 1.0:
-        reasons.append("Low expense ratio supports long-term compounding.")
+        reasons.append(f"Low expense ratio of {expense:.2f}% supports compounding.")
+
     risk = str(row.get("risk_level") or "").strip().lower()
     if risk in {"low", "moderately low"}:
-        reasons.append("Risk profile is relatively conservative.")
+        reasons.append(f"Risk level: {row.get('risk_level', '').strip()}.")
+
+    sharpe = _to_float(row.get("sharpe"))
+    if sharpe is not None and sharpe >= 1.5:
+        reasons.append(f"Sharpe ratio of {sharpe:.2f} indicates strong risk-adjusted returns.")
+
+    aum = _to_float(row.get("aum_cr"))
+    if aum is not None and aum < 100:
+        reasons.append("Small fund size (< 100 Cr) — metrics may be less stable.")
+
     if str(row.get("plan_type") or "").strip().lower() == "direct":
         reasons.append("Direct plan selected for lower cost drag.")
+
     status = _normalize_source_status(row.get("source_status"))
     if status != "primary":
         reasons.append("Some advanced metrics are unavailable in fallback mode.")
     if not reasons:
         reasons.append("Balanced risk-return-cost score within category.")
-    return reasons[:3]
+    return reasons[:4]
 
 
-def _decorate_stock_row(row: dict) -> dict:
+def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
     item = dict(row)
     item["source_status"] = _normalize_source_status(item.get("source_status"))
     item["score_breakdown"] = _stock_breakdown_payload(item)
     tags = item.get("tags")
     item["tags"] = tags if isinstance(tags, list) else []
-    item["why_ranked"] = _stock_why_ranked(item)
+    item["why_ranked"] = _stock_why_ranked(item, sector_stats)
     return item
 
 
-def _decorate_mf_row(row: dict) -> dict:
+def _decorate_mf_row(row: dict, category_stats: dict | None = None) -> dict:
     item = dict(row)
     item["source_status"] = _normalize_source_status(item.get("source_status"))
     item["score_breakdown"] = _mf_breakdown_payload(item)
     tags = item.get("tags")
     item["tags"] = tags if isinstance(tags, list) else []
-    item["why_ranked"] = _mf_why_ranked(item)
+    item["why_ranked"] = _mf_why_ranked(item, category_stats)
     return item
 
 
@@ -348,6 +389,47 @@ def _normalize_order(sort_order: str | None) -> str:
     return "ASC" if str(sort_order or "").strip().lower() == "asc" else "DESC"
 
 
+async def _get_stock_sector_stats(pool) -> dict[str, dict]:
+    """Fetch per-sector avg ROE, median PE for contextual why_ranked."""
+    rows = await pool.fetch(f"""
+        SELECT
+            COALESCE(NULLIF(sector, ''), 'Other') AS sector,
+            ROUND(AVG(roe)::numeric, 1) AS avg_roe,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY pe_ratio)
+                FILTER (WHERE pe_ratio > 0) AS median_pe
+        FROM {STOCK_TABLE}
+        WHERE market = 'IN'
+        GROUP BY COALESCE(NULLIF(sector, ''), 'Other')
+    """)
+    out: dict[str, dict] = {}
+    for r in rows:
+        sector = str(r["sector"])
+        out[sector] = {
+            "avg_roe": float(r["avg_roe"]) if r["avg_roe"] is not None else None,
+            "median_pe": float(r["median_pe"]) if r["median_pe"] is not None else None,
+        }
+    return out
+
+
+async def _get_mf_category_stats(pool) -> dict[str, dict]:
+    """Fetch per-category avg 3Y returns for contextual why_ranked."""
+    rows = await pool.fetch(f"""
+        SELECT
+            COALESCE(NULLIF(category, ''), 'Other') AS category,
+            ROUND(AVG(returns_3y)::numeric, 1) AS avg_ret3y
+        FROM {MF_TABLE}
+        WHERE returns_3y IS NOT NULL
+        GROUP BY COALESCE(NULLIF(category, ''), 'Other')
+    """)
+    out: dict[str, dict] = {}
+    for r in rows:
+        cat = str(r["category"])
+        out[cat] = {
+            "avg_ret3y": float(r["avg_ret3y"]) if r["avg_ret3y"] is not None else None,
+        }
+    return out
+
+
 async def list_discover_stocks(
     *,
     preset: str = "momentum",
@@ -400,6 +482,14 @@ async def list_discover_stocks(
     elif preset_norm == "breakout":
         conds.append("ABS(COALESCE(percent_change, 0)) >= 2")
         conds.append("COALESCE(volume, 0) >= 500000")
+    elif preset_norm == "quality":
+        conds.append("COALESCE(roe, 0) >= 15")
+        conds.append("COALESCE(roce, 0) >= 15")
+        conds.append("(debt_to_equity IS NULL OR debt_to_equity <= 1.0)")
+    elif preset_norm == "dividend":
+        conds.append("COALESCE(eps, 0) > 0")
+        conds.append("(pe_ratio IS NULL OR pe_ratio <= 25)")
+        conds.append("score_fundamentals >= 50")
 
     if search and search.strip():
         q = f"%{search.strip()}%"
@@ -431,9 +521,14 @@ async def list_discover_stocks(
     if source_status and source_status.strip().lower() != "all":
         _add("source_status = ${idx}", _normalize_source_status(source_status))
 
+    where_clause = " AND ".join(conds)
+    filter_args = list(args)
+
     args.extend([max(1, min(limit, 250)), max(0, offset)])
 
     pool = await get_pool()
+    sector_stats = await _get_stock_sector_stats(pool)
+
     rows = await pool.fetch(
         f"""
         SELECT
@@ -444,20 +539,32 @@ async def list_discover_stocks(
             score_breakdown, tags, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source
         FROM {STOCK_TABLE}
-        WHERE {' AND '.join(conds)}
+        WHERE {where_clause}
         ORDER BY {order_col} {order_dir} NULLS LAST, symbol ASC
         LIMIT ${len(args) - 1} OFFSET ${len(args)}
         """,
         *args,
     )
 
-    items = [_decorate_stock_row(record_to_dict(r)) for r in rows]
+    total_row = await pool.fetchrow(
+        f"SELECT COUNT(*) AS total FROM {STOCK_TABLE} WHERE {where_clause}",
+        *filter_args,
+    )
+    total_count = int(total_row["total"]) if total_row else 0
+
+    items = []
+    for r in rows:
+        d = record_to_dict(r)
+        s = str(d.get("sector") or "Other")
+        items.append(_decorate_stock_row(d, sector_stats.get(s)))
+
     return {
         "preset": preset_norm,
         "as_of": await _as_of(STOCK_TABLE),
         "source_status": _resolve_batch_source_status(items),
         "items": items,
         "count": len(items),
+        "total_count": total_count,
     }
 
 
@@ -517,6 +624,14 @@ async def list_discover_mutual_funds(
         conds.append(
             "(LOWER(COALESCE(risk_level, '')) IN ('low','moderately low') OR COALESCE(std_dev, 999) <= 8)"
         )
+    elif preset_norm == "mid-cap":
+        conds.append(
+            "(LOWER(COALESCE(category, '')) LIKE '%mid%' OR LOWER(COALESCE(sub_category, '')) LIKE '%mid%')"
+        )
+    elif preset_norm == "debt":
+        conds.append(
+            "(LOWER(COALESCE(category, '')) ~ '(debt|bond|gilt|money market|liquid|overnight|ultra short)')"
+        )
 
     if search and search.strip():
         q = f"%{search.strip()}%"
@@ -546,9 +661,13 @@ async def list_discover_mutual_funds(
         _add("source_status = ${idx}", _normalize_source_status(source_status))
 
     where_sql = f"WHERE {' AND '.join(conds)}" if conds else ""
+    filter_args = list(args)
+
     args.extend([max(1, min(limit, 250)), max(0, offset)])
 
     pool = await get_pool()
+    category_stats = await _get_mf_category_stats(pool)
+
     rows = await pool.fetch(
         f"""
         SELECT
@@ -567,13 +686,23 @@ async def list_discover_mutual_funds(
         *args,
     )
 
-    items = [_decorate_mf_row(record_to_dict(r)) for r in rows]
+    total_count_sql = f"SELECT COUNT(*) AS total FROM {MF_TABLE} {where_sql}"
+    total_row = await pool.fetchrow(total_count_sql, *filter_args)
+    total_count = int(total_row["total"]) if total_row else 0
+
+    items = []
+    for r in rows:
+        d = record_to_dict(r)
+        cat = str(d.get("category") or "Other")
+        items.append(_decorate_mf_row(d, category_stats.get(cat)))
+
     return {
         "preset": preset_norm,
         "as_of": await _as_of(MF_TABLE),
         "source_status": _resolve_batch_source_status(items),
         "items": items,
         "count": len(items),
+        "total_count": total_count,
     }
 
 
@@ -593,6 +722,36 @@ async def get_discover_overview(
             f"SELECT source_status FROM {STOCK_TABLE} WHERE market = 'IN' ORDER BY score DESC LIMIT 20"
         )
         source = _resolve_batch_source_status([record_to_dict(r) for r in sample_rows])
+
+        stats_row = await pool.fetchrow(f"""
+            SELECT
+                ROUND(AVG(score)::numeric, 1) AS avg_score,
+                COUNT(*) FILTER (WHERE score >= 75) AS excellent,
+                COUNT(*) FILTER (WHERE score >= 50 AND score < 75) AS good,
+                COUNT(*) FILTER (WHERE score >= 25 AND score < 50) AS average,
+                COUNT(*) FILTER (WHERE score < 25) AS poor
+            FROM {STOCK_TABLE} WHERE market = 'IN'
+        """)
+
+        sector_rows = await pool.fetch(f"""
+            SELECT
+                COALESCE(NULLIF(sector, ''), 'Other') AS name,
+                ROUND(AVG(score)::numeric, 1) AS avg_score,
+                COUNT(*) AS count
+            FROM {STOCK_TABLE} WHERE market = 'IN'
+            GROUP BY COALESCE(NULLIF(sector, ''), 'Other')
+            HAVING COUNT(*) >= 2
+            ORDER BY avg_score DESC LIMIT 3
+        """)
+
+        freshness_row = await pool.fetchrow(
+            f"SELECT MAX(ingested_at) AS latest FROM {STOCK_TABLE} WHERE market = 'IN'"
+        )
+        freshness_minutes = None
+        if freshness_row and freshness_row["latest"]:
+            delta = datetime.now(timezone.utc) - freshness_row["latest"]
+            freshness_minutes = round(delta.total_seconds() / 60.0, 1)
+
         return {
             "segment": "stocks",
             "as_of": await _as_of(STOCK_TABLE),
@@ -600,6 +759,19 @@ async def get_discover_overview(
             "source_status": source,
             "leaders": [str(r["symbol"]) for r in leader_rows],
             "laggards": [str(r["symbol"]) for r in laggard_rows],
+            "avg_score": float(stats_row["avg_score"]) if stats_row and stats_row["avg_score"] is not None else None,
+            "score_distribution": {
+                "excellent": int(stats_row["excellent"] or 0) if stats_row else 0,
+                "good": int(stats_row["good"] or 0) if stats_row else 0,
+                "average": int(stats_row["average"] or 0) if stats_row else 0,
+                "poor": int(stats_row["poor"] or 0) if stats_row else 0,
+            } if stats_row else None,
+            "top_sectors": [
+                {"name": str(r["name"]), "avg_score": float(r["avg_score"]), "count": int(r["count"])}
+                for r in sector_rows
+            ],
+            "top_categories": [],
+            "data_freshness_minutes": freshness_minutes,
         }
 
     total_row = await pool.fetchrow(f"SELECT COUNT(*) AS c FROM {MF_TABLE}")
@@ -613,6 +785,36 @@ async def get_discover_overview(
         f"SELECT source_status FROM {MF_TABLE} ORDER BY score DESC LIMIT 20"
     )
     source = _resolve_batch_source_status([record_to_dict(r) for r in sample_rows])
+
+    stats_row = await pool.fetchrow(f"""
+        SELECT
+            ROUND(AVG(score)::numeric, 1) AS avg_score,
+            COUNT(*) FILTER (WHERE score >= 75) AS excellent,
+            COUNT(*) FILTER (WHERE score >= 50 AND score < 75) AS good,
+            COUNT(*) FILTER (WHERE score >= 25 AND score < 50) AS average,
+            COUNT(*) FILTER (WHERE score < 25) AS poor
+        FROM {MF_TABLE}
+    """)
+
+    cat_rows = await pool.fetch(f"""
+        SELECT
+            COALESCE(NULLIF(category, ''), 'Other') AS name,
+            ROUND(AVG(score)::numeric, 1) AS avg_score,
+            COUNT(*) AS count
+        FROM {MF_TABLE}
+        GROUP BY COALESCE(NULLIF(category, ''), 'Other')
+        HAVING COUNT(*) >= 2
+        ORDER BY avg_score DESC LIMIT 3
+    """)
+
+    freshness_row = await pool.fetchrow(
+        f"SELECT MAX(ingested_at) AS latest FROM {MF_TABLE}"
+    )
+    freshness_minutes = None
+    if freshness_row and freshness_row["latest"]:
+        delta = datetime.now(timezone.utc) - freshness_row["latest"]
+        freshness_minutes = round(delta.total_seconds() / 60.0, 1)
+
     return {
         "segment": "mutual_funds",
         "as_of": await _as_of(MF_TABLE),
@@ -620,7 +822,66 @@ async def get_discover_overview(
         "source_status": source,
         "leaders": [str(r["scheme_name"]) for r in leader_rows],
         "laggards": [str(r["scheme_name"]) for r in laggard_rows],
+        "avg_score": float(stats_row["avg_score"]) if stats_row and stats_row["avg_score"] is not None else None,
+        "score_distribution": {
+            "excellent": int(stats_row["excellent"] or 0) if stats_row else 0,
+            "good": int(stats_row["good"] or 0) if stats_row else 0,
+            "average": int(stats_row["average"] or 0) if stats_row else 0,
+            "poor": int(stats_row["poor"] or 0) if stats_row else 0,
+        } if stats_row else None,
+        "top_sectors": [],
+        "top_categories": [
+            {"name": str(r["name"]), "avg_score": float(r["avg_score"]), "count": int(r["count"])}
+            for r in cat_rows
+        ],
+        "data_freshness_minutes": freshness_minutes,
     }
+
+
+def _compute_stock_metric_winners(items: list[dict]) -> dict[str, str]:
+    winners: dict[str, str] = {}
+    higher_better = {"score": "score", "roe": "roe", "roce": "roce", "volume": "volume"}
+    lower_better = {"pe_ratio": "pe_ratio", "debt_to_equity": "debt_to_equity"}
+    for label, key in higher_better.items():
+        best_val, best_sym = None, None
+        for item in items:
+            v = _to_float(item.get(key))
+            if v is not None and (best_val is None or v > best_val):
+                best_val, best_sym = v, str(item.get("symbol") or "")
+        if best_sym:
+            winners[label] = best_sym
+    for label, key in lower_better.items():
+        best_val, best_sym = None, None
+        for item in items:
+            v = _to_float(item.get(key))
+            if v is not None and v > 0 and (best_val is None or v < best_val):
+                best_val, best_sym = v, str(item.get("symbol") or "")
+        if best_sym:
+            winners[label] = best_sym
+    return winners
+
+
+def _compute_mf_metric_winners(items: list[dict]) -> dict[str, str]:
+    winners: dict[str, str] = {}
+    higher_better = {"score": "score", "returns_3y": "returns_3y", "sharpe": "sharpe"}
+    lower_better = {"expense_ratio": "expense_ratio"}
+    for label, key in higher_better.items():
+        best_val, best_code = None, None
+        for item in items:
+            v = _to_float(item.get(key))
+            if v is not None and (best_val is None or v > best_val):
+                best_val, best_code = v, str(item.get("scheme_code") or "")
+        if best_code:
+            winners[label] = best_code
+    for label, key in lower_better.items():
+        best_val, best_code = None, None
+        for item in items:
+            v = _to_float(item.get(key))
+            if v is not None and v > 0 and (best_val is None or v < best_val):
+                best_val, best_code = v, str(item.get("scheme_code") or "")
+        if best_code:
+            winners[label] = best_code
+    return winners
 
 
 async def get_discover_compare(
@@ -636,10 +897,12 @@ async def get_discover_compare(
             "source_status": "limited",
             "stock_items": [],
             "mutual_fund_items": [],
+            "comparison_summary": None,
         }
 
     pool = await get_pool()
     if segment == "stocks":
+        sector_stats = await _get_stock_sector_stats(pool)
         rows = await pool.fetch(
             f"""
             SELECT
@@ -655,7 +918,22 @@ async def get_discover_compare(
             """,
             clean_ids,
         )
-        items = [_decorate_stock_row(record_to_dict(r)) for r in rows]
+        items = []
+        for r in rows:
+            d = record_to_dict(r)
+            s = str(d.get("sector") or "Other")
+            items.append(_decorate_stock_row(d, sector_stats.get(s)))
+
+        summary = None
+        if len(items) >= 2:
+            best = max(items, key=lambda x: float(x.get("score") or 0))
+            worst = min(items, key=lambda x: float(x.get("score") or 0))
+            summary = {
+                "winner": str(best.get("symbol") or ""),
+                "score_delta": round(float(best.get("score") or 0) - float(worst.get("score") or 0), 2),
+                "metric_winners": _compute_stock_metric_winners(items),
+            }
+
         return {
             "segment": "stocks",
             "as_of": await _as_of(STOCK_TABLE),
@@ -663,8 +941,10 @@ async def get_discover_compare(
             "source_status": _resolve_batch_source_status(items),
             "stock_items": items,
             "mutual_fund_items": [],
+            "comparison_summary": summary,
         }
 
+    category_stats = await _get_mf_category_stats(pool)
     rows = await pool.fetch(
         f"""
         SELECT
@@ -681,7 +961,22 @@ async def get_discover_compare(
         """,
         clean_ids,
     )
-    items = [_decorate_mf_row(record_to_dict(r)) for r in rows]
+    items = []
+    for r in rows:
+        d = record_to_dict(r)
+        cat = str(d.get("category") or "Other")
+        items.append(_decorate_mf_row(d, category_stats.get(cat)))
+
+    summary = None
+    if len(items) >= 2:
+        best = max(items, key=lambda x: float(x.get("score") or 0))
+        worst = min(items, key=lambda x: float(x.get("score") or 0))
+        summary = {
+            "winner": str(best.get("scheme_code") or ""),
+            "score_delta": round(float(best.get("score") or 0) - float(worst.get("score") or 0), 2),
+            "metric_winners": _compute_mf_metric_winners(items),
+        }
+
     return {
         "segment": "mutual_funds",
         "as_of": await _as_of(MF_TABLE),
@@ -689,4 +984,5 @@ async def get_discover_compare(
         "source_status": _resolve_batch_source_status(items),
         "stock_items": [],
         "mutual_fund_items": items,
+        "comparison_summary": summary,
     }
