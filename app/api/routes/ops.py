@@ -101,6 +101,7 @@ async def ops_logs(
 @router.post("/jobs/trigger/{job_name}")
 async def trigger_job(
     job_name: str = Path(..., description="Name of the job to trigger"),
+    force: bool = Query(default=False, description="Force enqueue even if a previous run exists"),
     x_ops_token: str | None = Header(default=None),
 ) -> dict:
     """Manually enqueue a background job for immediate execution."""
@@ -113,12 +114,18 @@ async def trigger_job(
     from app.queue.redis_pool import get_redis_pool
 
     pool = await get_redis_pool()
-    job = await pool.enqueue_job(job_name, _job_id=f"{job_name}_manual")
+
+    job_id = f"{job_name}_manual"
+    if force:
+        # Use a unique job ID to bypass ARQ deduplication
+        job_id = f"{job_name}_manual_{int(datetime.now(timezone.utc).timestamp())}"
+
+    job = await pool.enqueue_job(job_name, _job_id=job_id)
     logger.info("Manually triggered job: %s (job_id=%s)", job_name, job.job_id if job else "deduped")
     return {
         "status": "enqueued" if job else "already_queued",
         "job_name": job_name,
-        "job_id": job.job_id if job else f"{job_name}_manual",
+        "job_id": job.job_id if job else job_id,
     }
 
 
@@ -180,8 +187,11 @@ async def running_jobs(
             except Exception as exc:
                 running.append({"job_id": job_id, "status": "running", "error": str(exc)})
 
-        # 2. Check known job IDs (manual triggers + startup jobs)
-        known_ids = [f"{name}_manual" for name in _VALID_JOBS] + [f"startup_{name}" for name in _VALID_JOBS]
+        # 2. Check known job IDs (manual triggers + startup + cron jobs)
+        known_ids = (
+            [f"{name}_manual" for name in _VALID_JOBS]
+            + [f"startup_{name}" for name in _VALID_JOBS]
+        )
 
         for job_id in known_ids:
             if job_id in seen_ids:
