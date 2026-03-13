@@ -147,6 +147,7 @@ async def clear_stale_jobs(
 
     pool = await get_redis_pool()
     cleared_progress = []
+    cleared_per_job = []
     cleared_jobs = []
 
     # 1. Clear the in-progress set
@@ -157,8 +158,16 @@ async def clear_stale_jobs(
         await pool.srem(in_progress_key, raw_id)
         cleared_progress.append(job_id)
 
-    # 2. Delete individual job hash keys for known startup/manual jobs
-    #    These contain the per-job in-progress marker that blocks re-execution.
+    # 2. Delete per-job-id in-progress keys (`arq:in-progress:{job_id}`)
+    #    THIS is what causes "already running elsewhere" — a TTL string key.
+    async for key in pool.scan_iter(match=f"{in_progress_key_prefix}*"):
+        key_str = key.decode() if isinstance(key, bytes) else str(key)
+        if key_str == in_progress_key:
+            continue
+        await pool.delete(key)
+        cleared_per_job.append(key_str.removeprefix(in_progress_key_prefix))
+
+    # 3. Delete individual job hash keys for known startup/manual jobs
     known_prefixes = [f"startup_{name}" for name in _VALID_JOBS] + [f"{name}_manual" for name in _VALID_JOBS]
     for jid in known_prefixes:
         job_key = job_key_prefix + jid
@@ -166,20 +175,19 @@ async def clear_stale_jobs(
             await pool.delete(job_key)
             cleared_jobs.append(jid)
 
-    # 3. Also scan for timestamped manual job keys
+    # 4. Also scan for timestamped manual job keys
     async for key in pool.scan_iter(match=f"{job_key_prefix}*_manual_*"):
         key_str = key.decode() if isinstance(key, bytes) else str(key)
         await pool.delete(key)
         cleared_jobs.append(key_str.removeprefix(job_key_prefix))
 
-    logger.warning(
-        "Cleared stale state: %d in-progress entries, %d job keys",
-        len(cleared_progress), len(cleared_jobs),
-    )
+    total = len(cleared_progress) + len(cleared_per_job) + len(cleared_jobs)
+    logger.warning("Cleared stale state: %d set entries, %d per-job locks, %d job hashes", len(cleared_progress), len(cleared_per_job), len(cleared_jobs))
     return {
-        "cleared_in_progress": cleared_progress,
+        "cleared_in_progress_set": cleared_progress,
+        "cleared_per_job_locks": cleared_per_job,
         "cleared_job_keys": cleared_jobs,
-        "total": len(cleared_progress) + len(cleared_jobs),
+        "total": total,
     }
 
 

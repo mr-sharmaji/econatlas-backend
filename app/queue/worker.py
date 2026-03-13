@@ -17,12 +17,13 @@ _worker_task: asyncio.Task | None = None
 
 
 async def _clear_stale_arq_state() -> None:
-    """Remove orphaned in-progress markers left by a previous unclean shutdown.
+    """Remove ALL orphaned ARQ state left by a previous unclean shutdown.
 
-    When the server restarts mid-job, ARQ leaves behind:
-    - `arq:in-progress:arq:queue` set with stale job IDs
-    - `arq:job:{id}` hashes with in-progress markers
-    These prevent the worker from picking up new jobs for the same function.
+    ARQ uses three types of Redis keys that can go stale on crash:
+    1. `arq:in-progress:arq:queue` — set of job IDs the worker is processing
+    2. `arq:job:{id}` — per-job hash with metadata
+    3. `arq:in-progress:{job_id}` — per-job TTL key that blocks re-execution
+       (THIS is what causes "already running elsewhere")
     """
     from arq.constants import default_queue_name, in_progress_key_prefix, job_key_prefix
 
@@ -38,7 +39,17 @@ async def _clear_stale_arq_state() -> None:
         await pool.srem(in_progress_key, raw_id)
         cleared += 1
 
-    # 2. Delete stale job hashes for startup/manual jobs
+    # 2. Delete per-job-id in-progress keys (the actual "already running" blocker)
+    #    These are `arq:in-progress:{job_id}` string keys with a TTL.
+    async for key in pool.scan_iter(match=f"{in_progress_key_prefix}*"):
+        key_str = key.decode() if isinstance(key, bytes) else str(key)
+        # Don't delete the queue-level set itself (handled above)
+        if key_str == in_progress_key:
+            continue
+        await pool.delete(key)
+        cleared += 1
+
+    # 3. Delete stale job hashes for startup/manual jobs
     from app.api.routes.ops import _VALID_JOBS
 
     known_ids = (
@@ -51,7 +62,7 @@ async def _clear_stale_arq_state() -> None:
             await pool.delete(job_key)
             cleared += 1
 
-    # 3. Scan for timestamped manual job keys
+    # 4. Scan for timestamped manual job keys
     async for key in pool.scan_iter(match=f"{job_key_prefix}*_manual_*"):
         await pool.delete(key)
         cleared += 1
