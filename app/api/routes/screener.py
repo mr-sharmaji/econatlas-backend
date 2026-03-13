@@ -139,7 +139,7 @@ async def get_discover_stocks(
     min_pb: float | None = Query(default=None, ge=0.0, description="Min P/B ratio"),
     max_pb: float | None = Query(default=None, ge=0.0, description="Max P/B ratio"),
     source_status: str | None = Query(default=None, description="primary|fallback|limited"),
-    sort_by: str = Query(default="score", description="score|change|volume|traded_value|pe|roe|price|market_cap"),
+    sort_by: str = Query(default="score", description="score|change|change_3m|change_1y|volume|traded_value|pe|roe|price|market_cap"),
     sort_order: str = Query(default="desc", description="asc|desc"),
     limit: int = Query(default=25, ge=1, le=250),
     offset: int = Query(default=0, ge=0),

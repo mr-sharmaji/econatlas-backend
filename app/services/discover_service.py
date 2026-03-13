@@ -114,8 +114,11 @@ def _stock_breakdown_payload(row: dict) -> dict:
     fundamentals = _to_float(row.get("score_fundamentals")) or 0.0
     volatility = _to_float(row.get("score_volatility")) or 0.0
     growth = _to_float(row.get("score_growth")) or 0.0
+    financial_health = _to_float(row.get("score_financial_health")) or 0.0
+    ownership = _to_float(row.get("score_ownership")) or 0.0
+    analyst = _to_float(row.get("score_analyst")) or 0.0
     combined_signal = ((momentum + liquidity) / 2.0) if (momentum or liquidity) else 0.0
-    return {
+    result = {
         "momentum": round(momentum, 2),
         "liquidity": round(liquidity, 2),
         "fundamentals": round(fundamentals, 2),
@@ -123,15 +126,40 @@ def _stock_breakdown_payload(row: dict) -> dict:
         "growth": round(growth, 2),
         "combined_signal": round(combined_signal, 2),
     }
+    # Only include v0.2.4 scores if they have non-zero values
+    if financial_health:
+        result["financial_health"] = round(financial_health, 2)
+    if ownership:
+        result["ownership"] = round(ownership, 2)
+    if analyst:
+        result["analyst"] = round(analyst, 2)
+    # Additional coverage/quality metadata
+    pos_52w = _to_float(row.get("position_52w"))
+    if pos_52w is not None:
+        result["52w_position"] = round(pos_52w, 2)
+    fc = row.get("fundamentals_coverage")
+    if fc:
+        result["fundamentals_coverage"] = str(fc)
+    dq = row.get("data_quality")
+    if dq:
+        result["data_quality"] = str(dq)
+    return result
 
 
 def _mf_breakdown_payload(row: dict) -> dict:
-    return {
+    result = {
         "return_score": round(_to_float(row.get("score_return")) or 0.0, 2),
         "risk_score": round(_to_float(row.get("score_risk")) or 0.0, 2),
         "cost_score": round(_to_float(row.get("score_cost")) or 0.0, 2),
         "consistency_score": round(_to_float(row.get("score_consistency")) or 0.0, 2),
     }
+    alpha_score = _to_float(row.get("score_alpha"))
+    beta_score = _to_float(row.get("score_beta"))
+    if alpha_score:
+        result["alpha_score"] = round(alpha_score, 2)
+    if beta_score:
+        result["beta_score"] = round(beta_score, 2)
+    return result
 
 
 def _stock_why_ranked(row: dict, sector_stats: dict | None = None) -> list[str]:
@@ -312,7 +340,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     gross_margins, operating_margins, profit_margins,
                     revenue_growth, earnings_growth, forward_pe,
                     analyst_target_mean, analyst_count, analyst_recommendation, analyst_recommendation_mean,
-                    industry
+                    industry, payout_ratio
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -331,7 +359,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     $54, $55, $56,
                     $57, $58, $59,
                     $60, $61, $62, $63,
-                    $64
+                    $64, $65
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -398,7 +426,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     analyst_count = EXCLUDED.analyst_count,
                     analyst_recommendation = EXCLUDED.analyst_recommendation,
                     analyst_recommendation_mean = EXCLUDED.analyst_recommendation_mean,
-                    industry = EXCLUDED.industry
+                    industry = EXCLUDED.industry,
+                    payout_ratio = EXCLUDED.payout_ratio
                 """,
                 str(row.get("market") or "IN"),                                    # $1
                 str(row.get("symbol") or ""),                                      # $2
@@ -464,6 +493,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 row.get("analyst_recommendation"),                                 # $62
                 _to_float(row.get("analyst_recommendation_mean")),                 # $63
                 row.get("industry"),                                               # $64
+                _to_float(row.get("payout_ratio")),                                # $65
             )
             count += 1
     return count
@@ -665,6 +695,8 @@ async def list_discover_stocks(
     allowed_sorts = {
         "score": "score",
         "change": "percent_change",
+        "change_3m": "percent_change_3m",
+        "change_1y": "percent_change_1y",
         "volume": "volume",
         "traded_value": "traded_value",
         "pe": "pe_ratio",
@@ -753,15 +785,24 @@ async def list_discover_stocks(
     rows = await pool.fetch(
         f"""
         SELECT
-            symbol, display_name, market, sector,
+            symbol, display_name, market, sector, industry,
             last_price, point_change, percent_change, volume, traded_value,
             pe_ratio, roe, roce, debt_to_equity, price_to_book, eps,
             score, score_momentum, score_liquidity, score_fundamentals,
             score_volatility, score_growth,
+            score_financial_health, score_ownership, score_analyst,
             percent_change_3m, percent_change_1w,
+            percent_change_1y, percent_change_3y,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
-            high_52w, low_52w, market_cap, dividend_yield
+            high_52w, low_52w, market_cap, dividend_yield,
+            promoter_holding, fii_holding, dii_holding, government_holding, public_holding,
+            num_shareholders, promoter_holding_change, fii_holding_change, dii_holding_change,
+            beta, free_cash_flow, operating_cash_flow, total_cash, total_debt, total_revenue,
+            gross_margins, operating_margins, profit_margins,
+            revenue_growth, earnings_growth, forward_pe,
+            analyst_target_mean, analyst_count, analyst_recommendation, analyst_recommendation_mean,
+            payout_ratio
         FROM {STOCK_TABLE}
         WHERE {where_clause}
         ORDER BY {order_col} {order_dir} NULLS LAST, symbol ASC
@@ -955,7 +996,9 @@ async def list_discover_mutual_funds(
             score, score_return, score_risk, score_cost, score_consistency,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
-            category_rank, category_total, fund_age_years
+            category_rank, category_total, fund_age_years,
+            max_drawdown, rolling_return_consistency,
+            alpha, beta, score_alpha, score_beta
         FROM {MF_TABLE}
         {where_sql}
         ORDER BY {order_col} {order_dir} NULLS LAST, scheme_name ASC
@@ -1633,15 +1676,24 @@ async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
     rows = await pool.fetch(
         f"""
         SELECT
-            symbol, display_name, market, sector,
+            symbol, display_name, market, sector, industry,
             last_price, point_change, percent_change, volume, traded_value,
             pe_ratio, roe, roce, debt_to_equity, price_to_book, eps,
             score, score_momentum, score_liquidity, score_fundamentals,
             score_volatility, score_growth,
+            score_financial_health, score_ownership, score_analyst,
             percent_change_3m, percent_change_1w,
+            percent_change_1y, percent_change_3y,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
-            high_52w, low_52w, market_cap, dividend_yield
+            high_52w, low_52w, market_cap, dividend_yield,
+            promoter_holding, fii_holding, dii_holding, government_holding, public_holding,
+            num_shareholders, promoter_holding_change, fii_holding_change, dii_holding_change,
+            beta, free_cash_flow, operating_cash_flow, total_cash, total_debt, total_revenue,
+            gross_margins, operating_margins, profit_margins,
+            revenue_growth, earnings_growth, forward_pe,
+            analyst_target_mean, analyst_count, analyst_recommendation, analyst_recommendation_mean,
+            payout_ratio
         FROM {STOCK_TABLE}
         WHERE sector = $1 AND symbol != $2
         ORDER BY score DESC NULLS LAST
@@ -1687,7 +1739,9 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
             score, score_return, score_risk, score_cost, score_consistency,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
-            category_rank, category_total, fund_age_years
+            category_rank, category_total, fund_age_years,
+            max_drawdown, rolling_return_consistency,
+            alpha, beta, score_alpha, score_beta
         FROM {MF_TABLE}
         WHERE COALESCE(NULLIF(sub_category, ''), category) = $1
           AND scheme_code != $2

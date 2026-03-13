@@ -430,6 +430,8 @@ ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_financial_he
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_analyst DOUBLE PRECISION;
 -- Industry sub-sector (from Screener.in)
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS industry TEXT;
+-- Payout ratio (from Yahoo Finance)
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS payout_ratio DOUBLE PRECISION;
 
 -- Dead-letter queue for failed background jobs
 CREATE TABLE IF NOT EXISTS job_dead_letters (
