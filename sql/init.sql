@@ -332,10 +332,13 @@ ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS dividend_yield DOU
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_volatility DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_growth DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS percent_change_3m DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS percent_change_1w DOUBLE PRECISION;
 
 -- Discover enrichment: additional MF columns
 ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS category_rank INTEGER;
 ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS category_total INTEGER;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS sub_category_rank INTEGER;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS sub_category_total INTEGER;
 ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS fund_age_years DOUBLE PRECISION;
 
 -- Historical stock prices for charts

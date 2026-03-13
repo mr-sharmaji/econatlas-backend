@@ -1434,11 +1434,13 @@ async def run_discover_mutual_fund_job() -> None:
         count = await discover_service.upsert_discover_mutual_fund_snapshots(rows)
         logger.info("Discover mutual fund job complete: %d snapshots upserted", count)
 
-        # After upsert, compute category rank
+        # After upsert, compute dual ranking: sub-category + category
         pool = await get_pool()
+
+        # 1. Sub-category rank (granular: Large Cap, Mid Cap, Corporate Bond, etc.)
         await pool.execute("""
             UPDATE discover_mutual_fund_snapshots AS t
-            SET category_rank = sub.rnk, category_total = sub.total
+            SET sub_category_rank = sub.rnk, sub_category_total = sub.total
             FROM (
                 SELECT scheme_code,
                        DENSE_RANK() OVER (
@@ -1447,6 +1449,24 @@ async def run_discover_mutual_fund_job() -> None:
                        ) AS rnk,
                        COUNT(*) OVER (
                            PARTITION BY COALESCE(NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
+                       ) AS total
+                FROM discover_mutual_fund_snapshots
+            ) sub
+            WHERE t.scheme_code = sub.scheme_code
+        """)
+
+        # 2. Category rank (broader: Equity, Debt, Hybrid, etc.)
+        await pool.execute("""
+            UPDATE discover_mutual_fund_snapshots AS t
+            SET category_rank = sub.rnk, category_total = sub.total
+            FROM (
+                SELECT scheme_code,
+                       DENSE_RANK() OVER (
+                           PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
+                           ORDER BY score DESC
+                       ) AS rnk,
+                       COUNT(*) OVER (
+                           PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
                        ) AS total
                 FROM discover_mutual_fund_snapshots
             ) sub

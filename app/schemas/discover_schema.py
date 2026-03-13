@@ -46,6 +46,7 @@ class DiscoverStockItemResponse(BaseModel):
     score_volatility: float = 0
     score_growth: float = 0
     percent_change_3m: float | None = None
+    percent_change_1w: float | None = None
     score_breakdown: DiscoverStockScoreBreakdown
     tags: list[str] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)
@@ -94,6 +95,8 @@ class DiscoverMutualFundItemResponse(BaseModel):
     sortino: float | None = None
     category_rank: int | None = None
     category_total: int | None = None
+    sub_category_rank: int | None = None
+    sub_category_total: int | None = None
     fund_age_years: float | None = None
     quality_badges: list[str] = Field(default_factory=list)
     category_avg_returns_1y: float | None = None
@@ -184,6 +187,7 @@ class DiscoverHomeStockItem(BaseModel):
     last_price: float
     percent_change: float | None = None
     percent_change_3m: float | None = None
+    percent_change_1w: float | None = None
     score: float
     quality_tier: str | None = None
 
@@ -211,14 +215,11 @@ class DiscoverHomeResponse(BaseModel):
     top_equity_funds: list[DiscoverHomeMutualFundItem] = Field(default_factory=list)
     top_debt_funds: list[DiscoverHomeMutualFundItem] = Field(default_factory=list)
     trending_this_week: list[DiscoverHomeStockItem] = Field(default_factory=list)
+    sector_champions: list[DiscoverHomeStockItem] = Field(default_factory=list)
     gainers: list[DiscoverHomeStockItem] = Field(default_factory=list)
     gainers_3m: list[DiscoverHomeStockItem] = Field(default_factory=list)
     losers: list[DiscoverHomeStockItem] = Field(default_factory=list)
     losers_3m: list[DiscoverHomeStockItem] = Field(default_factory=list)
-    hot_today_sector_name: str | None = None
-    hot_today_stocks: list[DiscoverHomeStockItem] = Field(default_factory=list)
-    leader_3m_sector_name: str | None = None
-    leader_3m_stocks: list[DiscoverHomeStockItem] = Field(default_factory=list)
     quick_categories: list[QuickCategory] = Field(default_factory=list)
 
 

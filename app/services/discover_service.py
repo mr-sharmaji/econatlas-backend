@@ -299,7 +299,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     market, symbol, display_name, sector, last_price, point_change, percent_change,
                     volume, traded_value, pe_ratio, roe, roce, debt_to_equity, price_to_book, eps,
                     score, score_momentum, score_liquidity, score_fundamentals,
-                    score_volatility, score_growth, percent_change_3m,
+                    score_volatility, score_growth, percent_change_3m, percent_change_1w,
                     score_breakdown, tags, source_status, source_timestamp, ingested_at,
                     primary_source, secondary_source,
                     high_52w, low_52w, market_cap, dividend_yield
@@ -308,10 +308,10 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     $1, $2, $3, $4, $5, $6, $7,
                     $8, $9, $10, $11, $12, $13, $14, $15,
                     $16, $17, $18, $19,
-                    $20, $21, $22,
-                    $23, $24, $25, $26, NOW(),
-                    $27, $28,
-                    $29, $30, $31, $32
+                    $20, $21, $22, $23,
+                    $24, $25, $26, $27, NOW(),
+                    $28, $29,
+                    $30, $31, $32, $33
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -336,6 +336,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     score_volatility = EXCLUDED.score_volatility,
                     score_growth = EXCLUDED.score_growth,
                     percent_change_3m = EXCLUDED.percent_change_3m,
+                    percent_change_1w = EXCLUDED.percent_change_1w,
                     score_breakdown = EXCLUDED.score_breakdown,
                     tags = EXCLUDED.tags,
                     source_status = EXCLUDED.source_status,
@@ -370,6 +371,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("score_volatility")) or 0.0,
                 _to_float(row.get("score_growth")) or 0.0,
                 _to_float(row.get("percent_change_3m")),
+                _to_float(row.get("percent_change_1w")),
                 _to_jsonb(row.get("score_breakdown"), _stock_breakdown_payload(row)),
                 _to_jsonb(row.get("tags"), []),
                 _normalize_source_status(row.get("source_status")),
@@ -1053,7 +1055,7 @@ async def get_discover_home_data() -> dict:
 
     _stock_cols = (
         "symbol, display_name, sector, last_price, percent_change, "
-        "percent_change_3m, score, high_52w, low_52w, market_cap"
+        "percent_change_3m, percent_change_1w, score, high_52w, low_52w, market_cap"
     )
 
     def _decorate_stock_list(rows) -> list[dict]:
@@ -1072,6 +1074,7 @@ async def get_discover_home_data() -> dict:
                    ROW_NUMBER() OVER (PARTITION BY COALESCE(sector, 'Other') ORDER BY score DESC) AS rn
             FROM {STOCK_TABLE}
             WHERE market = 'IN' AND source_status IN ('primary', 'fallback') AND score >= 50
+                  AND percent_change_3m IS NOT NULL
         ) sub WHERE rn <= 2
         ORDER BY score DESC LIMIT 8
         """
@@ -1193,47 +1196,27 @@ async def get_discover_home_data() -> dict:
     )
     losers_3m = _decorate_stock_list(loser_3m_rows)
 
-    # Hot Today 🔥: sector with best avg daily percent_change
-    hot_today_sector_name = None
-    hot_today_stocks = []
-    hot_sector = await pool.fetchrow(
+    # Sector Champions: top 1 stock from each sector by 70% score + 30% 3M change
+    champion_rows = await pool.fetch(
         f"""
-        SELECT sector, AVG(percent_change) AS avg_change
-        FROM {STOCK_TABLE}
-        WHERE market = 'IN' AND sector IS NOT NULL AND percent_change IS NOT NULL
+        SELECT * FROM (
+            SELECT {_stock_cols},
+                   ROW_NUMBER() OVER (
+                       PARTITION BY sector
+                       ORDER BY (score * 0.70 + COALESCE(percent_change_3m, 0) * 0.30) DESC
+                   ) AS rn
+            FROM {STOCK_TABLE}
+            WHERE market = 'IN'
+              AND sector IS NOT NULL
+              AND sector != 'Other'
               AND source_status IN ('primary', 'fallback')
-        GROUP BY sector HAVING COUNT(*) >= 3
-        ORDER BY AVG(percent_change) DESC LIMIT 1
+              AND score >= 30
+        ) sub WHERE rn = 1
+        ORDER BY (score * 0.70 + COALESCE(percent_change_3m, 0) * 0.30) DESC
+        LIMIT 10
         """
     )
-    if hot_sector:
-        hot_today_sector_name = hot_sector["sector"]
-        hot_rows = await pool.fetch(
-            f"SELECT {_stock_cols} FROM {STOCK_TABLE} WHERE market = 'IN' AND sector = $1 ORDER BY percent_change DESC LIMIT 8",
-            hot_today_sector_name,
-        )
-        hot_today_stocks = _decorate_stock_list(hot_rows)
-
-    # 3M Sector Leader 📈: sector with best avg 3M change
-    leader_3m_sector_name = None
-    leader_3m_stocks = []
-    leader_sector = await pool.fetchrow(
-        f"""
-        SELECT sector, AVG(percent_change_3m) AS avg_change_3m
-        FROM {STOCK_TABLE}
-        WHERE market = 'IN' AND sector IS NOT NULL AND percent_change_3m IS NOT NULL
-              AND source_status IN ('primary', 'fallback')
-        GROUP BY sector HAVING COUNT(*) >= 3
-        ORDER BY AVG(percent_change_3m) DESC LIMIT 1
-        """
-    )
-    if leader_sector:
-        leader_3m_sector_name = leader_sector["sector"]
-        leader_rows = await pool.fetch(
-            f"SELECT {_stock_cols} FROM {STOCK_TABLE} WHERE market = 'IN' AND sector = $1 ORDER BY percent_change_3m DESC NULLS LAST LIMIT 8",
-            leader_3m_sector_name,
-        )
-        leader_3m_stocks = _decorate_stock_list(leader_rows)
+    sector_champions = _decorate_stock_list(champion_rows)
 
     quick_categories = [
         {"name": "Quality Stocks", "segment": "stocks", "preset": "quality"},
@@ -1255,10 +1238,7 @@ async def get_discover_home_data() -> dict:
         "gainers_3m": gainers_3m,
         "losers": losers,
         "losers_3m": losers_3m,
-        "hot_today_sector_name": hot_today_sector_name,
-        "hot_today_stocks": hot_today_stocks,
-        "leader_3m_sector_name": leader_3m_sector_name,
-        "leader_3m_stocks": leader_3m_stocks,
+        "sector_champions": sector_champions,
         "quick_categories": quick_categories,
     }
 
@@ -1331,14 +1311,23 @@ async def get_stock_price_history(*, symbol: str, days: int = 365) -> list[dict]
 
 
 async def get_bulk_stock_volatility_data() -> dict[str, dict]:
-    """Fetch 3M price stats (std_dev of daily returns, first close, last close) for all stocks.
+    """Fetch 3M price stats + short-term stats for all stocks.
 
-    Returns {symbol: {"std_dev": float, "pct_change_3m": float, "data_points": int}}.
+    Returns {symbol: {
+        "std_dev": float,          # 3M daily return std dev
+        "pct_change_3m": float,    # 3M price change %
+        "pct_change_1w": float,    # 1W price change %
+        "avg_vol_5d": float,       # 5-day avg volume
+        "avg_vol_20d": float,      # 20-day avg volume
+        "momentum_5d": float,      # 5-day return %
+        "momentum_20d": float,     # 20-day return %
+        "data_points": int,
+    }}.
     """
     pool = await get_pool()
     rows = await pool.fetch(
         """
-        WITH daily AS (
+        WITH daily_3m AS (
             SELECT symbol, close,
                    LAG(close) OVER (PARTITION BY symbol ORDER BY trade_date) AS prev_close,
                    FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
@@ -1349,21 +1338,44 @@ async def get_bulk_stock_volatility_data() -> dict[str, dict]:
             FROM discover_stock_price_history
             WHERE trade_date >= CURRENT_DATE - INTERVAL '90 days'
         ),
-        returns AS (
+        returns_3m AS (
             SELECT symbol,
                    (close - prev_close) / NULLIF(prev_close, 0) AS daily_return,
                    first_close, last_close, cnt
-            FROM daily
+            FROM daily_3m
             WHERE prev_close IS NOT NULL AND prev_close > 0
+        ),
+        stats_3m AS (
+            SELECT symbol,
+                   STDDEV_SAMP(daily_return) AS std_dev,
+                   MIN(first_close) AS first_close,
+                   MAX(last_close) AS last_close,
+                   MAX(cnt) AS data_points
+            FROM returns_3m
+            GROUP BY symbol
+            HAVING COUNT(*) >= 5
+        ),
+        recent AS (
+            SELECT symbol, close, volume,
+                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) AS rn
+            FROM discover_stock_price_history
+            WHERE trade_date >= CURRENT_DATE - INTERVAL '30 days'
+        ),
+        short_term AS (
+            SELECT symbol,
+                   MAX(close) FILTER (WHERE rn = 1) AS latest_close,
+                   MAX(close) FILTER (WHERE rn = 5) AS close_5d_ago,
+                   MAX(close) FILTER (WHERE rn = 20) AS close_20d_ago,
+                   AVG(volume) FILTER (WHERE rn <= 5) AS avg_vol_5d,
+                   AVG(volume) FILTER (WHERE rn <= 20) AS avg_vol_20d
+            FROM recent
+            GROUP BY symbol
         )
-        SELECT symbol,
-               STDDEV_SAMP(daily_return) AS std_dev,
-               MIN(first_close) AS first_close,
-               MAX(last_close) AS last_close,
-               MAX(cnt) AS data_points
-        FROM returns
-        GROUP BY symbol
-        HAVING COUNT(*) >= 5
+        SELECT s.symbol, s.std_dev, s.first_close, s.last_close, s.data_points,
+               st.latest_close, st.close_5d_ago, st.close_20d_ago,
+               st.avg_vol_5d, st.avg_vol_20d
+        FROM stats_3m s
+        LEFT JOIN short_term st ON s.symbol = st.symbol
         """
     )
     result: dict[str, dict] = {}
@@ -1371,12 +1383,34 @@ async def get_bulk_stock_volatility_data() -> dict[str, dict]:
         sym = r["symbol"]
         first_close = float(r["first_close"]) if r["first_close"] else None
         last_close = float(r["last_close"]) if r["last_close"] else None
+        latest = float(r["latest_close"]) if r["latest_close"] else None
+        close_5d = float(r["close_5d_ago"]) if r["close_5d_ago"] else None
+        close_20d = float(r["close_20d_ago"]) if r["close_20d_ago"] else None
+
         pct_3m = None
         if first_close and first_close > 0 and last_close:
             pct_3m = round(((last_close - first_close) / first_close) * 100, 2)
+
+        pct_1w = None
+        if latest and close_5d and close_5d > 0:
+            pct_1w = round(((latest - close_5d) / close_5d) * 100, 2)
+
+        momentum_5d = None
+        if latest and close_5d and close_5d > 0:
+            momentum_5d = round(((latest - close_5d) / close_5d) * 100, 2)
+
+        momentum_20d = None
+        if latest and close_20d and close_20d > 0:
+            momentum_20d = round(((latest - close_20d) / close_20d) * 100, 2)
+
         result[sym] = {
             "std_dev": float(r["std_dev"]) if r["std_dev"] else None,
             "pct_change_3m": pct_3m,
+            "pct_change_1w": pct_1w,
+            "momentum_5d": momentum_5d,
+            "momentum_20d": momentum_20d,
+            "avg_vol_5d": float(r["avg_vol_5d"]) if r["avg_vol_5d"] else None,
+            "avg_vol_20d": float(r["avg_vol_20d"]) if r["avg_vol_20d"] else None,
             "data_points": int(r["data_points"]) if r["data_points"] else 0,
         }
     return result

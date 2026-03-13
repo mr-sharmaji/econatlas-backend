@@ -137,6 +137,16 @@ async def init_pool() -> asyncpg.Pool:
         await conn.execute(
             "ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS percent_change_3m DOUBLE PRECISION"
         )
+        await conn.execute(
+            "ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS percent_change_1w DOUBLE PRECISION"
+        )
+        # MF dual ranking: sub-category rank columns
+        await conn.execute(
+            "ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS sub_category_rank INTEGER"
+        )
+        await conn.execute(
+            "ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS sub_category_total INTEGER"
+        )
         # IPO snapshot backward-compatible columns for Closed tab and retention.
         await conn.execute(
             "ALTER TABLE ipo_snapshots ADD COLUMN IF NOT EXISTS listing_price DOUBLE PRECISION"

@@ -798,7 +798,7 @@ class DiscoverStockScraper(BaseScraper):
                 "pb": self._median(pb_vals) if len(pb_vals) >= 3 else overall_pb_med,
             }
 
-        # Pre-compute robust percentile data for momentum (winsorized).
+        # Pre-compute robust percentile data for daily momentum (winsorized).
         all_pcts_raw = [float(r.get("percent_change") or 0.0) for r in rows]
         if all_pcts_raw:
             if len(all_pcts_raw) >= 8:
@@ -814,7 +814,45 @@ class DiscoverStockScraper(BaseScraper):
             pct_lo, pct_hi = pct_hi, pct_lo
         all_pcts = [max(pct_lo, min(pct_hi, v)) for v in all_pcts_raw]
 
-        # Pre-compute liquidity percentile data using log scale to reduce outlier skew.
+        # Pre-compute multi-day momentum percentile data (5d, 20d returns).
+        all_momentum_5d: list[float] = []
+        all_momentum_20d: list[float] = []
+        momentum_5d_by_sym: dict[str, float] = {}
+        momentum_20d_by_sym: dict[str, float] = {}
+        for r in rows:
+            sym = str(r.get("symbol") or "")
+            vd = vol_data.get(sym)
+            if vd:
+                m5 = vd.get("momentum_5d")
+                if m5 is not None:
+                    all_momentum_5d.append(m5)
+                    momentum_5d_by_sym[sym] = m5
+                m20 = vd.get("momentum_20d")
+                if m20 is not None:
+                    all_momentum_20d.append(m20)
+                    momentum_20d_by_sym[sym] = m20
+
+        # Pre-compute multi-day liquidity percentile data (5d, 20d avg volume).
+        all_avg_vol_5d: list[float] = []
+        all_avg_vol_20d: list[float] = []
+        avg_vol_5d_by_sym: dict[str, float] = {}
+        avg_vol_20d_by_sym: dict[str, float] = {}
+        for r in rows:
+            sym = str(r.get("symbol") or "")
+            vd = vol_data.get(sym)
+            if vd:
+                v5 = vd.get("avg_vol_5d")
+                if v5 is not None and v5 > 0:
+                    log_v5 = math.log1p(v5)
+                    all_avg_vol_5d.append(log_v5)
+                    avg_vol_5d_by_sym[sym] = log_v5
+                v20 = vd.get("avg_vol_20d")
+                if v20 is not None and v20 > 0:
+                    log_v20 = math.log1p(v20)
+                    all_avg_vol_20d.append(log_v20)
+                    avg_vol_20d_by_sym[sym] = log_v20
+
+        # Fallback: daily liquidity percentile data using log scale.
         all_tv_logs = [
             math.log1p(max(0.0, float(r.get("traded_value") or 0.0)))
             for r in rows
@@ -857,13 +895,36 @@ class DiscoverStockScraper(BaseScraper):
             tv_log = math.log1p(max(0.0, float(row.get("traded_value") or 0.0)))
             vol_log = math.log1p(max(0.0, float(row.get("volume") or 0.0)))
 
-            # Percentile-based momentum
-            momentum = self._clamp(self._percentile_rank(all_pcts, pct))
+            # Multi-day momentum: 50% 5d return + 30% 20d return + 20% daily change.
+            # Falls back to daily-only if multi-day data unavailable.
+            daily_momentum = self._clamp(self._percentile_rank(all_pcts, pct))
+            has_m5 = symbol in momentum_5d_by_sym and all_momentum_5d
+            has_m20 = symbol in momentum_20d_by_sym and all_momentum_20d
+            if has_m5 and has_m20:
+                m5_pctile = self._percentile_rank(all_momentum_5d, momentum_5d_by_sym[symbol])
+                m20_pctile = self._percentile_rank(all_momentum_20d, momentum_20d_by_sym[symbol])
+                momentum = self._clamp(m5_pctile * 0.50 + m20_pctile * 0.30 + daily_momentum * 0.20)
+            elif has_m5:
+                m5_pctile = self._percentile_rank(all_momentum_5d, momentum_5d_by_sym[symbol])
+                momentum = self._clamp(m5_pctile * 0.65 + daily_momentum * 0.35)
+            else:
+                momentum = daily_momentum
 
-            # Weighted liquidity percentile: 60% traded_value + 40% volume.
-            tv_percentile = self._percentile_rank(all_tv_logs, tv_log)
-            vol_percentile = self._percentile_rank(all_vol_logs, vol_log)
-            liquidity = self._clamp((tv_percentile * 0.60) + (vol_percentile * 0.40))
+            # Multi-day liquidity: 70% 5d avg vol + 30% 20d avg vol.
+            # Falls back to daily volume if multi-day data unavailable.
+            has_v5 = symbol in avg_vol_5d_by_sym and all_avg_vol_5d
+            has_v20 = symbol in avg_vol_20d_by_sym and all_avg_vol_20d
+            if has_v5 and has_v20:
+                v5_pctile = self._percentile_rank(all_avg_vol_5d, avg_vol_5d_by_sym[symbol])
+                v20_pctile = self._percentile_rank(all_avg_vol_20d, avg_vol_20d_by_sym[symbol])
+                liquidity = self._clamp(v5_pctile * 0.70 + v20_pctile * 0.30)
+            elif has_v5:
+                v5_pctile = self._percentile_rank(all_avg_vol_5d, avg_vol_5d_by_sym[symbol])
+                liquidity = self._clamp(v5_pctile)
+            else:
+                tv_percentile = self._percentile_rank(all_tv_logs, tv_log)
+                vol_percentile = self._percentile_rank(all_vol_logs, vol_log)
+                liquidity = self._clamp((tv_percentile * 0.60) + (vol_percentile * 0.40))
 
             fundamentals, metrics_used = self._score_fundamentals(row, sector_medians)
             if metrics_used > 0:
@@ -982,6 +1043,9 @@ class DiscoverStockScraper(BaseScraper):
             if sector not in sector_best or score > sector_best[sector][0]:
                 sector_best[sector] = (score, symbol)
 
+            # Extract 1W change from volatility data
+            pct_change_1w = vd.get("pct_change_1w") if vd else None
+
             enriched = {
                 **row,
                 "score": score,
@@ -991,6 +1055,7 @@ class DiscoverStockScraper(BaseScraper):
                 "score_volatility": round(volatility_score, 2),
                 "score_growth": round(growth_score, 2),
                 "percent_change_3m": pct_change_3m,
+                "percent_change_1w": pct_change_1w,
                 "score_breakdown": {
                     "momentum": round(momentum, 2),
                     "liquidity": round(liquidity, 2),
