@@ -542,7 +542,7 @@ class MacroScraper(BaseScraper):
             try:
                 ts = datetime.fromisoformat(str(item["timestamp"]).replace("Z", "+00:00"))
                 lag_h = max(0.0, (self.utc_now() - ts).total_seconds() / 3600.0)
-                logger.debug(
+                logger.info(
                     "Macro selected %s/%s source=%s ts=%s age_h=%.1f value=%s",
                     item.get("country"),
                     item.get("indicator_name"),

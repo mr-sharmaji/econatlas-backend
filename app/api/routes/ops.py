@@ -1,6 +1,7 @@
 import logging
+import re
 
-from fastapi import APIRouter, Header, HTTPException, Path, Query
+from fastapi import APIRouter, Body, Header, HTTPException, Path, Query
 
 from app.core.config import get_settings
 from app.core.log_stream import get_log_entries
@@ -20,6 +21,21 @@ _VALID_JOBS = {
     "ipo", "tax",
 }
 
+# Tables exposed for CRUD operations.
+_TABLES: dict[str, str] = {
+    "macro": "macro_indicators",
+    "market": "market_prices",
+    "news": "news_articles",
+    "brief": "stock_snapshots",
+    "discover_stock": "discover_stock_snapshots",
+    "discover_mf": "discover_mutual_fund_snapshots",
+    "discover_stock_price": "discover_stock_price_history",
+    "discover_mf_nav": "discover_mf_nav_history",
+    "events": "economic_events",
+}
+
+_SAFE_COLUMN_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
 
 def _authorize(x_ops_token: str | None) -> None:
     settings = get_settings()
@@ -29,6 +45,31 @@ def _authorize(x_ops_token: str | None) -> None:
     if required_token and x_ops_token != required_token:
         raise HTTPException(status_code=403, detail="Invalid ops token")
 
+
+def _resolve_table(table_key: str) -> str:
+    table = _TABLES.get(table_key)
+    if table is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown table '{table_key}'. Valid: {sorted(_TABLES)}",
+        )
+    return table
+
+
+def _validate_column(column: str) -> str:
+    if not _SAFE_COLUMN_RE.match(column):
+        raise HTTPException(status_code=400, detail=f"Invalid column name: {column}")
+    return column
+
+
+async def _get_pool():
+    from app.core.database import get_pool
+    return await get_pool()
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Logs
+# ═════════════════════════════════════════════════════════════════════
 
 @router.get("/logs", response_model=LogListResponse)
 async def ops_logs(
@@ -51,6 +92,10 @@ async def ops_logs(
     entries = [LogEntryResponse(**r) for r in rows]
     return LogListResponse(entries=entries, count=len(entries), latest_id=latest_id)
 
+
+# ═════════════════════════════════════════════════════════════════════
+# Jobs
+# ═════════════════════════════════════════════════════════════════════
 
 @router.post("/jobs/trigger/{job_name}")
 async def trigger_job(
@@ -83,6 +128,336 @@ async def list_jobs(
     """List all valid job names that can be triggered."""
     _authorize(x_ops_token)
     return {"jobs": sorted(_VALID_JOBS)}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Generic CRUD — GET (read)
+# ═════════════════════════════════════════════════════════════════════
+
+@router.get("/tables")
+async def list_tables(
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """List all table aliases available for CRUD operations."""
+    _authorize(x_ops_token)
+    return {"tables": sorted(_TABLES.keys())}
+
+
+@router.get("/table/{table_key}/row/{row_id}")
+async def get_row(
+    table_key: str = Path(...),
+    row_id: str = Path(..., description="UUID of the row"),
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Fetch a single row by UUID."""
+    _authorize(x_ops_token)
+    table = _resolve_table(table_key)
+    pool = await _get_pool()
+    from app.core.database import record_to_dict
+
+    row = await pool.fetchrow(f'SELECT * FROM {table} WHERE id = $1', row_id)  # noqa: S608
+    if row is None:
+        raise HTTPException(status_code=404, detail="Row not found")
+    return {"table": table, "row": record_to_dict(row)}
+
+
+@router.get("/table/{table_key}/rows")
+async def get_rows(
+    table_key: str = Path(...),
+    column: str | None = Query(default=None, description="Column to filter on"),
+    value: str | None = Query(default=None, description="Value to match (exact)"),
+    order_by: str = Query(default="id", description="Column to sort by"),
+    order: str = Query(default="desc", description="asc or desc"),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """List rows with optional filter, ordering, and pagination."""
+    _authorize(x_ops_token)
+    table = _resolve_table(table_key)
+    _validate_column(order_by)
+    sort_dir = "ASC" if order.lower() == "asc" else "DESC"
+    pool = await _get_pool()
+    from app.core.database import record_to_dict
+
+    if column and value is not None:
+        _validate_column(column)
+        rows = await pool.fetch(
+            f'SELECT * FROM {table} WHERE {column} = $1 ORDER BY {order_by} {sort_dir} LIMIT $2 OFFSET $3',  # noqa: S608
+            value, limit, offset,
+        )
+        total = await pool.fetchval(
+            f'SELECT COUNT(*) FROM {table} WHERE {column} = $1',  # noqa: S608
+            value,
+        )
+    else:
+        rows = await pool.fetch(
+            f'SELECT * FROM {table} ORDER BY {order_by} {sort_dir} LIMIT $1 OFFSET $2',  # noqa: S608
+            limit, offset,
+        )
+        total = await pool.fetchval(f'SELECT COUNT(*) FROM {table}')  # noqa: S608
+
+    return {
+        "table": table,
+        "rows": [record_to_dict(r) for r in rows],
+        "count": len(rows),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.get("/table/{table_key}/count")
+async def count_rows(
+    table_key: str = Path(...),
+    column: str | None = Query(default=None, description="Column to filter on"),
+    value: str | None = Query(default=None, description="Value to match"),
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Count rows, optionally filtered by column=value."""
+    _authorize(x_ops_token)
+    table = _resolve_table(table_key)
+    pool = await _get_pool()
+
+    if column and value is not None:
+        _validate_column(column)
+        total = await pool.fetchval(
+            f'SELECT COUNT(*) FROM {table} WHERE {column} = $1',  # noqa: S608
+            value,
+        )
+    else:
+        total = await pool.fetchval(f'SELECT COUNT(*) FROM {table}')  # noqa: S608
+
+    return {"table": table, "count": total}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Generic CRUD — POST (insert)
+# ═════════════════════════════════════════════════════════════════════
+
+@router.post("/table/{table_key}/row")
+async def insert_row(
+    table_key: str = Path(...),
+    payload: dict = Body(..., description="Column-value pairs to insert"),
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Insert a single row. Pass JSON body with column: value pairs."""
+    _authorize(x_ops_token)
+    table = _resolve_table(table_key)
+    if not payload:
+        raise HTTPException(status_code=400, detail="Empty payload")
+
+    columns = []
+    placeholders = []
+    values = []
+    for i, (col, val) in enumerate(payload.items(), start=1):
+        _validate_column(col)
+        columns.append(col)
+        placeholders.append(f"${i}")
+        values.append(val)
+
+    col_str = ", ".join(columns)
+    ph_str = ", ".join(placeholders)
+    pool = await _get_pool()
+    from app.core.database import record_to_dict
+
+    row = await pool.fetchrow(
+        f'INSERT INTO {table} ({col_str}) VALUES ({ph_str}) RETURNING *',  # noqa: S608
+        *values,
+    )
+    logger.info("Ops insert: table=%s columns=%s", table, columns)
+    return {"table": table, "row": record_to_dict(row) if row else None}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Generic CRUD — PUT/PATCH (update)
+# ═════════════════════════════════════════════════════════════════════
+
+@router.put("/table/{table_key}/row/{row_id}")
+async def update_row(
+    table_key: str = Path(...),
+    row_id: str = Path(..., description="UUID of the row to update"),
+    payload: dict = Body(..., description="Column-value pairs to update"),
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Update a single row by UUID. Pass JSON body with column: value pairs to set."""
+    _authorize(x_ops_token)
+    table = _resolve_table(table_key)
+    if not payload:
+        raise HTTPException(status_code=400, detail="Empty payload")
+
+    set_clauses = []
+    values = []
+    for i, (col, val) in enumerate(payload.items(), start=1):
+        _validate_column(col)
+        set_clauses.append(f"{col} = ${i}")
+        values.append(val)
+
+    set_str = ", ".join(set_clauses)
+    id_placeholder = f"${len(values) + 1}"
+    values.append(row_id)
+
+    pool = await _get_pool()
+    from app.core.database import record_to_dict
+
+    row = await pool.fetchrow(
+        f'UPDATE {table} SET {set_str} WHERE id = {id_placeholder} RETURNING *',  # noqa: S608
+        *values,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Row not found")
+    logger.info("Ops update: table=%s row_id=%s columns=%s", table, row_id, list(payload.keys()))
+    return {"table": table, "row": record_to_dict(row)}
+
+
+@router.patch("/table/{table_key}/rows")
+async def update_rows_by_filter(
+    table_key: str = Path(...),
+    column: str = Query(..., description="Column to filter on"),
+    value: str = Query(..., description="Value to match"),
+    payload: dict = Body(..., description="Column-value pairs to update"),
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Bulk update rows matching column=value filter."""
+    _authorize(x_ops_token)
+    table = _resolve_table(table_key)
+    _validate_column(column)
+    if not payload:
+        raise HTTPException(status_code=400, detail="Empty payload")
+
+    set_clauses = []
+    values = []
+    for i, (col, val) in enumerate(payload.items(), start=1):
+        _validate_column(col)
+        set_clauses.append(f"{col} = ${i}")
+        values.append(val)
+
+    set_str = ", ".join(set_clauses)
+    filter_placeholder = f"${len(values) + 1}"
+    values.append(value)
+
+    pool = await _get_pool()
+    status = await pool.execute(
+        f'UPDATE {table} SET {set_str} WHERE {column} = {filter_placeholder}',  # noqa: S608
+        *values,
+    )
+    updated = int(str(status).split()[-1])
+    logger.info("Ops bulk update: table=%s %s=%s updated=%d columns=%s", table, column, value, updated, list(payload.keys()))
+    return {"table": table, "updated": updated, "filter": {column: value}}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Generic CRUD — DELETE
+# ═════════════════════════════════════════════════════════════════════
+
+@router.delete("/table/{table_key}/row/{row_id}")
+async def delete_row(
+    table_key: str = Path(...),
+    row_id: str = Path(..., description="UUID of the row to delete"),
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Delete a specific row by UUID."""
+    _authorize(x_ops_token)
+    table = _resolve_table(table_key)
+    pool = await _get_pool()
+    status = await pool.execute(
+        f'DELETE FROM {table} WHERE id = $1',  # noqa: S608
+        row_id,
+    )
+    deleted = int(str(status).split()[-1])
+    logger.info("Ops delete: table=%s row_id=%s deleted=%d", table, row_id, deleted)
+    return {"deleted": deleted, "table": table, "row_id": row_id}
+
+
+@router.delete("/table/{table_key}/rows")
+async def delete_rows_by_filter(
+    table_key: str = Path(...),
+    column: str = Query(..., description="Column to filter on"),
+    value: str = Query(..., description="Value to match (exact)"),
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Delete rows matching column=value filter."""
+    _authorize(x_ops_token)
+    table = _resolve_table(table_key)
+    _validate_column(column)
+    pool = await _get_pool()
+    status = await pool.execute(
+        f'DELETE FROM {table} WHERE {column} = $1',  # noqa: S608
+        value,
+    )
+    deleted = int(str(status).split()[-1])
+    logger.info("Ops bulk delete: table=%s %s=%s deleted=%d", table, column, value, deleted)
+    return {"deleted": deleted, "table": table, "filter": {column: value}}
+
+
+@router.delete("/table/{table_key}/truncate")
+async def truncate_table(
+    table_key: str = Path(...),
+    confirm: str = Query(..., description="Must be 'yes' to confirm truncation"),
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Truncate (empty) an entire table. Requires confirm=yes."""
+    _authorize(x_ops_token)
+    table = _resolve_table(table_key)
+    if confirm != "yes":
+        raise HTTPException(status_code=400, detail="Pass confirm=yes to truncate")
+    pool = await _get_pool()
+    await pool.execute(f'TRUNCATE {table}')  # noqa: S608
+    logger.warning("Ops truncate: table=%s", table)
+    return {"truncated": True, "table": table}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# SQL (read-only)
+# ═════════════════════════════════════════════════════════════════════
+
+@router.post("/sql")
+async def execute_sql(
+    payload: dict = Body(..., description='{"query": "SELECT ...", "params": []}'),
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Execute a read-only SQL query. Only SELECT/WITH statements allowed."""
+    _authorize(x_ops_token)
+    query = str(payload.get("query", "")).strip()
+    params = payload.get("params") or []
+
+    if not query:
+        raise HTTPException(status_code=400, detail="Empty query")
+    # Only allow read-only statements
+    first_word = query.split()[0].upper() if query.split() else ""
+    if first_word not in ("SELECT", "WITH", "EXPLAIN"):
+        raise HTTPException(status_code=400, detail="Only SELECT/WITH/EXPLAIN queries allowed")
+
+    pool = await _get_pool()
+    from app.core.database import record_to_dict
+
+    try:
+        rows = await pool.fetch(query, *params)
+        return {
+            "rows": [record_to_dict(r) for r in rows],
+            "count": len(rows),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Config / Debug
+# ═════════════════════════════════════════════════════════════════════
+
+@router.get("/macro-config")
+async def macro_config(
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Return current FRED_CPI / FRED_DIRECT config for debugging."""
+    _authorize(x_ops_token)
+    from app.scheduler.macro_job import FRED_CPI, FRED_DIRECT, VALUE_RANGES
+
+    return {
+        "fred_cpi": FRED_CPI,
+        "fred_direct": {k: [(n, s) for n, s in v] for k, v in FRED_DIRECT.items()},
+        "value_ranges": VALUE_RANGES,
+    }
 
 
 @router.get("/data-health", response_model=DataHealthResponse)
