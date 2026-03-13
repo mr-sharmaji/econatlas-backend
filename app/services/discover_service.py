@@ -1066,19 +1066,35 @@ async def get_discover_home_data() -> dict:
             out.append(d)
         return out
 
-    # Top stocks by score (sector-diversified), include 3M change
-    top_stock_rows = await pool.fetch(
-        f"""
-        SELECT * FROM (
-            SELECT {_stock_cols},
-                   ROW_NUMBER() OVER (PARTITION BY COALESCE(sector, 'Other') ORDER BY score DESC) AS rn
-            FROM {STOCK_TABLE}
-            WHERE market = 'IN' AND source_status IN ('primary', 'fallback') AND score >= 50
-                  AND percent_change_3m IS NOT NULL
-        ) sub WHERE rn <= 2
-        ORDER BY score DESC LIMIT 8
-        """
+    # Top stocks by 3M change (sector-diversified), fallback to score when 3M data unavailable
+    has_3m = await pool.fetchval(
+        f"SELECT EXISTS(SELECT 1 FROM {STOCK_TABLE} WHERE percent_change_3m IS NOT NULL LIMIT 1)"
     )
+    if has_3m:
+        top_stock_rows = await pool.fetch(
+            f"""
+            SELECT * FROM (
+                SELECT {_stock_cols},
+                       ROW_NUMBER() OVER (PARTITION BY COALESCE(sector, 'Other') ORDER BY percent_change_3m DESC) AS rn
+                FROM {STOCK_TABLE}
+                WHERE market = 'IN' AND source_status IN ('primary', 'fallback')
+                      AND percent_change_3m IS NOT NULL AND percent_change_3m > 0
+            ) sub WHERE rn <= 2
+            ORDER BY percent_change_3m DESC LIMIT 8
+            """
+        )
+    else:
+        top_stock_rows = await pool.fetch(
+            f"""
+            SELECT * FROM (
+                SELECT {_stock_cols},
+                       ROW_NUMBER() OVER (PARTITION BY COALESCE(sector, 'Other') ORDER BY score DESC) AS rn
+                FROM {STOCK_TABLE}
+                WHERE market = 'IN' AND source_status IN ('primary', 'fallback') AND score >= 50
+            ) sub WHERE rn <= 2
+            ORDER BY score DESC LIMIT 8
+            """
+        )
     top_stocks = _decorate_stock_list(top_stock_rows)
 
     # Top equity mutual funds by score
