@@ -103,12 +103,17 @@ async def get_discover_home() -> DiscoverHomeResponse:
         payload = await discover_service.get_discover_home_data()
         return DiscoverHomeResponse(
             top_stocks=[DiscoverHomeStockItem(**s) for s in payload.get("top_stocks", [])],
-            top_mutual_funds=[DiscoverHomeMutualFundItem(**m) for m in payload.get("top_mutual_funds", [])],
-            trending_stocks=[DiscoverHomeStockItem(**s) for s in payload.get("trending_stocks", [])],
+            top_equity_funds=[DiscoverHomeMutualFundItem(**m) for m in payload.get("top_equity_funds", [])],
+            top_debt_funds=[DiscoverHomeMutualFundItem(**m) for m in payload.get("top_debt_funds", [])],
+            trending_this_week=[DiscoverHomeStockItem(**s) for s in payload.get("trending_this_week", [])],
             gainers=[DiscoverHomeStockItem(**s) for s in payload.get("gainers", [])],
+            gainers_3m=[DiscoverHomeStockItem(**s) for s in payload.get("gainers_3m", [])],
             losers=[DiscoverHomeStockItem(**s) for s in payload.get("losers", [])],
-            sector_spotlight=[DiscoverHomeStockItem(**s) for s in payload.get("sector_spotlight", [])],
-            spotlight_sector_name=payload.get("spotlight_sector_name"),
+            losers_3m=[DiscoverHomeStockItem(**s) for s in payload.get("losers_3m", [])],
+            hot_today_sector_name=payload.get("hot_today_sector_name"),
+            hot_today_stocks=[DiscoverHomeStockItem(**s) for s in payload.get("hot_today_stocks", [])],
+            leader_3m_sector_name=payload.get("leader_3m_sector_name"),
+            leader_3m_stocks=[DiscoverHomeStockItem(**s) for s in payload.get("leader_3m_stocks", [])],
             quick_categories=[QuickCategory(**c) for c in payload.get("quick_categories", [])],
         )
     except Exception as exc:

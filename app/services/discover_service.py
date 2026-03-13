@@ -112,11 +112,15 @@ def _stock_breakdown_payload(row: dict) -> dict:
     momentum = _to_float(row.get("score_momentum")) or 0.0
     liquidity = _to_float(row.get("score_liquidity")) or 0.0
     fundamentals = _to_float(row.get("score_fundamentals")) or 0.0
+    volatility = _to_float(row.get("score_volatility")) or 0.0
+    growth = _to_float(row.get("score_growth")) or 0.0
     combined_signal = ((momentum + liquidity) / 2.0) if (momentum or liquidity) else 0.0
     return {
         "momentum": round(momentum, 2),
         "liquidity": round(liquidity, 2),
         "fundamentals": round(fundamentals, 2),
+        "volatility": round(volatility, 2),
+        "growth": round(growth, 2),
         "combined_signal": round(combined_signal, 2),
     }
 
@@ -295,6 +299,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     market, symbol, display_name, sector, last_price, point_change, percent_change,
                     volume, traded_value, pe_ratio, roe, roce, debt_to_equity, price_to_book, eps,
                     score, score_momentum, score_liquidity, score_fundamentals,
+                    score_volatility, score_growth, percent_change_3m,
                     score_breakdown, tags, source_status, source_timestamp, ingested_at,
                     primary_source, secondary_source,
                     high_52w, low_52w, market_cap, dividend_yield
@@ -303,9 +308,10 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     $1, $2, $3, $4, $5, $6, $7,
                     $8, $9, $10, $11, $12, $13, $14, $15,
                     $16, $17, $18, $19,
-                    $20, $21, $22, $23, NOW(),
-                    $24, $25,
-                    $26, $27, $28, $29
+                    $20, $21, $22,
+                    $23, $24, $25, $26, NOW(),
+                    $27, $28,
+                    $29, $30, $31, $32
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -327,6 +333,9 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     score_momentum = EXCLUDED.score_momentum,
                     score_liquidity = EXCLUDED.score_liquidity,
                     score_fundamentals = EXCLUDED.score_fundamentals,
+                    score_volatility = EXCLUDED.score_volatility,
+                    score_growth = EXCLUDED.score_growth,
+                    percent_change_3m = EXCLUDED.percent_change_3m,
                     score_breakdown = EXCLUDED.score_breakdown,
                     tags = EXCLUDED.tags,
                     source_status = EXCLUDED.source_status,
@@ -358,6 +367,9 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("score_momentum")) or 0.0,
                 _to_float(row.get("score_liquidity")) or 0.0,
                 _to_float(row.get("score_fundamentals")) or 0.0,
+                _to_float(row.get("score_volatility")) or 0.0,
+                _to_float(row.get("score_growth")) or 0.0,
+                _to_float(row.get("percent_change_3m")),
                 _to_jsonb(row.get("score_breakdown"), _stock_breakdown_payload(row)),
                 _to_jsonb(row.get("tags"), []),
                 _normalize_source_status(row.get("source_status")),
@@ -1039,12 +1051,24 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
 async def get_discover_home_data() -> dict:
     pool = await get_pool()
 
-    # Top stocks by score (sector-diversified)
+    _stock_cols = (
+        "symbol, display_name, sector, last_price, percent_change, "
+        "percent_change_3m, score, high_52w, low_52w, market_cap"
+    )
+
+    def _decorate_stock_list(rows) -> list[dict]:
+        out = []
+        for r in rows:
+            d = record_to_dict(r)
+            d["quality_tier"] = _compute_quality_tier(_to_float(d.get("score")))
+            out.append(d)
+        return out
+
+    # Top stocks by score (sector-diversified), include 3M change
     top_stock_rows = await pool.fetch(
         f"""
         SELECT * FROM (
-            SELECT symbol, display_name, sector, last_price, percent_change, score,
-                   high_52w, low_52w, market_cap,
+            SELECT {_stock_cols},
                    ROW_NUMBER() OVER (PARTITION BY COALESCE(sector, 'Other') ORDER BY score DESC) AS rn
             FROM {STOCK_TABLE}
             WHERE market = 'IN' AND source_status IN ('primary', 'fallback') AND score >= 50
@@ -1052,110 +1076,164 @@ async def get_discover_home_data() -> dict:
         ORDER BY score DESC LIMIT 8
         """
     )
-    top_stocks = []
-    for r in top_stock_rows:
-        d = record_to_dict(r)
-        d["quality_tier"] = _compute_quality_tier(_to_float(d.get("score")))
-        top_stocks.append(d)
+    top_stocks = _decorate_stock_list(top_stock_rows)
 
-    # Top mutual funds by score (category-diversified)
-    top_mf_rows = await pool.fetch(
+    # Top equity mutual funds by score
+    top_equity_mf_rows = await pool.fetch(
         f"""
         SELECT * FROM (
-            SELECT scheme_code, scheme_name, category, score, returns_1y,
-                   ROW_NUMBER() OVER (PARTITION BY COALESCE(category, 'Other') ORDER BY score DESC) AS rn
+            SELECT scheme_code, scheme_name, category, sub_category, score, returns_1y,
+                   ROW_NUMBER() OVER (PARTITION BY COALESCE(sub_category, category, 'Other') ORDER BY score DESC) AS rn
             FROM {MF_TABLE}
-            WHERE plan_type = 'direct' AND (returns_1y IS NOT NULL OR returns_3y IS NOT NULL) AND score >= 50
+            WHERE plan_type = 'direct'
+              AND (returns_1y IS NOT NULL OR returns_3y IS NOT NULL)
+              AND score >= 50
+              AND LOWER(COALESCE(category, '')) NOT LIKE '%%debt%%'
+              AND LOWER(COALESCE(category, '')) NOT LIKE '%%liquid%%'
+              AND LOWER(COALESCE(category, '')) NOT LIKE '%%gilt%%'
+              AND LOWER(COALESCE(category, '')) NOT LIKE '%%money market%%'
+              AND LOWER(COALESCE(category, '')) NOT LIKE '%%hybrid%%'
         ) sub WHERE rn <= 2
-        ORDER BY score DESC LIMIT 8
+        ORDER BY score DESC LIMIT 5
         """
     )
-    top_mutual_funds = []
-    for r in top_mf_rows:
+    top_equity_funds = []
+    for r in top_equity_mf_rows:
         d = record_to_dict(r)
         d["quality_badges"] = _compute_quality_badges(d)
         d["display_name"] = _clean_mf_display_name(d.get("scheme_name", ""))
-        top_mutual_funds.append(d)
+        top_equity_funds.append(d)
 
-    # Trending stocks by traded_value
-    trending_stock_rows = await pool.fetch(
+    # Top debt mutual funds by score
+    top_debt_mf_rows = await pool.fetch(
         f"""
-        SELECT symbol, display_name, sector, last_price, percent_change, score,
-               high_52w, low_52w, market_cap
+        SELECT * FROM (
+            SELECT scheme_code, scheme_name, category, sub_category, score, returns_1y,
+                   ROW_NUMBER() OVER (PARTITION BY COALESCE(sub_category, category, 'Other') ORDER BY score DESC) AS rn
+            FROM {MF_TABLE}
+            WHERE plan_type = 'direct'
+              AND (returns_1y IS NOT NULL OR returns_3y IS NOT NULL)
+              AND score >= 40
+              AND (
+                  LOWER(COALESCE(category, '')) LIKE '%%debt%%'
+                  OR LOWER(COALESCE(category, '')) LIKE '%%liquid%%'
+                  OR LOWER(COALESCE(category, '')) LIKE '%%gilt%%'
+                  OR LOWER(COALESCE(category, '')) LIKE '%%money market%%'
+                  OR LOWER(COALESCE(sub_category, '')) LIKE '%%corporate bond%%'
+                  OR LOWER(COALESCE(sub_category, '')) LIKE '%%overnight%%'
+              )
+        ) sub WHERE rn <= 2
+        ORDER BY score DESC LIMIT 5
+        """
+    )
+    top_debt_funds = []
+    for r in top_debt_mf_rows:
+        d = record_to_dict(r)
+        d["quality_badges"] = _compute_quality_badges(d)
+        d["display_name"] = _clean_mf_display_name(d.get("scheme_name", ""))
+        top_debt_funds.append(d)
+
+    # Trending this week: stocks with highest traded_value
+    trending_rows = await pool.fetch(
+        f"""
+        SELECT {_stock_cols}
         FROM {STOCK_TABLE}
         WHERE market = 'IN'
         ORDER BY traded_value DESC NULLS LAST, symbol ASC
         LIMIT 8
         """
     )
-    trending_stocks = []
-    for r in trending_stock_rows:
-        d = record_to_dict(r)
-        d["quality_tier"] = _compute_quality_tier(_to_float(d.get("score")))
-        trending_stocks.append(d)
+    trending_this_week = _decorate_stock_list(trending_rows)
 
-    # Top gainers (highest percent_change)
+    # Top gainers (daily)
     gainer_rows = await pool.fetch(
         f"""
-        SELECT symbol, display_name, sector, last_price, percent_change, score,
-               high_52w, low_52w, market_cap
+        SELECT {_stock_cols}
         FROM {STOCK_TABLE}
         WHERE market = 'IN' AND percent_change IS NOT NULL AND percent_change > 0
         ORDER BY percent_change DESC
         LIMIT 8
         """
     )
-    gainers = []
-    for r in gainer_rows:
-        d = record_to_dict(r)
-        d["quality_tier"] = _compute_quality_tier(_to_float(d.get("score")))
-        gainers.append(d)
+    gainers = _decorate_stock_list(gainer_rows)
 
-    # Top losers (lowest percent_change)
+    # Top gainers (3M)
+    gainer_3m_rows = await pool.fetch(
+        f"""
+        SELECT {_stock_cols}
+        FROM {STOCK_TABLE}
+        WHERE market = 'IN' AND percent_change_3m IS NOT NULL AND percent_change_3m > 0
+        ORDER BY percent_change_3m DESC
+        LIMIT 8
+        """
+    )
+    gainers_3m = _decorate_stock_list(gainer_3m_rows)
+
+    # Top losers (daily)
     loser_rows = await pool.fetch(
         f"""
-        SELECT symbol, display_name, sector, last_price, percent_change, score,
-               high_52w, low_52w, market_cap
+        SELECT {_stock_cols}
         FROM {STOCK_TABLE}
         WHERE market = 'IN' AND percent_change IS NOT NULL AND percent_change < 0
         ORDER BY percent_change ASC
         LIMIT 8
         """
     )
-    losers = []
-    for r in loser_rows:
-        d = record_to_dict(r)
-        d["quality_tier"] = _compute_quality_tier(_to_float(d.get("score")))
-        losers.append(d)
+    losers = _decorate_stock_list(loser_rows)
 
-    # Sector spotlight: top sector by avg score, then top 8 stocks in it
-    spotlight_sector_name = None
-    sector_spotlight = []
-    top_sector_row = await pool.fetchrow(
+    # Top losers (3M)
+    loser_3m_rows = await pool.fetch(
         f"""
-        SELECT sector FROM {STOCK_TABLE}
-        WHERE market = 'IN' AND sector IS NOT NULL
-              AND source_status IN ('primary', 'fallback')
-        GROUP BY sector HAVING COUNT(*) >= 3
-        ORDER BY AVG(score) DESC LIMIT 1
+        SELECT {_stock_cols}
+        FROM {STOCK_TABLE}
+        WHERE market = 'IN' AND percent_change_3m IS NOT NULL AND percent_change_3m < 0
+        ORDER BY percent_change_3m ASC
+        LIMIT 8
         """
     )
-    if top_sector_row:
-        spotlight_sector_name = top_sector_row["sector"]
-        spotlight_rows = await pool.fetch(
-            f"""
-            SELECT symbol, display_name, sector, last_price, percent_change, score,
-                   high_52w, low_52w, market_cap
-            FROM {STOCK_TABLE}
-            WHERE market = 'IN' AND sector = $1
-            ORDER BY score DESC LIMIT 8
-            """,
-            spotlight_sector_name,
+    losers_3m = _decorate_stock_list(loser_3m_rows)
+
+    # Hot Today 🔥: sector with best avg daily percent_change
+    hot_today_sector_name = None
+    hot_today_stocks = []
+    hot_sector = await pool.fetchrow(
+        f"""
+        SELECT sector, AVG(percent_change) AS avg_change
+        FROM {STOCK_TABLE}
+        WHERE market = 'IN' AND sector IS NOT NULL AND percent_change IS NOT NULL
+              AND source_status IN ('primary', 'fallback')
+        GROUP BY sector HAVING COUNT(*) >= 3
+        ORDER BY AVG(percent_change) DESC LIMIT 1
+        """
+    )
+    if hot_sector:
+        hot_today_sector_name = hot_sector["sector"]
+        hot_rows = await pool.fetch(
+            f"SELECT {_stock_cols} FROM {STOCK_TABLE} WHERE market = 'IN' AND sector = $1 ORDER BY percent_change DESC LIMIT 8",
+            hot_today_sector_name,
         )
-        for r in spotlight_rows:
-            d = record_to_dict(r)
-            d["quality_tier"] = _compute_quality_tier(_to_float(d.get("score")))
-            sector_spotlight.append(d)
+        hot_today_stocks = _decorate_stock_list(hot_rows)
+
+    # 3M Sector Leader 📈: sector with best avg 3M change
+    leader_3m_sector_name = None
+    leader_3m_stocks = []
+    leader_sector = await pool.fetchrow(
+        f"""
+        SELECT sector, AVG(percent_change_3m) AS avg_change_3m
+        FROM {STOCK_TABLE}
+        WHERE market = 'IN' AND sector IS NOT NULL AND percent_change_3m IS NOT NULL
+              AND source_status IN ('primary', 'fallback')
+        GROUP BY sector HAVING COUNT(*) >= 3
+        ORDER BY AVG(percent_change_3m) DESC LIMIT 1
+        """
+    )
+    if leader_sector:
+        leader_3m_sector_name = leader_sector["sector"]
+        leader_rows = await pool.fetch(
+            f"SELECT {_stock_cols} FROM {STOCK_TABLE} WHERE market = 'IN' AND sector = $1 ORDER BY percent_change_3m DESC NULLS LAST LIMIT 8",
+            leader_3m_sector_name,
+        )
+        leader_3m_stocks = _decorate_stock_list(leader_rows)
 
     quick_categories = [
         {"name": "Quality Stocks", "segment": "stocks", "preset": "quality"},
@@ -1170,12 +1248,17 @@ async def get_discover_home_data() -> dict:
 
     return {
         "top_stocks": top_stocks,
-        "top_mutual_funds": top_mutual_funds,
-        "trending_stocks": trending_stocks,
+        "top_equity_funds": top_equity_funds,
+        "top_debt_funds": top_debt_funds,
+        "trending_this_week": trending_this_week,
         "gainers": gainers,
+        "gainers_3m": gainers_3m,
         "losers": losers,
-        "sector_spotlight": sector_spotlight,
-        "spotlight_sector_name": spotlight_sector_name,
+        "losers_3m": losers_3m,
+        "hot_today_sector_name": hot_today_sector_name,
+        "hot_today_stocks": hot_today_stocks,
+        "leader_3m_sector_name": leader_3m_sector_name,
+        "leader_3m_stocks": leader_3m_stocks,
         "quick_categories": quick_categories,
     }
 
@@ -1247,6 +1330,58 @@ async def get_stock_price_history(*, symbol: str, days: int = 365) -> list[dict]
     return [record_to_dict(r) for r in rows]
 
 
+async def get_bulk_stock_volatility_data() -> dict[str, dict]:
+    """Fetch 3M price stats (std_dev of daily returns, first close, last close) for all stocks.
+
+    Returns {symbol: {"std_dev": float, "pct_change_3m": float, "data_points": int}}.
+    """
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        WITH daily AS (
+            SELECT symbol, close,
+                   LAG(close) OVER (PARTITION BY symbol ORDER BY trade_date) AS prev_close,
+                   FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS first_close,
+                   LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS last_close,
+                   COUNT(*) OVER (PARTITION BY symbol) AS cnt
+            FROM discover_stock_price_history
+            WHERE trade_date >= CURRENT_DATE - INTERVAL '90 days'
+        ),
+        returns AS (
+            SELECT symbol,
+                   (close - prev_close) / NULLIF(prev_close, 0) AS daily_return,
+                   first_close, last_close, cnt
+            FROM daily
+            WHERE prev_close IS NOT NULL AND prev_close > 0
+        )
+        SELECT symbol,
+               STDDEV_SAMP(daily_return) AS std_dev,
+               MIN(first_close) AS first_close,
+               MAX(last_close) AS last_close,
+               MAX(cnt) AS data_points
+        FROM returns
+        GROUP BY symbol
+        HAVING COUNT(*) >= 5
+        """
+    )
+    result: dict[str, dict] = {}
+    for r in rows:
+        sym = r["symbol"]
+        first_close = float(r["first_close"]) if r["first_close"] else None
+        last_close = float(r["last_close"]) if r["last_close"] else None
+        pct_3m = None
+        if first_close and first_close > 0 and last_close:
+            pct_3m = round(((last_close - first_close) / first_close) * 100, 2)
+        result[sym] = {
+            "std_dev": float(r["std_dev"]) if r["std_dev"] else None,
+            "pct_change_3m": pct_3m,
+            "data_points": int(r["data_points"]) if r["data_points"] else 0,
+        }
+    return result
+
+
 async def get_mf_nav_history(*, scheme_code: str, days: int = 365) -> list[dict]:
     pool = await get_pool()
     rows = await pool.fetch(
@@ -1305,18 +1440,22 @@ async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
 
 
 async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
-    """Get peer mutual funds in the same category, sorted by score descending."""
+    """Get peer mutual funds in the same sub-category (or category fallback), sorted by score."""
     pool = await get_pool()
     category_stats = await _get_mf_category_stats(pool)
 
     target = await pool.fetchrow(
-        f"SELECT category FROM {MF_TABLE} WHERE scheme_code = $1",
+        f"SELECT category, sub_category FROM {MF_TABLE} WHERE scheme_code = $1",
         scheme_code,
     )
     if target is None:
         return []
 
+    sub_cat = target["sub_category"]
     cat = target["category"]
+
+    # Try sub_category first, fall back to category if too few peers.
+    peer_label = sub_cat or cat
     rows = await pool.fetch(
         f"""
         SELECT
@@ -1329,16 +1468,41 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
             primary_source, secondary_source,
             category_rank, category_total, fund_age_years
         FROM {MF_TABLE}
-        WHERE category = $1
+        WHERE COALESCE(NULLIF(sub_category, ''), category) = $1
           AND scheme_code != $2
           AND LOWER(COALESCE(plan_type, 'direct')) = 'direct'
         ORDER BY score DESC NULLS LAST
         LIMIT $3
         """,
-        cat,
+        peer_label,
         scheme_code,
         limit,
     )
+
+    # Fallback to broader category if sub_category yielded < 3 peers.
+    if len(rows) < 3 and sub_cat and sub_cat != cat:
+        rows = await pool.fetch(
+            f"""
+            SELECT
+                scheme_code, scheme_name, amc, category, sub_category,
+                plan_type, option_type, nav, nav_date,
+                expense_ratio, aum_cr, risk_level,
+                returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
+                score, score_return, score_risk, score_cost, score_consistency,
+                score_breakdown, tags, source_status, source_timestamp, ingested_at,
+                primary_source, secondary_source,
+                category_rank, category_total, fund_age_years
+            FROM {MF_TABLE}
+            WHERE category = $1
+              AND scheme_code != $2
+              AND LOWER(COALESCE(plan_type, 'direct')) = 'direct'
+            ORDER BY score DESC NULLS LAST
+            LIMIT $3
+            """,
+            cat,
+            scheme_code,
+            limit,
+        )
 
     items = []
     for r in rows:

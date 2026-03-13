@@ -127,6 +127,16 @@ async def init_pool() -> asyncpg.Pool:
             "CREATE INDEX IF NOT EXISTS idx_device_watchlists_device_position "
             "ON device_watchlists (device_id, position ASC)"
         )
+        # Discover stock scoring: Volatility + Growth + 3M change columns.
+        await conn.execute(
+            "ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_volatility DOUBLE PRECISION NOT NULL DEFAULT 0"
+        )
+        await conn.execute(
+            "ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_growth DOUBLE PRECISION NOT NULL DEFAULT 0"
+        )
+        await conn.execute(
+            "ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS percent_change_3m DOUBLE PRECISION"
+        )
         # IPO snapshot backward-compatible columns for Closed tab and retention.
         await conn.execute(
             "ALTER TABLE ipo_snapshots ADD COLUMN IF NOT EXISTS listing_price DOUBLE PRECISION"
@@ -290,6 +300,31 @@ async def init_pool() -> asyncpg.Pool:
         await conn.execute(
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_market_prices_intraday_asset_type_source_ts_provider_unique '
             'ON market_prices_intraday (asset, instrument_type, source_timestamp, provider)'
+        )
+        # Job dead-letter queue table.
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS job_dead_letters (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                job_name TEXT NOT NULL,
+                error_message TEXT NOT NULL,
+                traceback TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'dead',
+                failed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                retried_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_job_dead_letters_status ON job_dead_letters (status)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_job_dead_letters_job_name ON job_dead_letters (job_name)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_job_dead_letters_failed_at ON job_dead_letters (failed_at DESC)"
         )
         logger.info("Idempotent indexes ensured")
     return _pool

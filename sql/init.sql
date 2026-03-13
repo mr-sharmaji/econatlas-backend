@@ -329,6 +329,9 @@ ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS high_52w DOUBLE PR
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS low_52w DOUBLE PRECISION;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS market_cap DOUBLE PRECISION;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS dividend_yield DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_volatility DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_growth DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS percent_change_3m DOUBLE PRECISION;
 
 -- Discover enrichment: additional MF columns
 ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS category_rank INTEGER;
@@ -365,3 +368,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_discover_mf_nav_history_uniq
 ON discover_mf_nav_history (scheme_code, nav_date);
 CREATE INDEX IF NOT EXISTS idx_discover_mf_nav_history_lookup
 ON discover_mf_nav_history (scheme_code, nav_date DESC);
+
+-- Dead-letter queue for failed background jobs
+CREATE TABLE IF NOT EXISTS job_dead_letters (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    job_name TEXT NOT NULL,
+    error_message TEXT NOT NULL,
+    traceback TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'dead',
+    failed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    retried_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_dead_letters_status
+ON job_dead_letters (status);
+CREATE INDEX IF NOT EXISTS idx_job_dead_letters_job_name
+ON job_dead_letters (job_name);
+CREATE INDEX IF NOT EXISTS idx_job_dead_letters_failed_at
+ON job_dead_letters (failed_at DESC);

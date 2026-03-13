@@ -13,6 +13,8 @@ class DiscoverStockScoreBreakdown(BaseModel):
     momentum: float
     liquidity: float
     fundamentals: float
+    volatility: float = 0
+    growth: float = 0
     combined_signal: float
 
 
@@ -41,6 +43,9 @@ class DiscoverStockItemResponse(BaseModel):
     score_momentum: float
     score_liquidity: float
     score_fundamentals: float
+    score_volatility: float = 0
+    score_growth: float = 0
+    percent_change_3m: float | None = None
     score_breakdown: DiscoverStockScoreBreakdown
     tags: list[str] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)
@@ -178,6 +183,7 @@ class DiscoverHomeStockItem(BaseModel):
     sector: str | None = None
     last_price: float
     percent_change: float | None = None
+    percent_change_3m: float | None = None
     score: float
     quality_tier: str | None = None
 
@@ -202,12 +208,17 @@ class QuickCategory(BaseModel):
 
 class DiscoverHomeResponse(BaseModel):
     top_stocks: list[DiscoverHomeStockItem] = Field(default_factory=list)
-    top_mutual_funds: list[DiscoverHomeMutualFundItem] = Field(default_factory=list)
-    trending_stocks: list[DiscoverHomeStockItem] = Field(default_factory=list)
+    top_equity_funds: list[DiscoverHomeMutualFundItem] = Field(default_factory=list)
+    top_debt_funds: list[DiscoverHomeMutualFundItem] = Field(default_factory=list)
+    trending_this_week: list[DiscoverHomeStockItem] = Field(default_factory=list)
     gainers: list[DiscoverHomeStockItem] = Field(default_factory=list)
+    gainers_3m: list[DiscoverHomeStockItem] = Field(default_factory=list)
     losers: list[DiscoverHomeStockItem] = Field(default_factory=list)
-    sector_spotlight: list[DiscoverHomeStockItem] = Field(default_factory=list)
-    spotlight_sector_name: str | None = None
+    losers_3m: list[DiscoverHomeStockItem] = Field(default_factory=list)
+    hot_today_sector_name: str | None = None
+    hot_today_stocks: list[DiscoverHomeStockItem] = Field(default_factory=list)
+    leader_3m_sector_name: str | None = None
+    leader_3m_stocks: list[DiscoverHomeStockItem] = Field(default_factory=list)
     quick_categories: list[QuickCategory] = Field(default_factory=list)
 
 

@@ -1,4 +1,4 @@
-"""Background scheduler that runs data collection jobs inside the FastAPI process."""
+"""Background scheduler that enqueues data-collection jobs into ARQ via Redis."""
 from __future__ import annotations
 
 import asyncio
@@ -7,6 +7,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.core.config import get_settings
+from app.queue.redis_pool import get_redis_pool
 from app.scheduler.job_executors import shutdown_job_executors
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ def _get_intervals() -> dict:
         "discover_mf_daily_minute_ist": getattr(settings, "discover_mf_daily_minute_ist", 0),
         "discover_mf_daily_days": getattr(settings, "discover_mf_daily_days", "mon-fri"),
         "ipo_minutes": getattr(settings, "ipo_interval_minutes", 5),
-        "macro_minutes": getattr(settings, "macro_interval_minutes", 1),
+        "macro_minutes": getattr(settings, "macro_interval_minutes", 60),
         "news_minutes": getattr(settings, "news_interval_minutes", 30),
         "tax_enabled": getattr(settings, "tax_sync_enabled", True),
         "tax_minutes": getattr(settings, "tax_sync_interval_minutes", 1440),
@@ -43,116 +44,92 @@ def _get_intervals() -> dict:
     return intervals
 
 
+# ── Enqueue helpers ──────────────────────────────────────────────────
+# Each _run_* wrapper enqueues a named job into Redis.
+# _job_id deduplication prevents queue buildup for high-frequency jobs:
+# if a job with the same _job_id is already queued/running, the enqueue
+# is silently skipped.
+
+
+async def _enqueue(job_name: str, *, job_id: str | None = None) -> None:
+    """Enqueue a named job into ARQ.  Uses job_name as default dedup key."""
+    try:
+        pool = await get_redis_pool()
+        await pool.enqueue_job(job_name, _job_id=job_id or job_name)
+        logger.debug("Scheduler tick: enqueued %s", job_name)
+    except Exception:
+        logger.exception("Failed to enqueue job %s", job_name)
+
+
 async def _run_market() -> None:
-    logger.debug("Scheduler tick: market job started")
-    from app.scheduler.market_job import run_market_job
-    await run_market_job()
-    logger.debug("Scheduler tick: market job finished")
+    await _enqueue("market")
 
 
 async def _run_commodity() -> None:
-    logger.debug("Scheduler tick: commodity job started")
-    from app.scheduler.commodity_job import run_commodity_job
-    await run_commodity_job()
-    logger.debug("Scheduler tick: commodity job finished")
+    await _enqueue("commodity")
 
 
 async def _run_crypto() -> None:
-    logger.debug("Scheduler tick: crypto job started")
-    from app.scheduler.crypto_job import run_crypto_job
-    await run_crypto_job()
-    logger.debug("Scheduler tick: crypto job finished")
+    await _enqueue("crypto")
 
 
 async def _run_macro() -> None:
-    logger.debug("Scheduler tick: macro job started")
-    from app.scheduler.macro_job import run_macro_job
-    await run_macro_job()
-    logger.debug("Scheduler tick: macro job finished")
+    await _enqueue("macro")
 
 
 async def _run_news() -> None:
-    logger.debug("Scheduler tick: news job started")
-    from app.scheduler.news_job import run_news_job
-    await run_news_job()
-    logger.debug("Scheduler tick: news job finished")
+    await _enqueue("news")
 
 
 async def _run_brief() -> None:
-    logger.debug("Scheduler tick: brief stock job started")
-    from app.scheduler.brief_job import run_brief_job
-    await run_brief_job()
-    logger.debug("Scheduler tick: brief stock job finished")
+    await _enqueue("brief")
 
 
 async def _run_discover_stock() -> None:
-    logger.debug("Scheduler tick: discover stock job started")
-    from app.scheduler.discover_stock_job import run_discover_stock_job
+    await _enqueue("discover_stock")
 
-    await run_discover_stock_job()
-    logger.debug("Scheduler tick: discover stock job finished")
+
+async def _run_discover_stock_retry() -> None:
+    await _enqueue("discover_stock", job_id="discover_stock_retry")
 
 
 async def _run_discover_mutual_funds() -> None:
-    logger.debug("Scheduler tick: discover mutual fund job started")
-    from app.scheduler.discover_mutual_fund_job import run_discover_mutual_fund_job
-
-    await run_discover_mutual_fund_job()
-    logger.debug("Scheduler tick: discover mutual fund job finished")
+    await _enqueue("discover_mutual_funds")
 
 
 async def _run_discover_stock_price() -> None:
-    logger.debug("Scheduler tick: discover stock price daily job started")
-    from app.scheduler.discover_stock_price_job import run_discover_stock_price_job
-
-    await run_discover_stock_price_job()
-    logger.debug("Scheduler tick: discover stock price daily job finished")
+    await _enqueue("discover_stock_price")
 
 
 async def _run_discover_mf_nav() -> None:
-    logger.debug("Scheduler tick: discover MF NAV daily job started")
-    from app.scheduler.discover_mf_nav_job import run_discover_mf_nav_job
-
-    await run_discover_mf_nav_job()
-    logger.debug("Scheduler tick: discover MF NAV daily job finished")
+    await _enqueue("discover_mf_nav")
 
 
 async def _run_ipo() -> None:
-    logger.debug("Scheduler tick: IPO job started")
-    from app.services import ipo_service
-
-    await ipo_service.sync_ipo_cache(force=False)
-    logger.debug("Scheduler tick: IPO job finished")
+    await _enqueue("ipo")
 
 
 async def _run_tax() -> None:
-    logger.debug("Scheduler tick: tax job started")
-    from app.scheduler.tax_job import run_tax_job
+    await _enqueue("tax")
 
-    settings = get_settings()
-    await run_tax_job(
-        timeout_seconds=settings.tax_sync_timeout_seconds,
-    )
-    logger.debug("Scheduler tick: tax job finished")
+
+# ── Startup collection ───────────────────────────────────────────────
 
 
 async def _startup_collection() -> None:
-    """Run all jobs once at startup (market, commodity, crypto, brief, IPO, macro, tax, then news)."""
-    logger.info("Running startup data collection...")
-    await _run_market()
-    await _run_commodity()
-    await _run_crypto()
-    await _run_brief()
-    # Discover stock can run long when NSE is slow; start both discover jobs together.
-    await asyncio.gather(
-        _run_discover_stock(),
-        _run_discover_mutual_funds(),
-    )
-    await _run_ipo()
-    await _run_macro()
-    await _run_tax()
-    await _run_news()
-    logger.info("Startup data collection complete.")
+    """Enqueue all jobs once at startup so the ARQ worker processes them."""
+    logger.info("Enqueuing startup data collection...")
+    startup_jobs = [
+        "market", "commodity", "crypto", "brief",
+        "discover_stock", "discover_mutual_funds",
+        "ipo", "macro", "tax", "news",
+    ]
+    for name in startup_jobs:
+        await _enqueue(name, job_id=f"startup_{name}")
+    logger.info("Startup data collection enqueued (%d jobs).", len(startup_jobs))
+
+
+# ── Scheduler lifecycle ──────────────────────────────────────────────
 
 
 def start_scheduler() -> None:
@@ -202,7 +179,7 @@ def start_scheduler() -> None:
     )
     if intervals["discover_stock_retry_enabled"]:
         _scheduler.add_job(
-            _run_discover_stock,
+            _run_discover_stock_retry,
             "cron",
             day_of_week=intervals["discover_stock_daily_days"],
             hour=intervals["discover_stock_retry_hour_ist"],

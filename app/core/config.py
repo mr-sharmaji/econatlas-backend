@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     commodity_interval_seconds: int | None = 30
     crypto_interval_minutes: int = 1
     crypto_interval_seconds: int | None = 30
-    macro_interval_minutes: int = 1
+    macro_interval_minutes: int = 60
     news_interval_minutes: int = 30
     brief_interval_minutes: int = 5
     discover_stock_interval_minutes: int = 60
@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     # Free feeds for Japan indices are often delayed; allow a wider stale window so
     # "live delayed" data is not incorrectly marked as stale.
     stale_threshold_seconds_tse_session: int = 1800
+
+    # Redis / ARQ task queue settings
+    redis_url: str = "redis://localhost:6379"
+    arq_default_max_retries: int = 3
+    arq_default_retry_delay_seconds: int = 10
+    arq_job_timeout_seconds: int = 300
 
     # Ops logs endpoint settings
     ops_logs_enabled: bool = True

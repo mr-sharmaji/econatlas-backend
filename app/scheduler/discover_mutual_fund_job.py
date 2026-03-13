@@ -878,6 +878,97 @@ class DiscoverMutualFundScraper(BaseScraper):
         total_w = sum(w for _, w in parts)
         return sum(s * w for s, w in parts) / total_w
 
+    @staticmethod
+    def _determine_fund_type(row: dict) -> str:
+        """Classify fund as 'equity', 'debt', or 'hybrid' from category/sub_category."""
+        cat = (str(row.get("category") or "")).strip().lower()
+        sub = (str(row.get("sub_category") or "")).strip().lower()
+        combined = f"{cat} {sub}"
+        if any(k in combined for k in ("equity", "elss", "large cap", "mid cap", "small cap",
+                                        "flexi", "multi cap", "index", "sectoral", "thematic",
+                                        "focused", "contra", "value", "dividend yield")):
+            return "equity"
+        if any(k in combined for k in ("debt", "liquid", "money market", "overnight",
+                                        "gilt", "corporate bond", "credit risk",
+                                        "banking", "short duration", "medium duration",
+                                        "long duration", "ultra short", "low duration",
+                                        "floater", "fixed maturity")):
+            return "debt"
+        if any(k in combined for k in ("hybrid", "balanced", "aggressive", "conservative",
+                                        "dynamic asset", "multi asset", "arbitrage",
+                                        "equity savings")):
+            return "hybrid"
+        # Heuristic: if risk_level is Low/Moderately Low → likely debt
+        risk = str(row.get("risk_level") or "").strip().lower()
+        if risk in ("low", "moderately low"):
+            return "debt"
+        if risk in ("high", "moderately high"):
+            return "equity"
+        return "equity"  # default to equity
+
+    def _alpha_score(self, row: dict, cat_avg_returns: dict[str, float]) -> float | None:
+        """Alpha proxy: fund 3Y return minus category average 3Y return."""
+        ret3 = self._to_float(row.get("returns_3y"))
+        if ret3 is None:
+            return None
+        cat = str(row.get("category") or "Other")
+        avg = cat_avg_returns.get(cat)
+        if avg is None:
+            return None
+        # Alpha = excess return; 0 alpha = 50, positive = higher
+        alpha = ret3 - avg
+        return max(0.0, min(100.0, 50.0 + (alpha * 5.0)))
+
+    def _beta_score(self, row: dict, cat_std_devs: dict[str, list[float]], global_std_devs: list[float]) -> float | None:
+        """Beta proxy: fund std_dev relative to category median std_dev. Lower beta = higher score."""
+        std = self._to_float(row.get("std_dev"))
+        if std is None:
+            return None
+        cat = str(row.get("category") or "Other")
+        peers = cat_std_devs.get(cat, [])
+        if len(peers) < 3:
+            peers = global_std_devs
+        if not peers:
+            return None
+        median_std = self._median(peers)
+        if median_std <= 0:
+            return 50.0
+        beta_ratio = std / median_std
+        # beta_ratio ~1 = 50, lower = better
+        return max(0.0, min(100.0, 100.0 - (beta_ratio * 50.0)))
+
+    def _credit_quality_score(self, row: dict) -> float | None:
+        """Credit quality proxy for debt funds: based on risk_level + category keywords."""
+        risk = str(row.get("risk_level") or "").strip().lower()
+        sub = str(row.get("sub_category") or "").strip().lower()
+        cat = str(row.get("category") or "").strip().lower()
+        combined = f"{cat} {sub}"
+
+        # AAA-heavy categories
+        if any(k in combined for k in ("gilt", "overnight", "liquid", "money market")):
+            base = 90.0
+        elif any(k in combined for k in ("corporate bond", "banking")):
+            base = 75.0
+        elif "credit risk" in combined:
+            base = 40.0
+        elif any(k in combined for k in ("short duration", "medium duration", "low duration")):
+            base = 70.0
+        else:
+            base = 60.0
+
+        # Adjust by risk level
+        risk_adj = {"low": 10, "moderately low": 5, "moderate": 0,
+                    "moderately high": -10, "high": -15}.get(risk, 0)
+        return max(0.0, min(100.0, base + risk_adj))
+
+    def _duration_score(self, row: dict) -> float | None:
+        """Duration proxy for debt: lower volatility (std_dev) = better for debt funds."""
+        std = self._to_float(row.get("std_dev"))
+        if std is None:
+            return None
+        # For debt, lower std_dev = higher score
+        return max(0.0, min(100.0, 100.0 - (std * 12.0)))
+
     def _compute_scores(self, rows: list[dict]) -> list[dict]:
         if not rows:
             return []
@@ -889,6 +980,7 @@ class DiscoverMutualFundScraper(BaseScraper):
         global_sharpes: list[float] = []
         global_sortinos: list[float] = []
         global_std_devs: list[float] = []
+        cat_returns_3y: dict[str, list[float]] = {}
         for r in rows:
             cat = str(r.get("category") or "Other")
             s = self._to_float(r.get("sharpe"))
@@ -903,10 +995,18 @@ class DiscoverMutualFundScraper(BaseScraper):
             if d is not None:
                 cat_std_devs.setdefault(cat, []).append(d)
                 global_std_devs.append(d)
+            r3 = self._to_float(r.get("returns_3y"))
+            if r3 is not None:
+                cat_returns_3y.setdefault(cat, []).append(r3)
+
+        cat_avg_returns: dict[str, float] = {
+            cat: sum(vals) / len(vals) for cat, vals in cat_returns_3y.items() if vals
+        }
 
         out: list[dict] = []
         for row in rows:
             cat = str(row.get("category") or "Other")
+            fund_type = self._determine_fund_type(row)
             return_score = self._return_score(rows, row)
             risk_score = self._risk_score(
                 risk_level=str(row.get("risk_level") or "").strip() or None,
@@ -923,6 +1023,13 @@ class DiscoverMutualFundScraper(BaseScraper):
                 global_sharpes,
                 global_sortinos,
             )
+
+            # Type-specific extra scores
+            alpha_score = self._alpha_score(row, cat_avg_returns)
+            beta_score = self._beta_score(row, cat_std_devs, global_std_devs)
+            credit_quality_score = self._credit_quality_score(row)
+            duration_score = self._duration_score(row)
+
             return_available = any(
                 self._to_float(row.get(k)) is not None
                 for k in ("returns_1y", "returns_3y", "returns_5y")
@@ -934,22 +1041,41 @@ class DiscoverMutualFundScraper(BaseScraper):
                 or self._to_float(row.get("sortino")) is not None
             )
 
-            # Quality-first weighting with dynamic reweight on availability.
-            base_weights = {
-                "return": 0.30,
-                "risk": 0.30,
-                "cost": 0.15,
-                "consistency": 0.25,
-            }
+            # Type-specific weight distributions
+            if fund_type == "equity":
+                base_weights: dict[str, tuple[float, float | None, bool]] = {
+                    # (weight, score, available)
+                    "return":      (0.30, return_score, return_available),
+                    "risk":        (0.15, risk_score, risk_available),
+                    "cost":        (0.10, cost_score, cost_available),
+                    "consistency": (0.20, consistency_score, consistency_available),
+                    "alpha":       (0.15, alpha_score, alpha_score is not None),
+                    "beta":        (0.10, beta_score, beta_score is not None),
+                }
+            elif fund_type == "debt":
+                base_weights = {
+                    "return":         (0.15, return_score, return_available),
+                    "risk":           (0.25, risk_score, risk_available),
+                    "cost":           (0.20, cost_score, cost_available),
+                    "consistency":    (0.15, consistency_score, consistency_available),
+                    "credit_quality": (0.15, credit_quality_score, credit_quality_score is not None),
+                    "duration":       (0.10, duration_score, duration_score is not None),
+                }
+            else:
+                # Hybrid: blend equity and debt approach
+                base_weights = {
+                    "return":         (0.25, return_score, return_available),
+                    "risk":           (0.20, risk_score, risk_available),
+                    "cost":           (0.15, cost_score, cost_available),
+                    "consistency":    (0.20, consistency_score, consistency_available),
+                    "alpha":          (0.10, alpha_score, alpha_score is not None),
+                    "credit_quality": (0.10, credit_quality_score, credit_quality_score is not None),
+                }
+
             parts: list[tuple[float, float]] = []
-            if return_available:
-                parts.append((return_score, base_weights["return"]))
-            if risk_available:
-                parts.append((risk_score, base_weights["risk"]))
-            if cost_available:
-                parts.append((cost_score, base_weights["cost"]))
-            if consistency_available:
-                parts.append((consistency_score, base_weights["consistency"]))
+            for _, (w, s, avail) in base_weights.items():
+                if avail and s is not None:
+                    parts.append((s, w))
 
             if parts:
                 total_w = sum(w for _, w in parts)
@@ -1013,6 +1139,7 @@ class DiscoverMutualFundScraper(BaseScraper):
             out.append(
                 {
                     **row,
+                    "fund_type": fund_type,
                     "score": round(max(0.0, min(100.0, score - status_penalty)), 2),
                     "score_return": round(return_score, 2),
                     "score_risk": round(risk_score, 2),
@@ -1314,9 +1441,13 @@ async def run_discover_mutual_fund_job() -> None:
             SET category_rank = sub.rnk, category_total = sub.total
             FROM (
                 SELECT scheme_code,
-                       DENSE_RANK() OVER (PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
-                                          ORDER BY score DESC) AS rnk,
-                       COUNT(*) OVER (PARTITION BY COALESCE(NULLIF(category, ''), 'Other')) AS total
+                       DENSE_RANK() OVER (
+                           PARTITION BY COALESCE(NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
+                           ORDER BY score DESC
+                       ) AS rnk,
+                       COUNT(*) OVER (
+                           PARTITION BY COALESCE(NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
+                       ) AS total
                 FROM discover_mutual_fund_snapshots
             ) sub
             WHERE t.scheme_code = sub.scheme_code

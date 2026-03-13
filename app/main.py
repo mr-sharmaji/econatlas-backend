@@ -9,6 +9,8 @@ from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.database import close_pool, init_pool
 from app.core.log_stream import setup_log_stream
+from app.queue.redis_pool import close_redis_pool
+from app.queue.worker import start_worker, stop_worker
 from app.scheduler.runner import start_scheduler, stop_scheduler
 
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s - %(message)s"
@@ -42,11 +44,14 @@ def _configure_logging(level_name: str | None) -> int:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    await init_pool()
-    start_scheduler()
+    await init_pool()           # 1. PostgreSQL pool
+    await start_worker()        # 2. ARQ worker (ready to pick up jobs)
+    start_scheduler()           # 3. APScheduler (starts enqueuing into Redis)
     yield
-    stop_scheduler()
-    await close_pool()
+    stop_scheduler()            # 1. Stop enqueuing new jobs
+    await stop_worker()         # 2. Drain in-flight ARQ jobs
+    await close_redis_pool()    # 3. Close Redis connection
+    await close_pool()          # 4. Close PostgreSQL pool
 
 
 def create_app() -> FastAPI:

@@ -104,6 +104,43 @@ _EXTRA_SECTOR_MAP: dict[str, str] = {
     "DELHIVERY": "Industrials", "PIIND": "Materials", "AARTI": "Materials",
     "DEEPAKNTR": "Materials", "UPL": "Materials", "SRF": "Materials",
     "PVRINOX": "Media", "SUNTV": "Media", "ZEEL": "Media",
+    # Additional sector mappings to reduce "Other"
+    "JUBLFOOD": "Consumer", "MCDOWELL": "Consumer", "UBL": "Consumer",
+    "TATACONSUM": "Consumer", "EMAMILTD": "Consumer", "JYOTHYLAB": "Consumer",
+    "RADICO": "Consumer", "BATAINDIA": "Consumer", "RELAXO": "Consumer",
+    "WHIRLPOOL": "Consumer", "BLUESTARLT": "Consumer", "CROMPTON": "Consumer",
+    "KAJARIACER": "Materials", "CENTURYTEX": "Materials", "GRASIM": "Materials",
+    "FLUOROCHEM": "Materials", "CLEAN": "Materials", "NAVINFLUOR": "Materials",
+    "SUMICHEM": "Materials", "BASF": "Materials", "TATACHEM": "Materials",
+    "FINEORG": "Materials", "ALKYLAMINE": "Materials",
+    "HINDPETRO": "Energy", "BPCL": "Energy", "IOC": "Energy",
+    "GAIL": "Energy", "PETRONET": "Energy", "ONGC": "Energy",
+    "ADANIGREEN": "Energy", "TATAPOWER": "Energy", "ADANIPOWER": "Energy",
+    "KPITTECH": "IT", "ZENSAR": "IT", "BIRLASOFT": "IT",
+    "TATAELXSI": "IT", "INTELLECT": "IT", "HAPPSTMNDS": "IT",
+    "ROUTE": "IT", "MASTEK": "IT", "CYIENT": "IT",
+    "ICICIPRULI": "Financials", "BAJFINANCE": "Financials", "BAJAJFINSV": "Financials",
+    "LICHSGFIN": "Financials", "M&MFIN": "Financials", "SHRIRAMFIN": "Financials",
+    "SUNDARMFIN": "Financials", "CANARAHSBK": "Financials", "FEDERALBNK": "Financials",
+    "BANDHANBNK": "Financials", "RBLBANK": "Financials", "IDFC": "Financials",
+    "IDFCFIRSTB": "Financials", "INDUSINDBK": "Financials",
+    "APOLLOHOSP": "Healthcare", "SYNGENE": "Healthcare", "BIOCON": "Healthcare",
+    "NATCOPHARMA": "Healthcare", "TORNTPHARM": "Healthcare",
+    "APLLTD": "Healthcare", "GRANULES": "Healthcare",
+    "EXIDEIND": "Auto", "AMARAJABAT": "Auto", "SONACOMS": "Auto",
+    "SAMVARDHNA": "Auto", "ENDURANCE": "Auto", "BHARATFORG": "Industrials",
+    "CUMMINSIND": "Industrials", "THERMAX": "Industrials", "LTIM": "IT",
+    "KAYNES": "Industrials", "AFFLE": "IT", "MAPMY": "IT",
+    "RVNL": "Industrials", "IRCON": "Industrials", "NCC": "Industrials",
+    "NBCC": "Industrials", "KECINTL": "Industrials", "KALPATPOWR": "Industrials",
+    "AIAENG": "Industrials", "GRINFRA": "Industrials",
+    "SBICARD": "Financials", "BSE": "Financials", "MCX": "Financials",
+    "CDSL": "Financials", "CAMS": "Financials", "KFIN": "Financials",
+    "BRIGADE": "Real Estate", "SOBHA": "Real Estate", "MAHLIFE": "Real Estate",
+    "LODHA": "Real Estate", "RAYMOND": "Consumer",
+    "TTML": "Telecom", "VODAFONE": "Telecom",
+    "GPPL": "Utilities", "POWERGRID": "Utilities",
+    "IEX": "Utilities", "SJVN": "Energy",
 }
 
 
@@ -312,6 +349,8 @@ class DiscoverStockScraper(BaseScraper):
                 sector = core.sector
             else:
                 sector = _EXTRA_SECTOR_MAP.get(symbol, "Other")
+                if sector == "Other":
+                    logger.debug("Stock %s mapped to 'Other' sector", symbol)
             out.append(
                 DiscoverStockDef(
                     nse_symbol=symbol,
@@ -720,9 +759,16 @@ class DiscoverStockScraper(BaseScraper):
 
         return round(result, 2), metrics_used
 
-    def _compute_scores(self, rows: list[dict]) -> list[dict]:
+    def _compute_scores(
+        self,
+        rows: list[dict],
+        *,
+        volatility_data: dict[str, dict] | None = None,
+    ) -> list[dict]:
         if not rows:
             return []
+
+        vol_data = volatility_data or {}
 
         # Pre-compute sector medians for PE and PB
         sector_pe: dict[str, list[float]] = {}
@@ -778,11 +824,34 @@ class DiscoverStockScraper(BaseScraper):
             for r in rows
         ]
 
+        # Pre-compute volatility std_dev values for percentile ranking.
+        all_std_devs: list[float] = []
+        for r in rows:
+            sym = str(r.get("symbol") or "")
+            vd = vol_data.get(sym)
+            if vd and vd.get("std_dev") is not None:
+                all_std_devs.append(vd["std_dev"])
+
+        # Pre-compute growth proxy data for percentile ranking.
+        # Growth = blend of EPS growth (if available from Screener) + 3M price appreciation.
+        all_growth_scores: list[float] = []
+        growth_raw_by_sym: dict[str, float] = {}
+        for r in rows:
+            sym = str(r.get("symbol") or "")
+            vd = vol_data.get(sym)
+            pct_3m = vd.get("pct_change_3m") if vd else None
+            # Use 3M price change as growth proxy when EPS growth not yet available.
+            if pct_3m is not None:
+                growth_raw_by_sym[sym] = pct_3m
+                all_growth_scores.append(pct_3m)
+
         # Track sector scores for sector_leader tag
         sector_best: dict[str, tuple[float, str]] = {}
 
         out: list[dict] = []
         for row in rows:
+            symbol = str(row.get("symbol") or "")
+            sector = str(row.get("sector") or "Other")
             pct_raw = float(row.get("percent_change") or 0.0)
             pct = max(pct_lo, min(pct_hi, pct_raw))
             tv_log = math.log1p(max(0.0, float(row.get("traded_value") or 0.0)))
@@ -802,16 +871,75 @@ class DiscoverStockScraper(BaseScraper):
                 fundamentals = self._clamp(
                     self._shrink_to_neutral(fundamentals, coverage),
                 )
-            combined_signal = round((momentum + liquidity) / 2.0, 2)
-            if metrics_used == 0:
-                # Signal-only scores are capped to avoid unstable extremes.
+
+            # ── Volatility score (lower std_dev → higher score = stability premium) ──
+            vd = vol_data.get(symbol)
+            has_volatility = False
+            volatility_score = 50.0
+            pct_change_3m = None
+            if vd:
+                pct_change_3m = vd.get("pct_change_3m")
+                sd = vd.get("std_dev")
+                if sd is not None and all_std_devs:
+                    # Invert: lower volatility → higher percentile (more stable = better)
+                    raw_pctile = self._percentile_rank(all_std_devs, sd)
+                    volatility_score = self._clamp(100.0 - raw_pctile)
+                    has_volatility = True
+
+            # ── Growth score (higher 3M price change → higher score) ──
+            has_growth = False
+            growth_score = 50.0
+            if symbol in growth_raw_by_sym and all_growth_scores:
+                growth_score = self._clamp(
+                    self._percentile_rank(all_growth_scores, growth_raw_by_sym[symbol])
+                )
+                has_growth = True
+
+            # ── 5-component weighted total ──
+            # Target weights: Momentum 15%, Liquidity 10%, Fundamentals 35%,
+            #                 Volatility 15%, Growth 25%
+            weights = {
+                "momentum": 0.15,
+                "liquidity": 0.10,
+                "fundamentals": 0.35,
+                "volatility": 0.15,
+                "growth": 0.25,
+            }
+            scores = {
+                "momentum": momentum,
+                "liquidity": liquidity,
+                "fundamentals": fundamentals,
+                "volatility": volatility_score,
+                "growth": growth_score,
+            }
+
+            # Dynamic reweighting: if component unavailable, redistribute weight.
+            available_weights: dict[str, float] = {}
+            for k, w in weights.items():
+                if k == "volatility" and not has_volatility:
+                    continue
+                if k == "growth" and not has_growth:
+                    continue
+                if k == "fundamentals" and metrics_used == 0:
+                    continue
+                available_weights[k] = w
+
+            if not available_weights:
+                # Absolute fallback: signal-only
+                combined_signal = (momentum + liquidity) / 2.0
                 total = self._clamp(combined_signal, lo=20.0, hi=80.0)
-            elif metrics_used >= 4:
-                total = (combined_signal * 0.25) + (fundamentals * 0.75)
-            elif metrics_used >= 2:
-                total = (combined_signal * 0.50) + (fundamentals * 0.50)
             else:
-                total = (combined_signal * 0.65) + (fundamentals * 0.35)
+                total_w = sum(available_weights.values())
+                total = sum(
+                    scores[k] * (w / total_w) for k, w in available_weights.items()
+                )
+
+            # Shrink fundamentals influence when data coverage is low
+            if metrics_used > 0 and metrics_used < 4:
+                # Partially shrink total toward signal-dominated score
+                signal_only = (momentum * 0.6 + liquidity * 0.4)
+                blend_factor = metrics_used / 5.0
+                total = (total * blend_factor) + (signal_only * (1.0 - blend_factor))
 
             source_status = str(row.get("source_status") or "limited").strip().lower()
             if metrics_used == 0 and source_status == "primary":
@@ -831,12 +959,15 @@ class DiscoverStockScraper(BaseScraper):
                 tags.append("high_liquidity")
             if fundamentals >= 70:
                 tags.append("strong_fundamentals")
+            if has_volatility and volatility_score >= 75:
+                tags.append("low_volatility")
+            if has_growth and growth_score >= 75:
+                tags.append("strong_growth")
             eps = row.get("eps")
             if eps is not None and eps < 0:
                 tags.append("negative_eps")
             # Check for undervalued: PE below sector median + strong fundamentals
             pe = row.get("pe_ratio")
-            sector = str(row.get("sector") or "Other")
             med_pe = sector_medians.get(sector, {}).get("pe", 25.0)
             if pe is not None and pe > 0 and pe < med_pe and fundamentals >= 60:
                 tags.append("undervalued")
@@ -846,7 +977,6 @@ class DiscoverStockScraper(BaseScraper):
                 tags.append("balanced")
 
             score = round(self._clamp(total - status_penalty), 2)
-            symbol = str(row.get("symbol") or "")
 
             # Track sector leader
             if sector not in sector_best or score > sector_best[sector][0]:
@@ -858,11 +988,16 @@ class DiscoverStockScraper(BaseScraper):
                 "score_momentum": round(momentum, 2),
                 "score_liquidity": round(liquidity, 2),
                 "score_fundamentals": round(fundamentals, 2),
+                "score_volatility": round(volatility_score, 2),
+                "score_growth": round(growth_score, 2),
+                "percent_change_3m": pct_change_3m,
                 "score_breakdown": {
                     "momentum": round(momentum, 2),
                     "liquidity": round(liquidity, 2),
                     "fundamentals": round(fundamentals, 2),
-                    "combined_signal": round(combined_signal, 2),
+                    "volatility": round(volatility_score, 2),
+                    "growth": round(growth_score, 2),
+                    "combined_signal": round((momentum + liquidity) / 2.0, 2),
                 },
                 "tags": tags,
                 "source_status": source_status,
@@ -962,7 +1097,8 @@ class DiscoverStockScraper(BaseScraper):
             return None
         return self._build_snapshot_row(stock, quote, quote_source)
 
-    def fetch_all(self) -> list[dict]:
+    def fetch_raw_rows(self) -> list[dict]:
+        """Fetch quotes + fundamentals (sync I/O). Does NOT score."""
         universe = self._build_effective_universe()
         bulk_quotes, _ = self._fetch_latest_bhavcopy_quotes()
         raw_rows: list[dict] = []
@@ -1007,23 +1143,35 @@ class DiscoverStockScraper(BaseScraper):
                     len(raw_rows),
                     len(fallback_universe),
                 )
-        return self._compute_scores(raw_rows)
+        return raw_rows
+
+    def fetch_all(self, *, volatility_data: dict[str, dict] | None = None) -> list[dict]:
+        raw_rows = self.fetch_raw_rows()
+        return self._compute_scores(raw_rows, volatility_data=volatility_data)
 
 
 _scraper = DiscoverStockScraper()
 
 
-def _fetch_discover_stock_rows_sync() -> list[dict]:
-    return _scraper.fetch_all()
+def _fetch_discover_stock_raw_sync() -> list[dict]:
+    return _scraper.fetch_raw_rows()
 
 
 async def run_discover_stock_job() -> None:
     try:
+        # 1. Pre-fetch volatility data from PostgreSQL (async).
+        volatility_data = await discover_service.get_bulk_stock_volatility_data()
+
+        # 2. Fetch quotes + fundamentals (sync network I/O in executor).
         loop = asyncio.get_event_loop()
-        rows = await loop.run_in_executor(
+        raw_rows = await loop.run_in_executor(
             get_job_executor("discover-stock"),
-            _fetch_discover_stock_rows_sync,
+            _fetch_discover_stock_raw_sync,
         )
+
+        # 3. Score with all 5 components (CPU-bound, fast).
+        rows = _scraper._compute_scores(raw_rows, volatility_data=volatility_data)
+
         count = await discover_service.upsert_discover_stock_snapshots(rows)
         logger.info("Discover stock job complete: %d snapshots upserted", count)
     except requests.RequestException:

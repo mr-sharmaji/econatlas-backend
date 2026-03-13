@@ -10,3 +10,5 @@ exchange-calendars>=4.0,<5
 requests>=2.31,<3
 beautifulsoup4>=4.12,<5
 feedparser>=6.0,<7
+arq>=0.26,<1
+redis[hiredis]>=5.0,<6
