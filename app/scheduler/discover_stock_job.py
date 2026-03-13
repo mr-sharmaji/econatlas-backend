@@ -1226,6 +1226,11 @@ async def run_discover_stock_job() -> None:
     try:
         # 1. Pre-fetch volatility data from PostgreSQL (async).
         volatility_data = await discover_service.get_bulk_stock_volatility_data()
+        logger.info(
+            "Discover stock: volatility_data has %d symbols (sample keys: %s)",
+            len(volatility_data),
+            list(volatility_data.keys())[:5] if volatility_data else "EMPTY",
+        )
 
         # 2. Fetch quotes + fundamentals (sync network I/O in executor).
         loop = asyncio.get_event_loop()
@@ -1233,9 +1238,22 @@ async def run_discover_stock_job() -> None:
             get_job_executor("discover-stock"),
             _fetch_discover_stock_raw_sync,
         )
+        logger.info("Discover stock: fetched %d raw rows", len(raw_rows))
 
         # 3. Score with all 5 components (CPU-bound, fast).
         rows = _scraper._compute_scores(raw_rows, volatility_data=volatility_data)
+
+        # Log sample scores to verify volatility/growth populated
+        if rows:
+            sample = rows[0]
+            logger.info(
+                "Discover stock: sample scored row %s → score=%.2f vol=%.2f growth=%.2f pct3m=%s",
+                sample.get("symbol"),
+                sample.get("score", 0),
+                sample.get("score_volatility", -1),
+                sample.get("score_growth", -1),
+                sample.get("percent_change_3m"),
+            )
 
         count = await discover_service.upsert_discover_stock_snapshots(rows)
         logger.info("Discover stock job complete: %d snapshots upserted", count)

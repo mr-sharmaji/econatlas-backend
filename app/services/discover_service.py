@@ -659,6 +659,8 @@ async def list_discover_stocks(
             last_price, point_change, percent_change, volume, traded_value,
             pe_ratio, roe, roce, debt_to_equity, price_to_book, eps,
             score, score_momentum, score_liquidity, score_fundamentals,
+            score_volatility, score_growth,
+            percent_change_3m, percent_change_1w,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
             high_52w, low_52w, market_cap, dividend_yield
@@ -1055,7 +1057,8 @@ async def get_discover_home_data() -> dict:
 
     _stock_cols = (
         "symbol, display_name, sector, last_price, percent_change, "
-        "percent_change_3m, percent_change_1w, score, high_52w, low_52w, market_cap"
+        "percent_change_3m, percent_change_1w, score, score_volatility, score_growth, "
+        "high_52w, low_52w, market_cap"
     )
 
     def _decorate_stock_list(rows) -> list[dict]:
@@ -1468,6 +1471,8 @@ async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
             last_price, point_change, percent_change, volume, traded_value,
             pe_ratio, roe, roce, debt_to_equity, price_to_book, eps,
             score, score_momentum, score_liquidity, score_fundamentals,
+            score_volatility, score_growth,
+            percent_change_3m, percent_change_1w,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
             high_52w, low_52w, market_cap, dividend_yield
