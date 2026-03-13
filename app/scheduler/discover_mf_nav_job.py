@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import time
+
+from app.scheduler.job_executors import get_job_executor
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -85,7 +87,7 @@ async def run_discover_mf_nav_job() -> None:
 
     for i, scheme_code in enumerate(code_list, start=1):
         try:
-            rows = await loop.run_in_executor(None, _fetch_mf_nav_7d, scheme_code)
+            rows = await loop.run_in_executor(get_job_executor("discover-mf-nav"), _fetch_mf_nav_7d, scheme_code)
             if rows:
                 await pool.executemany(INSERT_SQL, rows)
                 total_inserted += len(rows)

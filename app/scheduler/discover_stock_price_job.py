@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import random
 import time
+
+from app.scheduler.job_executors import get_job_executor
 from datetime import datetime, timezone
 
 import requests
@@ -89,7 +91,7 @@ async def run_discover_stock_price_job() -> None:
 
     for i, symbol in enumerate(symbol_list, start=1):
         try:
-            rows = await loop.run_in_executor(None, _fetch_yahoo_7d, symbol)
+            rows = await loop.run_in_executor(get_job_executor("discover-stock-price"), _fetch_yahoo_7d, symbol)
             if rows:
                 await pool.executemany(INSERT_SQL, rows)
                 total_inserted += len(rows)

@@ -9,6 +9,7 @@ from html import unescape
 import requests
 
 from app.core.config import get_settings
+from app.scheduler.job_executors import get_job_executor
 from app.core.database import get_pool, parse_ts, record_to_dict
 
 logger = logging.getLogger(__name__)
@@ -585,7 +586,8 @@ async def _sync_live_rows(force: bool = False) -> None:
             return
 
     try:
-        rows = await asyncio.to_thread(_fetch_live_rows)
+        loop = asyncio.get_event_loop()
+        rows = await loop.run_in_executor(get_job_executor("ipo"), _fetch_live_rows)
     except Exception:
         logger.exception("IPO live sync failed")
         return
