@@ -158,6 +158,10 @@ class DiscoverStockScraper(BaseScraper):
         self._nse_timeout = max(1, int(getattr(self.settings, "discover_stock_nse_timeout_seconds", 4)))
         self._nse_cooldown = max(30, int(getattr(self.settings, "discover_stock_nse_cooldown_seconds", 300)))
         self._screener_timeout = max(2, int(getattr(self.settings, "discover_stock_screener_timeout_seconds", 8)))
+        self._fundamentals_limit = max(
+            len(CORE_UNIVERSE),
+            int(getattr(self.settings, "discover_stock_fundamentals_limit", 600)),
+        )
         self._bhavcopy_lookback_days = max(
             1,
             int(getattr(self.settings, "discover_stock_bhavcopy_lookback_days", 7)),
@@ -337,6 +341,32 @@ class DiscoverStockScraper(BaseScraper):
         if self._universe_cache:
             return self._universe_cache
         return CORE_UNIVERSE
+
+    def _select_fundamentals_symbols(
+        self,
+        universe: tuple[DiscoverStockDef, ...],
+        quotes_by_symbol: dict[str, dict],
+    ) -> set[str]:
+        prioritized: list[tuple[int, float, int, str]] = []
+        for stock in universe:
+            quote = quotes_by_symbol.get(stock.nse_symbol) or {}
+            prioritized.append(
+                (
+                    0 if stock.nse_symbol in self._core_symbol_map else 1,
+                    -float(quote.get("traded_value") or 0.0),
+                    -int(quote.get("volume") or 0),
+                    stock.nse_symbol,
+                )
+            )
+
+        selected: set[str] = set()
+        for _, _, _, symbol in sorted(prioritized):
+            selected.add(symbol)
+            if len(selected) >= self._fundamentals_limit:
+                break
+
+        selected.update(self._core_symbol_map.keys())
+        return selected
 
     def _fetch_latest_bhavcopy_quotes(self) -> tuple[dict[str, dict], datetime | None]:
         base_url = str(getattr(self.settings, "discover_stock_bhavcopy_url_template", NSE_BHAVCOPY_URL_TMPL)).strip()
@@ -856,8 +886,19 @@ class DiscoverStockScraper(BaseScraper):
         )
         return out
 
-    def _build_snapshot_row(self, stock: DiscoverStockDef, quote: dict, quote_source: str) -> dict:
-        if bool(getattr(stock, "fundamentals_enabled", True)):
+    def _build_snapshot_row(
+        self,
+        stock: DiscoverStockDef,
+        quote: dict,
+        quote_source: str,
+        *,
+        fundamentals_enabled: bool | None = None,
+    ) -> dict:
+        use_fundamentals = bool(getattr(stock, "fundamentals_enabled", True))
+        if fundamentals_enabled is not None:
+            use_fundamentals = fundamentals_enabled
+
+        if use_fundamentals:
             fundamentals, fundamentals_source = self._fetch_screener_fundamentals(stock.nse_symbol)
         else:
             fundamentals = {
@@ -926,13 +967,21 @@ class DiscoverStockScraper(BaseScraper):
         bulk_quotes, _ = self._fetch_latest_bhavcopy_quotes()
         raw_rows: list[dict] = []
         if bulk_quotes:
+            fundamentals_symbols = self._select_fundamentals_symbols(universe, bulk_quotes)
             missing: list[DiscoverStockDef] = []
             for stock in universe:
                 quote = bulk_quotes.get(stock.nse_symbol)
                 if quote is None:
                     missing.append(stock)
                     continue
-                raw_rows.append(self._build_snapshot_row(stock, quote, "nse_bhavcopy"))
+                raw_rows.append(
+                    self._build_snapshot_row(
+                        stock,
+                        quote,
+                        "nse_bhavcopy",
+                        fundamentals_enabled=stock.nse_symbol in fundamentals_symbols,
+                    )
+                )
             if missing and self._missing_quote_retry_limit > 0:
                 retry_batch = missing[: self._missing_quote_retry_limit]
                 logger.warning(
