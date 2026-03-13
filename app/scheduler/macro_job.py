@@ -31,14 +31,12 @@ FRED_DIRECT: Dict[str, List[Tuple[str, str]]] = {
         ("repo_rate", "IRSTCI01INM156N"),
     ],
     "EU": [
-        ("inflation", "CP0000EZ19M086NEST"),
         # Euro Area real GDP level; converted to YoY % via _compute_growth_from_level.
         ("gdp_growth", "CLVMNACSCAB1GQEA19"),
         ("unemployment", "LRHUTTTTEZM156S"),
         ("repo_rate", "ECBDFR"),
     ],
     "JP": [
-        ("inflation", "CPALTT01JPM657N"),
         ("gdp_growth", "JPNGDPRQPSMEI"),
         ("unemployment", "LRHUTTTTJPM156S"),
         ("repo_rate", "IRSTCB01JPM156N"),
@@ -54,6 +52,8 @@ FRED_GROWTH_FROM_LEVEL: Dict[str, int] = {
 FRED_CPI: Dict[str, str] = {
     "US": "CPIAUCSL",
     "IN": "INDCPIALLMINMEI",
+    "EU": "CP0000EZ19M086NEST",
+    "JP": "CPALTT01JPM657N",
 }
 
 WORLD_BANK_FALLBACK: Dict[str, List[Tuple[str, str]]] = {
@@ -91,7 +91,7 @@ SOURCE_PRIORITY: Dict[str, int] = {
 
 # Lightweight sanity ranges to reject obvious bad provider values.
 VALUE_RANGES: Dict[str, Tuple[float, float]] = {
-    "inflation": (-100.0, 200.0),
+    "inflation": (-20.0, 40.0),
     "gdp_growth": (-50.0, 50.0),
     "unemployment": (0.0, 100.0),
     "repo_rate": (-5.0, 50.0),
