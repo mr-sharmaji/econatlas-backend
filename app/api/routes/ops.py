@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Header, HTTPException, Query
+import logging
+
+from fastapi import APIRouter, Header, HTTPException, Path, Query
 
 from app.core.config import get_settings
 from app.core.log_stream import get_log_entries
@@ -6,7 +8,17 @@ from app.schemas.market_intel_schema import DataHealthResponse
 from app.schemas.ops_schema import LogEntryResponse, LogListResponse
 from app.services import market_intel_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/ops", tags=["ops"])
+
+# Valid job names that can be triggered manually.
+_VALID_JOBS = {
+    "market", "commodity", "crypto", "brief", "macro", "news",
+    "discover_stock", "discover_mutual_funds",
+    "discover_stock_price", "discover_mf_nav",
+    "ipo", "tax",
+}
 
 
 def _authorize(x_ops_token: str | None) -> None:
@@ -38,6 +50,39 @@ async def ops_logs(
     )
     entries = [LogEntryResponse(**r) for r in rows]
     return LogListResponse(entries=entries, count=len(entries), latest_id=latest_id)
+
+
+@router.post("/jobs/trigger/{job_name}")
+async def trigger_job(
+    job_name: str = Path(..., description="Name of the job to trigger"),
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Manually enqueue a background job for immediate execution."""
+    _authorize(x_ops_token)
+    if job_name not in _VALID_JOBS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown job '{job_name}'. Valid: {sorted(_VALID_JOBS)}",
+        )
+    from app.queue.redis_pool import get_redis_pool
+
+    pool = await get_redis_pool()
+    job = await pool.enqueue_job(job_name, _job_id=f"{job_name}_manual")
+    logger.info("Manually triggered job: %s (job_id=%s)", job_name, job.job_id if job else "deduped")
+    return {
+        "status": "enqueued" if job else "already_queued",
+        "job_name": job_name,
+        "job_id": job.job_id if job else f"{job_name}_manual",
+    }
+
+
+@router.get("/jobs")
+async def list_jobs(
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """List all valid job names that can be triggered."""
+    _authorize(x_ops_token)
+    return {"jobs": sorted(_VALID_JOBS)}
 
 
 @router.get("/data-health", response_model=DataHealthResponse)
