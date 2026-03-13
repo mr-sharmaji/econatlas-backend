@@ -15,8 +15,13 @@ class DiscoverStockScoreBreakdown(BaseModel):
     fundamentals: float
     volatility: float | None = None
     growth: float | None = None
+    financial_health: float | None = None
+    ownership: float | None = None
+    analyst: float | None = None
     combined_signal: float
     position_52w: float | None = Field(None, alias="52w_position")
+    fundamentals_coverage: str | None = None
+    data_quality: str | None = None
 
 
 class DiscoverStockItemResponse(BaseModel):
@@ -46,6 +51,39 @@ class DiscoverStockItemResponse(BaseModel):
     score_fundamentals: float
     score_volatility: float | None = None
     score_growth: float | None = None
+    score_financial_health: float | None = None
+    score_ownership: float | None = None
+    score_analyst: float | None = None
+    # Shareholding
+    promoter_holding: float | None = None
+    fii_holding: float | None = None
+    dii_holding: float | None = None
+    government_holding: float | None = None
+    public_holding: float | None = None
+    num_shareholders: int | None = None
+    promoter_holding_change: float | None = None
+    fii_holding_change: float | None = None
+    dii_holding_change: float | None = None
+    # Yahoo-exclusive fundamentals
+    beta: float | None = None
+    free_cash_flow: float | None = None
+    operating_cash_flow: float | None = None
+    total_cash: float | None = None
+    total_debt: float | None = None
+    total_revenue: float | None = None
+    gross_margins: float | None = None
+    operating_margins: float | None = None
+    profit_margins: float | None = None
+    revenue_growth: float | None = None
+    earnings_growth: float | None = None
+    forward_pe: float | None = None
+    # Analyst data
+    analyst_target_mean: float | None = None
+    analyst_count: int | None = None
+    analyst_recommendation: str | None = None
+    analyst_recommendation_mean: float | None = None
+    # Industry sub-sector
+    industry: str | None = None
     percent_change_3m: float | None = None
     percent_change_1w: float | None = None
     percent_change_1y: float | None = None

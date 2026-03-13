@@ -7,6 +7,7 @@ import logging
 import math
 import re
 import statistics
+import time as time_mod
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
@@ -32,7 +33,43 @@ IST = ZoneInfo("Asia/Kolkata")
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 
 
-# Mapping from Screener.in / NSE industry terms to broad sector categories
+# ---------------------------------------------------------------------------
+# Screener.in Broad Sector → clean sector name mapping
+# ---------------------------------------------------------------------------
+_SCREENER_BROAD_SECTOR_MAP: dict[str, str] = {
+    "energy": "Energy",
+    "information technology": "IT",
+    "financial services": "Financials",
+    "fast moving consumer goods": "FMCG",
+    "consumer discretionary": "Consumer Discretionary",
+    "consumer staples": "FMCG",
+    "healthcare": "Healthcare",
+    "pharmaceuticals": "Healthcare",
+    "industrials": "Industrials",
+    "capital goods": "Industrials",
+    "construction": "Industrials",
+    "construction materials": "Industrials",
+    "materials": "Materials",
+    "chemicals": "Chemicals",
+    "metals & mining": "Materials",
+    "telecommunication": "Telecom",
+    "real estate": "Real Estate",
+    "media entertainment & publication": "Media & Entertainment",
+    "media": "Media & Entertainment",
+    "services": "Services",
+    "utilities": "Utilities",
+    "automobile and auto components": "Auto",
+    "automobile": "Auto",
+    "diversified": "Diversified",
+    "textiles": "Textiles",
+    "forest materials": "Materials",
+    "consumer services": "Services",
+    "oil gas & consumable fuels": "Energy",
+    "power": "Energy",
+    "realty": "Real Estate",
+}
+
+# Legacy keyword-based fallback for sector classification
 _SECTOR_MAPPING: dict[str, str] = {
     # Energy
     "oil": "Energy", "gas": "Energy", "petroleum": "Energy", "crude": "Energy",
@@ -48,9 +85,9 @@ _SECTOR_MAPPING: dict[str, str] = {
     "pharma": "Healthcare", "healthcare": "Healthcare", "hospital": "Healthcare",
     "drug": "Healthcare", "medical": "Healthcare", "biotech": "Healthcare",
     # Consumer
-    "fmcg": "Consumer", "consumer": "Consumer", "retail": "Consumer",
-    "food": "Consumer", "beverage": "Consumer", "textile": "Consumer",
-    "apparel": "Consumer", "personal care": "Consumer",
+    "fmcg": "FMCG", "consumer": "Consumer Discretionary", "retail": "Consumer Discretionary",
+    "food": "FMCG", "beverage": "FMCG", "textile": "Textiles",
+    "apparel": "Consumer Discretionary", "personal care": "FMCG",
     # Auto
     "auto": "Auto", "automobile": "Auto", "vehicle": "Auto",
     "tyre": "Auto", "tire": "Auto",
@@ -59,16 +96,16 @@ _SECTOR_MAPPING: dict[str, str] = {
     "engineering": "Industrials", "construction": "Industrials",
     "infrastructure": "Industrials", "cement": "Industrials",
     "defence": "Industrials", "defense": "Industrials",
-    # Materials
+    # Materials / Chemicals
     "metals": "Materials", "steel": "Materials", "aluminium": "Materials",
-    "mining": "Materials", "chemicals": "Materials", "paper": "Materials",
-    "fertilizer": "Materials", "plastic": "Materials",
+    "mining": "Materials", "chemicals": "Chemicals", "paper": "Materials",
+    "fertilizer": "Chemicals", "plastic": "Chemicals",
     # Telecom
     "telecom": "Telecom", "communication": "Telecom",
     # Real Estate
     "real estate": "Real Estate", "realty": "Real Estate", "housing": "Real Estate",
     # Media
-    "media": "Media", "entertainment": "Media",
+    "media": "Media & Entertainment", "entertainment": "Media & Entertainment",
 }
 
 # Expanded curated sector mapping for common stocks not in INDIA_STOCKS
@@ -76,14 +113,14 @@ _EXTRA_SECTOR_MAP: dict[str, str] = {
     "ATGL": "Energy", "NTPCGREEN": "Energy", "JSWENERGY": "Energy",
     "ADANIENERGY": "Energy", "CESC": "Energy", "NHPC": "Energy",
     "TORNTPOWER": "Utilities", "SJVN": "Energy",
-    "DOMS": "Consumer", "JINDALSAW": "Materials", "JINDALSTEL": "Materials",
+    "DOMS": "Consumer Discretionary", "JINDALSAW": "Materials", "JINDALSTEL": "Materials",
     "TATASTEEL": "Materials", "HINDALCO": "Materials", "VEDL": "Materials",
     "NMDC": "Materials", "COALINDIA": "Energy",
-    "DABUR": "Consumer", "GODREJCP": "Consumer", "MARICO": "Consumer",
-    "PIDILITIND": "Consumer", "COLPAL": "Consumer", "BRITANNIA": "Consumer",
-    "PAGEIND": "Consumer", "VBL": "Consumer", "TRENT": "Consumer",
-    "IRCTC": "Consumer", "ZOMATO": "Consumer", "NYKAA": "Consumer",
-    "DMART": "Consumer", "TITAN": "Consumer",
+    "DABUR": "FMCG", "GODREJCP": "FMCG", "MARICO": "FMCG",
+    "PIDILITIND": "FMCG", "COLPAL": "FMCG", "BRITANNIA": "FMCG",
+    "PAGEIND": "Consumer Discretionary", "VBL": "FMCG", "TRENT": "Consumer Discretionary",
+    "IRCTC": "Consumer Discretionary", "ZOMATO": "Consumer Discretionary", "NYKAA": "Consumer Discretionary",
+    "DMART": "Consumer Discretionary", "TITAN": "Consumer Discretionary",
     "SBICARD": "Financials", "CHOLAFIN": "Financials", "MUTHOOTFIN": "Financials",
     "MANAPPURAM": "Financials", "PEL": "Financials", "CANFINHOME": "Financials",
     "ICICIGI": "Financials", "SBILIFE": "Financials", "HDFCLIFE": "Financials",
@@ -102,18 +139,18 @@ _EXTRA_SECTOR_MAP: dict[str, str] = {
     "BEL": "Industrials", "HAL": "Industrials", "CONCOR": "Industrials",
     "IRFC": "Financials", "PFC": "Financials", "RECLTD": "Financials",
     "ULTRACEMCO": "Industrials", "AMBUJACEM": "Industrials", "SHREECEM": "Industrials",
-    "DELHIVERY": "Industrials", "PIIND": "Materials", "AARTI": "Materials",
-    "DEEPAKNTR": "Materials", "UPL": "Materials", "SRF": "Materials",
-    "PVRINOX": "Media", "SUNTV": "Media", "ZEEL": "Media",
+    "DELHIVERY": "Industrials", "PIIND": "Chemicals", "AARTI": "Chemicals",
+    "DEEPAKNTR": "Chemicals", "UPL": "Chemicals", "SRF": "Chemicals",
+    "PVRINOX": "Media & Entertainment", "SUNTV": "Media & Entertainment", "ZEEL": "Media & Entertainment",
     # Additional sector mappings to reduce "Other"
-    "JUBLFOOD": "Consumer", "MCDOWELL": "Consumer", "UBL": "Consumer",
-    "TATACONSUM": "Consumer", "EMAMILTD": "Consumer", "JYOTHYLAB": "Consumer",
-    "RADICO": "Consumer", "BATAINDIA": "Consumer", "RELAXO": "Consumer",
-    "WHIRLPOOL": "Consumer", "BLUESTARLT": "Consumer", "CROMPTON": "Consumer",
-    "KAJARIACER": "Materials", "CENTURYTEX": "Materials", "GRASIM": "Materials",
-    "FLUOROCHEM": "Materials", "CLEAN": "Materials", "NAVINFLUOR": "Materials",
-    "SUMICHEM": "Materials", "BASF": "Materials", "TATACHEM": "Materials",
-    "FINEORG": "Materials", "ALKYLAMINE": "Materials",
+    "JUBLFOOD": "Consumer Discretionary", "MCDOWELL": "FMCG", "UBL": "FMCG",
+    "TATACONSUM": "FMCG", "EMAMILTD": "FMCG", "JYOTHYLAB": "FMCG",
+    "RADICO": "FMCG", "BATAINDIA": "Consumer Discretionary", "RELAXO": "Consumer Discretionary",
+    "WHIRLPOOL": "Consumer Discretionary", "BLUESTARLT": "Consumer Discretionary", "CROMPTON": "Consumer Discretionary",
+    "KAJARIACER": "Materials", "CENTURYTEX": "Textiles", "GRASIM": "Materials",
+    "FLUOROCHEM": "Chemicals", "CLEAN": "Chemicals", "NAVINFLUOR": "Chemicals",
+    "SUMICHEM": "Chemicals", "BASF": "Chemicals", "TATACHEM": "Chemicals",
+    "FINEORG": "Chemicals", "ALKYLAMINE": "Chemicals",
     "HINDPETRO": "Energy", "BPCL": "Energy", "IOC": "Energy",
     "GAIL": "Energy", "PETRONET": "Energy", "ONGC": "Energy",
     "ADANIGREEN": "Energy", "TATAPOWER": "Energy", "ADANIPOWER": "Energy",
@@ -135,13 +172,13 @@ _EXTRA_SECTOR_MAP: dict[str, str] = {
     "RVNL": "Industrials", "IRCON": "Industrials", "NCC": "Industrials",
     "NBCC": "Industrials", "KECINTL": "Industrials", "KALPATPOWR": "Industrials",
     "AIAENG": "Industrials", "GRINFRA": "Industrials",
-    "SBICARD": "Financials", "BSE": "Financials", "MCX": "Financials",
+    "BSE": "Financials", "MCX": "Financials",
     "CDSL": "Financials", "CAMS": "Financials", "KFIN": "Financials",
     "BRIGADE": "Real Estate", "SOBHA": "Real Estate", "MAHLIFE": "Real Estate",
-    "LODHA": "Real Estate", "RAYMOND": "Consumer",
+    "LODHA": "Real Estate", "RAYMOND": "Consumer Discretionary",
     "TTML": "Telecom", "VODAFONE": "Telecom",
     "GPPL": "Utilities", "POWERGRID": "Utilities",
-    "IEX": "Utilities", "SJVN": "Energy",
+    "IEX": "Utilities",
 }
 
 
@@ -187,6 +224,123 @@ def _build_core_universe() -> tuple[DiscoverStockDef, ...]:
 CORE_UNIVERSE = _build_core_universe()
 
 
+# ---------------------------------------------------------------------------
+# Yahoo Finance v10 quoteSummary via curl_cffi (browser impersonation)
+# ---------------------------------------------------------------------------
+
+class YahooFinanceSession:
+    """Yahoo v10 quoteSummary via curl_cffi with crumb caching."""
+
+    def __init__(self, crumb_ttl: int = 600):
+        self._session = None
+        self._crumb: str | None = None
+        self._crumb_ts: float = 0.0
+        self._crumb_ttl = crumb_ttl
+
+    def _ensure_session(self) -> None:
+        if self._session and self._crumb and time_mod.time() - self._crumb_ts < self._crumb_ttl:
+            return
+        try:
+            from curl_cffi import requests as cffi_requests
+        except ImportError:
+            raise RuntimeError("curl_cffi not installed; Yahoo v10 unavailable")
+        self._session = cffi_requests.Session(impersonate="chrome")
+        try:
+            self._session.get("https://fc.yahoo.com", timeout=10)
+        except Exception:
+            pass
+        time_mod.sleep(1)
+        r = self._session.get("https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=10)
+        crumb = r.text.strip()
+        if "Too Many" in crumb or "error" in crumb.lower():
+            raise RuntimeError(f"Yahoo crumb failed: {crumb}")
+        self._crumb = crumb
+        self._crumb_ts = time_mod.time()
+        logger.info("Yahoo v10: crumb obtained successfully")
+
+    def get_stock_data(self, nse_symbol: str) -> dict:
+        """Fetch comprehensive stock data from Yahoo v10 quoteSummary."""
+        self._ensure_session()
+        modules = "defaultKeyStatistics,financialData,summaryDetail,recommendationTrend"
+        url = (
+            f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/"
+            f"{nse_symbol}.NS?modules={modules}&crumb={self._crumb}"
+        )
+        r = self._session.get(url, timeout=10)
+        data = r.json()
+        result = data.get("quoteSummary", {}).get("result", [{}])[0]
+        ks = result.get("defaultKeyStatistics", {})
+        fd = result.get("financialData", {})
+        sd = result.get("summaryDetail", {})
+        rt = result.get("recommendationTrend", {}).get("trend", [])
+
+        def _r(d: dict, k: str):
+            v = d.get(k, {})
+            return v.get("raw") if isinstance(v, dict) else None
+
+        # Analyst consensus
+        current_reco = rt[0] if rt else {}
+
+        return {
+            # Fundamentals (fallback for Screener gaps)
+            "pe_ratio": _r(sd, "trailingPE"),
+            "forward_pe": _r(sd, "forwardPE") or _r(ks, "forwardPE"),
+            "price_to_book": _r(ks, "priceToBook"),
+            "eps": _r(ks, "trailingEps"),
+            "forward_eps": _r(ks, "forwardEps"),
+            "debt_to_equity": (
+                (_r(fd, "debtToEquity") or 0) / 100.0
+                if _r(fd, "debtToEquity") is not None else None
+            ),
+            "dividend_yield": (
+                (_r(sd, "dividendYield") or 0) * 100
+                if _r(sd, "dividendYield") is not None else None
+            ),
+            "market_cap": _r(sd, "marketCap"),
+            "high_52w": _r(sd, "fiftyTwoWeekHigh"),
+            "low_52w": _r(sd, "fiftyTwoWeekLow"),
+            # Yahoo-exclusive: Financial Health
+            "beta": _r(ks, "beta") or _r(sd, "beta"),
+            "free_cash_flow": _r(fd, "freeCashflow"),
+            "operating_cash_flow": _r(fd, "operatingCashflow"),
+            "total_cash": _r(fd, "totalCash"),
+            "total_debt": _r(fd, "totalDebt"),
+            "total_revenue": _r(fd, "totalRevenue"),
+            "gross_margins": _r(fd, "grossMargins"),
+            "operating_margins": _r(fd, "operatingMargins"),
+            "profit_margins": _r(fd, "profitMargins"),
+            "ebitda_margins": _r(fd, "ebitdaMargins"),
+            # Yahoo-exclusive: Growth
+            "revenue_growth": _r(fd, "revenueGrowth"),
+            "earnings_growth": _r(fd, "earningsGrowth"),
+            "earnings_quarterly_growth": _r(ks, "earningsQuarterlyGrowth"),
+            # Yahoo-exclusive: Analyst
+            "analyst_target_mean": _r(fd, "targetMeanPrice"),
+            "analyst_target_median": _r(fd, "targetMedianPrice"),
+            "analyst_target_high": _r(fd, "targetHighPrice"),
+            "analyst_target_low": _r(fd, "targetLowPrice"),
+            "analyst_count": _r(fd, "numberOfAnalystOpinions"),
+            "analyst_recommendation": fd.get("recommendationKey"),
+            "analyst_recommendation_mean": _r(fd, "recommendationMean"),
+            "analyst_strong_buy": current_reco.get("strongBuy", 0),
+            "analyst_buy": current_reco.get("buy", 0),
+            "analyst_hold": current_reco.get("hold", 0),
+            "analyst_sell": (current_reco.get("sell", 0) or 0) + (current_reco.get("strongSell", 0) or 0),
+            # Ownership (fallback if Screener missing)
+            "held_percent_insiders": _r(ks, "heldPercentInsiders"),
+            "held_percent_institutions": _r(ks, "heldPercentInstitutions"),
+            # Valuation
+            "enterprise_value": _r(ks, "enterpriseValue"),
+            "ev_to_ebitda": _r(ks, "enterpriseToEbitda"),
+            "ev_to_revenue": _r(ks, "enterpriseToRevenue"),
+            "price_to_sales": _r(sd, "priceToSalesTrailing12Months"),
+            "payout_ratio": _r(sd, "payoutRatio"),
+            # Moving averages
+            "fifty_day_avg": _r(sd, "fiftyDayAverage"),
+            "two_hundred_day_avg": _r(sd, "twoHundredDayAverage"),
+        }
+
+
 class DiscoverStockScraper(BaseScraper):
     def __init__(self) -> None:
         super().__init__()
@@ -195,10 +349,15 @@ class DiscoverStockScraper(BaseScraper):
         self._nse_disabled_until: datetime | None = None
         self._nse_timeout = max(1, int(getattr(self.settings, "discover_stock_nse_timeout_seconds", 4)))
         self._nse_cooldown = max(30, int(getattr(self.settings, "discover_stock_nse_cooldown_seconds", 300)))
-        self._screener_timeout = max(2, int(getattr(self.settings, "discover_stock_screener_timeout_seconds", 8)))
+        self._screener_timeout = max(2, int(getattr(self.settings, "discover_stock_screener_timeout_seconds", 10)))
+        self._screener_max_retries = max(1, int(getattr(self.settings, "discover_stock_screener_max_retries", 3)))
+        self._screener_retry_delay = max(0.5, float(getattr(self.settings, "discover_stock_screener_retry_delay", 5.0)))
+        self._screener_batch_delay = max(0.0, float(getattr(self.settings, "discover_stock_screener_batch_delay", 0.5)))
+        self._yahoo_batch_delay = max(0.0, float(getattr(self.settings, "discover_stock_yahoo_batch_delay", 0.5)))
+        self._yahoo_crumb_ttl = max(60, int(getattr(self.settings, "discover_stock_yahoo_crumb_ttl", 600)))
         self._fundamentals_limit = max(
             len(CORE_UNIVERSE),
-            int(getattr(self.settings, "discover_stock_fundamentals_limit", 600)),
+            int(getattr(self.settings, "discover_stock_fundamentals_limit", 5000)),
         )
         self._bhavcopy_lookback_days = max(
             1,
@@ -215,6 +374,13 @@ class DiscoverStockScraper(BaseScraper):
         self._core_symbol_map = {row.nse_symbol: row for row in CORE_UNIVERSE}
         self._universe_cache: tuple[DiscoverStockDef, ...] | None = None
         self._universe_cache_at: datetime | None = None
+        # Yahoo v10 session (lazy init)
+        self._yahoo_session: YahooFinanceSession | None = None
+
+    def _get_yahoo_session(self) -> YahooFinanceSession:
+        if self._yahoo_session is None:
+            self._yahoo_session = YahooFinanceSession(crumb_ttl=self._yahoo_crumb_ttl)
+        return self._yahoo_session
 
     def _nse_on_cooldown(self) -> bool:
         if self._nse_disabled_until is None:
@@ -284,7 +450,6 @@ class DiscoverStockScraper(BaseScraper):
             ts_text = meta.get("lastUpdateTime")
             source_ts = datetime.now(timezone.utc)
             if ts_text:
-                # NSE format example: 12-Mar-2026 15:30:00
                 try:
                     parsed = datetime.strptime(str(ts_text), "%d-%b-%Y %H:%M:%S")
                     source_ts = parsed.replace(tzinfo=timezone.utc)
@@ -510,7 +675,6 @@ class DiscoverStockScraper(BaseScraper):
 
     def _extract_labeled_number(self, text: str, labels: list[str]) -> float | None:
         for label in labels:
-            # Allow optional currency symbols (₹, Rs, Rs.) and "in Rs" between label and number
             patt = rf"{re.escape(label)}\s*(?:in\s+)?[:\-]?\s*(?:[₹]|Rs\.?\s*)?\s*([\-]?[0-9][0-9,]*(?:\.[0-9]+)?)"
             match = re.search(patt, text, flags=re.IGNORECASE)
             if not match:
@@ -524,26 +688,19 @@ class DiscoverStockScraper(BaseScraper):
 
     @staticmethod
     def _extract_balance_sheet_de(html: str) -> float | None:
-        """Compute Debt-to-Equity from the balance sheet table on Screener.in.
-
-        D/E = Total Borrowings / (Equity Capital + Reserves).
-        Extracts the last column (most recent period) from each row.
-        """
+        """Compute Debt-to-Equity from the balance sheet table on Screener.in."""
         bs_match = re.search(r'id="balance-sheet"', html)
         if not bs_match:
             return None
         bs_chunk = html[bs_match.start(): bs_match.start() + 20000]
 
         def _last_number(label: str) -> float | None:
-            """Find a balance-sheet row by label and return its last numeric value."""
             idx = bs_chunk.find(label)
             if idx < 0:
                 return None
-            # Walk forward to find the closing </td> of the label cell
             close_td = bs_chunk.find("</td>", idx)
             if close_td < 0:
                 return None
-            # Extract numbers only within this row — stop at next </tr>
             after_start = close_td + 5
             end_tr = bs_chunk.find("</tr>", after_start)
             row_slice = bs_chunk[after_start: end_tr] if end_tr > 0 else bs_chunk[after_start: after_start + 2000]
@@ -566,82 +723,171 @@ class DiscoverStockScraper(BaseScraper):
             return None
         return round(borrowings / equity, 2)
 
+    @staticmethod
+    def _extract_shareholding(html: str) -> dict:
+        """Extract shareholding data from Screener.in <section id="shareholding"> table.
+
+        Returns dict with: promoter_holding, fii_holding, dii_holding,
+        government_holding, public_holding, num_shareholders,
+        and *_prev variants for QoQ change computation.
+        """
+        result: dict = {}
+        sh_match = re.search(r'id="shareholding"', html)
+        if not sh_match:
+            return result
+        sh_chunk = html[sh_match.start(): sh_match.start() + 15000]
+
+        def _extract_row(label: str) -> tuple[float | None, float | None]:
+            """Extract the latest and previous quarter values for a shareholding row."""
+            idx = sh_chunk.find(label)
+            if idx < 0:
+                return None, None
+            close_td = sh_chunk.find("</td>", idx)
+            if close_td < 0:
+                return None, None
+            after_start = close_td + 5
+            end_tr = sh_chunk.find("</tr>", after_start)
+            row_slice = sh_chunk[after_start: end_tr] if end_tr > 0 else sh_chunk[after_start: after_start + 2000]
+            nums = re.findall(r'<td[^>]*>\s*([\d,]+(?:\.\d+)?)\s*</td>', row_slice)
+            latest = None
+            prev = None
+            if nums:
+                try:
+                    latest = float(nums[-1].replace(",", ""))
+                except ValueError:
+                    pass
+                if len(nums) >= 2:
+                    try:
+                        prev = float(nums[-2].replace(",", ""))
+                    except ValueError:
+                        pass
+            return latest, prev
+
+        promoter, promoter_prev = _extract_row("Promoters")
+        if promoter is not None:
+            result["promoter_holding"] = promoter
+            if promoter_prev is not None:
+                result["promoter_holding_change"] = round(promoter - promoter_prev, 2)
+
+        fii, fii_prev = _extract_row("FIIs")
+        if fii is None:
+            fii, fii_prev = _extract_row("Foreign Institutions")
+        if fii is not None:
+            result["fii_holding"] = fii
+            if fii_prev is not None:
+                result["fii_holding_change"] = round(fii - fii_prev, 2)
+
+        dii, dii_prev = _extract_row("DIIs")
+        if dii is None:
+            dii, dii_prev = _extract_row("Domestic Institutions")
+        if dii is not None:
+            result["dii_holding"] = dii
+            if dii_prev is not None:
+                result["dii_holding_change"] = round(dii - dii_prev, 2)
+
+        gov, _ = _extract_row("Government")
+        if gov is not None:
+            result["government_holding"] = gov
+
+        pub, _ = _extract_row("Public")
+        if pub is not None:
+            result["public_holding"] = pub
+
+        # Number of shareholders
+        ns, _ = _extract_row("No. of Shareholders")
+        if ns is not None:
+            result["num_shareholders"] = int(ns)
+
+        return result
+
     def _fetch_screener_fundamentals(self, nse_symbol: str) -> tuple[dict, str]:
+        """Fetch fundamentals from Screener.in with retry logic and shareholding extraction."""
         base = self.settings.discover_stock_primary_url.rstrip("/")
         candidates = [
             f"{base}/company/{nse_symbol}/consolidated/",
             f"{base}/company/{nse_symbol}/",
         ]
         for url in candidates:
-            try:
-                html = self._get_text(url, timeout=self._screener_timeout)
-                text = unescape(re.sub(r"<[^>]+>", " ", html))
-                text = re.sub(r"\s+", " ", text)
+            for attempt in range(self._screener_max_retries):
+                try:
+                    html = self._get_text(url, timeout=self._screener_timeout)
+                    text = unescape(re.sub(r"<[^>]+>", " ", html))
+                    text = re.sub(r"\s+", " ", text)
 
-                book_value = self._extract_labeled_number(text, ["Book Value"])
-                current_price = self._extract_labeled_number(text, ["Current Price"])
+                    book_value = self._extract_labeled_number(text, ["Book Value"])
+                    current_price = self._extract_labeled_number(text, ["Current Price"])
 
-                # Compute D/E from balance sheet (Borrowings / Equity)
-                debt_to_equity = self._extract_balance_sheet_de(html)
+                    debt_to_equity = self._extract_balance_sheet_de(html)
 
-                fundamentals = {
-                    "pe_ratio": self._extract_labeled_number(text, ["Stock P/E", "P/E"]),
-                    "roe": self._extract_labeled_number(text, ["ROE", "Return on equity"]),
-                    "roce": self._extract_labeled_number(text, ["ROCE", "Return on capital employed"]),
-                    "debt_to_equity": debt_to_equity,
-                    "price_to_book": (
-                        round(current_price / book_value, 2)
-                        if current_price and book_value and book_value > 0
-                        else None
-                    ),
-                    "eps": self._extract_labeled_number(text, ["EPS", "Earnings Per Share"]),
-                    "market_cap": self._extract_labeled_number(text, ["Market Cap"]),
-                    "dividend_yield": self._extract_labeled_number(text, ["Dividend Yield"]),
-                }
+                    fundamentals: dict = {
+                        "pe_ratio": self._extract_labeled_number(text, ["Stock P/E", "P/E"]),
+                        "roe": self._extract_labeled_number(text, ["ROE", "Return on equity"]),
+                        "roce": self._extract_labeled_number(text, ["ROCE", "Return on capital employed"]),
+                        "debt_to_equity": debt_to_equity,
+                        "price_to_book": (
+                            round(current_price / book_value, 2)
+                            if current_price and book_value and book_value > 0
+                            else None
+                        ),
+                        "eps": self._extract_labeled_number(text, ["EPS", "Earnings Per Share"]),
+                        "market_cap": self._extract_labeled_number(text, ["Market Cap"]),
+                        "dividend_yield": self._extract_labeled_number(text, ["Dividend Yield"]),
+                    }
 
-                # Extract sector/industry from Screener.in page
-                sector_match = re.search(
-                    r"(?:Sector|Industry)\s*[:\s]+([A-Za-z &\-/]+?)(?:\s{2,}|\s*\d|\s*$)",
-                    text,
-                    flags=re.IGNORECASE,
-                )
-                if sector_match:
-                    raw_sector = sector_match.group(1).strip()
-                    fundamentals["_screener_sector"] = raw_sector
+                    # --- Extract sector/industry from HTML attributes (NOT flattened text) ---
+                    broad_sector_match = re.search(r'title="Broad Sector">([^<]+)</a>', html)
+                    industry_match = re.search(r'title="Industry">([^<]+)</a>', html)
 
-                # 52-week High / Low: pattern like "High / Low ₹ 1,234 / ₹ 567"
-                hl_match = re.search(
-                    r"High\s*/\s*Low\s*[₹Rs.\s]*([\d,]+(?:\.\d+)?)\s*/\s*[₹Rs.\s]*([\d,]+(?:\.\d+)?)",
-                    text,
-                    flags=re.IGNORECASE,
-                )
-                if hl_match:
-                    try:
-                        fundamentals["high_52w"] = float(hl_match.group(1).replace(",", ""))
-                    except ValueError:
+                    if broad_sector_match:
+                        fundamentals["_screener_broad_sector"] = unescape(broad_sector_match.group(1).strip())
+                    if industry_match:
+                        fundamentals["_screener_industry"] = unescape(industry_match.group(1).strip())
+
+                    # 52-week High / Low
+                    hl_match = re.search(
+                        r"High\s*/\s*Low\s*[₹Rs.\s]*([\d,]+(?:\.\d+)?)\s*/\s*[₹Rs.\s]*([\d,]+(?:\.\d+)?)",
+                        text,
+                        flags=re.IGNORECASE,
+                    )
+                    if hl_match:
+                        try:
+                            fundamentals["high_52w"] = float(hl_match.group(1).replace(",", ""))
+                        except ValueError:
+                            fundamentals["high_52w"] = None
+                        try:
+                            fundamentals["low_52w"] = float(hl_match.group(2).replace(",", ""))
+                        except ValueError:
+                            fundamentals["low_52w"] = None
+                    else:
                         fundamentals["high_52w"] = None
-                    try:
-                        fundamentals["low_52w"] = float(hl_match.group(2).replace(",", ""))
-                    except ValueError:
                         fundamentals["low_52w"] = None
-                else:
-                    fundamentals["high_52w"] = None
-                    fundamentals["low_52w"] = None
-                return fundamentals, "screener_in"
-            except Exception:
-                logger.debug("Screener fundamentals fetch failed for %s url=%s", nse_symbol, url, exc_info=True)
-                continue
+
+                    # --- Extract shareholding from HTML ---
+                    shareholding = self._extract_shareholding(html)
+                    fundamentals.update(shareholding)
+
+                    return fundamentals, "screener_in"
+                except requests.exceptions.HTTPError as e:
+                    status = e.response.status_code if e.response is not None else 0
+                    if status in (429, 503) and attempt < self._screener_max_retries - 1:
+                        wait = self._screener_retry_delay * (attempt + 1)
+                        logger.warning("Screener %d for %s; retry in %.0fs (%d/%d)", status, nse_symbol, wait, attempt + 1, self._screener_max_retries)
+                        time_mod.sleep(wait)
+                        continue
+                    break
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+                    if attempt < self._screener_max_retries - 1:
+                        time_mod.sleep(self._screener_retry_delay)
+                        continue
+                    break
+                except Exception:
+                    logger.debug("Screener fundamentals fetch failed for %s url=%s", nse_symbol, url, exc_info=True)
+                    break
         return {
-            "pe_ratio": None,
-            "roe": None,
-            "roce": None,
-            "debt_to_equity": None,
-            "price_to_book": None,
-            "eps": None,
-            "market_cap": None,
-            "high_52w": None,
-            "low_52w": None,
-            "dividend_yield": None,
+            "pe_ratio": None, "roe": None, "roce": None,
+            "debt_to_equity": None, "price_to_book": None,
+            "eps": None, "market_cap": None, "high_52w": None,
+            "low_52w": None, "dividend_yield": None,
         }, "unavailable"
 
     @staticmethod
@@ -650,7 +896,6 @@ class DiscoverStockScraper(BaseScraper):
 
     @staticmethod
     def _percentile_rank(values: list[float], target: float) -> float:
-        """Return 0-100 percentile rank of *target* within *values*."""
         if not values:
             return 50.0
         eps = 1e-9
@@ -701,18 +946,12 @@ class DiscoverStockScraper(BaseScraper):
         high_52w: float | None,
         low_52w: float | None,
     ) -> float | None:
-        """Score based on position within 52-week range (0-100).
-
-        Near 52W high = strong momentum confirmation → higher score.
-        Near 52W low = weak momentum → lower score.
-        """
         if price is None or high_52w is None or low_52w is None:
             return None
         if high_52w <= low_52w or price <= 0:
             return None
         position = (price - low_52w) / (high_52w - low_52w)
         position = max(0.0, min(1.0, position))
-        # Map 0→5, 1→100
         return round(self._clamp(position * 95 + 5), 2)
 
     @staticmethod
@@ -720,18 +959,13 @@ class DiscoverStockScraper(BaseScraper):
         vol_score: float,
         market_cap: float | None,
     ) -> float:
-        """Scale volatility score expectations by market cap tier.
-
-        Small caps naturally have higher volatility — penalizing them equally
-        to large caps is unfair.
-        """
         if market_cap is None or market_cap <= 0:
             return vol_score
-        if market_cap >= 20_000:  # Large cap (₹20k+ Cr)
-            return vol_score       # No adjustment
-        if market_cap >= 5_000:   # Mid cap (₹5k-20k Cr)
-            return min(100.0, vol_score * 1.08)   # ~8% boost
-        return min(100.0, vol_score * 1.15)        # Small cap: ~15% boost
+        if market_cap >= 20_000:
+            return vol_score
+        if market_cap >= 5_000:
+            return min(100.0, vol_score * 1.08)
+        return min(100.0, vol_score * 1.15)
 
     def _score_fundamentals(
         self,
@@ -744,7 +978,6 @@ class DiscoverStockScraper(BaseScraper):
         parts: dict[str, float] = {}
         metrics_used = 0
 
-        # --- PE (lower is better, sector-relative) ---
         pe = row.get("pe_ratio")
         if pe is not None and pe > 0:
             median_pe = medians.get("pe", 25.0)
@@ -752,28 +985,23 @@ class DiscoverStockScraper(BaseScraper):
             parts["pe"] = self._clamp(100 - (ratio * 50))
             metrics_used += 1
 
-        # --- ROE (higher is better) ---
         roe = row.get("roe")
         if roe is not None:
             parts["roe"] = self._clamp(roe * 4.5)
             metrics_used += 1
 
-        # --- ROCE (higher is better) ---
         roce = row.get("roce")
         if roce is not None:
             parts["roce"] = self._clamp(roce * 4.0)
             metrics_used += 1
 
-        # --- Debt-to-Equity (lower is better, sector-relative) ---
         dte = row.get("debt_to_equity")
         if dte is not None:
             median_de = medians.get("de", 1.0)
             ratio = dte / max(median_de, 0.1)
-            # At sector median → score 60, at 2× → 20, at 0 → 100
             parts["dte"] = self._clamp(100 - (ratio * 40))
             metrics_used += 1
 
-        # --- Price-to-Book (lower is better, sector-relative) ---
         pb = row.get("price_to_book")
         if pb is not None and pb > 0:
             median_pb = medians.get("pb", 4.0)
@@ -784,7 +1012,6 @@ class DiscoverStockScraper(BaseScraper):
         if not parts:
             return 50.0, metrics_used
 
-        # Weighted average: ROE 30%, ROCE 25%, PE 20%, D/E 15%, P/B 10%
         weights = {"roe": 0.30, "roce": 0.25, "pe": 0.20, "dte": 0.15, "pb": 0.10}
         total_w = 0.0
         weighted_sum = 0.0
@@ -794,12 +1021,156 @@ class DiscoverStockScraper(BaseScraper):
             total_w += w
         result = weighted_sum / total_w if total_w > 0 else 50.0
 
-        # EPS quality gate: negative EPS caps fundamentals at 40
         eps = row.get("eps")
         if eps is not None and eps < 0:
             result = min(result, 40.0)
 
         return round(result, 2), metrics_used
+
+    # ---------------------------------------------------------------------------
+    # NEW: Financial Health Score (weight 15%)
+    # ---------------------------------------------------------------------------
+    def _score_financial_health(self, row: dict) -> tuple[float | None, dict]:
+        """Score based on margins, FCF, cash position, debt coverage."""
+        parts: dict[str, float] = {}
+        mcap = row.get("market_cap")
+
+        # FCF Yield
+        fcf = row.get("free_cash_flow")
+        if fcf is not None and mcap and mcap > 0:
+            fcf_yield = (fcf / (mcap * 1e7)) * 100  # mcap in Cr, fcf in absolute
+            parts["fcf_yield"] = self._clamp(fcf_yield * 8 + 30)
+
+        # Operating Margin
+        op_margin = row.get("operating_margins")
+        if op_margin is not None:
+            parts["op_margin"] = self._clamp(op_margin * 200 + 20)
+
+        # Profit Margin
+        profit_margin = row.get("profit_margins")
+        if profit_margin is not None:
+            parts["profit_margin"] = self._clamp(profit_margin * 200 + 20)
+
+        # Net Cash Position
+        cash = row.get("total_cash")
+        debt = row.get("total_debt")
+        if cash is not None and debt is not None and mcap and mcap > 0:
+            net_cash_pct = ((cash - debt) / (mcap * 1e7)) * 100
+            parts["net_cash"] = self._clamp(50 + net_cash_pct * 3)
+
+        # Payout Ratio
+        payout = row.get("payout_ratio")
+        if payout is not None and payout > 0:
+            if 0.1 <= payout <= 0.6:
+                parts["payout"] = 80.0
+            elif payout < 0.1:
+                parts["payout"] = 50.0
+            else:
+                parts["payout"] = max(20.0, 100 - payout * 80)
+
+        if not parts:
+            return None, {}
+
+        weights = {"fcf_yield": 0.30, "op_margin": 0.25, "profit_margin": 0.20,
+                    "net_cash": 0.15, "payout": 0.10}
+        total_w = sum(weights.get(k, 0.10) for k in parts)
+        score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
+
+        return round(score, 2), parts
+
+    # ---------------------------------------------------------------------------
+    # NEW: Analyst Consensus Score (weight 10%)
+    # ---------------------------------------------------------------------------
+    def _score_analyst_consensus(self, row: dict) -> tuple[float | None, dict]:
+        """Score based on analyst recommendations and price target upside."""
+        parts: dict[str, float] = {}
+
+        target = row.get("analyst_target_mean")
+        price = row.get("last_price")
+        count = row.get("analyst_count")
+
+        if target and price and price > 0:
+            upside_pct = ((target - price) / price) * 100
+            parts["upside"] = self._clamp(50 + upside_pct * 1.0)
+
+        rec_mean = row.get("analyst_recommendation_mean")
+        if rec_mean is not None:
+            parts["recommendation"] = self._clamp(100 - (rec_mean - 1.0) * 25)
+
+        if count is not None and count > 0:
+            parts["coverage"] = self._clamp(min(100, count * 4 + 20))
+
+        sb = row.get("analyst_strong_buy", 0) or 0
+        b = row.get("analyst_buy", 0) or 0
+        h = row.get("analyst_hold", 0) or 0
+        s = row.get("analyst_sell", 0) or 0
+        total = sb + b + h + s
+        if total >= 3:
+            buy_ratio = (sb + b) / total
+            parts["buy_ratio"] = self._clamp(buy_ratio * 100)
+
+        if not parts:
+            return None, {}
+
+        weights = {"upside": 0.35, "recommendation": 0.25, "buy_ratio": 0.25, "coverage": 0.15}
+        total_w = sum(weights.get(k, 0.10) for k in parts)
+        score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
+
+        return round(score, 2), parts
+
+    # ---------------------------------------------------------------------------
+    # NEW: Ownership Score (weight 12%)
+    # ---------------------------------------------------------------------------
+    def _score_ownership(self, row: dict) -> tuple[float | None, dict]:
+        """Score based on promoter/FII/DII levels and QoQ trends."""
+        parts: dict[str, float] = {}
+
+        promoter = row.get("promoter_holding")
+        if promoter is not None:
+            # 50-75% promoter is ideal; too low = weak control, too high = low float
+            if 50 <= promoter <= 75:
+                parts["promoter_level"] = 80.0
+            elif promoter > 75:
+                parts["promoter_level"] = 60.0  # Low float risk
+            elif promoter >= 30:
+                parts["promoter_level"] = 65.0
+            else:
+                parts["promoter_level"] = 40.0
+
+        fii = row.get("fii_holding")
+        if fii is not None:
+            # FII > 20% = strong institutional confidence
+            parts["fii_level"] = self._clamp(fii * 3 + 20)
+
+        dii = row.get("dii_holding")
+        if dii is not None:
+            # DII > 25% = domestic institutional backing
+            parts["dii_level"] = self._clamp(dii * 3 + 15)
+
+        # QoQ trend signals (buying = bullish, selling = bearish)
+        promoter_chg = row.get("promoter_holding_change")
+        if promoter_chg is not None:
+            parts["promoter_trend"] = self._clamp(50 + promoter_chg * 20)  # +0.5% → 60, -1% → 30
+
+        fii_chg = row.get("fii_holding_change")
+        if fii_chg is not None:
+            parts["fii_trend"] = self._clamp(50 + fii_chg * 15)
+
+        dii_chg = row.get("dii_holding_change")
+        if dii_chg is not None:
+            parts["dii_trend"] = self._clamp(50 + dii_chg * 15)
+
+        if not parts:
+            return None, {}
+
+        weights = {
+            "promoter_level": 0.25, "fii_level": 0.20, "dii_level": 0.15,
+            "promoter_trend": 0.20, "fii_trend": 0.10, "dii_trend": 0.10,
+        }
+        total_w = sum(weights.get(k, 0.10) for k in parts)
+        score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
+
+        return round(score, 2), parts
 
     @staticmethod
     def _generate_tags(
@@ -815,8 +1186,8 @@ class DiscoverStockScraper(BaseScraper):
         pct_raw: float,
         source_status: str,
     ) -> list[str]:
-        """Generate descriptive auto-tags (max 4)."""
-        tags: list[str] = []
+        """Generate descriptive auto-tags (max 5)."""
+        candidates: list[tuple[str, int]] = []  # (tag, priority) — lower priority = more important
         market_cap = row.get("market_cap")
         roe = row.get("roe")
         roce = row.get("roce")
@@ -825,46 +1196,115 @@ class DiscoverStockScraper(BaseScraper):
         pe = row.get("pe_ratio")
         dividend_yield = row.get("dividend_yield")
         pct_3m = row.get("_pct_change_3m")
+        revenue_growth = row.get("revenue_growth")
+        earnings_growth = row.get("earnings_growth")
+        fcf = row.get("free_cash_flow")
+        total_cash = row.get("total_cash")
+        total_debt = row.get("total_debt")
+        analyst_count = row.get("analyst_count")
+        rec_mean = row.get("analyst_recommendation_mean")
+        analyst_target = row.get("analyst_target_mean")
+        last_price = row.get("last_price")
+        promoter = row.get("promoter_holding")
+        fii = row.get("fii_holding")
+        dii = row.get("dii_holding")
+        promoter_chg = row.get("promoter_holding_change")
+        fii_chg = row.get("fii_holding_change")
+        dii_chg = row.get("dii_holding_change")
+        fifty_dma = row.get("fifty_day_avg")
+        two_hundred_dma = row.get("two_hundred_day_avg")
 
-        # --- Market Cap tags ---
+        # --- Market Cap tags (always first) ---
         if market_cap is not None and market_cap > 0:
             if market_cap >= 20_000:
-                tags.append("Large Cap")
+                candidates.append(("Large Cap", 1))
             elif market_cap >= 5_000:
-                tags.append("Mid Cap")
+                candidates.append(("Mid Cap", 1))
             else:
-                tags.append("Small Cap")
+                candidates.append(("Small Cap", 1))
 
         # --- Quality tags ---
         if (roe is not None and roe >= 20
                 and roce is not None and roce >= 20
                 and (dte is None or dte <= 0.5)):
-            tags.append("High Quality")
+            candidates.append(("High Quality", 2))
         elif dte is not None and dte == 0 and eps is not None and eps > 0:
-            tags.append("Debt Free")
+            candidates.append(("Debt Free", 3))
 
-        # --- Dividend tag ---
-        if dividend_yield is not None and dividend_yield >= 2.0:
-            tags.append("High Dividend")
+        # --- Financial Health tags ---
+        if fcf is not None and market_cap and market_cap > 0:
+            fcf_yield = (fcf / (market_cap * 1e7)) * 100
+            if fcf_yield > 5:
+                candidates.append(("FCF Machine", 3))
+        if total_cash is not None and total_debt is not None and market_cap and market_cap > 0:
+            net_cash = total_cash - total_debt
+            if net_cash > 0 and net_cash > (market_cap * 1e7 * 0.10):
+                candidates.append(("Cash Rich", 3))
 
         # --- Value / Growth ---
         if (pe is not None and pe > 0 and pe < sector_pe_median * 0.7
                 and roe is not None and roe >= 12):
-            tags.append("Value Pick")
+            candidates.append(("Value Pick", 3))
+
+        # Growth: fundamental or price-based
+        if revenue_growth is not None and revenue_growth >= 0.15:
+            candidates.append(("Growth Stock", 3))
+        elif earnings_growth is not None and earnings_growth >= 0.20:
+            candidates.append(("Growth Stock", 3))
         elif (pct_3m is not None and pct_3m >= 15
               and has_growth and growth_score >= 70):
-            tags.append("Growth Stock")
+            candidates.append(("Growth Stock", 4))
+
+        # --- Dividend tag ---
+        if dividend_yield is not None and dividend_yield >= 2.0:
+            candidates.append(("High Dividend", 4))
+
+        # --- Analyst tags ---
+        if rec_mean is not None and rec_mean <= 1.5 and analyst_count is not None and analyst_count >= 10:
+            candidates.append(("Analyst Strong Buy", 3))
+        elif (analyst_target and last_price and last_price > 0
+              and ((analyst_target - last_price) / last_price) > 0.25
+              and analyst_count is not None and analyst_count >= 5):
+            candidates.append(("Analyst Undervalued", 4))
+
+        # --- Ownership tags ---
+        if promoter is not None and promoter >= 55:
+            candidates.append(("High Promoter", 5))
+        if fii is not None and fii >= 20:
+            candidates.append(("FII Favorite", 5))
+        if dii is not None and dii >= 25:
+            candidates.append(("DII Backed", 5))
+        if promoter_chg is not None and promoter_chg >= 0.5:
+            candidates.append(("Promoter Buying", 4))
+        if fii_chg is not None and fii_chg >= 1.0:
+            candidates.append(("FII Buying", 4))
+        if dii_chg is not None and dii_chg >= 1.0:
+            candidates.append(("DII Buying", 4))
+
+        # --- Technical trend tags (50/200 DMA) ---
+        if fifty_dma and two_hundred_dma and last_price:
+            if fifty_dma > two_hundred_dma and last_price > fifty_dma:
+                candidates.append(("Bullish Trend", 5))
+            elif fifty_dma < two_hundred_dma and last_price < fifty_dma:
+                candidates.append(("Bearish Trend", 5))
 
         # --- Low Volatility ---
-        if has_volatility and volatility_score >= 75 and len(tags) < 4:
-            tags.append("Low Volatility")
+        if has_volatility and volatility_score >= 75:
+            candidates.append(("Low Volatility", 6))
 
         # --- Negative EPS warning ---
-        if eps is not None and eps < 0 and len(tags) < 4:
-            tags.append("Negative EPS")
+        if eps is not None and eps < 0:
+            candidates.append(("Negative EPS", 6))
 
-        # Limit to 4 tags
-        return tags[:4]
+        # Sort by priority, keep all unique tags
+        candidates.sort(key=lambda x: x[1])
+        tags = []
+        seen_tags: set[str] = set()
+        for tag, _ in candidates:
+            if tag not in seen_tags:
+                tags.append(tag)
+                seen_tags.add(tag)
+        return tags
 
     def _compute_scores(
         self,
@@ -893,7 +1333,6 @@ class DiscoverStockScraper(BaseScraper):
             if de is not None and de >= 0:
                 sector_de.setdefault(sector, []).append(float(de))
 
-        # Global medians computed from all stocks (not hardcoded)
         all_pe = [v for vals in sector_pe.values() for v in vals]
         all_pb = [v for vals in sector_pb.values() for v in vals]
         all_de = [v for vals in sector_de.values() for v in vals]
@@ -929,7 +1368,7 @@ class DiscoverStockScraper(BaseScraper):
             pct_lo, pct_hi = pct_hi, pct_lo
         all_pcts = [max(pct_lo, min(pct_hi, v)) for v in all_pcts_raw]
 
-        # ── Pre-compute multi-day momentum percentile data (5d, 20d returns) ──
+        # ── Pre-compute multi-day momentum percentile data ──
         all_momentum_5d: list[float] = []
         all_momentum_20d: list[float] = []
         momentum_5d_by_sym: dict[str, float] = {}
@@ -947,7 +1386,7 @@ class DiscoverStockScraper(BaseScraper):
                     all_momentum_20d.append(m20)
                     momentum_20d_by_sym[sym] = m20
 
-        # ── Pre-compute 52W position scores for blending into momentum ──
+        # ── Pre-compute 52W position scores ──
         pos_52w_by_sym: dict[str, float] = {}
         all_pos_52w: list[float] = []
         for r in rows:
@@ -960,7 +1399,7 @@ class DiscoverStockScraper(BaseScraper):
                 pos_52w_by_sym[sym] = pos
                 all_pos_52w.append(pos)
 
-        # ── Pre-compute multi-day liquidity percentile data (5d, 20d avg volume) ──
+        # ── Pre-compute multi-day liquidity data ──
         all_avg_vol_5d: list[float] = []
         all_avg_vol_20d: list[float] = []
         avg_vol_5d_by_sym: dict[str, float] = {}
@@ -980,7 +1419,6 @@ class DiscoverStockScraper(BaseScraper):
                     all_avg_vol_20d.append(log_v20)
                     avg_vol_20d_by_sym[sym] = log_v20
 
-        # Fallback: daily liquidity percentile data using log scale.
         all_tv_logs = [
             math.log1p(max(0.0, float(r.get("traded_value") or 0.0)))
             for r in rows
@@ -990,7 +1428,7 @@ class DiscoverStockScraper(BaseScraper):
             for r in rows
         ]
 
-        # ── Pre-compute volatility std_dev values for percentile ranking ──
+        # ── Pre-compute volatility ──
         all_std_devs: list[float] = []
         for r in rows:
             sym = str(r.get("symbol") or "")
@@ -998,8 +1436,7 @@ class DiscoverStockScraper(BaseScraper):
             if vd and vd.get("std_dev") is not None:
                 all_std_devs.append(vd["std_dev"])
 
-        # ── Pre-compute multi-period growth data for percentile ranking ──
-        # Growth = blend of 3M (25%) + 1Y (35%) + 3Y (40%) price appreciation.
+        # ── Pre-compute multi-period growth data ──
         all_pct_3m: list[float] = []
         all_pct_1y: list[float] = []
         all_pct_3y: list[float] = []
@@ -1024,8 +1461,19 @@ class DiscoverStockScraper(BaseScraper):
                 pct_3y_by_sym[sym] = p3y
                 all_pct_3y.append(p3y)
 
+        # ── Pre-compute revenue/earnings growth percentile data ──
+        all_rev_growth: list[float] = []
+        all_earn_growth: list[float] = []
+        for r in rows:
+            rg = r.get("revenue_growth")
+            if rg is not None:
+                all_rev_growth.append(rg)
+            eg = r.get("earnings_growth")
+            if eg is not None:
+                all_earn_growth.append(eg)
+
         # Track sector scores for sector_leader tag
-        sector_best: dict[str, tuple[float, str]] = {}
+        sector_best: dict[str, list[tuple[float, str]]] = {}
 
         out: list[dict] = []
         for row in rows:
@@ -1036,7 +1484,7 @@ class DiscoverStockScraper(BaseScraper):
             tv_log = math.log1p(max(0.0, float(row.get("traded_value") or 0.0)))
             vol_log = math.log1p(max(0.0, float(row.get("volume") or 0.0)))
 
-            # ── Momentum: blend price momentum (5d/20d/daily) + 52W position ──
+            # ── Momentum: blend price momentum + 52W position ──
             daily_momentum = self._clamp(self._percentile_rank(all_pcts, pct))
             has_m5 = symbol in momentum_5d_by_sym and all_momentum_5d
             has_m20 = symbol in momentum_20d_by_sym and all_momentum_20d
@@ -1050,13 +1498,12 @@ class DiscoverStockScraper(BaseScraper):
             else:
                 price_momentum = daily_momentum
 
-            # Blend 52W position into momentum (60% price + 40% 52W position)
             if symbol in pos_52w_by_sym:
                 momentum = self._clamp(price_momentum * 0.60 + pos_52w_by_sym[symbol] * 0.40)
             else:
                 momentum = price_momentum
 
-            # ── Liquidity: multi-day volume ──
+            # ── Liquidity ──
             has_v5 = symbol in avg_vol_5d_by_sym and all_avg_vol_5d
             has_v20 = symbol in avg_vol_20d_by_sym and all_avg_vol_20d
             if has_v5 and has_v20:
@@ -1079,7 +1526,7 @@ class DiscoverStockScraper(BaseScraper):
                     self._shrink_to_neutral(fundamentals, coverage),
                 )
 
-            # ── Volatility score (lower std_dev → higher score = stability premium) ──
+            # ── Volatility (lower std_dev → higher score = stability premium) ──
             vd = vol_data.get(symbol)
             has_volatility = False
             volatility_score: float | None = None
@@ -1092,16 +1539,19 @@ class DiscoverStockScraper(BaseScraper):
                 pct_change_3y = vd.get("pct_change_3y")
                 sd = vd.get("std_dev")
                 if sd is not None and all_std_devs:
-                    # Invert: lower volatility → higher percentile (more stable = better)
                     raw_pctile = self._percentile_rank(all_std_devs, sd)
                     vol_raw = self._clamp(100.0 - raw_pctile)
-                    # Adjust for market cap: small caps get a boost
-                    volatility_score = self._adjust_volatility_for_cap(
-                        vol_raw, row.get("market_cap"),
-                    )
+                    vol_raw = self._adjust_volatility_for_cap(vol_raw, row.get("market_cap"))
+                    # Incorporate Yahoo beta if available
+                    beta = row.get("beta")
+                    if beta is not None:
+                        beta_score = self._clamp(100 - abs(beta - 1.0) * 50)
+                        volatility_score = self._clamp(vol_raw * 0.70 + beta_score * 0.30)
+                    else:
+                        volatility_score = vol_raw
                     has_volatility = True
 
-            # ── Growth score (multi-period: 25% 3M + 35% 1Y + 40% 3Y) ──
+            # ── Growth (enhanced: blend price + fundamental growth) ──
             has_growth = False
             growth_score: float | None = None
 
@@ -1109,42 +1559,97 @@ class DiscoverStockScraper(BaseScraper):
             has_1y = symbol in pct_1y_by_sym and all_pct_1y
             has_3y = symbol in pct_3y_by_sym and all_pct_3y
 
-            if has_3m or has_1y or has_3y:
-                growth_parts: list[tuple[float, float]] = []
-                if has_3m:
-                    rank_3m = self._percentile_rank(all_pct_3m, pct_3m_by_sym[symbol])
-                    growth_parts.append((rank_3m, 0.25))
-                if has_1y:
-                    rank_1y = self._percentile_rank(all_pct_1y, pct_1y_by_sym[symbol])
-                    growth_parts.append((rank_1y, 0.35))
-                if has_3y:
-                    rank_3y = self._percentile_rank(all_pct_3y, pct_3y_by_sym[symbol])
-                    growth_parts.append((rank_3y, 0.40))
-                total_gw = sum(w for _, w in growth_parts)
-                growth_score = self._clamp(
-                    sum(s * (w / total_gw) for s, w in growth_parts)
-                )
+            price_growth_parts: list[tuple[float, float]] = []
+            if has_3m:
+                rank_3m = self._percentile_rank(all_pct_3m, pct_3m_by_sym[symbol])
+                price_growth_parts.append((rank_3m, 0.30))
+            if has_1y:
+                rank_1y = self._percentile_rank(all_pct_1y, pct_1y_by_sym[symbol])
+                price_growth_parts.append((rank_1y, 0.35))
+            if has_3y:
+                rank_3y = self._percentile_rank(all_pct_3y, pct_3y_by_sym[symbol])
+                price_growth_parts.append((rank_3y, 0.35))
+
+            # Fundamental growth from Yahoo
+            fundamental_growth_parts: list[tuple[float, float]] = []
+            rg = row.get("revenue_growth")
+            if rg is not None and all_rev_growth:
+                rev_score = self._clamp(50 + rg * 200)  # 10% → 70, 25% → 100
+                fundamental_growth_parts.append((rev_score, 0.50))
+            eg = row.get("earnings_growth")
+            if eg is not None and all_earn_growth:
+                earn_score = self._clamp(50 + eg * 200)
+                fundamental_growth_parts.append((earn_score, 0.50))
+
+            if price_growth_parts or fundamental_growth_parts:
+                # Blend price growth (70%) with fundamental growth (30%) when both available
+                price_growth = None
+                if price_growth_parts:
+                    pgw = sum(w for _, w in price_growth_parts)
+                    price_growth = self._clamp(sum(s * (w / pgw) for s, w in price_growth_parts))
+
+                fund_growth = None
+                if fundamental_growth_parts:
+                    fgw = sum(w for _, w in fundamental_growth_parts)
+                    fund_growth = self._clamp(sum(s * (w / fgw) for s, w in fundamental_growth_parts))
+
+                if price_growth is not None and fund_growth is not None:
+                    growth_score = self._clamp(price_growth * 0.65 + fund_growth * 0.35)
+                elif price_growth is not None:
+                    growth_score = price_growth
+                else:
+                    growth_score = fund_growth
                 has_growth = True
 
-            # ── 5-component weighted total ──
-            # Target weights: Momentum 15%, Liquidity 10%, Fundamentals 35%,
-            #                 Volatility 15%, Growth 25%
+            # ── Financial Health (NEW) ──
+            has_financial_health = False
+            financial_health_score: float | None = None
+            fh_score, _fh_parts = self._score_financial_health(row)
+            if fh_score is not None:
+                financial_health_score = fh_score
+                has_financial_health = True
+
+            # ── Ownership (NEW) ──
+            has_ownership = False
+            ownership_score: float | None = None
+            own_score, _own_parts = self._score_ownership(row)
+            if own_score is not None:
+                ownership_score = own_score
+                has_ownership = True
+
+            # ── Analyst Consensus (NEW) ──
+            has_analyst = False
+            analyst_score: float | None = None
+            an_score, _an_parts = self._score_analyst_consensus(row)
+            if an_score is not None:
+                analyst_score = an_score
+                has_analyst = True
+
+            # ── 8-component weighted total ──
+            # Momentum 12%, Liquidity 5%, Fundamentals 22%, Growth 16%,
+            # Financial Health 15%, Volatility 8%, Ownership 12%, Analyst 10%
             target_weights = {
-                "momentum": 0.15,
-                "liquidity": 0.10,
-                "fundamentals": 0.35,
-                "volatility": 0.15,
-                "growth": 0.25,
+                "momentum": 0.12,
+                "liquidity": 0.05,
+                "fundamentals": 0.22,
+                "growth": 0.16,
+                "financial_health": 0.15,
+                "volatility": 0.08,
+                "ownership": 0.12,
+                "analyst": 0.10,
             }
             scores_map = {
                 "momentum": momentum,
                 "liquidity": liquidity,
                 "fundamentals": fundamentals,
-                "volatility": volatility_score if has_volatility else 0.0,
                 "growth": growth_score if has_growth else 0.0,
+                "financial_health": financial_health_score if has_financial_health else 0.0,
+                "volatility": volatility_score if has_volatility else 0.0,
+                "ownership": ownership_score if has_ownership else 0.0,
+                "analyst": analyst_score if has_analyst else 0.0,
             }
 
-            # Dynamic reweighting: exclude unavailable components, redistribute.
+            # Dynamic reweighting: exclude unavailable components
             available_weights: dict[str, float] = {}
             for k, w in target_weights.items():
                 if k == "volatility" and not has_volatility:
@@ -1153,10 +1658,15 @@ class DiscoverStockScraper(BaseScraper):
                     continue
                 if k == "fundamentals" and metrics_used == 0:
                     continue
+                if k == "financial_health" and not has_financial_health:
+                    continue
+                if k == "ownership" and not has_ownership:
+                    continue
+                if k == "analyst" and not has_analyst:
+                    continue
                 available_weights[k] = w
 
             if not available_weights:
-                # Absolute fallback: signal-only
                 combined_signal = (momentum + liquidity) / 2.0
                 total = self._clamp(combined_signal, lo=20.0, hi=80.0)
             else:
@@ -1165,7 +1675,7 @@ class DiscoverStockScraper(BaseScraper):
                     scores_map[k] * (w / total_w) for k, w in available_weights.items()
                 )
 
-            # Shrink fundamentals influence when data coverage is low
+            # Shrink fundamentals influence when coverage is low
             if metrics_used > 0 and metrics_used < 4:
                 signal_only = (momentum * 0.6 + liquidity * 0.4)
                 blend_factor = metrics_used / 5.0
@@ -1182,9 +1692,27 @@ class DiscoverStockScraper(BaseScraper):
 
             score = round(self._clamp(total - status_penalty), 2)
 
+            # ── Confidence caps ──
+            data_quality = "full"
+            total_data_metrics = metrics_used
+            if has_financial_health:
+                total_data_metrics += 1
+            if has_ownership:
+                total_data_metrics += 1
+            if has_analyst:
+                total_data_metrics += 1
+
+            if total_data_metrics == 0:
+                score = min(score, 65.0)
+                data_quality = "limited"
+            elif total_data_metrics <= 2:
+                score = min(score, 75.0)
+                data_quality = "partial"
+            elif total_data_metrics <= 4:
+                data_quality = "partial"
+
             # ── Auto-tags ──
             med_pe = sector_medians.get(sector, {}).get("pe", 25.0)
-            # Pass pct_change_3m via a temporary key for tag generation
             row_for_tags = {**row, "_pct_change_3m": pct_change_3m}
             tags = self._generate_tags(
                 row_for_tags,
@@ -1199,11 +1727,9 @@ class DiscoverStockScraper(BaseScraper):
                 source_status=source_status,
             )
 
-            # Track sector leader
-            if sector not in sector_best or score > sector_best[sector][0]:
-                sector_best[sector] = (score, symbol)
+            # Track sector leaders (top 3)
+            sector_best.setdefault(sector, []).append((score, symbol))
 
-            # Extract 1W change from volatility data
             pct_change_1w = vd.get("pct_change_1w") if vd else None
 
             enriched = {
@@ -1214,6 +1740,9 @@ class DiscoverStockScraper(BaseScraper):
                 "score_fundamentals": round(fundamentals, 2),
                 "score_volatility": round(volatility_score, 2) if volatility_score is not None else None,
                 "score_growth": round(growth_score, 2) if growth_score is not None else None,
+                "score_financial_health": round(financial_health_score, 2) if financial_health_score is not None else None,
+                "score_ownership": round(ownership_score, 2) if ownership_score is not None else None,
+                "score_analyst": round(analyst_score, 2) if analyst_score is not None else None,
                 "percent_change_3m": pct_change_3m,
                 "percent_change_1w": pct_change_1w,
                 "percent_change_1y": pct_change_1y,
@@ -1224,22 +1753,31 @@ class DiscoverStockScraper(BaseScraper):
                     "fundamentals": round(fundamentals, 2),
                     "volatility": round(volatility_score, 2) if volatility_score is not None else None,
                     "growth": round(growth_score, 2) if growth_score is not None else None,
+                    "financial_health": round(financial_health_score, 2) if financial_health_score is not None else None,
+                    "ownership": round(ownership_score, 2) if ownership_score is not None else None,
+                    "analyst": round(analyst_score, 2) if analyst_score is not None else None,
                     "52w_position": pos_52w_by_sym.get(symbol),
                     "combined_signal": round((momentum + liquidity) / 2.0, 2),
+                    "fundamentals_coverage": f"{metrics_used}/5",
+                    "data_quality": data_quality,
                 },
                 "tags": tags,
                 "source_status": source_status,
             }
             out.append(enriched)
 
-        # Add sector_leader tag to the top scorer in each sector
+        # Add sector_leader tag to top 3 scorers in each sector
+        sector_leaders: set[str] = set()
+        for sector, scores_list in sector_best.items():
+            scores_list.sort(key=lambda x: -x[0])
+            for rank_score, sym in scores_list[:3]:
+                sector_leaders.add(sym)
+
         for enriched in out:
             symbol = str(enriched.get("symbol") or "")
-            sector = str(enriched.get("sector") or "Other")
-            best = sector_best.get(sector)
-            if best and best[1] == symbol:
+            if symbol in sector_leaders:
                 tags = enriched["tags"]
-                if "Sector Leader" not in tags and len(tags) < 4:
+                if "Sector Leader" not in tags:
                     tags.insert(0, "Sector Leader")
 
         out.sort(
@@ -1265,37 +1803,77 @@ class DiscoverStockScraper(BaseScraper):
 
         if use_fundamentals:
             fundamentals, fundamentals_source = self._fetch_screener_fundamentals(stock.nse_symbol)
+            time_mod.sleep(self._screener_batch_delay)
+
+            # Yahoo v10 for EVERY stock: fills gaps + adds exclusive data
+            try:
+                yahoo_session = self._get_yahoo_session()
+                yahoo = yahoo_session.get_stock_data(stock.nse_symbol)
+                time_mod.sleep(self._yahoo_batch_delay)
+
+                # Fill missing Screener fields from Yahoo
+                for field in ("pe_ratio", "price_to_book", "eps", "debt_to_equity",
+                              "market_cap", "high_52w", "low_52w", "dividend_yield"):
+                    if fundamentals.get(field) is None and yahoo.get(field) is not None:
+                        fundamentals[field] = yahoo[field]
+
+                # Add Yahoo-exclusive fields (always overwrite with Yahoo data)
+                for field in ("beta", "free_cash_flow", "operating_cash_flow", "total_cash",
+                              "total_debt", "total_revenue", "gross_margins", "operating_margins",
+                              "profit_margins", "revenue_growth", "earnings_growth",
+                              "forward_pe",
+                              "analyst_target_mean", "analyst_count", "analyst_recommendation",
+                              "analyst_recommendation_mean", "analyst_strong_buy", "analyst_buy",
+                              "analyst_hold", "analyst_sell",
+                              "payout_ratio", "fifty_day_avg", "two_hundred_day_avg"):
+                    if yahoo.get(field) is not None:
+                        fundamentals[field] = yahoo[field]
+
+                if fundamentals_source == "unavailable":
+                    fundamentals_source = "yahoo_fundamentals"
+                elif fundamentals_source == "screener_in":
+                    fundamentals_source = "screener_in+yahoo"
+            except Exception:
+                logger.debug("Yahoo v10 failed for %s", stock.nse_symbol, exc_info=True)
         else:
             fundamentals = {
-                "pe_ratio": None,
-                "roe": None,
-                "roce": None,
-                "debt_to_equity": None,
-                "price_to_book": None,
-                "eps": None,
-                "market_cap": None,
-                "high_52w": None,
-                "low_52w": None,
-                "dividend_yield": None,
+                "pe_ratio": None, "roe": None, "roce": None,
+                "debt_to_equity": None, "price_to_book": None,
+                "eps": None, "market_cap": None, "high_52w": None,
+                "low_52w": None, "dividend_yield": None,
             }
             fundamentals_source = "unavailable"
+
         fundamentals_count = sum(1 for k, v in fundamentals.items() if v is not None and not k.startswith("_"))
 
-        source_status = "primary" if (fundamentals_source == "screener_in" and fundamentals_count >= 2) else "fallback"
+        source_status = "primary" if (fundamentals_source in ("screener_in", "screener_in+yahoo") and fundamentals_count >= 2) else "fallback"
         if fundamentals_count == 0 and quote_source not in {"nse_quote_api", "nse_bhavcopy"}:
             source_status = "limited"
 
-        # Use Screener.in sector if stock had default "Diversified" sector
+        # Sector resolution: curated > Screener Broad Sector > existing > "Other"
         sector = stock.sector
-        screener_sector = fundamentals.pop("_screener_sector", None)
-        if sector in ("Diversified", "Other") and screener_sector:
-            sector = _map_screener_sector(screener_sector)
+        broad_sector_raw = fundamentals.pop("_screener_broad_sector", None)
+        industry_raw = fundamentals.pop("_screener_industry", None)
+        # Remove legacy key if present
+        fundamentals.pop("_screener_sector", None)
+
+        if stock.nse_symbol in _EXTRA_SECTOR_MAP:
+            sector = _EXTRA_SECTOR_MAP[stock.nse_symbol]
+        elif broad_sector_raw:
+            mapped = _SCREENER_BROAD_SECTOR_MAP.get(broad_sector_raw.lower())
+            if mapped:
+                sector = mapped
+            else:
+                sector = _map_screener_sector(broad_sector_raw)
+        elif sector in ("Diversified", "Other") and industry_raw:
+            sector = _map_screener_sector(industry_raw)
 
         return {
             "market": "IN",
             "symbol": stock.nse_symbol,
             "display_name": stock.display_name,
             "sector": sector,
+            "industry": industry_raw,
             "last_price": quote["last_price"],
             "point_change": quote.get("point_change"),
             "percent_change": quote.get("percent_change"),
@@ -1311,6 +1889,43 @@ class DiscoverStockScraper(BaseScraper):
             "high_52w": fundamentals.get("high_52w"),
             "low_52w": fundamentals.get("low_52w"),
             "dividend_yield": fundamentals.get("dividend_yield"),
+            # Shareholding
+            "promoter_holding": fundamentals.get("promoter_holding"),
+            "fii_holding": fundamentals.get("fii_holding"),
+            "dii_holding": fundamentals.get("dii_holding"),
+            "government_holding": fundamentals.get("government_holding"),
+            "public_holding": fundamentals.get("public_holding"),
+            "num_shareholders": fundamentals.get("num_shareholders"),
+            "promoter_holding_change": fundamentals.get("promoter_holding_change"),
+            "fii_holding_change": fundamentals.get("fii_holding_change"),
+            "dii_holding_change": fundamentals.get("dii_holding_change"),
+            # Yahoo-exclusive fundamentals
+            "beta": fundamentals.get("beta"),
+            "free_cash_flow": fundamentals.get("free_cash_flow"),
+            "operating_cash_flow": fundamentals.get("operating_cash_flow"),
+            "total_cash": fundamentals.get("total_cash"),
+            "total_debt": fundamentals.get("total_debt"),
+            "total_revenue": fundamentals.get("total_revenue"),
+            "gross_margins": fundamentals.get("gross_margins"),
+            "operating_margins": fundamentals.get("operating_margins"),
+            "profit_margins": fundamentals.get("profit_margins"),
+            "revenue_growth": fundamentals.get("revenue_growth"),
+            "earnings_growth": fundamentals.get("earnings_growth"),
+            "forward_pe": fundamentals.get("forward_pe"),
+            # Analyst data
+            "analyst_target_mean": fundamentals.get("analyst_target_mean"),
+            "analyst_count": fundamentals.get("analyst_count"),
+            "analyst_recommendation": fundamentals.get("analyst_recommendation"),
+            "analyst_recommendation_mean": fundamentals.get("analyst_recommendation_mean"),
+            "analyst_strong_buy": fundamentals.get("analyst_strong_buy"),
+            "analyst_buy": fundamentals.get("analyst_buy"),
+            "analyst_hold": fundamentals.get("analyst_hold"),
+            "analyst_sell": fundamentals.get("analyst_sell"),
+            # Technical
+            "fifty_day_avg": fundamentals.get("fifty_day_avg"),
+            "two_hundred_day_avg": fundamentals.get("two_hundred_day_avg"),
+            "payout_ratio": fundamentals.get("payout_ratio"),
+            # Metadata
             "source_status": source_status,
             "source_timestamp": quote.get("source_timestamp") or datetime.now(timezone.utc),
             "primary_source": fundamentals_source,
@@ -1361,7 +1976,6 @@ class DiscoverStockScraper(BaseScraper):
                     if item is not None:
                         raw_rows.append(item)
         else:
-            # If bhavcopy is unavailable, keep serving a smaller reliable subset.
             fallback_universe = CORE_UNIVERSE if len(universe) > len(CORE_UNIVERSE) else universe
             for stock in fallback_universe:
                 item = self._fetch_one(stock)
@@ -1405,23 +2019,45 @@ async def run_discover_stock_job() -> None:
         )
         logger.info("Discover stock: fetched %d raw rows", len(raw_rows))
 
-        # 3. Score with all 5 components (CPU-bound, fast).
+        # Log data source distribution
+        source_counts: dict[str, int] = {}
+        for r in raw_rows:
+            src = r.get("primary_source", "unknown")
+            source_counts[src] = source_counts.get(src, 0) + 1
+        logger.info("Discover stock: source distribution: %s", source_counts)
+
+        # Log sector distribution
+        sector_counts: dict[str, int] = {}
+        for r in raw_rows:
+            sec = r.get("sector", "Other")
+            sector_counts[sec] = sector_counts.get(sec, 0) + 1
+        other_count = sector_counts.get("Other", 0)
+        logger.info(
+            "Discover stock: %d sectors, 'Other'=%d/%d (%.1f%%)",
+            len(sector_counts), other_count, len(raw_rows),
+            (other_count / max(len(raw_rows), 1)) * 100,
+        )
+
+        # 3. Score with all 8 components (CPU-bound, fast).
         rows = _scraper._compute_scores(raw_rows, volatility_data=volatility_data)
 
-        # Log sample scores to verify all components populated
+        # Log sample scores
         if rows:
             sample = rows[0]
             logger.info(
-                "Discover stock: sample scored row %s → score=%.2f vol=%s growth=%s "
-                "pct3m=%s pct1y=%s pct3y=%s tags=%s",
+                "Discover stock: sample scored row %s → score=%.2f "
+                "mom=%.1f liq=%.1f fun=%.1f vol=%s gro=%s fh=%s own=%s ana=%s tags=%s",
                 sample.get("symbol"),
                 sample.get("score", 0),
+                sample.get("score_momentum", 0),
+                sample.get("score_liquidity", 0),
+                sample.get("score_fundamentals", 0),
                 sample.get("score_volatility"),
                 sample.get("score_growth"),
-                sample.get("percent_change_3m"),
-                sample.get("percent_change_1y"),
-                sample.get("percent_change_3y"),
-                sample.get("tags", [])[:3],
+                sample.get("score_financial_health"),
+                sample.get("score_ownership"),
+                sample.get("score_analyst"),
+                sample.get("tags", [])[:5],
             )
 
         count = await discover_service.upsert_discover_stock_snapshots(rows)

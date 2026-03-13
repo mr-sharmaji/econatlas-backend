@@ -7,10 +7,11 @@ Skips symbols that already have >= 1000 rows (already backfilled).
 Processes in batches of 50 with a cooldown pause between batches.
 
 Usage:
-  python scripts/backfill_discover_stock_history.py
+  python scripts/backfill_discover_stock_history.py [--force]
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import random
@@ -92,22 +93,31 @@ def _fetch_yahoo_chart(symbol: str) -> list[tuple[str, datetime, float, int | No
 
 
 async def main() -> None:
+    parser = argparse.ArgumentParser(description="Backfill stock price history")
+    parser.add_argument("--force", action="store_true", help="Re-backfill all symbols (ignore row count threshold)")
+    args = parser.parse_args()
+
     await init_pool()
     pool = await get_pool()
 
     try:
         # 1. Fetch symbols that haven't been backfilled yet (< 1000 rows = not done)
-        symbols = await pool.fetch("""
-            SELECT s.symbol
-            FROM discover_stock_snapshots s
-            LEFT JOIN (
-                SELECT symbol, COUNT(*) AS cnt
-                FROM discover_stock_price_history
-                GROUP BY symbol
-            ) h ON h.symbol = s.symbol
-            WHERE COALESCE(h.cnt, 0) < 1000
-            ORDER BY s.symbol
-        """)
+        if args.force:
+            symbols = await pool.fetch("""
+                SELECT s.symbol FROM discover_stock_snapshots s ORDER BY s.symbol
+            """)
+        else:
+            symbols = await pool.fetch("""
+                SELECT s.symbol
+                FROM discover_stock_snapshots s
+                LEFT JOIN (
+                    SELECT symbol, COUNT(*) AS cnt
+                    FROM discover_stock_price_history
+                    GROUP BY symbol
+                ) h ON h.symbol = s.symbol
+                WHERE COALESCE(h.cnt, 0) < 1000
+                ORDER BY s.symbol
+            """)
         symbol_list = [row["symbol"] for row in symbols]
         logger.info("Found %d symbols needing backfill (skipped already-done).", len(symbol_list))
 

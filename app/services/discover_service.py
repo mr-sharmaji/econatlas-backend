@@ -299,21 +299,39 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     market, symbol, display_name, sector, last_price, point_change, percent_change,
                     volume, traded_value, pe_ratio, roe, roce, debt_to_equity, price_to_book, eps,
                     score, score_momentum, score_liquidity, score_fundamentals,
-                    score_volatility, score_growth, percent_change_3m, percent_change_1w,
+                    score_volatility, score_growth,
+                    score_ownership, score_financial_health, score_analyst,
+                    percent_change_3m, percent_change_1w,
                     percent_change_1y, percent_change_3y,
                     score_breakdown, tags, source_status, source_timestamp, ingested_at,
                     primary_source, secondary_source,
-                    high_52w, low_52w, market_cap, dividend_yield
+                    high_52w, low_52w, market_cap, dividend_yield,
+                    promoter_holding, fii_holding, dii_holding, government_holding, public_holding,
+                    num_shareholders, promoter_holding_change, fii_holding_change, dii_holding_change,
+                    beta, free_cash_flow, operating_cash_flow, total_cash, total_debt, total_revenue,
+                    gross_margins, operating_margins, profit_margins,
+                    revenue_growth, earnings_growth, forward_pe,
+                    analyst_target_mean, analyst_count, analyst_recommendation, analyst_recommendation_mean,
+                    industry
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
                     $8, $9, $10, $11, $12, $13, $14, $15,
                     $16, $17, $18, $19,
-                    $20, $21, $22, $23,
-                    $24, $25,
-                    $26, $27, $28, $29, NOW(),
-                    $30, $31,
-                    $32, $33, $34, $35
+                    $20, $21,
+                    $22, $23, $24,
+                    $25, $26,
+                    $27, $28,
+                    $29, $30, $31, $32, NOW(),
+                    $33, $34,
+                    $35, $36, $37, $38,
+                    $39, $40, $41, $42, $43,
+                    $44, $45, $46, $47,
+                    $48, $49, $50, $51, $52, $53,
+                    $54, $55, $56,
+                    $57, $58, $59,
+                    $60, $61, $62, $63,
+                    $64
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -337,6 +355,9 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     score_fundamentals = EXCLUDED.score_fundamentals,
                     score_volatility = EXCLUDED.score_volatility,
                     score_growth = EXCLUDED.score_growth,
+                    score_ownership = EXCLUDED.score_ownership,
+                    score_financial_health = EXCLUDED.score_financial_health,
+                    score_analyst = EXCLUDED.score_analyst,
                     percent_change_3m = EXCLUDED.percent_change_3m,
                     percent_change_1w = EXCLUDED.percent_change_1w,
                     percent_change_1y = EXCLUDED.percent_change_1y,
@@ -351,43 +372,98 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     high_52w = EXCLUDED.high_52w,
                     low_52w = EXCLUDED.low_52w,
                     market_cap = EXCLUDED.market_cap,
-                    dividend_yield = EXCLUDED.dividend_yield
+                    dividend_yield = EXCLUDED.dividend_yield,
+                    promoter_holding = EXCLUDED.promoter_holding,
+                    fii_holding = EXCLUDED.fii_holding,
+                    dii_holding = EXCLUDED.dii_holding,
+                    government_holding = EXCLUDED.government_holding,
+                    public_holding = EXCLUDED.public_holding,
+                    num_shareholders = EXCLUDED.num_shareholders,
+                    promoter_holding_change = EXCLUDED.promoter_holding_change,
+                    fii_holding_change = EXCLUDED.fii_holding_change,
+                    dii_holding_change = EXCLUDED.dii_holding_change,
+                    beta = EXCLUDED.beta,
+                    free_cash_flow = EXCLUDED.free_cash_flow,
+                    operating_cash_flow = EXCLUDED.operating_cash_flow,
+                    total_cash = EXCLUDED.total_cash,
+                    total_debt = EXCLUDED.total_debt,
+                    total_revenue = EXCLUDED.total_revenue,
+                    gross_margins = EXCLUDED.gross_margins,
+                    operating_margins = EXCLUDED.operating_margins,
+                    profit_margins = EXCLUDED.profit_margins,
+                    revenue_growth = EXCLUDED.revenue_growth,
+                    earnings_growth = EXCLUDED.earnings_growth,
+                    forward_pe = EXCLUDED.forward_pe,
+                    analyst_target_mean = EXCLUDED.analyst_target_mean,
+                    analyst_count = EXCLUDED.analyst_count,
+                    analyst_recommendation = EXCLUDED.analyst_recommendation,
+                    analyst_recommendation_mean = EXCLUDED.analyst_recommendation_mean,
+                    industry = EXCLUDED.industry
                 """,
-                str(row.get("market") or "IN"),
-                str(row.get("symbol") or ""),
-                str(row.get("display_name") or row.get("symbol") or ""),
-                row.get("sector"),
-                _to_float(row.get("last_price")) or 0.0,
-                _to_float(row.get("point_change")),
-                _to_float(row.get("percent_change")),
-                _to_int(row.get("volume")),
-                _to_float(row.get("traded_value")),
-                _to_float(row.get("pe_ratio")),
-                _to_float(row.get("roe")),
-                _to_float(row.get("roce")),
-                _to_float(row.get("debt_to_equity")),
-                _to_float(row.get("price_to_book")),
-                _to_float(row.get("eps")),
-                _to_float(row.get("score")) or 0.0,
-                _to_float(row.get("score_momentum")) or 0.0,
-                _to_float(row.get("score_liquidity")) or 0.0,
-                _to_float(row.get("score_fundamentals")) or 0.0,
-                _to_float(row.get("score_volatility")),
-                _to_float(row.get("score_growth")),
-                _to_float(row.get("percent_change_3m")),
-                _to_float(row.get("percent_change_1w")),
-                _to_float(row.get("percent_change_1y")),
-                _to_float(row.get("percent_change_3y")),
-                _to_jsonb(row.get("score_breakdown"), _stock_breakdown_payload(row)),
-                _to_jsonb(row.get("tags"), []),
-                _normalize_source_status(row.get("source_status")),
-                parse_ts(row.get("source_timestamp")) or datetime.now(timezone.utc),
-                row.get("primary_source"),
-                row.get("secondary_source"),
-                _to_float(row.get("high_52w")),
-                _to_float(row.get("low_52w")),
-                _to_float(row.get("market_cap")),
-                _to_float(row.get("dividend_yield")),
+                str(row.get("market") or "IN"),                                    # $1
+                str(row.get("symbol") or ""),                                      # $2
+                str(row.get("display_name") or row.get("symbol") or ""),           # $3
+                row.get("sector"),                                                 # $4
+                _to_float(row.get("last_price")) or 0.0,                           # $5
+                _to_float(row.get("point_change")),                                # $6
+                _to_float(row.get("percent_change")),                              # $7
+                _to_int(row.get("volume")),                                        # $8
+                _to_float(row.get("traded_value")),                                # $9
+                _to_float(row.get("pe_ratio")),                                    # $10
+                _to_float(row.get("roe")),                                         # $11
+                _to_float(row.get("roce")),                                        # $12
+                _to_float(row.get("debt_to_equity")),                              # $13
+                _to_float(row.get("price_to_book")),                               # $14
+                _to_float(row.get("eps")),                                         # $15
+                _to_float(row.get("score")) or 0.0,                                # $16
+                _to_float(row.get("score_momentum")) or 0.0,                       # $17
+                _to_float(row.get("score_liquidity")) or 0.0,                      # $18
+                _to_float(row.get("score_fundamentals")) or 0.0,                   # $19
+                _to_float(row.get("score_volatility")),                            # $20
+                _to_float(row.get("score_growth")),                                # $21
+                _to_float(row.get("score_ownership")),                             # $22
+                _to_float(row.get("score_financial_health")),                       # $23
+                _to_float(row.get("score_analyst")),                               # $24
+                _to_float(row.get("percent_change_3m")),                           # $25
+                _to_float(row.get("percent_change_1w")),                           # $26
+                _to_float(row.get("percent_change_1y")),                           # $27
+                _to_float(row.get("percent_change_3y")),                           # $28
+                _to_jsonb(row.get("score_breakdown"), _stock_breakdown_payload(row)),  # $29
+                _to_jsonb(row.get("tags"), []),                                    # $30
+                _normalize_source_status(row.get("source_status")),                # $31
+                parse_ts(row.get("source_timestamp")) or datetime.now(timezone.utc),  # $32
+                row.get("primary_source"),                                         # $33
+                row.get("secondary_source"),                                       # $34
+                _to_float(row.get("high_52w")),                                    # $35
+                _to_float(row.get("low_52w")),                                     # $36
+                _to_float(row.get("market_cap")),                                  # $37
+                _to_float(row.get("dividend_yield")),                              # $38
+                _to_float(row.get("promoter_holding")),                            # $39
+                _to_float(row.get("fii_holding")),                                 # $40
+                _to_float(row.get("dii_holding")),                                 # $41
+                _to_float(row.get("government_holding")),                          # $42
+                _to_float(row.get("public_holding")),                              # $43
+                _to_int(row.get("num_shareholders")),                              # $44
+                _to_float(row.get("promoter_holding_change")),                     # $45
+                _to_float(row.get("fii_holding_change")),                          # $46
+                _to_float(row.get("dii_holding_change")),                          # $47
+                _to_float(row.get("beta")),                                        # $48
+                _to_float(row.get("free_cash_flow")),                              # $49
+                _to_float(row.get("operating_cash_flow")),                         # $50
+                _to_float(row.get("total_cash")),                                  # $51
+                _to_float(row.get("total_debt")),                                  # $52
+                _to_float(row.get("total_revenue")),                               # $53
+                _to_float(row.get("gross_margins")),                               # $54
+                _to_float(row.get("operating_margins")),                           # $55
+                _to_float(row.get("profit_margins")),                              # $56
+                _to_float(row.get("revenue_growth")),                              # $57
+                _to_float(row.get("earnings_growth")),                             # $58
+                _to_float(row.get("forward_pe")),                                  # $59
+                _to_float(row.get("analyst_target_mean")),                         # $60
+                _to_int(row.get("analyst_count")),                                 # $61
+                row.get("analyst_recommendation"),                                 # $62
+                _to_float(row.get("analyst_recommendation_mean")),                 # $63
+                row.get("industry"),                                               # $64
             )
             count += 1
     return count

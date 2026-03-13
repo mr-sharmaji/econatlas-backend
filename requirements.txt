@@ -12,3 +12,4 @@ beautifulsoup4>=4.12,<5
 feedparser>=6.0,<7
 arq>=0.26,<1
 redis[hiredis]>=5.0,<6
+curl_cffi>=0.7,<1

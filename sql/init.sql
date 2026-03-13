@@ -393,6 +393,44 @@ ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS beta DOUBLE 
 ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS score_alpha DOUBLE PRECISION;
 ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS score_beta DOUBLE PRECISION;
 
+-- ================================================================
+-- Discover enrichment: stock fundamentals + shareholding + analyst (v0.2.4)
+-- ================================================================
+-- Shareholding (from Screener.in)
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS promoter_holding DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS fii_holding DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS dii_holding DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS government_holding DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS public_holding DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS num_shareholders BIGINT;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS promoter_holding_change DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS fii_holding_change DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS dii_holding_change DOUBLE PRECISION;
+-- Yahoo Finance exclusive fundamentals
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS beta DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS free_cash_flow DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS operating_cash_flow DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS total_cash DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS total_debt DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS total_revenue DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS gross_margins DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS operating_margins DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS profit_margins DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS revenue_growth DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS earnings_growth DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS forward_pe DOUBLE PRECISION;
+-- Analyst data (from Yahoo Finance)
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS analyst_target_mean DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS analyst_count INTEGER;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS analyst_recommendation TEXT;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS analyst_recommendation_mean DOUBLE PRECISION;
+-- New score components
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_ownership DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_financial_health DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_analyst DOUBLE PRECISION;
+-- Industry sub-sector (from Screener.in)
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS industry TEXT;
+
 -- Dead-letter queue for failed background jobs
 CREATE TABLE IF NOT EXISTS job_dead_letters (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

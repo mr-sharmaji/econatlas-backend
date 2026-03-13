@@ -50,8 +50,13 @@ class Settings(BaseSettings):
     discover_stock_fallback_url: str = "https://www.nseindia.com"
     discover_stock_nse_timeout_seconds: int = 4
     discover_stock_nse_cooldown_seconds: int = 300
-    discover_stock_screener_timeout_seconds: int = 8
-    discover_stock_fundamentals_limit: int = 600
+    discover_stock_screener_timeout_seconds: int = 10
+    discover_stock_screener_max_retries: int = 3
+    discover_stock_screener_retry_delay: float = 5.0
+    discover_stock_screener_batch_delay: float = 0.5
+    discover_stock_fundamentals_limit: int = 5000
+    discover_stock_yahoo_batch_delay: float = 0.5
+    discover_stock_yahoo_crumb_ttl: int = 600
     discover_stock_universe_url: str = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
     discover_stock_bhavcopy_url_template: str = "https://archives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{yyyymmdd}_F_0000.csv.zip"
     discover_stock_bhavcopy_lookback_days: int = 7
