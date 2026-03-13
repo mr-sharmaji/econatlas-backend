@@ -1,3 +1,6 @@
+import logging
+import math
+
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.macro_schema import (
@@ -8,13 +11,42 @@ from app.schemas.macro_schema import (
 )
 from app.services import macro_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/macro", tags=["macro"])
+
+# Value ranges for sanity checking incoming macro data (same as macro_job.py).
+_VALUE_RANGES: dict[str, tuple[float, float]] = {
+    "inflation": (-20.0, 40.0),
+    "gdp_growth": (-50.0, 50.0),
+    "unemployment": (0.0, 100.0),
+    "repo_rate": (-5.0, 50.0),
+    "fii_net_cash": (-1_000_000.0, 1_000_000.0),
+    "dii_net_cash": (-1_000_000.0, 1_000_000.0),
+}
+
+
+def _is_value_valid(indicator_name: str, value: float) -> bool:
+    if not math.isfinite(value):
+        return False
+    low, high = _VALUE_RANGES.get(indicator_name, (-1e12, 1e12))
+    return low <= value <= high
 
 
 @router.post("", response_model=MacroIndicatorResponse, status_code=200)
 async def create_macro_indicator(payload: MacroIndicatorCreate) -> MacroIndicatorResponse:
     """Receive a macro-economic indicator from scraper. Idempotent: same row returned if already exists."""
     try:
+        # Reject out-of-range values at the API layer
+        if not _is_value_valid(payload.indicator_name, payload.value):
+            logger.warning(
+                "Macro POST rejected out-of-range: %s/%s value=%s",
+                payload.country, payload.indicator_name, payload.value,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=f"Value {payload.value} out of range for {payload.indicator_name}",
+            )
         row = await macro_service.insert_indicator(payload.model_dump(mode="json"))
         if row is not None:
             return MacroIndicatorResponse(**row)

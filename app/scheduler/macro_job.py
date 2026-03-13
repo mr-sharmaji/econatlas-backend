@@ -212,6 +212,7 @@ class MacroScraper(BaseScraper):
     def _compute_yoy_inflation(self, series_id: str) -> Optional[Tuple[float, datetime]]:
         rows = self._fetch_fred_csv(series_id)
         if len(rows) < 13:
+            logger.warning("CPI YoY: series=%s only %d rows (need 13+)", series_id, len(rows))
             return None
         parsed = []
         for d, v in rows:
@@ -229,8 +230,13 @@ class MacroScraper(BaseScraper):
                 year_ago = val
                 break
         if not year_ago or year_ago == 0:
+            logger.warning("CPI YoY: series=%s no year-ago match for %s", series_id, latest_dt)
             return None
         yoy = round(((latest_val - year_ago) / year_ago) * 100, 2)
+        logger.info(
+            "CPI YoY: series=%s latest=%.2f@%s year_ago=%.2f yoy=%.2f%%",
+            series_id, latest_val, latest_dt.date(), year_ago, yoy,
+        )
         return yoy, latest_dt
 
     def _compute_growth_from_level(self, series_id: str, lag_periods: int) -> Optional[Tuple[float, datetime]]:
