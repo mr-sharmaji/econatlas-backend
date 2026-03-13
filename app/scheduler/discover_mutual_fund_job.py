@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+from collections import deque
 from datetime import datetime, timezone
 from html import unescape
 from typing import Any
@@ -211,6 +212,250 @@ class DiscoverMutualFundScraper(BaseScraper):
                     continue
         return blobs
 
+    @staticmethod
+    def _strip_tags(text: str) -> str:
+        raw = re.sub(r"<[^>]+>", " ", text or "", flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", unescape(raw)).strip()
+
+    @staticmethod
+    def _extract_number(text: str) -> float | None:
+        if not text:
+            return None
+        match = re.search(r"-?\d[\d,]*(?:\.\d+)?", text)
+        if not match:
+            return None
+        try:
+            return float(match.group(0).replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_aum_cr(self, text: str | None) -> float | None:
+        if not text:
+            return None
+        raw = self._strip_tags(text)
+        value = self._extract_number(raw)
+        if value is None:
+            return None
+        lowered = raw.lower()
+        if "lakh" in lowered:
+            value = value / 100.0
+        elif "million" in lowered:
+            value = value / 10.0
+        elif "billion" in lowered:
+            value = value * 100.0
+        return round(value, 2)
+
+    def _parse_age_years(self, text: str | None) -> float | None:
+        if not text:
+            return None
+        raw = self._strip_tags(text).lower()
+        years = 0.0
+        months = 0.0
+        y = re.search(r"(\d+(?:\.\d+)?)\s*(?:yr|yrs|year|years)\b", raw)
+        if y:
+            years = float(y.group(1))
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(?:m|mon|month|months)\b", raw)
+        if m:
+            months = float(m.group(1))
+        total = years + (months / 12.0)
+        if total > 0:
+            return round(total, 1)
+        direct_year = self._extract_number(raw)
+        if direct_year is not None and ("year" in raw or "yr" in raw):
+            return round(direct_year, 1)
+        return None
+
+    @staticmethod
+    def _slug_from_detail_link(link: str) -> str:
+        parts = [p for p in str(link or "").strip().split("/") if p]
+        if len(parts) < 2:
+            return ""
+        return parts[-2].strip().lower()
+
+    @staticmethod
+    def _extract_table_value(html: str, title_pattern: str) -> str | None:
+        patt = (
+            rf'<strong class="mfSceme-key-title">\s*{title_pattern}\s*</strong>'
+            r"\s*</td>\s*<td class=\"item\">\s*(.*?)</td>"
+        )
+        match = re.search(patt, html, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            return None
+        return match.group(1)
+
+    @staticmethod
+    def _extract_etmoney_detail_links(html: str) -> set[str]:
+        links = re.findall(
+            r'href="(/mutual-funds/(?!compare|explore|featured|filter|fund-houses|equity|debt|hybrid|other|solution-oriented)[^"]+/\d+)"',
+            html,
+            flags=re.IGNORECASE,
+        )
+        return {unescape(link.strip()) for link in links if link and link.strip()}
+
+    @staticmethod
+    def _extract_counterpart_link(html: str) -> str | None:
+        for match in re.finditer(
+            r'class="counterpart-plan-link"[^>]*href="([^"]+)"',
+            html,
+            flags=re.IGNORECASE,
+        ):
+            href = unescape(match.group(1)).strip()
+            if href.startswith("/mutual-funds/") and re.search(r"/\d+$", href):
+                return href
+        return None
+
+    def _parse_etmoney_detail_page(self, html: str, rel_link: str) -> dict | None:
+        slug = self._slug_from_detail_link(rel_link)
+        if not slug:
+            return None
+
+        expense_raw = self._extract_table_value(html, r"Expense\s*ratio")
+        expense = self._to_float(self._strip_tags(expense_raw or ""))
+        if expense is None:
+            regex_exp = re.search(r'"expenseRatio"\s*:\s*"([^"]+)"', html, flags=re.IGNORECASE)
+            if regex_exp:
+                expense = self._to_float(regex_exp.group(1))
+
+        aum_raw = self._extract_table_value(html, r"[^<]*AUM[^<]*")
+        if not aum_raw:
+            regex_aum = re.search(r'"aum"\s*:\s*"([^"]+)"', html, flags=re.IGNORECASE)
+            if regex_aum:
+                aum_raw = regex_aum.group(1)
+        aum_cr = self._parse_aum_cr(aum_raw)
+
+        risk_raw = self._extract_table_value(html, r"Risk")
+        risk_level = self._normalize_risk(self._strip_tags(risk_raw or ""))
+
+        age_raw = self._extract_table_value(html, r"Age")
+        if not age_raw:
+            regex_age = re.search(r'"fundAge"\s*:\s*"([^"]+)"', html, flags=re.IGNORECASE)
+            if regex_age:
+                age_raw = regex_age.group(1)
+        fund_age_years = self._parse_age_years(age_raw)
+
+        report_card = self._extract_json_object_after_marker(html, '"mfReportCardData":') or {}
+        std_dev = self._to_float(report_card.get("standardDeviation") or report_card.get("stdDev"))
+        sharpe = self._to_float(report_card.get("sharpeRatio") or report_card.get("sharpe"))
+        sortino = self._to_float(report_card.get("sortinoRatio") or report_card.get("sortino"))
+        if std_dev is None:
+            std_match = re.search(r'"standardDeviation"\s*:\s*(-?\d+(?:\.\d+)?)', html, flags=re.IGNORECASE)
+            if std_match:
+                std_dev = self._to_float(std_match.group(1))
+        if sharpe is None:
+            sh_match = re.search(r'"sharpeRatio"\s*:\s*(-?\d+(?:\.\d+)?)', html, flags=re.IGNORECASE)
+            if sh_match:
+                sharpe = self._to_float(sh_match.group(1))
+        if sortino is None:
+            so_match = re.search(r'"sortinoRatio"\s*:\s*(-?\d+(?:\.\d+)?)', html, flags=re.IGNORECASE)
+            if so_match:
+                sortino = self._to_float(so_match.group(1))
+
+        option_type = None
+        slug_low = slug.lower()
+        if "growth" in slug_low:
+            option_type = "Growth"
+        elif "idcw" in slug_low or "dividend" in slug_low:
+            option_type = "IDCW"
+
+        title_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, flags=re.IGNORECASE | re.DOTALL)
+        display_name = self._strip_tags(title_match.group(1)) if title_match else slug.replace("-", " ")
+        name_key = self._normalize_fund_name_key(display_name)
+        if not name_key:
+            return None
+
+        return {
+            "_name_key": name_key,
+            "_is_direct": "direct" in slug_low,
+            "_slug": slug,
+            "scheme_name": display_name,
+            "option_type": option_type,
+            "expense_ratio": expense,
+            "aum_cr": aum_cr,
+            "risk_level": risk_level,
+            "std_dev": std_dev,
+            "sharpe": sharpe,
+            "sortino": sortino,
+            "fund_age_years": fund_age_years,
+            "source_status": "primary",
+            "source_timestamp": datetime.now(timezone.utc),
+            "primary_source": "etmoney_web",
+            "secondary_source": "amfi_nav_file",
+        }
+
+    @staticmethod
+    def _detail_completeness(row: dict) -> tuple[int, int]:
+        metrics = (
+            "expense_ratio",
+            "aum_cr",
+            "risk_level",
+            "std_dev",
+            "sharpe",
+            "sortino",
+            "fund_age_years",
+        )
+        coverage = sum(1 for key in metrics if row.get(key) is not None)
+        growth_bias = 1 if str(row.get("option_type") or "").lower() == "growth" else 0
+        return coverage, growth_bias
+
+    def _parse_etmoney_detail_pages(
+        self,
+        detail_links: set[str],
+        *,
+        max_pages: int = 3200,
+    ) -> dict[str, dict]:
+        if not detail_links:
+            return {}
+        base = self.settings.discover_mf_primary_url.rstrip("/")
+        queue: deque[str] = deque(sorted(detail_links))
+        queued = set(queue)
+        seen: set[str] = set()
+        out: dict[str, dict] = {}
+
+        while queue and len(seen) < max_pages:
+            rel_link = queue.popleft()
+            queued.discard(rel_link)
+            if rel_link in seen:
+                continue
+            seen.add(rel_link)
+
+            url = f"{base}{rel_link}"
+            try:
+                html = self._get_text(url, timeout=8, retries=0)
+            except Exception:
+                logger.debug("ET Money detail fetch failed url=%s", url, exc_info=True)
+                continue
+
+            counterpart = self._extract_counterpart_link(html)
+            if (
+                counterpart
+                and "direct" in counterpart.lower()
+                and counterpart not in seen
+                and counterpart not in queued
+            ):
+                queue.appendleft(counterpart)
+                queued.add(counterpart)
+
+            detail = self._parse_etmoney_detail_page(html, rel_link)
+            if not detail or not detail.get("_is_direct"):
+                continue
+            key = str(detail.get("_name_key") or "").strip()
+            if not key:
+                continue
+
+            prior = out.get(key)
+            if prior is None or self._detail_completeness(detail) > self._detail_completeness(prior):
+                out[key] = detail
+
+        if queue:
+            logger.info("ET Money detail enrichment hit max_pages=%d; remaining=%d", max_pages, len(queue))
+        logger.info(
+            "ET Money detail enrichment scanned=%d direct_rows=%d seed_links=%d",
+            len(seen),
+            len(out),
+            len(detail_links),
+        )
+        return out
+
     def _parse_etmoney_candidates(self) -> dict[str, dict]:
         base = self.settings.discover_mf_primary_url.rstrip("/")
         urls = [
@@ -319,14 +564,15 @@ class DiscoverMutualFundScraper(BaseScraper):
                 main = inside.strip()
         return self._normalize_heading_labels(main, sub)
 
-    def _parse_etmoney_category_pages(self) -> dict[str, dict]:
+    def _parse_etmoney_category_pages(self) -> tuple[dict[str, dict], set[str]]:
         out: dict[str, dict] = {}
+        detail_links: set[str] = set()
         base = self.settings.discover_mf_primary_url.rstrip("/")
         try:
             explore_html = self._get_text(f"{base}/mutual-funds/explore", timeout=16)
         except Exception:
             logger.debug("ET Money explore fetch failed", exc_info=True)
-            return out
+            return out, detail_links
 
         category_links = sorted(
             {
@@ -335,6 +581,7 @@ class DiscoverMutualFundScraper(BaseScraper):
                 if link
             }
         )
+        detail_links.update(self._extract_etmoney_detail_links(explore_html))
 
         for rel_link in category_links:
             url = f"{base}{rel_link}"
@@ -343,6 +590,7 @@ class DiscoverMutualFundScraper(BaseScraper):
             except Exception:
                 logger.debug("ET Money category fetch failed url=%s", url, exc_info=True)
                 continue
+            detail_links.update(self._extract_etmoney_detail_links(html))
 
             category_payload = self._extract_json_object_after_marker(html, "var category =")
             category = None
@@ -393,7 +641,7 @@ class DiscoverMutualFundScraper(BaseScraper):
                     "primary_source": "etmoney_web",
                     "secondary_source": "amfi_nav_file",
                 }
-        return out
+        return out, detail_links
 
     def _parse_amfi_fallback(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
@@ -795,6 +1043,11 @@ class DiscoverMutualFundScraper(BaseScraper):
 
         Only enriches up to max_enrich funds to avoid rate-limiting. Prioritises
         funds with missing fund_age_years, std_dev, sharpe, or sortino.
+
+        NOTE: expense_ratio and aum_cr are NOT available from any free public API
+        (mfapi.in, AMFI NAV file, ET Money, Groww, etc. all lack these fields or
+        block server-side requests). A premium data source or browser-based scraping
+        would be needed to populate these fields.
         """
         import math
         import time
@@ -823,23 +1076,42 @@ class DiscoverMutualFundScraper(BaseScraper):
 
                 row = rows[code]
 
-                # Fund age from inception date
-                inception = meta.get("scheme_start_date", {}).get("date")
-                if inception and row.get("fund_age_years") is None:
-                    try:
-                        # mfapi format: "01-01-2013" (DD-MM-YYYY) or ISO
-                        if "-" in str(inception) and len(str(inception)) == 10:
-                            parts = str(inception).split("-")
+                # Fund age from inception date or oldest NAV
+                if row.get("fund_age_years") is None:
+                    inception_date = None
+                    # Try scheme_start_date from meta (dict with "date" key, or string)
+                    ssd = meta.get("scheme_start_date")
+                    inception_str = None
+                    if isinstance(ssd, dict):
+                        inception_str = ssd.get("date")
+                    elif isinstance(ssd, str):
+                        inception_str = ssd
+                    if inception_str and "-" in str(inception_str) and len(str(inception_str)) == 10:
+                        try:
+                            parts = str(inception_str).split("-")
                             if len(parts[0]) == 2:  # DD-MM-YYYY
                                 inception_date = datetime(int(parts[2]), int(parts[1]), int(parts[0]),
                                                           tzinfo=timezone.utc)
                             else:  # YYYY-MM-DD
                                 inception_date = datetime(int(parts[0]), int(parts[1]), int(parts[2]),
                                                           tzinfo=timezone.utc)
-                            age_days = (datetime.now(timezone.utc) - inception_date).days
-                            row["fund_age_years"] = round(age_days / 365.25, 1)
-                    except (ValueError, IndexError):
-                        pass
+                        except (ValueError, IndexError):
+                            pass
+                    # Fallback: oldest NAV date (mfapi returns newest-first)
+                    if inception_date is None and nav_data:
+                        oldest_pt = nav_data[-1]
+                        oldest_str = oldest_pt.get("date", "") if isinstance(oldest_pt, dict) else ""
+                        if oldest_str and "-" in oldest_str:
+                            try:
+                                parts = oldest_str.split("-")
+                                if len(parts) == 3 and len(parts[0]) == 2:  # DD-MM-YYYY
+                                    inception_date = datetime(int(parts[2]), int(parts[1]), int(parts[0]),
+                                                              tzinfo=timezone.utc)
+                            except (ValueError, IndexError):
+                                pass
+                    if inception_date is not None:
+                        age_days = (datetime.now(timezone.utc) - inception_date).days
+                        row["fund_age_years"] = round(age_days / 365.25, 1)
 
                 # AMC from meta if missing
                 if not row.get("amc") and meta.get("fund_house"):
@@ -907,7 +1179,8 @@ class DiscoverMutualFundScraper(BaseScraper):
     def fetch_all(self) -> list[dict]:
         amfi_rows = self._parse_amfi_fallback()
         et_rows = self._parse_etmoney_candidates()
-        et_rows_by_name = self._parse_etmoney_category_pages()
+        et_rows_by_name, et_detail_links = self._parse_etmoney_category_pages()
+        et_detail_rows_by_name = self._parse_etmoney_detail_pages(et_detail_links)
 
         merged: dict[str, dict] = {}
         for code, row in amfi_rows.items():
@@ -936,25 +1209,29 @@ class DiscoverMutualFundScraper(BaseScraper):
                 continue
             amfi_name_index.setdefault(key, []).append(code)
 
+        def _candidate_codes_for_key(name_key: str) -> list[str]:
+            candidate_codes = amfi_name_index.get(name_key) or []
+            if candidate_codes:
+                return candidate_codes
+            return [
+                code
+                for known_key, codes in amfi_name_index.items()
+                if known_key and (known_key in name_key or name_key in known_key)
+                for code in codes
+            ]
+
+        def _candidate_priority(code: str) -> tuple[int, int]:
+            name = str(merged.get(code, {}).get("scheme_name") or "").lower()
+            growth_bias = 2 if "growth" in name else 0
+            direct_bias = 1 if "direct" in name else 0
+            return (growth_bias + direct_bias, -len(name))
+
         for key, et_row in et_rows_by_name.items():
             if not key:
                 continue
-            candidate_codes = amfi_name_index.get(key) or []
-            if not candidate_codes:
-                candidate_codes = [
-                    code
-                    for known_key, codes in amfi_name_index.items()
-                    if known_key and (known_key in key or key in known_key)
-                    for code in codes
-                ]
+            candidate_codes = _candidate_codes_for_key(key)
             if not candidate_codes:
                 continue
-
-            def _candidate_priority(code: str) -> tuple[int, int]:
-                name = str(merged.get(code, {}).get("scheme_name") or "").lower()
-                growth_bias = 2 if "growth" in name else 0
-                direct_bias = 1 if "direct" in name else 0
-                return (growth_bias + direct_bias, -len(name))
 
             best_code = sorted(candidate_codes, key=_candidate_priority, reverse=True)[0]
             base_row = dict(merged[best_code])
@@ -966,6 +1243,35 @@ class DiscoverMutualFundScraper(BaseScraper):
             for metric_key in ("returns_1y", "returns_3y", "returns_5y", "risk_level"):
                 if et_row.get(metric_key) is not None:
                     base_row[metric_key] = et_row.get(metric_key)
+
+            base_row["source_status"] = "primary"
+            base_row["source_timestamp"] = datetime.now(timezone.utc)
+            base_row["primary_source"] = "etmoney_web"
+            base_row["secondary_source"] = "amfi_nav_file"
+            merged[best_code] = base_row
+
+        for key, detail_row in et_detail_rows_by_name.items():
+            if not key:
+                continue
+            candidate_codes = _candidate_codes_for_key(key)
+            if not candidate_codes:
+                continue
+            best_code = sorted(candidate_codes, key=_candidate_priority, reverse=True)[0]
+            base_row = dict(merged[best_code])
+
+            for metric_key in (
+                "expense_ratio",
+                "aum_cr",
+                "risk_level",
+                "std_dev",
+                "sharpe",
+                "sortino",
+                "fund_age_years",
+            ):
+                if detail_row.get(metric_key) is not None:
+                    base_row[metric_key] = detail_row.get(metric_key)
+            if detail_row.get("option_type") and not base_row.get("option_type"):
+                base_row["option_type"] = detail_row.get("option_type")
 
             base_row["source_status"] = "primary"
             base_row["source_timestamp"] = datetime.now(timezone.utc)
