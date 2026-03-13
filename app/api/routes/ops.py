@@ -137,27 +137,32 @@ async def running_jobs(
 ) -> dict:
     """List currently queued, running, and recently finished ARQ jobs.
 
-    Queries Redis for all known job keys and returns their status,
-    start time, and result info.
+    Queries Redis for in-progress jobs, known job IDs, queued jobs,
+    and recent results.
     """
     _authorize(x_ops_token)
     from arq.constants import default_queue_name, in_progress_key_prefix
-    from arq.jobs import JobStatus
+    from arq.jobs import Job, JobStatus
 
     from app.queue.redis_pool import get_redis_pool
 
     pool = await get_redis_pool()
     running = []
-    queued = []
+    queued_list = []
     complete = []
+    seen_ids: set[str] = set()
 
-    # 1. Check in-progress jobs via the in_progress set
+    def _make_job(job_id: str) -> Job:
+        return Job(job_id, pool, _queue_name=default_queue_name)
+
+    # 1. Check in-progress jobs via the Redis set
     in_progress_key = in_progress_key_prefix + default_queue_name
     in_progress_ids: set[bytes] = await pool.smembers(in_progress_key)  # type: ignore[assignment]
 
     for raw_id in in_progress_ids:
         job_id = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
-        job = await pool.job(job_id)  # type: ignore[arg-type]
+        seen_ids.add(job_id)
+        job = _make_job(job_id)
         info = await job.info()
         if info:
             running.append({
@@ -175,14 +180,14 @@ async def running_jobs(
     known_ids = [f"{name}_manual" for name in _VALID_JOBS] + [f"startup_{name}" for name in _VALID_JOBS]
 
     for job_id in known_ids:
-        # Skip if already found in in-progress set
-        if any(r["job_id"] == job_id for r in running):
+        if job_id in seen_ids:
             continue
-        job = await pool.job(job_id)  # type: ignore[arg-type]
+        job = _make_job(job_id)
         status = await job.status()
         if status == JobStatus.not_found:
             continue
 
+        seen_ids.add(job_id)
         info = await job.info()
         if not info:
             continue
@@ -200,22 +205,59 @@ async def running_jobs(
                 datetime.now(timezone.utc) - info.start_time
             ).total_seconds(), 1) if info.start_time else None
             running.append(entry)
-        elif status == JobStatus.queued or status == JobStatus.deferred:
-            entry["score"] = info.score if hasattr(info, "score") else None
-            queued.append(entry)
+        elif status in (JobStatus.queued, JobStatus.deferred):
+            queued_list.append(entry)
         elif status == JobStatus.complete:
-            entry["finish_time"] = info.finish_time.isoformat() if info.finish_time else None
-            entry["success"] = info.success
-            entry["result"] = str(info.result)[:200] if info.result is not None else None
+            result_info = await job.result_info()
+            if result_info:
+                entry["finish_time"] = result_info.finish_time.isoformat() if result_info.finish_time else None
+                entry["success"] = result_info.success
+                entry["result"] = str(result_info.result)[:200] if result_info.result is not None else None
             complete.append(entry)
+
+    # 3. Also include queued jobs from ARQ's queue
+    try:
+        arq_queued = await pool.queued_jobs()
+        for jdef in arq_queued:
+            jid = jdef.job_id
+            if jid in seen_ids:
+                continue
+            seen_ids.add(jid)
+            queued_list.append({
+                "job_id": jid,
+                "function": jdef.function,
+                "status": "queued",
+                "enqueue_time": jdef.enqueue_time.isoformat() if jdef.enqueue_time else None,
+            })
+    except Exception:
+        pass  # queued_jobs may not be available in all setups
+
+    # 4. Recent job results
+    try:
+        results = await pool.all_job_results()
+        for r in results:
+            if r.job_id in seen_ids:
+                continue
+            seen_ids.add(r.job_id)
+            complete.append({
+                "job_id": r.job_id,
+                "function": r.function,
+                "status": "complete",
+                "enqueue_time": r.enqueue_time.isoformat() if r.enqueue_time else None,
+                "finish_time": r.finish_time.isoformat() if r.finish_time else None,
+                "success": r.success,
+                "result": str(r.result)[:200] if r.result is not None else None,
+            })
+    except Exception:
+        pass
 
     return {
         "running": running,
-        "queued": queued,
+        "queued": queued_list,
         "complete": complete,
         "summary": {
             "running": len(running),
-            "queued": len(queued),
+            "queued": len(queued_list),
             "complete": len(complete),
         },
     }
