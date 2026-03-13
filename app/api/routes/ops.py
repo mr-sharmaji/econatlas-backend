@@ -133,28 +133,54 @@ async def trigger_job(
 async def clear_stale_jobs(
     x_ops_token: str | None = Header(default=None),
 ) -> dict:
-    """Clear stale in-progress job markers from Redis.
+    """Clear ALL stale job state from Redis.
 
-    When the server restarts mid-job, ARQ's in-progress set retains
-    orphaned job IDs that prevent re-execution. This endpoint removes them.
+    When the server restarts mid-job, ARQ leaves behind:
+    1. The in-progress set (`arq:in-progress:arq:queue`)
+    2. Individual job hashes (`arq:job:{id}`) with stale status
+    This endpoint nukes all of them so the worker can pick up fresh jobs.
     """
     _authorize(x_ops_token)
-    from arq.constants import default_queue_name, in_progress_key_prefix
+    from arq.constants import default_queue_name, in_progress_key_prefix, job_key_prefix
 
     from app.queue.redis_pool import get_redis_pool
 
     pool = await get_redis_pool()
+    cleared_progress = []
+    cleared_jobs = []
+
+    # 1. Clear the in-progress set
     in_progress_key = in_progress_key_prefix + default_queue_name
     raw_members = await pool.smembers(in_progress_key)
-    cleared = []
-
     for raw_id in raw_members or set():
         job_id = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
         await pool.srem(in_progress_key, raw_id)
-        cleared.append(job_id)
+        cleared_progress.append(job_id)
 
-    logger.warning("Cleared %d stale in-progress job(s): %s", len(cleared), cleared)
-    return {"cleared": cleared, "count": len(cleared)}
+    # 2. Delete individual job hash keys for known startup/manual jobs
+    #    These contain the per-job in-progress marker that blocks re-execution.
+    known_prefixes = [f"startup_{name}" for name in _VALID_JOBS] + [f"{name}_manual" for name in _VALID_JOBS]
+    for jid in known_prefixes:
+        job_key = job_key_prefix + jid
+        if await pool.exists(job_key):
+            await pool.delete(job_key)
+            cleared_jobs.append(jid)
+
+    # 3. Also scan for timestamped manual job keys
+    async for key in pool.scan_iter(match=f"{job_key_prefix}*_manual_*"):
+        key_str = key.decode() if isinstance(key, bytes) else str(key)
+        await pool.delete(key)
+        cleared_jobs.append(key_str.removeprefix(job_key_prefix))
+
+    logger.warning(
+        "Cleared stale state: %d in-progress entries, %d job keys",
+        len(cleared_progress), len(cleared_jobs),
+    )
+    return {
+        "cleared_in_progress": cleared_progress,
+        "cleared_job_keys": cleared_jobs,
+        "total": len(cleared_progress) + len(cleared_jobs),
+    }
 
 
 @router.get("/jobs")
