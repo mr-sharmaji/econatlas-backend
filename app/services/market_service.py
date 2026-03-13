@@ -242,6 +242,9 @@ def _session_state(asset: str, instrument_type: str, now_utc: datetime, status: 
 
 def _compute_phase(asset: str, instrument_type: str, last_tick: datetime | None, now_utc: datetime, status: dict | None = None) -> tuple[str, bool]:
     live_max_age = _live_max_age_for_instrument(instrument_type)
+    # Gift Nifty trades extended hours — use rolling window (15 min) instead of session (5 min).
+    if asset == "Gift Nifty":
+        live_max_age = max(live_max_age, get_settings().effective_rolling_live_max_age_seconds())
     # FX & crypto are 24/7: never "closed", only live/stale.
     if instrument_type in ("currency", "crypto"):
         if last_tick is None:
