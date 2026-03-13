@@ -4,6 +4,7 @@ import asyncio
 import csv
 import io
 import logging
+import math
 import re
 import zipfile
 from dataclasses import dataclass
@@ -582,8 +583,38 @@ class DiscoverStockScraper(BaseScraper):
         """Return 0-100 percentile rank of *target* within *values*."""
         if not values:
             return 50.0
-        below = sum(1 for v in values if v < target)
-        return (below / len(values)) * 100.0
+        eps = 1e-9
+        below = sum(1 for v in values if v < (target - eps))
+        equal = sum(1 for v in values if abs(v - target) <= eps)
+        return ((below + (equal * 0.5)) / len(values)) * 100.0
+
+    @staticmethod
+    def _quantile(values: list[float], q: float) -> float:
+        if not values:
+            return 0.0
+        clipped_q = max(0.0, min(1.0, q))
+        s = sorted(values)
+        if len(s) == 1:
+            return s[0]
+        pos = (len(s) - 1) * clipped_q
+        lo = int(pos)
+        hi = min(lo + 1, len(s) - 1)
+        if lo == hi:
+            return s[lo]
+        frac = pos - lo
+        return s[lo] + ((s[hi] - s[lo]) * frac)
+
+    @staticmethod
+    def _shrink_to_neutral(
+        score: float,
+        coverage: float,
+        *,
+        neutral: float = 50.0,
+        min_factor: float = 0.35,
+    ) -> float:
+        c = max(0.0, min(1.0, coverage))
+        factor = min_factor + ((1.0 - min_factor) * c)
+        return neutral + ((score - neutral) * factor)
 
     @staticmethod
     def _median(values: list[float]) -> float:
@@ -691,45 +722,80 @@ class DiscoverStockScraper(BaseScraper):
                 "pb": self._median(pb_vals) if len(pb_vals) >= 3 else overall_pb_med,
             }
 
-        # Pre-compute percentile data for momentum
-        all_pcts = [float(r.get("percent_change") or 0.0) for r in rows]
+        # Pre-compute robust percentile data for momentum (winsorized).
+        all_pcts_raw = [float(r.get("percent_change") or 0.0) for r in rows]
+        if all_pcts_raw:
+            if len(all_pcts_raw) >= 8:
+                pct_lo = self._quantile(all_pcts_raw, 0.05)
+                pct_hi = self._quantile(all_pcts_raw, 0.95)
+            else:
+                pct_lo = min(all_pcts_raw)
+                pct_hi = max(all_pcts_raw)
+        else:
+            pct_lo = -5.0
+            pct_hi = 5.0
+        if pct_lo > pct_hi:
+            pct_lo, pct_hi = pct_hi, pct_lo
+        all_pcts = [max(pct_lo, min(pct_hi, v)) for v in all_pcts_raw]
 
-        # Pre-compute max values for liquidity
-        max_tv = max((float(r.get("traded_value") or 0.0) for r in rows), default=0.0)
-        max_vol = max((float(r.get("volume") or 0.0) for r in rows), default=0.0)
+        # Pre-compute liquidity percentile data using log scale to reduce outlier skew.
+        all_tv_logs = [
+            math.log1p(max(0.0, float(r.get("traded_value") or 0.0)))
+            for r in rows
+        ]
+        all_vol_logs = [
+            math.log1p(max(0.0, float(r.get("volume") or 0.0)))
+            for r in rows
+        ]
 
         # Track sector scores for sector_leader tag
         sector_best: dict[str, tuple[float, str]] = {}
 
         out: list[dict] = []
         for row in rows:
-            pct = float(row.get("percent_change") or 0.0)
-            tv = float(row.get("traded_value") or 0.0)
-            vol = float(row.get("volume") or 0.0)
+            pct_raw = float(row.get("percent_change") or 0.0)
+            pct = max(pct_lo, min(pct_hi, pct_raw))
+            tv_log = math.log1p(max(0.0, float(row.get("traded_value") or 0.0)))
+            vol_log = math.log1p(max(0.0, float(row.get("volume") or 0.0)))
 
             # Percentile-based momentum
             momentum = self._clamp(self._percentile_rank(all_pcts, pct))
 
-            # Weighted liquidity: 60% traded_value + 40% volume
-            tv_norm = (tv / max_tv) if max_tv > 0 else 0.0
-            vol_norm = (vol / max_vol) if max_vol > 0 else 0.0
-            liquidity = self._clamp((tv_norm * 0.60 + vol_norm * 0.40) * 100)
+            # Weighted liquidity percentile: 60% traded_value + 40% volume.
+            tv_percentile = self._percentile_rank(all_tv_logs, tv_log)
+            vol_percentile = self._percentile_rank(all_vol_logs, vol_log)
+            liquidity = self._clamp((tv_percentile * 0.60) + (vol_percentile * 0.40))
 
             fundamentals, metrics_used = self._score_fundamentals(row, sector_medians)
+            if metrics_used > 0:
+                coverage = metrics_used / 5.0
+                fundamentals = self._clamp(
+                    self._shrink_to_neutral(fundamentals, coverage),
+                )
             combined_signal = round((momentum + liquidity) / 2.0, 2)
             if metrics_used == 0:
-                total = combined_signal
+                # Signal-only scores are capped to avoid unstable extremes.
+                total = self._clamp(combined_signal, lo=20.0, hi=80.0)
+            elif metrics_used >= 4:
+                total = (combined_signal * 0.25) + (fundamentals * 0.75)
+            elif metrics_used >= 2:
+                total = (combined_signal * 0.50) + (fundamentals * 0.50)
             else:
-                total = (combined_signal * 0.30) + (fundamentals * 0.70)
+                total = (combined_signal * 0.65) + (fundamentals * 0.35)
 
-            source_status = str(row.get("source_status") or "limited")
+            source_status = str(row.get("source_status") or "limited").strip().lower()
             if metrics_used == 0 and source_status == "primary":
                 source_status = "fallback"
+            status_penalty = 0.0
+            if source_status == "fallback":
+                status_penalty = 5.0
+            elif source_status == "limited":
+                status_penalty = 12.0
 
             tags: list[str] = []
-            if pct >= 2:
+            if pct_raw >= 2:
                 tags.append("momentum_up")
-            elif pct <= -2:
+            elif pct_raw <= -2:
                 tags.append("momentum_down")
             if liquidity >= 70:
                 tags.append("high_liquidity")
@@ -749,7 +815,7 @@ class DiscoverStockScraper(BaseScraper):
             if not tags:
                 tags.append("balanced")
 
-            score = round(self._clamp(total), 2)
+            score = round(self._clamp(total - status_penalty), 2)
             symbol = str(row.get("symbol") or "")
 
             # Track sector leader
@@ -781,7 +847,13 @@ class DiscoverStockScraper(BaseScraper):
             if best and best[1] == symbol and "sector_leader" not in enriched["tags"]:
                 enriched["tags"].insert(0, "sector_leader")
 
-        out.sort(key=lambda item: (float(item.get("score") or 0.0), float(item.get("percent_change") or 0.0)), reverse=True)
+        out.sort(
+            key=lambda item: (
+                -float(item.get("score") or 0.0),
+                -float(item.get("percent_change") or 0.0),
+                str(item.get("symbol") or ""),
+            )
+        )
         return out
 
     def _build_snapshot_row(self, stock: DiscoverStockDef, quote: dict, quote_source: str) -> dict:

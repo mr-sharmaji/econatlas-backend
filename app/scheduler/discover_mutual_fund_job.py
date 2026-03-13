@@ -474,12 +474,31 @@ class DiscoverMutualFundScraper(BaseScraper):
         """Return 0-100 percentile rank of *target* within *values*."""
         if not values:
             return 50.0
-        below = sum(1 for v in values if v < target)
-        return (below / len(values)) * 100.0
+        eps = 1e-9
+        below = sum(1 for v in values if v < (target - eps))
+        equal = sum(1 for v in values if abs(v - target) <= eps)
+        return ((below + (equal * 0.5)) / len(values)) * 100.0
 
     @staticmethod
-    def _risk_score(risk_level: str | None, std_dev: float | None) -> float:
-        """Blended risk score: 60% categorical + 40% continuous (when both available)."""
+    def _shrink_to_neutral(
+        score: float,
+        coverage: float,
+        *,
+        neutral: float = 50.0,
+        min_factor: float = 0.35,
+    ) -> float:
+        c = max(0.0, min(1.0, coverage))
+        factor = min_factor + ((1.0 - min_factor) * c)
+        return neutral + ((score - neutral) * factor)
+
+    def _risk_score(
+        self,
+        risk_level: str | None,
+        std_dev: float | None,
+        category_std_devs: list[float],
+        global_std_devs: list[float],
+    ) -> float:
+        """Blended risk score with peer-relative std-dev percentile when data is sufficient."""
         mapping = {
             "low": 85.0,
             "moderately low": 75.0,
@@ -498,10 +517,23 @@ class DiscoverMutualFundScraper(BaseScraper):
 
         continuous: float | None = None
         if std_dev is not None:
-            continuous = max(0.0, min(100.0, 100.0 - (std_dev * 5.0)))
+            peer_values: list[float] = []
+            if len(category_std_devs) >= 5:
+                peer_values = category_std_devs
+            elif len(global_std_devs) >= 8:
+                peer_values = global_std_devs
+            elif category_std_devs:
+                peer_values = category_std_devs
+            elif global_std_devs:
+                peer_values = global_std_devs
+
+            if peer_values:
+                continuous = max(0.0, min(100.0, 100.0 - self._percentile_rank(peer_values, std_dev)))
+            else:
+                continuous = max(0.0, min(100.0, 100.0 - (std_dev * 5.0)))
 
         if categorical is not None and continuous is not None:
-            return categorical * 0.60 + continuous * 0.40
+            return categorical * 0.55 + continuous * 0.45
         if categorical is not None:
             return categorical
         if continuous is not None:
@@ -521,17 +553,31 @@ class DiscoverMutualFundScraper(BaseScraper):
         sortino: float | None,
         category_sharpes: list[float],
         category_sortinos: list[float],
+        global_sharpes: list[float],
+        global_sortinos: list[float],
     ) -> float:
-        """Percentile-rank Sharpe/Sortino within category peers."""
+        """Percentile-rank Sharpe/Sortino using category peers with global fallback."""
         values: list[float] = []
         if sharpe is not None:
-            if category_sharpes:
+            if len(category_sharpes) >= 5:
                 values.append(self._percentile_rank(category_sharpes, sharpe))
+            elif len(global_sharpes) >= 8:
+                values.append(self._percentile_rank(global_sharpes, sharpe))
+            elif category_sharpes:
+                values.append(self._percentile_rank(category_sharpes, sharpe))
+            elif global_sharpes:
+                values.append(self._percentile_rank(global_sharpes, sharpe))
             else:
                 values.append(max(0.0, min(100.0, sharpe * 35.0)))
         if sortino is not None:
-            if category_sortinos:
+            if len(category_sortinos) >= 5:
                 values.append(self._percentile_rank(category_sortinos, sortino))
+            elif len(global_sortinos) >= 8:
+                values.append(self._percentile_rank(global_sortinos, sortino))
+            elif category_sortinos:
+                values.append(self._percentile_rank(category_sortinos, sortino))
+            elif global_sortinos:
+                values.append(self._percentile_rank(global_sortinos, sortino))
             else:
                 values.append(max(0.0, min(100.0, sortino * 28.0)))
         if not values:
@@ -539,7 +585,7 @@ class DiscoverMutualFundScraper(BaseScraper):
         return sum(values) / len(values)
 
     def _return_score(self, rows: list[dict], current: dict) -> float:
-        """Blended return score: 3Y(50%) + 5Y(30%) + 1Y(20%) when available."""
+        """Blended return score using percentile peers (category-first, global fallback)."""
         category = str(current.get("category") or "Other")
         bucket = [r for r in rows if str(r.get("category") or "Other") == category]
 
@@ -547,14 +593,24 @@ class DiscoverMutualFundScraper(BaseScraper):
             cur = self._to_float(current.get(key))
             if cur is None:
                 return None
-            peer_vals = [self._to_float(r.get(key)) for r in bucket]
-            numeric = [v for v in peer_vals if v is not None]
-            if not numeric:
-                return max(0.0, min(100.0, 30.0 + (cur * 3.0)))
-            lo, hi = min(numeric), max(numeric)
-            if hi - lo < 1e-6:
-                return 65.0
-            return max(0.0, min(100.0, ((cur - lo) / (hi - lo)) * 100.0))
+            category_values = [self._to_float(r.get(key)) for r in bucket]
+            cat_numeric = [v for v in category_values if v is not None]
+            all_values = [self._to_float(r.get(key)) for r in rows]
+            global_numeric = [v for v in all_values if v is not None]
+
+            peer_values: list[float] = []
+            if len(cat_numeric) >= 5:
+                peer_values = cat_numeric
+            elif len(global_numeric) >= 8:
+                peer_values = global_numeric
+            elif cat_numeric:
+                peer_values = cat_numeric
+            elif global_numeric:
+                peer_values = global_numeric
+
+            if peer_values:
+                return self._percentile_rank(peer_values, cur)
+            return max(0.0, min(100.0, 30.0 + (cur * 3.0)))
 
         r3 = _peer_percentile("returns_3y")
         r5 = _peer_percentile("returns_5y")
@@ -578,17 +634,27 @@ class DiscoverMutualFundScraper(BaseScraper):
         if not rows:
             return []
 
-        # Pre-compute category-level Sharpe/Sortino lists for peer ranking
+        # Pre-compute category/global peer sets for percentile-based scoring.
         cat_sharpes: dict[str, list[float]] = {}
         cat_sortinos: dict[str, list[float]] = {}
+        cat_std_devs: dict[str, list[float]] = {}
+        global_sharpes: list[float] = []
+        global_sortinos: list[float] = []
+        global_std_devs: list[float] = []
         for r in rows:
             cat = str(r.get("category") or "Other")
             s = self._to_float(r.get("sharpe"))
             if s is not None:
                 cat_sharpes.setdefault(cat, []).append(s)
+                global_sharpes.append(s)
             t = self._to_float(r.get("sortino"))
             if t is not None:
                 cat_sortinos.setdefault(cat, []).append(t)
+                global_sortinos.append(t)
+            d = self._to_float(r.get("std_dev"))
+            if d is not None:
+                cat_std_devs.setdefault(cat, []).append(d)
+                global_std_devs.append(d)
 
         out: list[dict] = []
         for row in rows:
@@ -597,6 +663,8 @@ class DiscoverMutualFundScraper(BaseScraper):
             risk_score = self._risk_score(
                 risk_level=str(row.get("risk_level") or "").strip() or None,
                 std_dev=self._to_float(row.get("std_dev")),
+                category_std_devs=cat_std_devs.get(cat, []),
+                global_std_devs=global_std_devs,
             )
             cost_score = self._cost_score(self._to_float(row.get("expense_ratio")))
             consistency_score = self._consistency_score(
@@ -604,26 +672,77 @@ class DiscoverMutualFundScraper(BaseScraper):
                 self._to_float(row.get("sortino")),
                 cat_sharpes.get(cat, []),
                 cat_sortinos.get(cat, []),
+                global_sharpes,
+                global_sortinos,
             )
-            score = (
-                (return_score * 0.40)
-                + (risk_score * 0.25)
-                + (cost_score * 0.20)
-                + (consistency_score * 0.15)
+            return_available = any(
+                self._to_float(row.get(k)) is not None
+                for k in ("returns_1y", "returns_3y", "returns_5y")
+            )
+            risk_available = bool(str(row.get("risk_level") or "").strip()) or self._to_float(row.get("std_dev")) is not None
+            cost_available = self._to_float(row.get("expense_ratio")) is not None
+            consistency_available = (
+                self._to_float(row.get("sharpe")) is not None
+                or self._to_float(row.get("sortino")) is not None
             )
 
-            # AUM quality gate: small funds (< 100 Cr) get 10% penalty
+            # Quality-first weighting with dynamic reweight on availability.
+            base_weights = {
+                "return": 0.30,
+                "risk": 0.30,
+                "cost": 0.15,
+                "consistency": 0.25,
+            }
+            parts: list[tuple[float, float]] = []
+            if return_available:
+                parts.append((return_score, base_weights["return"]))
+            if risk_available:
+                parts.append((risk_score, base_weights["risk"]))
+            if cost_available:
+                parts.append((cost_score, base_weights["cost"]))
+            if consistency_available:
+                parts.append((consistency_score, base_weights["consistency"]))
+
+            if parts:
+                total_w = sum(w for _, w in parts)
+                score = sum(s * w for s, w in parts) / total_w
+            else:
+                score = 50.0
+
+            advanced_coverage_signals = [
+                self._to_float(row.get("returns_3y")) is not None,
+                self._to_float(row.get("returns_5y")) is not None,
+                self._to_float(row.get("expense_ratio")) is not None,
+                risk_available,
+                consistency_available,
+            ]
+            coverage = sum(1 for signal in advanced_coverage_signals if signal) / len(advanced_coverage_signals)
+            score = self._shrink_to_neutral(score, coverage)
+
+            # Tiered AUM penalty: strongest for very small funds.
             aum = self._to_float(row.get("aum_cr"))
             if aum is not None and aum < 100:
-                score *= 0.90
+                if aum < 25:
+                    score *= 0.82
+                elif aum < 50:
+                    score *= 0.88
+                else:
+                    score *= 0.94
+            elif aum is not None and aum < 250:
+                score *= 0.97
 
-            status = str(row.get("source_status") or "limited")
+            status = str(row.get("source_status") or "limited").strip().lower()
             has_advanced = any(
                 row.get(k) is not None
                 for k in ("returns_3y", "expense_ratio", "risk_level", "sharpe", "sortino")
             )
             if status == "primary" and not has_advanced:
                 status = "fallback"
+            status_penalty = 0.0
+            if status == "fallback":
+                status_penalty = 7.0
+            elif status == "limited":
+                status_penalty = 15.0
 
             tags: list[str] = []
             ret3 = self._to_float(row.get("returns_3y"))
@@ -646,7 +765,7 @@ class DiscoverMutualFundScraper(BaseScraper):
             out.append(
                 {
                     **row,
-                    "score": round(max(0.0, min(100.0, score)), 2),
+                    "score": round(max(0.0, min(100.0, score - status_penalty)), 2),
                     "score_return": round(return_score, 2),
                     "score_risk": round(risk_score, 2),
                     "score_cost": round(cost_score, 2),
@@ -662,7 +781,13 @@ class DiscoverMutualFundScraper(BaseScraper):
                 }
             )
 
-        out.sort(key=lambda item: (float(item.get("score") or 0.0), float(item.get("returns_3y") or -9999.0)), reverse=True)
+        out.sort(
+            key=lambda item: (
+                -float(item.get("score") or 0.0),
+                -float(item.get("returns_3y") or -9999.0),
+                str(item.get("scheme_code") or ""),
+            )
+        )
         return out
 
     def _enrich_from_mfapi(self, rows: dict[str, dict], *, max_enrich: int = 200) -> None:
@@ -883,8 +1008,8 @@ async def run_discover_mutual_fund_job() -> None:
             SET category_rank = sub.rnk, category_total = sub.total
             FROM (
                 SELECT scheme_code,
-                       RANK() OVER (PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
-                                    ORDER BY score DESC) AS rnk,
+                       DENSE_RANK() OVER (PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
+                                          ORDER BY score DESC) AS rnk,
                        COUNT(*) OVER (PARTITION BY COALESCE(NULLIF(category, ''), 'Other')) AS total
                 FROM discover_mutual_fund_snapshots
             ) sub
