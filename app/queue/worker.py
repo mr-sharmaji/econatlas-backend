@@ -27,7 +27,7 @@ async def start_worker() -> None:
         WorkerSettings,  # type: ignore[arg-type]
         redis_settings=redis_settings,
         functions=get_arq_functions(),
-        max_jobs=4,
+        max_jobs=10,
         job_timeout=settings.arq_job_timeout_seconds,
         poll_delay=0.5,
         keep_result=60,
@@ -35,7 +35,7 @@ async def start_worker() -> None:
     )
 
     _worker_task = asyncio.create_task(_worker.main(), name="arq-worker")
-    logger.info("ARQ worker started in-process (max_jobs=4, poll=0.5s)")
+    logger.info("ARQ worker started in-process (max_jobs=10, poll=0.5s)")
 
 
 async def stop_worker() -> None:
