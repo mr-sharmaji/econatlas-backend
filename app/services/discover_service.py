@@ -1094,6 +1094,69 @@ async def get_discover_home_data() -> dict:
         d["quality_tier"] = _compute_quality_tier(_to_float(d.get("score")))
         trending_stocks.append(d)
 
+    # Top gainers (highest percent_change)
+    gainer_rows = await pool.fetch(
+        f"""
+        SELECT symbol, display_name, sector, last_price, percent_change, score,
+               high_52w, low_52w, market_cap
+        FROM {STOCK_TABLE}
+        WHERE market = 'IN' AND percent_change IS NOT NULL AND percent_change > 0
+        ORDER BY percent_change DESC
+        LIMIT 8
+        """
+    )
+    gainers = []
+    for r in gainer_rows:
+        d = record_to_dict(r)
+        d["quality_tier"] = _compute_quality_tier(_to_float(d.get("score")))
+        gainers.append(d)
+
+    # Top losers (lowest percent_change)
+    loser_rows = await pool.fetch(
+        f"""
+        SELECT symbol, display_name, sector, last_price, percent_change, score,
+               high_52w, low_52w, market_cap
+        FROM {STOCK_TABLE}
+        WHERE market = 'IN' AND percent_change IS NOT NULL AND percent_change < 0
+        ORDER BY percent_change ASC
+        LIMIT 8
+        """
+    )
+    losers = []
+    for r in loser_rows:
+        d = record_to_dict(r)
+        d["quality_tier"] = _compute_quality_tier(_to_float(d.get("score")))
+        losers.append(d)
+
+    # Sector spotlight: top sector by avg score, then top 8 stocks in it
+    spotlight_sector_name = None
+    sector_spotlight = []
+    top_sector_row = await pool.fetchrow(
+        f"""
+        SELECT sector FROM {STOCK_TABLE}
+        WHERE market = 'IN' AND sector IS NOT NULL
+              AND source_status IN ('primary', 'fallback')
+        GROUP BY sector HAVING COUNT(*) >= 3
+        ORDER BY AVG(score) DESC LIMIT 1
+        """
+    )
+    if top_sector_row:
+        spotlight_sector_name = top_sector_row["sector"]
+        spotlight_rows = await pool.fetch(
+            f"""
+            SELECT symbol, display_name, sector, last_price, percent_change, score,
+                   high_52w, low_52w, market_cap
+            FROM {STOCK_TABLE}
+            WHERE market = 'IN' AND sector = $1
+            ORDER BY score DESC LIMIT 8
+            """,
+            spotlight_sector_name,
+        )
+        for r in spotlight_rows:
+            d = record_to_dict(r)
+            d["quality_tier"] = _compute_quality_tier(_to_float(d.get("score")))
+            sector_spotlight.append(d)
+
     quick_categories = [
         {"name": "Quality Stocks", "segment": "stocks", "preset": "quality"},
         {"name": "Value Stocks", "segment": "stocks", "preset": "value"},
@@ -1109,6 +1172,10 @@ async def get_discover_home_data() -> dict:
         "top_stocks": top_stocks,
         "top_mutual_funds": top_mutual_funds,
         "trending_stocks": trending_stocks,
+        "gainers": gainers,
+        "losers": losers,
+        "sector_spotlight": sector_spotlight,
+        "spotlight_sector_name": spotlight_sector_name,
         "quick_categories": quick_categories,
     }
 

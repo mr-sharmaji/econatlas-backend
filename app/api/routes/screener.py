@@ -105,6 +105,10 @@ async def get_discover_home() -> DiscoverHomeResponse:
             top_stocks=[DiscoverHomeStockItem(**s) for s in payload.get("top_stocks", [])],
             top_mutual_funds=[DiscoverHomeMutualFundItem(**m) for m in payload.get("top_mutual_funds", [])],
             trending_stocks=[DiscoverHomeStockItem(**s) for s in payload.get("trending_stocks", [])],
+            gainers=[DiscoverHomeStockItem(**s) for s in payload.get("gainers", [])],
+            losers=[DiscoverHomeStockItem(**s) for s in payload.get("losers", [])],
+            sector_spotlight=[DiscoverHomeStockItem(**s) for s in payload.get("sector_spotlight", [])],
+            spotlight_sector_name=payload.get("spotlight_sector_name"),
             quick_categories=[QuickCategory(**c) for c in payload.get("quick_categories", [])],
         )
     except Exception as exc:

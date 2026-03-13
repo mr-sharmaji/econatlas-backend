@@ -204,6 +204,10 @@ class DiscoverHomeResponse(BaseModel):
     top_stocks: list[DiscoverHomeStockItem] = Field(default_factory=list)
     top_mutual_funds: list[DiscoverHomeMutualFundItem] = Field(default_factory=list)
     trending_stocks: list[DiscoverHomeStockItem] = Field(default_factory=list)
+    gainers: list[DiscoverHomeStockItem] = Field(default_factory=list)
+    losers: list[DiscoverHomeStockItem] = Field(default_factory=list)
+    sector_spotlight: list[DiscoverHomeStockItem] = Field(default_factory=list)
+    spotlight_sector_name: str | None = None
     quick_categories: list[QuickCategory] = Field(default_factory=list)
 
 
