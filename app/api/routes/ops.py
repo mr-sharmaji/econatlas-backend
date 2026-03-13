@@ -1,5 +1,6 @@
 import logging
 import re
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header, HTTPException, Path, Query
 
@@ -128,6 +129,96 @@ async def list_jobs(
     """List all valid job names that can be triggered."""
     _authorize(x_ops_token)
     return {"jobs": sorted(_VALID_JOBS)}
+
+
+@router.get("/jobs/running")
+async def running_jobs(
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """List currently queued, running, and recently finished ARQ jobs.
+
+    Queries Redis for all known job keys and returns their status,
+    start time, and result info.
+    """
+    _authorize(x_ops_token)
+    from arq.constants import default_queue_name, in_progress_key_prefix
+    from arq.jobs import JobStatus
+
+    from app.queue.redis_pool import get_redis_pool
+
+    pool = await get_redis_pool()
+    running = []
+    queued = []
+    complete = []
+
+    # 1. Check in-progress jobs via the in_progress set
+    in_progress_key = in_progress_key_prefix + default_queue_name
+    in_progress_ids: set[bytes] = await pool.smembers(in_progress_key)  # type: ignore[assignment]
+
+    for raw_id in in_progress_ids:
+        job_id = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
+        job = await pool.job(job_id)  # type: ignore[arg-type]
+        info = await job.info()
+        if info:
+            running.append({
+                "job_id": job_id,
+                "function": info.function,
+                "status": "running",
+                "enqueue_time": info.enqueue_time.isoformat() if info.enqueue_time else None,
+                "start_time": info.start_time.isoformat() if info.start_time else None,
+                "elapsed_s": round((
+                    datetime.now(timezone.utc) - info.start_time
+                ).total_seconds(), 1) if info.start_time else None,
+            })
+
+    # 2. Check known job IDs (manual triggers + startup jobs)
+    known_ids = [f"{name}_manual" for name in _VALID_JOBS] + [f"startup_{name}" for name in _VALID_JOBS]
+
+    for job_id in known_ids:
+        # Skip if already found in in-progress set
+        if any(r["job_id"] == job_id for r in running):
+            continue
+        job = await pool.job(job_id)  # type: ignore[arg-type]
+        status = await job.status()
+        if status == JobStatus.not_found:
+            continue
+
+        info = await job.info()
+        if not info:
+            continue
+
+        entry = {
+            "job_id": job_id,
+            "function": info.function,
+            "status": status.value,
+            "enqueue_time": info.enqueue_time.isoformat() if info.enqueue_time else None,
+        }
+
+        if status == JobStatus.in_progress:
+            entry["start_time"] = info.start_time.isoformat() if info.start_time else None
+            entry["elapsed_s"] = round((
+                datetime.now(timezone.utc) - info.start_time
+            ).total_seconds(), 1) if info.start_time else None
+            running.append(entry)
+        elif status == JobStatus.queued or status == JobStatus.deferred:
+            entry["score"] = info.score if hasattr(info, "score") else None
+            queued.append(entry)
+        elif status == JobStatus.complete:
+            entry["finish_time"] = info.finish_time.isoformat() if info.finish_time else None
+            entry["success"] = info.success
+            entry["result"] = str(info.result)[:200] if info.result is not None else None
+            complete.append(entry)
+
+    return {
+        "running": running,
+        "queued": queued,
+        "complete": complete,
+        "summary": {
+            "running": len(running),
+            "queued": len(queued),
+            "complete": len(complete),
+        },
+    }
 
 
 # ═════════════════════════════════════════════════════════════════════
