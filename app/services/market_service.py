@@ -168,7 +168,7 @@ async def insert_prices_batch(rows: list[dict]) -> int:
 
 # Tolerance for float price comparison (avoids duplicates when markets closed)
 _PRICE_CHANGE_TOLERANCE = 1e-9
-_ROLLING_24H_TYPES = {"currency", "commodity"}
+_ROLLING_24H_TYPES = {"currency", "commodity", "crypto"}
 
 PHASE_LIVE = "live"
 PHASE_CLOSED = "closed"
@@ -242,8 +242,8 @@ def _session_state(asset: str, instrument_type: str, now_utc: datetime, status: 
 
 def _compute_phase(asset: str, instrument_type: str, last_tick: datetime | None, now_utc: datetime, status: dict | None = None) -> tuple[str, bool]:
     live_max_age = _live_max_age_for_instrument(instrument_type)
-    # FX is treated as continuously referenceable: never "closed", only live/stale.
-    if instrument_type == "currency":
+    # FX & crypto are 24/7: never "closed", only live/stale.
+    if instrument_type in ("currency", "crypto"):
         if last_tick is None:
             return PHASE_STALE, True
         age = (now_utc - last_tick).total_seconds()
