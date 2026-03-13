@@ -129,6 +129,34 @@ async def trigger_job(
     }
 
 
+@router.post("/jobs/clear-stale")
+async def clear_stale_jobs(
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Clear stale in-progress job markers from Redis.
+
+    When the server restarts mid-job, ARQ's in-progress set retains
+    orphaned job IDs that prevent re-execution. This endpoint removes them.
+    """
+    _authorize(x_ops_token)
+    from arq.constants import default_queue_name, in_progress_key_prefix
+
+    from app.queue.redis_pool import get_redis_pool
+
+    pool = await get_redis_pool()
+    in_progress_key = in_progress_key_prefix + default_queue_name
+    raw_members = await pool.smembers(in_progress_key)
+    cleared = []
+
+    for raw_id in raw_members or set():
+        job_id = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
+        await pool.srem(in_progress_key, raw_id)
+        cleared.append(job_id)
+
+    logger.warning("Cleared %d stale in-progress job(s): %s", len(cleared), cleared)
+    return {"cleared": cleared, "count": len(cleared)}
+
+
 @router.get("/jobs")
 async def list_jobs(
     x_ops_token: str | None = Header(default=None),
