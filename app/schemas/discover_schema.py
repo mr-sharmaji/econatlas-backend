@@ -13,9 +13,10 @@ class DiscoverStockScoreBreakdown(BaseModel):
     momentum: float
     liquidity: float
     fundamentals: float
-    volatility: float = 0
-    growth: float = 0
+    volatility: float | None = None
+    growth: float | None = None
     combined_signal: float
+    position_52w: float | None = Field(None, alias="52w_position")
 
 
 class DiscoverStockItemResponse(BaseModel):
@@ -43,10 +44,12 @@ class DiscoverStockItemResponse(BaseModel):
     score_momentum: float
     score_liquidity: float
     score_fundamentals: float
-    score_volatility: float = 0
-    score_growth: float = 0
+    score_volatility: float | None = None
+    score_growth: float | None = None
     percent_change_3m: float | None = None
     percent_change_1w: float | None = None
+    percent_change_1y: float | None = None
+    percent_change_3y: float | None = None
     score_breakdown: DiscoverStockScoreBreakdown
     tags: list[str] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)
@@ -71,6 +74,8 @@ class DiscoverMutualFundScoreBreakdown(BaseModel):
     risk_score: float
     cost_score: float
     consistency_score: float
+    alpha_score: float | None = None
+    beta_score: float | None = None
 
 
 class DiscoverMutualFundItemResponse(BaseModel):
@@ -97,6 +102,10 @@ class DiscoverMutualFundItemResponse(BaseModel):
     category_total: int | None = None
     sub_category_rank: int | None = None
     sub_category_total: int | None = None
+    max_drawdown: float | None = None
+    rolling_return_consistency: float | None = None
+    alpha: float | None = None
+    beta: float | None = None
     fund_age_years: float | None = None
     quality_badges: list[str] = Field(default_factory=list)
     category_avg_returns_1y: float | None = None
@@ -107,6 +116,8 @@ class DiscoverMutualFundItemResponse(BaseModel):
     score_risk: float
     score_cost: float
     score_consistency: float
+    score_alpha: float | None = None
+    score_beta: float | None = None
     score_breakdown: DiscoverMutualFundScoreBreakdown
     tags: list[str] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)

@@ -6,6 +6,7 @@ import io
 import logging
 import math
 import re
+import statistics
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
@@ -694,12 +695,50 @@ class DiscoverStockScraper(BaseScraper):
         mid = n // 2
         return (s[mid] + s[mid - 1]) / 2.0 if n % 2 == 0 else s[mid]
 
+    def _score_52w_position(
+        self,
+        price: float | None,
+        high_52w: float | None,
+        low_52w: float | None,
+    ) -> float | None:
+        """Score based on position within 52-week range (0-100).
+
+        Near 52W high = strong momentum confirmation → higher score.
+        Near 52W low = weak momentum → lower score.
+        """
+        if price is None or high_52w is None or low_52w is None:
+            return None
+        if high_52w <= low_52w or price <= 0:
+            return None
+        position = (price - low_52w) / (high_52w - low_52w)
+        position = max(0.0, min(1.0, position))
+        # Map 0→5, 1→100
+        return round(self._clamp(position * 95 + 5), 2)
+
+    @staticmethod
+    def _adjust_volatility_for_cap(
+        vol_score: float,
+        market_cap: float | None,
+    ) -> float:
+        """Scale volatility score expectations by market cap tier.
+
+        Small caps naturally have higher volatility — penalizing them equally
+        to large caps is unfair.
+        """
+        if market_cap is None or market_cap <= 0:
+            return vol_score
+        if market_cap >= 20_000:  # Large cap (₹20k+ Cr)
+            return vol_score       # No adjustment
+        if market_cap >= 5_000:   # Mid cap (₹5k-20k Cr)
+            return min(100.0, vol_score * 1.08)   # ~8% boost
+        return min(100.0, vol_score * 1.15)        # Small cap: ~15% boost
+
     def _score_fundamentals(
         self,
         row: dict,
         sector_medians: dict[str, dict[str, float]],
     ) -> tuple[float, int]:
-        """Weighted fundamentals score with sector-relative PE/PB."""
+        """Weighted fundamentals score with sector-relative PE/PB/D/E."""
         sector = str(row.get("sector") or "Other")
         medians = sector_medians.get(sector, {})
         parts: dict[str, float] = {}
@@ -725,10 +764,13 @@ class DiscoverStockScraper(BaseScraper):
             parts["roce"] = self._clamp(roce * 4.0)
             metrics_used += 1
 
-        # --- Debt-to-Equity (lower is better) ---
+        # --- Debt-to-Equity (lower is better, sector-relative) ---
         dte = row.get("debt_to_equity")
         if dte is not None:
-            parts["dte"] = self._clamp(100 - (dte * 45))
+            median_de = medians.get("de", 1.0)
+            ratio = dte / max(median_de, 0.1)
+            # At sector median → score 60, at 2× → 20, at 0 → 100
+            parts["dte"] = self._clamp(100 - (ratio * 40))
             metrics_used += 1
 
         # --- Price-to-Book (lower is better, sector-relative) ---
@@ -759,6 +801,71 @@ class DiscoverStockScraper(BaseScraper):
 
         return round(result, 2), metrics_used
 
+    @staticmethod
+    def _generate_tags(
+        row: dict,
+        *,
+        sector_pe_median: float,
+        has_volatility: bool,
+        volatility_score: float,
+        has_growth: bool,
+        growth_score: float,
+        fundamentals_score: float,
+        liquidity_score: float,
+        pct_raw: float,
+        source_status: str,
+    ) -> list[str]:
+        """Generate descriptive auto-tags (max 4)."""
+        tags: list[str] = []
+        market_cap = row.get("market_cap")
+        roe = row.get("roe")
+        roce = row.get("roce")
+        dte = row.get("debt_to_equity")
+        eps = row.get("eps")
+        pe = row.get("pe_ratio")
+        dividend_yield = row.get("dividend_yield")
+        pct_3m = row.get("_pct_change_3m")
+
+        # --- Market Cap tags ---
+        if market_cap is not None and market_cap > 0:
+            if market_cap >= 20_000:
+                tags.append("Large Cap")
+            elif market_cap >= 5_000:
+                tags.append("Mid Cap")
+            else:
+                tags.append("Small Cap")
+
+        # --- Quality tags ---
+        if (roe is not None and roe >= 20
+                and roce is not None and roce >= 20
+                and (dte is None or dte <= 0.5)):
+            tags.append("High Quality")
+        elif dte is not None and dte == 0 and eps is not None and eps > 0:
+            tags.append("Debt Free")
+
+        # --- Dividend tag ---
+        if dividend_yield is not None and dividend_yield >= 2.0:
+            tags.append("High Dividend")
+
+        # --- Value / Growth ---
+        if (pe is not None and pe > 0 and pe < sector_pe_median * 0.7
+                and roe is not None and roe >= 12):
+            tags.append("Value Pick")
+        elif (pct_3m is not None and pct_3m >= 15
+              and has_growth and growth_score >= 70):
+            tags.append("Growth Stock")
+
+        # --- Low Volatility ---
+        if has_volatility and volatility_score >= 75 and len(tags) < 4:
+            tags.append("Low Volatility")
+
+        # --- Negative EPS warning ---
+        if eps is not None and eps < 0 and len(tags) < 4:
+            tags.append("Negative EPS")
+
+        # Limit to 4 tags
+        return tags[:4]
+
     def _compute_scores(
         self,
         rows: list[dict],
@@ -770,9 +877,10 @@ class DiscoverStockScraper(BaseScraper):
 
         vol_data = volatility_data or {}
 
-        # Pre-compute sector medians for PE and PB
+        # ── Pre-compute sector medians for PE, PB, and D/E ──
         sector_pe: dict[str, list[float]] = {}
         sector_pb: dict[str, list[float]] = {}
+        sector_de: dict[str, list[float]] = {}
         for r in rows:
             sector = str(r.get("sector") or "Other")
             pe = r.get("pe_ratio")
@@ -781,24 +889,31 @@ class DiscoverStockScraper(BaseScraper):
             pb = r.get("price_to_book")
             if pb is not None and pb > 0:
                 sector_pb.setdefault(sector, []).append(float(pb))
+            de = r.get("debt_to_equity")
+            if de is not None and de >= 0:
+                sector_de.setdefault(sector, []).append(float(de))
 
-        # Overall medians as fallback for sectors with < 3 stocks
+        # Global medians computed from all stocks (not hardcoded)
         all_pe = [v for vals in sector_pe.values() for v in vals]
         all_pb = [v for vals in sector_pb.values() for v in vals]
-        overall_pe_med = self._median(all_pe) if all_pe else 25.0
-        overall_pb_med = self._median(all_pb) if all_pb else 4.0
+        all_de = [v for vals in sector_de.values() for v in vals]
+        overall_pe_med = statistics.median(all_pe) if len(all_pe) >= 3 else 25.0
+        overall_pb_med = statistics.median(all_pb) if len(all_pb) >= 3 else 4.0
+        overall_de_med = statistics.median(all_de) if len(all_de) >= 3 else 1.0
 
         sector_medians: dict[str, dict[str, float]] = {}
         all_sectors = set(str(r.get("sector") or "Other") for r in rows)
         for sector in all_sectors:
             pe_vals = sector_pe.get(sector, [])
             pb_vals = sector_pb.get(sector, [])
+            de_vals = sector_de.get(sector, [])
             sector_medians[sector] = {
-                "pe": self._median(pe_vals) if len(pe_vals) >= 3 else overall_pe_med,
-                "pb": self._median(pb_vals) if len(pb_vals) >= 3 else overall_pb_med,
+                "pe": statistics.median(pe_vals) if len(pe_vals) >= 3 else overall_pe_med,
+                "pb": statistics.median(pb_vals) if len(pb_vals) >= 3 else overall_pb_med,
+                "de": statistics.median(de_vals) if len(de_vals) >= 3 else overall_de_med,
             }
 
-        # Pre-compute robust percentile data for daily momentum (winsorized).
+        # ── Pre-compute robust percentile data for daily momentum (winsorized) ──
         all_pcts_raw = [float(r.get("percent_change") or 0.0) for r in rows]
         if all_pcts_raw:
             if len(all_pcts_raw) >= 8:
@@ -814,7 +929,7 @@ class DiscoverStockScraper(BaseScraper):
             pct_lo, pct_hi = pct_hi, pct_lo
         all_pcts = [max(pct_lo, min(pct_hi, v)) for v in all_pcts_raw]
 
-        # Pre-compute multi-day momentum percentile data (5d, 20d returns).
+        # ── Pre-compute multi-day momentum percentile data (5d, 20d returns) ──
         all_momentum_5d: list[float] = []
         all_momentum_20d: list[float] = []
         momentum_5d_by_sym: dict[str, float] = {}
@@ -832,7 +947,20 @@ class DiscoverStockScraper(BaseScraper):
                     all_momentum_20d.append(m20)
                     momentum_20d_by_sym[sym] = m20
 
-        # Pre-compute multi-day liquidity percentile data (5d, 20d avg volume).
+        # ── Pre-compute 52W position scores for blending into momentum ──
+        pos_52w_by_sym: dict[str, float] = {}
+        all_pos_52w: list[float] = []
+        for r in rows:
+            sym = str(r.get("symbol") or "")
+            price = r.get("last_price")
+            high_52w = r.get("high_52w")
+            low_52w = r.get("low_52w")
+            pos = self._score_52w_position(price, high_52w, low_52w)
+            if pos is not None:
+                pos_52w_by_sym[sym] = pos
+                all_pos_52w.append(pos)
+
+        # ── Pre-compute multi-day liquidity percentile data (5d, 20d avg volume) ──
         all_avg_vol_5d: list[float] = []
         all_avg_vol_20d: list[float] = []
         avg_vol_5d_by_sym: dict[str, float] = {}
@@ -862,7 +990,7 @@ class DiscoverStockScraper(BaseScraper):
             for r in rows
         ]
 
-        # Pre-compute volatility std_dev values for percentile ranking.
+        # ── Pre-compute volatility std_dev values for percentile ranking ──
         all_std_devs: list[float] = []
         for r in rows:
             sym = str(r.get("symbol") or "")
@@ -870,18 +998,31 @@ class DiscoverStockScraper(BaseScraper):
             if vd and vd.get("std_dev") is not None:
                 all_std_devs.append(vd["std_dev"])
 
-        # Pre-compute growth proxy data for percentile ranking.
-        # Growth = blend of EPS growth (if available from Screener) + 3M price appreciation.
-        all_growth_scores: list[float] = []
-        growth_raw_by_sym: dict[str, float] = {}
+        # ── Pre-compute multi-period growth data for percentile ranking ──
+        # Growth = blend of 3M (25%) + 1Y (35%) + 3Y (40%) price appreciation.
+        all_pct_3m: list[float] = []
+        all_pct_1y: list[float] = []
+        all_pct_3y: list[float] = []
+        pct_3m_by_sym: dict[str, float] = {}
+        pct_1y_by_sym: dict[str, float] = {}
+        pct_3y_by_sym: dict[str, float] = {}
         for r in rows:
             sym = str(r.get("symbol") or "")
             vd = vol_data.get(sym)
-            pct_3m = vd.get("pct_change_3m") if vd else None
-            # Use 3M price change as growth proxy when EPS growth not yet available.
-            if pct_3m is not None:
-                growth_raw_by_sym[sym] = pct_3m
-                all_growth_scores.append(pct_3m)
+            if not vd:
+                continue
+            p3m = vd.get("pct_change_3m")
+            if p3m is not None:
+                pct_3m_by_sym[sym] = p3m
+                all_pct_3m.append(p3m)
+            p1y = vd.get("pct_change_1y")
+            if p1y is not None:
+                pct_1y_by_sym[sym] = p1y
+                all_pct_1y.append(p1y)
+            p3y = vd.get("pct_change_3y")
+            if p3y is not None:
+                pct_3y_by_sym[sym] = p3y
+                all_pct_3y.append(p3y)
 
         # Track sector scores for sector_leader tag
         sector_best: dict[str, tuple[float, str]] = {}
@@ -895,23 +1036,27 @@ class DiscoverStockScraper(BaseScraper):
             tv_log = math.log1p(max(0.0, float(row.get("traded_value") or 0.0)))
             vol_log = math.log1p(max(0.0, float(row.get("volume") or 0.0)))
 
-            # Multi-day momentum: 50% 5d return + 30% 20d return + 20% daily change.
-            # Falls back to daily-only if multi-day data unavailable.
+            # ── Momentum: blend price momentum (5d/20d/daily) + 52W position ──
             daily_momentum = self._clamp(self._percentile_rank(all_pcts, pct))
             has_m5 = symbol in momentum_5d_by_sym and all_momentum_5d
             has_m20 = symbol in momentum_20d_by_sym and all_momentum_20d
             if has_m5 and has_m20:
                 m5_pctile = self._percentile_rank(all_momentum_5d, momentum_5d_by_sym[symbol])
                 m20_pctile = self._percentile_rank(all_momentum_20d, momentum_20d_by_sym[symbol])
-                momentum = self._clamp(m5_pctile * 0.50 + m20_pctile * 0.30 + daily_momentum * 0.20)
+                price_momentum = self._clamp(m5_pctile * 0.50 + m20_pctile * 0.30 + daily_momentum * 0.20)
             elif has_m5:
                 m5_pctile = self._percentile_rank(all_momentum_5d, momentum_5d_by_sym[symbol])
-                momentum = self._clamp(m5_pctile * 0.65 + daily_momentum * 0.35)
+                price_momentum = self._clamp(m5_pctile * 0.65 + daily_momentum * 0.35)
             else:
-                momentum = daily_momentum
+                price_momentum = daily_momentum
 
-            # Multi-day liquidity: 70% 5d avg vol + 30% 20d avg vol.
-            # Falls back to daily volume if multi-day data unavailable.
+            # Blend 52W position into momentum (60% price + 40% 52W position)
+            if symbol in pos_52w_by_sym:
+                momentum = self._clamp(price_momentum * 0.60 + pos_52w_by_sym[symbol] * 0.40)
+            else:
+                momentum = price_momentum
+
+            # ── Liquidity: multi-day volume ──
             has_v5 = symbol in avg_vol_5d_by_sym and all_avg_vol_5d
             has_v20 = symbol in avg_vol_20d_by_sym and all_avg_vol_20d
             if has_v5 and has_v20:
@@ -926,6 +1071,7 @@ class DiscoverStockScraper(BaseScraper):
                 vol_percentile = self._percentile_rank(all_vol_logs, vol_log)
                 liquidity = self._clamp((tv_percentile * 0.60) + (vol_percentile * 0.40))
 
+            # ── Fundamentals ──
             fundamentals, metrics_used = self._score_fundamentals(row, sector_medians)
             if metrics_used > 0:
                 coverage = metrics_used / 5.0
@@ -936,47 +1082,71 @@ class DiscoverStockScraper(BaseScraper):
             # ── Volatility score (lower std_dev → higher score = stability premium) ──
             vd = vol_data.get(symbol)
             has_volatility = False
-            volatility_score = 50.0
+            volatility_score: float | None = None
             pct_change_3m = None
+            pct_change_1y = None
+            pct_change_3y = None
             if vd:
                 pct_change_3m = vd.get("pct_change_3m")
+                pct_change_1y = vd.get("pct_change_1y")
+                pct_change_3y = vd.get("pct_change_3y")
                 sd = vd.get("std_dev")
                 if sd is not None and all_std_devs:
                     # Invert: lower volatility → higher percentile (more stable = better)
                     raw_pctile = self._percentile_rank(all_std_devs, sd)
-                    volatility_score = self._clamp(100.0 - raw_pctile)
+                    vol_raw = self._clamp(100.0 - raw_pctile)
+                    # Adjust for market cap: small caps get a boost
+                    volatility_score = self._adjust_volatility_for_cap(
+                        vol_raw, row.get("market_cap"),
+                    )
                     has_volatility = True
 
-            # ── Growth score (higher 3M price change → higher score) ──
+            # ── Growth score (multi-period: 25% 3M + 35% 1Y + 40% 3Y) ──
             has_growth = False
-            growth_score = 50.0
-            if symbol in growth_raw_by_sym and all_growth_scores:
+            growth_score: float | None = None
+
+            has_3m = symbol in pct_3m_by_sym and all_pct_3m
+            has_1y = symbol in pct_1y_by_sym and all_pct_1y
+            has_3y = symbol in pct_3y_by_sym and all_pct_3y
+
+            if has_3m or has_1y or has_3y:
+                growth_parts: list[tuple[float, float]] = []
+                if has_3m:
+                    rank_3m = self._percentile_rank(all_pct_3m, pct_3m_by_sym[symbol])
+                    growth_parts.append((rank_3m, 0.25))
+                if has_1y:
+                    rank_1y = self._percentile_rank(all_pct_1y, pct_1y_by_sym[symbol])
+                    growth_parts.append((rank_1y, 0.35))
+                if has_3y:
+                    rank_3y = self._percentile_rank(all_pct_3y, pct_3y_by_sym[symbol])
+                    growth_parts.append((rank_3y, 0.40))
+                total_gw = sum(w for _, w in growth_parts)
                 growth_score = self._clamp(
-                    self._percentile_rank(all_growth_scores, growth_raw_by_sym[symbol])
+                    sum(s * (w / total_gw) for s, w in growth_parts)
                 )
                 has_growth = True
 
             # ── 5-component weighted total ──
             # Target weights: Momentum 15%, Liquidity 10%, Fundamentals 35%,
             #                 Volatility 15%, Growth 25%
-            weights = {
+            target_weights = {
                 "momentum": 0.15,
                 "liquidity": 0.10,
                 "fundamentals": 0.35,
                 "volatility": 0.15,
                 "growth": 0.25,
             }
-            scores = {
+            scores_map = {
                 "momentum": momentum,
                 "liquidity": liquidity,
                 "fundamentals": fundamentals,
-                "volatility": volatility_score,
-                "growth": growth_score,
+                "volatility": volatility_score if has_volatility else 0.0,
+                "growth": growth_score if has_growth else 0.0,
             }
 
-            # Dynamic reweighting: if component unavailable, redistribute weight.
+            # Dynamic reweighting: exclude unavailable components, redistribute.
             available_weights: dict[str, float] = {}
-            for k, w in weights.items():
+            for k, w in target_weights.items():
                 if k == "volatility" and not has_volatility:
                     continue
                 if k == "growth" and not has_growth:
@@ -992,12 +1162,11 @@ class DiscoverStockScraper(BaseScraper):
             else:
                 total_w = sum(available_weights.values())
                 total = sum(
-                    scores[k] * (w / total_w) for k, w in available_weights.items()
+                    scores_map[k] * (w / total_w) for k, w in available_weights.items()
                 )
 
             # Shrink fundamentals influence when data coverage is low
             if metrics_used > 0 and metrics_used < 4:
-                # Partially shrink total toward signal-dominated score
                 signal_only = (momentum * 0.6 + liquidity * 0.4)
                 blend_factor = metrics_used / 5.0
                 total = (total * blend_factor) + (signal_only * (1.0 - blend_factor))
@@ -1011,33 +1180,24 @@ class DiscoverStockScraper(BaseScraper):
             elif source_status == "limited":
                 status_penalty = 12.0
 
-            tags: list[str] = []
-            if pct_raw >= 2:
-                tags.append("momentum_up")
-            elif pct_raw <= -2:
-                tags.append("momentum_down")
-            if liquidity >= 70:
-                tags.append("high_liquidity")
-            if fundamentals >= 70:
-                tags.append("strong_fundamentals")
-            if has_volatility and volatility_score >= 75:
-                tags.append("low_volatility")
-            if has_growth and growth_score >= 75:
-                tags.append("strong_growth")
-            eps = row.get("eps")
-            if eps is not None and eps < 0:
-                tags.append("negative_eps")
-            # Check for undervalued: PE below sector median + strong fundamentals
-            pe = row.get("pe_ratio")
-            med_pe = sector_medians.get(sector, {}).get("pe", 25.0)
-            if pe is not None and pe > 0 and pe < med_pe and fundamentals >= 60:
-                tags.append("undervalued")
-            if source_status != "primary":
-                tags.append("limited_data")
-            if not tags:
-                tags.append("balanced")
-
             score = round(self._clamp(total - status_penalty), 2)
+
+            # ── Auto-tags ──
+            med_pe = sector_medians.get(sector, {}).get("pe", 25.0)
+            # Pass pct_change_3m via a temporary key for tag generation
+            row_for_tags = {**row, "_pct_change_3m": pct_change_3m}
+            tags = self._generate_tags(
+                row_for_tags,
+                sector_pe_median=med_pe,
+                has_volatility=has_volatility,
+                volatility_score=volatility_score if volatility_score is not None else 50.0,
+                has_growth=has_growth,
+                growth_score=growth_score if growth_score is not None else 50.0,
+                fundamentals_score=fundamentals,
+                liquidity_score=liquidity,
+                pct_raw=pct_raw,
+                source_status=source_status,
+            )
 
             # Track sector leader
             if sector not in sector_best or score > sector_best[sector][0]:
@@ -1052,16 +1212,19 @@ class DiscoverStockScraper(BaseScraper):
                 "score_momentum": round(momentum, 2),
                 "score_liquidity": round(liquidity, 2),
                 "score_fundamentals": round(fundamentals, 2),
-                "score_volatility": round(volatility_score, 2),
-                "score_growth": round(growth_score, 2),
+                "score_volatility": round(volatility_score, 2) if volatility_score is not None else None,
+                "score_growth": round(growth_score, 2) if growth_score is not None else None,
                 "percent_change_3m": pct_change_3m,
                 "percent_change_1w": pct_change_1w,
+                "percent_change_1y": pct_change_1y,
+                "percent_change_3y": pct_change_3y,
                 "score_breakdown": {
                     "momentum": round(momentum, 2),
                     "liquidity": round(liquidity, 2),
                     "fundamentals": round(fundamentals, 2),
-                    "volatility": round(volatility_score, 2),
-                    "growth": round(growth_score, 2),
+                    "volatility": round(volatility_score, 2) if volatility_score is not None else None,
+                    "growth": round(growth_score, 2) if growth_score is not None else None,
+                    "52w_position": pos_52w_by_sym.get(symbol),
                     "combined_signal": round((momentum + liquidity) / 2.0, 2),
                 },
                 "tags": tags,
@@ -1074,8 +1237,10 @@ class DiscoverStockScraper(BaseScraper):
             symbol = str(enriched.get("symbol") or "")
             sector = str(enriched.get("sector") or "Other")
             best = sector_best.get(sector)
-            if best and best[1] == symbol and "sector_leader" not in enriched["tags"]:
-                enriched["tags"].insert(0, "sector_leader")
+            if best and best[1] == symbol:
+                tags = enriched["tags"]
+                if "Sector Leader" not in tags and len(tags) < 4:
+                    tags.insert(0, "Sector Leader")
 
         out.sort(
             key=lambda item: (
@@ -1243,16 +1408,20 @@ async def run_discover_stock_job() -> None:
         # 3. Score with all 5 components (CPU-bound, fast).
         rows = _scraper._compute_scores(raw_rows, volatility_data=volatility_data)
 
-        # Log sample scores to verify volatility/growth populated
+        # Log sample scores to verify all components populated
         if rows:
             sample = rows[0]
             logger.info(
-                "Discover stock: sample scored row %s → score=%.2f vol=%.2f growth=%.2f pct3m=%s",
+                "Discover stock: sample scored row %s → score=%.2f vol=%s growth=%s "
+                "pct3m=%s pct1y=%s pct3y=%s tags=%s",
                 sample.get("symbol"),
                 sample.get("score", 0),
-                sample.get("score_volatility", -1),
-                sample.get("score_growth", -1),
+                sample.get("score_volatility"),
+                sample.get("score_growth"),
                 sample.get("percent_change_3m"),
+                sample.get("percent_change_1y"),
+                sample.get("percent_change_3y"),
+                sample.get("tags", [])[:3],
             )
 
         count = await discover_service.upsert_discover_stock_snapshots(rows)

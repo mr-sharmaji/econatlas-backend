@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 from collections import deque
 from datetime import datetime, timezone
@@ -745,8 +746,10 @@ class DiscoverMutualFundScraper(BaseScraper):
         std_dev: float | None,
         category_std_devs: list[float],
         global_std_devs: list[float],
+        *,
+        max_drawdown: float | None = None,
     ) -> float:
-        """Blended risk score with peer-relative std-dev percentile when data is sufficient."""
+        """Blended risk score: categorical + std_dev percentile + max drawdown."""
         mapping = {
             "low": 85.0,
             "moderately low": 75.0,
@@ -778,15 +781,26 @@ class DiscoverMutualFundScraper(BaseScraper):
             if peer_values:
                 continuous = max(0.0, min(100.0, 100.0 - self._percentile_rank(peer_values, std_dev)))
             else:
-                continuous = max(0.0, min(100.0, 100.0 - (std_dev * 5.0)))
+                continuous = max(0.0, min(100.0, 100.0 - (std_dev * 2.5)))
 
-        if categorical is not None and continuous is not None:
-            return categorical * 0.55 + continuous * 0.45
+        # Max drawdown component: lower drawdown = better (10% DD → 75, 30% DD → 25)
+        dd_score: float | None = None
+        if max_drawdown is not None:
+            dd_score = max(0.0, min(100.0, 100.0 - (max_drawdown * 2.5)))
+
+        # Blend: 45% categorical + 35% continuous + 20% drawdown (when all available)
+        parts: list[tuple[float, float]] = []
         if categorical is not None:
-            return categorical
+            parts.append((categorical, 0.45))
         if continuous is not None:
-            return continuous
-        return 50.0
+            parts.append((continuous, 0.35))
+        if dd_score is not None:
+            parts.append((dd_score, 0.20))
+
+        if not parts:
+            return 50.0
+        total_w = sum(w for _, w in parts)
+        return sum(s * (w / total_w) for s, w in parts)
 
     @staticmethod
     def _cost_score(expense_ratio: float | None) -> float:
@@ -827,7 +841,7 @@ class DiscoverMutualFundScraper(BaseScraper):
             elif global_sortinos:
                 values.append(self._percentile_rank(global_sortinos, sortino))
             else:
-                values.append(max(0.0, min(100.0, sortino * 28.0)))
+                values.append(max(0.0, min(100.0, sortino * 22.0)))
         if not values:
             return 50.0
         return sum(values) / len(values)
@@ -977,9 +991,11 @@ class DiscoverMutualFundScraper(BaseScraper):
         cat_sharpes: dict[str, list[float]] = {}
         cat_sortinos: dict[str, list[float]] = {}
         cat_std_devs: dict[str, list[float]] = {}
+        cat_rolling: dict[str, list[float]] = {}
         global_sharpes: list[float] = []
         global_sortinos: list[float] = []
         global_std_devs: list[float] = []
+        global_rolling: list[float] = []
         cat_returns_3y: dict[str, list[float]] = {}
         for r in rows:
             cat = str(r.get("category") or "Other")
@@ -995,6 +1011,10 @@ class DiscoverMutualFundScraper(BaseScraper):
             if d is not None:
                 cat_std_devs.setdefault(cat, []).append(d)
                 global_std_devs.append(d)
+            rc = self._to_float(r.get("rolling_return_consistency"))
+            if rc is not None:
+                cat_rolling.setdefault(cat, []).append(rc)
+                global_rolling.append(rc)
             r3 = self._to_float(r.get("returns_3y"))
             if r3 is not None:
                 cat_returns_3y.setdefault(cat, []).append(r3)
@@ -1013,6 +1033,7 @@ class DiscoverMutualFundScraper(BaseScraper):
                 std_dev=self._to_float(row.get("std_dev")),
                 category_std_devs=cat_std_devs.get(cat, []),
                 global_std_devs=global_std_devs,
+                max_drawdown=self._to_float(row.get("max_drawdown")),
             )
             cost_score = self._cost_score(self._to_float(row.get("expense_ratio")))
             consistency_score = self._consistency_score(
@@ -1022,13 +1043,32 @@ class DiscoverMutualFundScraper(BaseScraper):
                 cat_sortinos.get(cat, []),
                 global_sharpes,
                 global_sortinos,
+                rolling_consistency=self._to_float(row.get("rolling_return_consistency")),
+                category_rolling=cat_rolling.get(cat),
+                global_rolling=global_rolling,
             )
 
-            # Type-specific extra scores
+            # Type-specific extra scores + store alpha/beta raw values
             alpha_score = self._alpha_score(row, cat_avg_returns)
             beta_score = self._beta_score(row, cat_std_devs, global_std_devs)
             credit_quality_score = self._credit_quality_score(row)
             duration_score = self._duration_score(row)
+
+            # Compute raw alpha and beta values for storage
+            ret3y = self._to_float(row.get("returns_3y"))
+            cat_avg = cat_avg_returns.get(cat)
+            alpha_value = round(ret3y - cat_avg, 2) if ret3y is not None and cat_avg is not None else None
+
+            std = self._to_float(row.get("std_dev"))
+            cat_stds = cat_std_devs.get(cat, [])
+            if std is not None and len(cat_stds) >= 3:
+                med_std = self._median(cat_stds)
+                beta_value = round(std / max(med_std, 0.01), 2) if med_std > 0 else None
+            elif std is not None and global_std_devs:
+                med_std = self._median(global_std_devs)
+                beta_value = round(std / max(med_std, 0.01), 2) if med_std > 0 else None
+            else:
+                beta_value = None
 
             return_available = any(
                 self._to_float(row.get(k)) is not None
@@ -1039,6 +1079,7 @@ class DiscoverMutualFundScraper(BaseScraper):
             consistency_available = (
                 self._to_float(row.get("sharpe")) is not None
                 or self._to_float(row.get("sortino")) is not None
+                or self._to_float(row.get("rolling_return_consistency")) is not None
             )
 
             # Type-specific weight distributions
@@ -1105,13 +1146,19 @@ class DiscoverMutualFundScraper(BaseScraper):
             elif aum is not None and aum < 250:
                 score *= 0.97
 
+            # Source status: primary if has returns + risk + meta, fallback if partial
             status = str(row.get("source_status") or "limited").strip().lower()
-            has_advanced = any(
-                row.get(k) is not None
-                for k in ("returns_3y", "expense_ratio", "risk_level", "sharpe", "sortino")
-            )
-            if status == "primary" and not has_advanced:
+            has_returns = self._to_float(row.get("returns_1y")) is not None or self._to_float(row.get("returns_3y")) is not None
+            has_risk_metrics = self._to_float(row.get("std_dev")) is not None or bool(str(row.get("risk_level") or "").strip())
+            has_meta = self._to_float(row.get("expense_ratio")) is not None
+            if has_returns and has_risk_metrics and has_meta:
+                status = "primary"
+            elif has_returns or has_risk_metrics:
+                if status == "limited":
+                    status = "fallback"
+            elif status == "primary":
                 status = "fallback"
+
             status_penalty = 0.0
             if status == "fallback":
                 status_penalty = 7.0
@@ -1145,11 +1192,17 @@ class DiscoverMutualFundScraper(BaseScraper):
                     "score_risk": round(risk_score, 2),
                     "score_cost": round(cost_score, 2),
                     "score_consistency": round(consistency_score, 2),
+                    "alpha": alpha_value,
+                    "beta": beta_value,
+                    "score_alpha": round(alpha_score, 2) if alpha_score is not None else None,
+                    "score_beta": round(beta_score, 2) if beta_score is not None else None,
                     "score_breakdown": {
                         "return_score": round(return_score, 2),
                         "risk_score": round(risk_score, 2),
                         "cost_score": round(cost_score, 2),
                         "consistency_score": round(consistency_score, 2),
+                        "alpha_score": round(alpha_score, 2) if alpha_score is not None else None,
+                        "beta_score": round(beta_score, 2) if beta_score is not None else None,
                     },
                     "source_status": status,
                     "tags": tags,
@@ -1248,23 +1301,88 @@ class DiscoverMutualFundScraper(BaseScraper):
                 if not row.get("category") and meta.get("scheme_category"):
                     row["category"] = meta["scheme_category"]
 
-                # Compute std_dev, sharpe, sortino from NAV history if missing
-                if nav_data and len(nav_data) >= 30 and row.get("std_dev") is None:
+                # ── Compute risk metrics + CAGR returns from NAV history ──
+                if nav_data and len(nav_data) >= 30:
                     try:
-                        # Parse NAVs (most recent first in mfapi)
-                        navs = []
-                        for pt in nav_data[:365]:  # Last ~1 year
+                        # Parse all NAVs with dates (most recent first in mfapi)
+                        nav_pairs: list[tuple[str, float]] = []
+                        navs_short: list[float] = []
+                        for pt in nav_data:
                             try:
-                                navs.append(float(pt.get("nav", 0)))
+                                nav_val = float(pt.get("nav", 0))
+                                if nav_val <= 0:
+                                    continue
+                                nav_pairs.append((pt.get("date", ""), nav_val))
+                                if len(navs_short) < 365:
+                                    navs_short.append(nav_val)
                             except (TypeError, ValueError):
                                 continue
-                        navs.reverse()  # Oldest first
+                        nav_pairs.reverse()  # Oldest first
+                        navs_short.reverse()  # Oldest first
 
-                        if len(navs) >= 30:
-                            # Daily returns
-                            daily_returns = [(navs[j] / navs[j - 1]) - 1.0
-                                             for j in range(1, len(navs))
-                                             if navs[j - 1] > 0]
+                        # ── CAGR returns from NAV history (replaces XIRR) ──
+                        if len(nav_pairs) >= 2:
+                            latest_nav = nav_pairs[-1][1]
+                            total_days = len(nav_pairs)
+
+                            # 1Y CAGR (≥200 trading days)
+                            if total_days >= 200:
+                                idx_1y = max(0, total_days - 252)
+                                nav_1y = nav_pairs[idx_1y][1]
+                                years_1y = (total_days - idx_1y) / 252.0
+                                if nav_1y > 0 and years_1y > 0:
+                                    cagr_1y = round(((latest_nav / nav_1y) ** (1.0 / years_1y) - 1.0) * 100, 2)
+                                    row["returns_1y"] = cagr_1y
+
+                            # 3Y CAGR (≥600 trading days)
+                            if total_days >= 600:
+                                idx_3y = max(0, total_days - 756)
+                                nav_3y = nav_pairs[idx_3y][1]
+                                years_3y = (total_days - idx_3y) / 252.0
+                                if nav_3y > 0 and years_3y > 0:
+                                    cagr_3y = round(((latest_nav / nav_3y) ** (1.0 / years_3y) - 1.0) * 100, 2)
+                                    row["returns_3y"] = cagr_3y
+
+                            # 5Y CAGR (≥1000 trading days)
+                            if total_days >= 1000:
+                                idx_5y = max(0, total_days - 1260)
+                                nav_5y = nav_pairs[idx_5y][1]
+                                years_5y = (total_days - idx_5y) / 252.0
+                                if nav_5y > 0 and years_5y > 0:
+                                    cagr_5y = round(((latest_nav / nav_5y) ** (1.0 / years_5y) - 1.0) * 100, 2)
+                                    row["returns_5y"] = cagr_5y
+
+                        # ── Maximum Drawdown ──
+                        all_navs = [p[1] for p in nav_pairs]
+                        if len(all_navs) >= 60:
+                            peak = all_navs[0]
+                            max_dd = 0.0
+                            for nav_val in all_navs:
+                                if nav_val > peak:
+                                    peak = nav_val
+                                dd = (peak - nav_val) / peak * 100
+                                if dd > max_dd:
+                                    max_dd = dd
+                            row["max_drawdown"] = round(max_dd, 2)
+
+                        # ── Rolling Return Consistency (std dev of rolling 1Y returns) ──
+                        if len(nav_pairs) >= 504:  # Need 2+ years
+                            rolling_returns: list[float] = []
+                            for ri in range(252, len(nav_pairs)):
+                                base_nav = nav_pairs[ri - 252][1]
+                                if base_nav > 0:
+                                    ret = (nav_pairs[ri][1] / base_nav - 1.0) * 100
+                                    rolling_returns.append(ret)
+                            if len(rolling_returns) >= 4:
+                                mean_rr = sum(rolling_returns) / len(rolling_returns)
+                                var_rr = sum((r - mean_rr) ** 2 for r in rolling_returns) / len(rolling_returns)
+                                row["rolling_return_consistency"] = round(math.sqrt(var_rr), 2)
+
+                        # ── Std dev, Sharpe, Sortino from NAV history if missing ──
+                        if len(navs_short) >= 30 and row.get("std_dev") is None:
+                            daily_returns = [(navs_short[j] / navs_short[j - 1]) - 1.0
+                                             for j in range(1, len(navs_short))
+                                             if navs_short[j - 1] > 0]
 
                             if daily_returns:
                                 mean_ret = sum(daily_returns) / len(daily_returns)
@@ -1274,18 +1392,18 @@ class DiscoverMutualFundScraper(BaseScraper):
                                 row["std_dev"] = round(std_annual * 100, 2)  # as percentage
 
                                 # Annualized return
-                                total_return = (navs[-1] / navs[0]) - 1.0 if navs[0] > 0 else 0
-                                n_years = len(navs) / 252.0
+                                total_return = (navs_short[-1] / navs_short[0]) - 1.0 if navs_short[0] > 0 else 0
+                                n_years = len(navs_short) / 252.0
                                 ann_return = ((1 + total_return) ** (1.0 / n_years) - 1.0) * 100 if n_years > 0 else 0
 
                                 risk_free = 6.5  # approx Indian risk-free rate
                                 if std_annual > 0:
                                     row["sharpe"] = round((ann_return - risk_free) / (std_annual * 100), 2)
 
-                                    # Sortino: downside deviation only
+                                    # Sortino: downside deviation only (BUG FIX: divide by len(downside))
                                     downside = [r for r in daily_returns if r < 0]
                                     if downside:
-                                        down_var = sum(r ** 2 for r in downside) / len(daily_returns)
+                                        down_var = sum(r ** 2 for r in downside) / len(downside)
                                         down_dev = math.sqrt(down_var) * math.sqrt(252) * 100
                                         if down_dev > 0:
                                             row["sortino"] = round((ann_return - risk_free) / down_dev, 2)

@@ -372,6 +372,27 @@ ON discover_mf_nav_history (scheme_code, nav_date);
 CREATE INDEX IF NOT EXISTS idx_discover_mf_nav_history_lookup
 ON discover_mf_nav_history (scheme_code, nav_date DESC);
 
+-- ================================================================
+-- Discover enrichment: additional stock columns (v0.2.3)
+-- ================================================================
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS percent_change_1y DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS percent_change_3y DOUBLE PRECISION;
+-- Allow NULL for score_volatility/score_growth (NULL = no data, not neutral 50)
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score_volatility DROP NOT NULL;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score_volatility DROP DEFAULT;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score_growth DROP NOT NULL;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score_growth DROP DEFAULT;
+
+-- ================================================================
+-- Discover enrichment: additional MF columns (v0.2.3)
+-- ================================================================
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS max_drawdown DOUBLE PRECISION;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS rolling_return_consistency DOUBLE PRECISION;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS alpha DOUBLE PRECISION;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS beta DOUBLE PRECISION;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS score_alpha DOUBLE PRECISION;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS score_beta DOUBLE PRECISION;
+
 -- Dead-letter queue for failed background jobs
 CREATE TABLE IF NOT EXISTS job_dead_letters (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

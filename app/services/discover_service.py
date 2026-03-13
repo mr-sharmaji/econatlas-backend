@@ -300,6 +300,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     volume, traded_value, pe_ratio, roe, roce, debt_to_equity, price_to_book, eps,
                     score, score_momentum, score_liquidity, score_fundamentals,
                     score_volatility, score_growth, percent_change_3m, percent_change_1w,
+                    percent_change_1y, percent_change_3y,
                     score_breakdown, tags, source_status, source_timestamp, ingested_at,
                     primary_source, secondary_source,
                     high_52w, low_52w, market_cap, dividend_yield
@@ -309,9 +310,10 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     $8, $9, $10, $11, $12, $13, $14, $15,
                     $16, $17, $18, $19,
                     $20, $21, $22, $23,
-                    $24, $25, $26, $27, NOW(),
-                    $28, $29,
-                    $30, $31, $32, $33
+                    $24, $25,
+                    $26, $27, $28, $29, NOW(),
+                    $30, $31,
+                    $32, $33, $34, $35
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -337,6 +339,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     score_growth = EXCLUDED.score_growth,
                     percent_change_3m = EXCLUDED.percent_change_3m,
                     percent_change_1w = EXCLUDED.percent_change_1w,
+                    percent_change_1y = EXCLUDED.percent_change_1y,
+                    percent_change_3y = EXCLUDED.percent_change_3y,
                     score_breakdown = EXCLUDED.score_breakdown,
                     tags = EXCLUDED.tags,
                     source_status = EXCLUDED.source_status,
@@ -368,10 +372,12 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("score_momentum")) or 0.0,
                 _to_float(row.get("score_liquidity")) or 0.0,
                 _to_float(row.get("score_fundamentals")) or 0.0,
-                _to_float(row.get("score_volatility")) or 0.0,
-                _to_float(row.get("score_growth")) or 0.0,
+                _to_float(row.get("score_volatility")),
+                _to_float(row.get("score_growth")),
                 _to_float(row.get("percent_change_3m")),
                 _to_float(row.get("percent_change_1w")),
+                _to_float(row.get("percent_change_1y")),
+                _to_float(row.get("percent_change_3y")),
                 _to_jsonb(row.get("score_breakdown"), _stock_breakdown_payload(row)),
                 _to_jsonb(row.get("tags"), []),
                 _normalize_source_status(row.get("source_status")),
@@ -403,7 +409,9 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
                     score, score_return, score_risk, score_cost, score_consistency,
                     score_breakdown, tags, source_status, source_timestamp, ingested_at,
-                    primary_source, secondary_source, fund_age_years
+                    primary_source, secondary_source, fund_age_years,
+                    max_drawdown, rolling_return_consistency,
+                    alpha, beta, score_alpha, score_beta
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -411,7 +419,9 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     $13, $14, $15, $16, $17, $18,
                     $19, $20, $21, $22, $23,
                     $24, $25, $26, $27, NOW(),
-                    $28, $29, $30
+                    $28, $29, $30,
+                    $31, $32,
+                    $33, $34, $35, $36
                 )
                 ON CONFLICT (scheme_code)
                 DO UPDATE SET
@@ -444,7 +454,13 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     ingested_at = NOW(),
                     primary_source = EXCLUDED.primary_source,
                     secondary_source = EXCLUDED.secondary_source,
-                    fund_age_years = COALESCE(EXCLUDED.fund_age_years, discover_mutual_fund_snapshots.fund_age_years)
+                    fund_age_years = COALESCE(EXCLUDED.fund_age_years, discover_mutual_fund_snapshots.fund_age_years),
+                    max_drawdown = COALESCE(EXCLUDED.max_drawdown, discover_mutual_fund_snapshots.max_drawdown),
+                    rolling_return_consistency = COALESCE(EXCLUDED.rolling_return_consistency, discover_mutual_fund_snapshots.rolling_return_consistency),
+                    alpha = EXCLUDED.alpha,
+                    beta = EXCLUDED.beta,
+                    score_alpha = EXCLUDED.score_alpha,
+                    score_beta = EXCLUDED.score_beta
                 """,
                 str(row.get("scheme_code") or ""),
                 str(row.get("scheme_name") or ""),
@@ -476,6 +492,12 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 row.get("primary_source"),
                 row.get("secondary_source"),
                 _to_float(row.get("fund_age_years")),
+                _to_float(row.get("max_drawdown")),
+                _to_float(row.get("rolling_return_consistency")),
+                _to_float(row.get("alpha")),
+                _to_float(row.get("beta")),
+                _to_float(row.get("score_alpha")),
+                _to_float(row.get("score_beta")),
             )
             count += 1
     return count
@@ -1300,9 +1322,9 @@ async def get_mf_by_scheme_code(*, scheme_code: str) -> dict | None:
     category = str(d.get("category") or "Other")
     cat_stats_rows = await pool.fetch(
         f"""
-        SELECT AVG(returns_1y) AS avg_returns_1y,
-               AVG(returns_3y) AS avg_returns_3y,
-               AVG(returns_5y) AS avg_returns_5y,
+        SELECT AVG(returns_1y) AS avg_ret1y,
+               AVG(returns_3y) AS avg_ret3y,
+               AVG(returns_5y) AS avg_ret5y,
                COUNT(*) AS total
         FROM {MF_TABLE}
         WHERE category = $1
@@ -1330,12 +1352,14 @@ async def get_stock_price_history(*, symbol: str, days: int = 365) -> list[dict]
 
 
 async def get_bulk_stock_volatility_data() -> dict[str, dict]:
-    """Fetch 3M price stats + short-term stats for all stocks.
+    """Fetch 3M price stats + short-term stats + 1Y/3Y returns for all stocks.
 
     Returns {symbol: {
-        "std_dev": float,          # 3M daily return std dev
+        "std_dev": float,          # 3M daily return std dev (annualized, ×√252)
         "pct_change_3m": float,    # 3M price change %
         "pct_change_1w": float,    # 1W price change %
+        "pct_change_1y": float,    # 1Y price change %
+        "pct_change_3y": float,    # 3Y price change %
         "avg_vol_5d": float,       # 5-day avg volume
         "avg_vol_20d": float,      # 20-day avg volume
         "momentum_5d": float,      # 5-day return %
@@ -1343,6 +1367,8 @@ async def get_bulk_stock_volatility_data() -> dict[str, dict]:
         "data_points": int,
     }}.
     """
+    import math as _math
+
     pool = await get_pool()
     rows = await pool.fetch(
         """
@@ -1389,14 +1415,59 @@ async def get_bulk_stock_volatility_data() -> dict[str, dict]:
                    AVG(volume) FILTER (WHERE rn <= 20) AS avg_vol_20d
             FROM recent
             GROUP BY symbol
+        ),
+        -- 1Y return: first and last close over 365 days
+        range_1y AS (
+            SELECT symbol,
+                   FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS first_close_1y,
+                   LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS last_close_1y,
+                   COUNT(*) OVER (PARTITION BY symbol) AS cnt_1y
+            FROM discover_stock_price_history
+            WHERE trade_date >= CURRENT_DATE - INTERVAL '365 days'
+        ),
+        stats_1y AS (
+            SELECT symbol,
+                   MIN(first_close_1y) AS first_close_1y,
+                   MAX(last_close_1y) AS last_close_1y,
+                   MAX(cnt_1y) AS cnt_1y
+            FROM range_1y
+            GROUP BY symbol
+            HAVING MAX(cnt_1y) >= 20
+        ),
+        -- 3Y return: first and last close over 1095 days
+        range_3y AS (
+            SELECT symbol,
+                   FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS first_close_3y,
+                   LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS last_close_3y,
+                   COUNT(*) OVER (PARTITION BY symbol) AS cnt_3y
+            FROM discover_stock_price_history
+            WHERE trade_date >= CURRENT_DATE - INTERVAL '1095 days'
+        ),
+        stats_3y AS (
+            SELECT symbol,
+                   MIN(first_close_3y) AS first_close_3y,
+                   MAX(last_close_3y) AS last_close_3y,
+                   MAX(cnt_3y) AS cnt_3y
+            FROM range_3y
+            GROUP BY symbol
+            HAVING MAX(cnt_3y) >= 60
         )
         SELECT s.symbol, s.std_dev, s.first_close, s.last_close, s.data_points,
                st.latest_close, st.close_5d_ago, st.close_20d_ago,
-               st.avg_vol_5d, st.avg_vol_20d
+               st.avg_vol_5d, st.avg_vol_20d,
+               y.first_close_1y, y.last_close_1y,
+               y3.first_close_3y, y3.last_close_3y
         FROM stats_3m s
         LEFT JOIN short_term st ON s.symbol = st.symbol
+        LEFT JOIN stats_1y y ON s.symbol = y.symbol
+        LEFT JOIN stats_3y y3 ON s.symbol = y3.symbol
         """
     )
+    _SQRT_252 = _math.sqrt(252)
     result: dict[str, dict] = {}
     for r in rows:
         sym = r["symbol"]
@@ -1422,10 +1493,29 @@ async def get_bulk_stock_volatility_data() -> dict[str, dict]:
         if latest and close_20d and close_20d > 0:
             momentum_20d = round(((latest - close_20d) / close_20d) * 100, 2)
 
+        # 1Y and 3Y returns
+        pct_1y = None
+        fc_1y = float(r["first_close_1y"]) if r.get("first_close_1y") else None
+        lc_1y = float(r["last_close_1y"]) if r.get("last_close_1y") else None
+        if fc_1y and fc_1y > 0 and lc_1y:
+            pct_1y = round(((lc_1y - fc_1y) / fc_1y) * 100, 2)
+
+        pct_3y = None
+        fc_3y = float(r["first_close_3y"]) if r.get("first_close_3y") else None
+        lc_3y = float(r["last_close_3y"]) if r.get("last_close_3y") else None
+        if fc_3y and fc_3y > 0 and lc_3y:
+            pct_3y = round(((lc_3y - fc_3y) / fc_3y) * 100, 2)
+
+        # Annualize std_dev: daily → annual (×√252)
+        raw_std = float(r["std_dev"]) if r["std_dev"] else None
+        annualized_std = round(raw_std * _SQRT_252, 4) if raw_std is not None else None
+
         result[sym] = {
-            "std_dev": float(r["std_dev"]) if r["std_dev"] else None,
+            "std_dev": annualized_std,
             "pct_change_3m": pct_3m,
             "pct_change_1w": pct_1w,
+            "pct_change_1y": pct_1y,
+            "pct_change_3y": pct_3y,
             "momentum_5d": momentum_5d,
             "momentum_20d": momentum_20d,
             "avg_vol_5d": float(r["avg_vol_5d"]) if r["avg_vol_5d"] else None,
