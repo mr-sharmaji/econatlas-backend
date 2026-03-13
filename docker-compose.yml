@@ -45,20 +45,6 @@ services:
       redis:
         condition: service_healthy
 
-  worker:
-    build: .
-    container_name: econatlas-worker
-    command: ["python", "-m", "app.queue.worker"]
-    environment:
-      DATABASE_URL: postgresql://econatlas:econatlas@postgres:5432/econatlas
-      REDIS_URL: redis://redis:6379
-      LOG_LEVEL: DEBUG
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
 volumes:
   postgres_data:
   redis_data:
