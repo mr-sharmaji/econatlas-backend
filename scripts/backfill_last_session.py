@@ -44,6 +44,7 @@ async def main(repair: bool = False) -> None:
     try:
         from app.scheduler.market_job import _fetch_market_rows_sync
         from app.scheduler.commodity_job import _fetch_commodity_rows_sync
+        from app.scheduler.crypto_job import _fetch_crypto_rows_sync
         from app.scheduler.trading_calendar import get_recent_trading_dates
         from datetime import datetime, timezone, timedelta
     except ImportError as e:
@@ -84,6 +85,7 @@ async def main(repair: bool = False) -> None:
 
     from app.scheduler.market_job import build_market_intraday_rows_last_session_yahoo
     from app.scheduler.commodity_job import build_commodity_intraday_rows_last_session_yahoo
+    from app.scheduler.crypto_job import build_crypto_intraday_rows_last_session_yahoo
 
     intraday_market = await loop.run_in_executor(
         None,
@@ -108,6 +110,23 @@ async def main(repair: bool = False) -> None:
         if intraday_commodity:
             n = await market_service.insert_intraday_batch(intraday_commodity)
             logger.info("Intraday (commodities): %d points inserted (last 5 calendar days, minute-level).", n)
+
+    # Fetch crypto rows — 24/7, uses today's date
+    crypto_rows, _ = await loop.run_in_executor(None, _fetch_crypto_rows_sync)
+    if not crypto_rows:
+        logger.warning("Crypto: no rows fetched (check network). Nothing to insert.")
+    else:
+        n_crypto = await market_service.insert_prices_batch_upsert_daily(crypto_rows)
+        logger.info("Crypto: %d rows upserted (daily).", n_crypto)
+
+    if crypto_rows:
+        intraday_crypto = await loop.run_in_executor(
+            None,
+            lambda: build_crypto_intraday_rows_last_session_yahoo(crypto_rows, recent_calendar_dates),
+        )
+        if intraday_crypto:
+            n = await market_service.insert_intraday_batch(intraday_crypto)
+            logger.info("Intraday (crypto): %d points inserted (last 5 calendar days, minute-level).", n)
 
     logger.info("Backfill complete.")
     if repair:

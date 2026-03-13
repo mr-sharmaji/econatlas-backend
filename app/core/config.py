@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     # When set, market/commodity jobs run every N seconds (default 30 for live accuracy). Set to 0 or omit to use *_interval_minutes.
     market_interval_seconds: int | None = 30
     commodity_interval_seconds: int | None = 30
+    crypto_interval_minutes: int = 1
+    crypto_interval_seconds: int | None = 30
     macro_interval_minutes: int = 1
     news_interval_minutes: int = 30
     brief_interval_minutes: int = 5

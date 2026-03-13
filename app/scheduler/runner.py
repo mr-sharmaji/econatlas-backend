@@ -21,6 +21,8 @@ def _get_intervals() -> dict:
         "market_minutes": getattr(settings, "market_interval_minutes", 1),
         "commodity_seconds": getattr(settings, "commodity_interval_seconds", None),
         "commodity_minutes": getattr(settings, "commodity_interval_minutes", 1),
+        "crypto_seconds": getattr(settings, "crypto_interval_seconds", None),
+        "crypto_minutes": getattr(settings, "crypto_interval_minutes", 1),
         "brief_minutes": getattr(settings, "brief_interval_minutes", 5),
         "discover_stock_daily_hour_ist": getattr(settings, "discover_stock_daily_hour_ist", 16),
         "discover_stock_daily_minute_ist": getattr(settings, "discover_stock_daily_minute_ist", 0),
@@ -53,6 +55,13 @@ async def _run_commodity() -> None:
     from app.scheduler.commodity_job import run_commodity_job
     await run_commodity_job()
     logger.debug("Scheduler tick: commodity job finished")
+
+
+async def _run_crypto() -> None:
+    logger.debug("Scheduler tick: crypto job started")
+    from app.scheduler.crypto_job import run_crypto_job
+    await run_crypto_job()
+    logger.debug("Scheduler tick: crypto job finished")
 
 
 async def _run_macro() -> None:
@@ -128,10 +137,11 @@ async def _run_tax() -> None:
 
 
 async def _startup_collection() -> None:
-    """Run all jobs once at startup (market, commodity, brief, IPO, macro, tax, then news)."""
+    """Run all jobs once at startup (market, commodity, crypto, brief, IPO, macro, tax, then news)."""
     logger.info("Running startup data collection...")
     await _run_market()
     await _run_commodity()
+    await _run_crypto()
     await _run_brief()
     # Discover stock can run long when NSE is slow; start both discover jobs together.
     await asyncio.gather(
@@ -168,6 +178,13 @@ def start_scheduler() -> None:
     else:
         _scheduler.add_job(_run_commodity, "interval", minutes=intervals["commodity_minutes"], id="commodity", replace_existing=True)
         logger.info("Scheduler: commodity every %dm", intervals["commodity_minutes"])
+
+    if intervals["crypto_seconds"] and intervals["crypto_seconds"] > 0:
+        _scheduler.add_job(_run_crypto, "interval", seconds=intervals["crypto_seconds"], id="crypto", replace_existing=True)
+        logger.info("Scheduler: crypto every %ds (live accuracy)", intervals["crypto_seconds"])
+    else:
+        _scheduler.add_job(_run_crypto, "interval", minutes=intervals["crypto_minutes"], id="crypto", replace_existing=True)
+        logger.info("Scheduler: crypto every %dm", intervals["crypto_minutes"])
 
     _scheduler.add_job(_run_brief, "interval", minutes=intervals["brief_minutes"], id="brief", replace_existing=True)
     _scheduler.add_job(

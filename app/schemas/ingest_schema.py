@@ -37,6 +37,15 @@ class CommodityIngestPayload(BaseModel):
     previous_close: float | None = None
 
 
+class CryptoIngestPayload(BaseModel):
+    asset: str = Field(..., min_length=1)
+    price_usd: float = Field(..., gt=0)
+    timestamp: datetime
+    source: str | None = None
+    change_percent: float | None = None
+    previous_close: float | None = None
+
+
 class NewsIngestPayload(BaseModel):
     title: str = Field(..., min_length=1)
     summary: str | None = None

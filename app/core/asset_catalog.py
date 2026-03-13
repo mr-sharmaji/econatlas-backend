@@ -95,6 +95,17 @@ ASSET_CATALOG: tuple[AssetCatalogItem, ...] = (
     AssetCatalogItem("copper", "commodity", "HG=F", "Commodities", "NYSE", "rolling_24h", 840, "commodity", "usd_per_pound", False, "gold"),
     AssetCatalogItem("crude oil", "commodity", "CL=F", "Commodities", "NYSE", "rolling_24h", 850, "commodity", "usd_per_barrel", True, "gold"),
     AssetCatalogItem("natural gas", "commodity", "NG=F", "Commodities", "NYSE", "rolling_24h", 860, "commodity", "usd_per_mmbtu", False, "gold"),
+    # Crypto
+    AssetCatalogItem("bitcoin", "crypto", "BTC-USD", "Crypto", "GLOBAL", "rolling_24h", 900, "crypto", "usd", True, "bitcoin"),
+    AssetCatalogItem("ethereum", "crypto", "ETH-USD", "Crypto", "GLOBAL", "rolling_24h", 910, "crypto", "usd", True, "bitcoin"),
+    AssetCatalogItem("bnb", "crypto", "BNB-USD", "Crypto", "GLOBAL", "rolling_24h", 920, "crypto", "usd", False, "bitcoin"),
+    AssetCatalogItem("solana", "crypto", "SOL-USD", "Crypto", "GLOBAL", "rolling_24h", 930, "crypto", "usd", False, "bitcoin"),
+    AssetCatalogItem("xrp", "crypto", "XRP-USD", "Crypto", "GLOBAL", "rolling_24h", 940, "crypto", "usd", False, "bitcoin"),
+    AssetCatalogItem("cardano", "crypto", "ADA-USD", "Crypto", "GLOBAL", "rolling_24h", 950, "crypto", "usd", False, "bitcoin"),
+    AssetCatalogItem("dogecoin", "crypto", "DOGE-USD", "Crypto", "GLOBAL", "rolling_24h", 960, "crypto", "usd", False, "bitcoin"),
+    AssetCatalogItem("polkadot", "crypto", "DOT-USD", "Crypto", "GLOBAL", "rolling_24h", 970, "crypto", "usd", False, "bitcoin"),
+    AssetCatalogItem("avalanche", "crypto", "AVAX-USD", "Crypto", "GLOBAL", "rolling_24h", 980, "crypto", "usd", False, "bitcoin"),
+    AssetCatalogItem("chainlink", "crypto", "LINK-USD", "Crypto", "GLOBAL", "rolling_24h", 990, "crypto", "usd", False, "bitcoin"),
     # Bonds
     AssetCatalogItem("India 10Y Bond Yield", "bond_yield", "INDIRLTLT01STM", "India", "NSE", "session", 800, "bond_yield", "percent", False, "India 10Y Bond Yield"),
     AssetCatalogItem("US 10Y Treasury Yield", "bond_yield", "DGS10", "US", "NYSE", "session", 810, "bond_yield", "percent", False, "US 10Y Treasury Yield"),
@@ -152,4 +163,6 @@ def benchmark_for_region(region: str) -> str | None:
         return "USD/INR"
     if region_norm == "commodities":
         return "gold"
+    if region_norm == "crypto":
+        return "bitcoin"
     return None
