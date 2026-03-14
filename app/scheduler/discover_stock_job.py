@@ -803,6 +803,198 @@ class DiscoverStockScraper(BaseScraper):
         return result
 
     # ------------------------------------------------------------------
+    # Historical metrics from JSONB tables (pl_annual, bs_annual, cf_annual, shareholding_quarterly)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_historical_metrics(row: dict) -> dict:
+        """Mine JSONB annual tables for multi-year trend signals.
+
+        Returns dict of derived metrics (prefixed with nothing — caller adds _hist_).
+        Gracefully returns {} when JSONB data is absent.
+        """
+        import statistics
+
+        out: dict = {}
+        pl = row.get("pl_annual")
+        bs = row.get("bs_annual")
+        cf = row.get("cf_annual")
+        sh = row.get("shareholding_quarterly")
+
+        def _tail(lst: list | None, n: int) -> list:
+            """Last n non-None values from list."""
+            if not lst:
+                return []
+            return [v for v in lst[-n:] if v is not None]
+
+        def _cagr(values: list, years: int) -> float | None:
+            """CAGR from first to last value over N years."""
+            if len(values) < 2 or years <= 0:
+                return None
+            start, end = values[0], values[-1]
+            if start is None or end is None or start <= 0:
+                return None
+            try:
+                return (end / start) ** (1.0 / years) - 1.0
+            except (ZeroDivisionError, ValueError, OverflowError):
+                return None
+
+        def _consistency(values: list) -> int:
+            """Count years with positive YoY growth (last 5 years)."""
+            vals = _tail(values, 6)  # need 6 to get 5 YoY deltas
+            if len(vals) < 2:
+                return 0
+            count = 0
+            for i in range(1, len(vals)):
+                if vals[i] is not None and vals[i - 1] is not None and vals[i - 1] > 0:
+                    if vals[i] > vals[i - 1]:
+                        count += 1
+            return count
+
+        # ── From pl_annual ──
+        if pl and isinstance(pl, dict):
+            net_profits = pl.get("net_profit", [])
+            sales = pl.get("sales", [])
+            opm_vals = pl.get("opm_pct") or pl.get("opm_pct", [])
+            eps_vals = pl.get("eps", [])
+
+            # Profit growth 3Y CAGR
+            tail_np = _tail(net_profits, 4)
+            if len(tail_np) >= 2:
+                cagr = _cagr(tail_np, len(tail_np) - 1)
+                if cagr is not None:
+                    out["profit_growth_3y_cagr"] = cagr
+
+            # Consistency (last 5 years)
+            out["profit_growth_consistency"] = _consistency(net_profits)
+            out["sales_growth_consistency"] = _consistency(sales)
+
+            # OPM trend 3Y (latest − 3yr ago)
+            opm_tail = _tail(opm_vals, 4)
+            if len(opm_tail) >= 2:
+                out["opm_trend_3y"] = opm_tail[-1] - opm_tail[0]
+
+            # OPM std 5Y
+            opm_5y = _tail(opm_vals, 5)
+            if len(opm_5y) >= 3:
+                try:
+                    out["opm_std_5y"] = statistics.stdev(opm_5y)
+                except statistics.StatisticsError:
+                    pass
+
+            # 3-year average ROE: net_profit / equity from bs_annual
+            if bs and isinstance(bs, dict):
+                equity_key = None
+                for k in ("shareholders_equity", "shareholder_equity", "share_capital", "equity_capital"):
+                    if k in bs:
+                        equity_key = k
+                        break
+                # Try reserves + equity capital as fallback
+                reserves = bs.get("reserves", [])
+                eq_cap = bs.get(equity_key, []) if equity_key else []
+
+                # Compute equity as reserves if shareholders_equity not found
+                nps_3 = _tail(net_profits, 3)
+                if reserves and len(reserves) >= 3:
+                    eqs_3 = _tail(reserves, 3)
+                    valid = [(n, e) for n, e in zip(nps_3, eqs_3)
+                             if n is not None and e is not None and e > 0]
+                    if len(valid) >= 2:
+                        out["avg_roe_3y"] = sum(n / e for n, e in valid) / len(valid) * 100
+
+            # 3-year average ROCE: operating_profit / (total_assets - current_liabilities)
+            # Simplified: operating_profit / total_assets as proxy
+            if bs and isinstance(bs, dict):
+                op_profits = pl.get("operating_profit", [])
+                total_assets = bs.get("total_assets", [])
+                ops_3 = _tail(op_profits, 3)
+                assets_3 = _tail(total_assets, 3)
+                valid = [(o, a) for o, a in zip(ops_3, assets_3)
+                         if o is not None and a is not None and a > 0]
+                if len(valid) >= 2:
+                    out["avg_roce_3y"] = sum(o / a for o, a in valid) / len(valid) * 100
+
+            # EPS CAGR for synthetic forward PE
+            eps_tail = [v for v in (eps_vals or [])[-4:] if v is not None and v > 0]
+            if len(eps_tail) >= 2:
+                cagr = _cagr(eps_tail, len(eps_tail) - 1)
+                if cagr is not None and cagr > -0.5:
+                    out["eps_cagr_3y"] = cagr
+                    forward_eps = eps_tail[-1] * (1 + max(cagr, -0.3))
+                    if forward_eps > 0:
+                        out["improved_forward_eps"] = forward_eps
+
+        # ── From bs_annual ──
+        if bs and isinstance(bs, dict):
+            # Debt trajectory
+            borrowings = bs.get("borrowings", [])
+            b_tail = _tail(borrowings, 4)
+            if len(b_tail) >= 2 and b_tail[0] > 0:
+                out["debt_trajectory"] = (b_tail[-1] - b_tail[0]) / b_tail[0]
+
+            # Reserves CAGR 3Y
+            reserves = bs.get("reserves", [])
+            r_tail = _tail(reserves, 4)
+            if len(r_tail) >= 2:
+                cagr = _cagr(r_tail, len(r_tail) - 1)
+                if cagr is not None:
+                    out["reserves_cagr_3y"] = cagr
+
+        # ── From cf_annual ──
+        if cf and isinstance(cf, dict):
+            ocf_key = None
+            for k in ("cash_from_operating_activity", "cash_from_operations",
+                       "cash_from_operating_activities"):
+                if k in cf:
+                    ocf_key = k
+                    break
+            ocf_vals = cf.get(ocf_key, []) if ocf_key else []
+
+            # OCF positive years (last 5)
+            ocf_5 = _tail(ocf_vals, 5)
+            if ocf_5:
+                out["ocf_positive_years"] = sum(1 for v in ocf_5 if v > 0)
+
+            # Cumulative accrual ratio: (sum 3yr NP − sum 3yr OCF) / avg total_assets
+            if pl and isinstance(pl, dict) and bs and isinstance(bs, dict):
+                np_3 = _tail(pl.get("net_profit", []), 3)
+                ocf_3 = _tail(ocf_vals, 3)
+                ta_3 = _tail(bs.get("total_assets", []), 3)
+                if len(np_3) >= 2 and len(ocf_3) >= 2 and len(ta_3) >= 1:
+                    sum_np = sum(v for v in np_3 if v is not None)
+                    sum_ocf = sum(v for v in ocf_3 if v is not None)
+                    avg_ta = sum(v for v in ta_3 if v is not None) / max(len(ta_3), 1)
+                    if avg_ta > 0:
+                        out["cumulative_accrual_ratio"] = (sum_np - sum_ocf) / avg_ta
+
+        # ── From shareholding_quarterly ──
+        if sh and isinstance(sh, dict):
+            for cat_key, out_key in [
+                ("promoters", "promoter_trend_4q"),
+                ("fiis", "fii_trend_4q"),
+                ("diis", "dii_trend_4q"),
+            ]:
+                vals = sh.get(cat_key, [])
+                t = _tail(vals, 5)  # 5 quarters → 4-quarter change
+                if len(t) >= 2:
+                    out[out_key] = t[-1] - t[0]
+
+            # FII trend direction (monotonicity over 4 quarters)
+            fii_vals = _tail(sh.get("fiis", []), 5)
+            if len(fii_vals) >= 3:
+                diffs = [fii_vals[i] - fii_vals[i - 1] for i in range(1, len(fii_vals))]
+                pos = sum(1 for d in diffs if d > 0)
+                neg = sum(1 for d in diffs if d < 0)
+                if pos >= len(diffs) * 0.75:
+                    out["fii_trend_direction"] = "increasing"
+                elif neg >= len(diffs) * 0.75:
+                    out["fii_trend_direction"] = "decreasing"
+                else:
+                    out["fii_trend_direction"] = "stable"
+
+        return out
+
+    # ------------------------------------------------------------------
     # P&L extractor
     # ------------------------------------------------------------------
 
@@ -1193,7 +1385,6 @@ class DiscoverStockScraper(BaseScraper):
                     cg_data = self._extract_compounded_growth(html)
                     if cg_data:
                         fundamentals.update(cg_data)
-                        logger.debug("Compounded growth for %s: %s", nse_symbol, cg_data)
 
                     # --- Extract full historical tables (JSONB) ---
                     pl_full = self._extract_full_table(html, "profit-loss")
@@ -1205,15 +1396,9 @@ class DiscoverStockScraper(BaseScraper):
                     cf_full = self._extract_full_table(html, "cash-flow")
                     if cf_full:
                         fundamentals["cf_annual"] = cf_full
-
-                    logger.info(
-                        "Screener full tables for %s: pl=%s bs=%s cf=%s (html=%d)",
-                        nse_symbol,
-                        f"{len(pl_full.get('years', []))}yr/{len(pl_full)-1}rows" if pl_full else "NONE",
-                        f"{len(bs_full.get('years', []))}yr/{len(bs_full)-1}rows" if bs_full else "NONE",
-                        f"{len(cf_full.get('years', []))}yr/{len(cf_full)-1}rows" if cf_full else "NONE",
-                        len(html),
-                    )
+                    sh_full = self._extract_full_table(html, "shareholding")
+                    if sh_full:
+                        fundamentals["shareholding_quarterly"] = sh_full
 
                     return fundamentals, "screener_in"
                 except requests.exceptions.HTTPError as e:
@@ -1348,6 +1533,14 @@ class DiscoverStockScraper(BaseScraper):
         roe = row.get("roe")
         roce = row.get("roce")
 
+        # Blend with 3-year historical average when available (60% current, 40% historical)
+        hist_roe = row.get("_hist_avg_roe_3y")
+        if hist_roe is not None and roe is not None:
+            roe = roe * 0.6 + hist_roe * 0.4
+        hist_roce = row.get("_hist_avg_roce_3y")
+        if hist_roce is not None and roce is not None:
+            roce = roce * 0.6 + hist_roce * 0.4
+
         # Sanitize extreme outliers — cap at 100% to prevent
         # absurd scores from data anomalies (e.g. ROE 644%, ROCE 318%)
         if roe is not None:
@@ -1471,11 +1664,25 @@ class DiscoverStockScraper(BaseScraper):
             else:
                 parts["payout"] = max(20.0, 100 - payout * 80)
 
+        # Deleveraging signal (from bs_annual via historical metrics)
+        debt_traj = row.get("_hist_debt_trajectory")
+        if debt_traj is not None:
+            # negative = reducing debt = good; positive = leveraging up
+            parts["deleveraging"] = self._clamp(60 - debt_traj * 100)
+
+        # Multi-year OCF consistency (from cf_annual via historical metrics)
+        ocf_years = row.get("_hist_ocf_positive_years")
+        if ocf_years is not None:
+            parts["ocf_consistency"] = self._clamp(ocf_years / 5.0 * 100)
+
         if not parts:
             return None, {}
 
-        weights = {"fcf_yield": 0.30, "op_margin": 0.25, "profit_margin": 0.20,
-                    "net_cash": 0.15, "payout": 0.10}
+        weights = {
+            "fcf_yield": 0.25, "op_margin": 0.20, "profit_margin": 0.15,
+            "net_cash": 0.12, "payout": 0.08,
+            "deleveraging": 0.10, "ocf_consistency": 0.10,
+        }
         total_w = sum(weights.get(k, 0.10) for k in parts)
         score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
 
@@ -1525,7 +1732,10 @@ class DiscoverStockScraper(BaseScraper):
     # NEW: Ownership Score (weight 12%)
     # ---------------------------------------------------------------------------
     def _score_ownership(self, row: dict) -> tuple[float | None, dict]:
-        """Score based on promoter/FII/DII levels and QoQ trends."""
+        """Score based on promoter/FII/DII static levels only.
+
+        Trend/flow signals are now exclusively in Smart Money to avoid overlap.
+        """
         parts: dict[str, float] = {}
 
         promoter = row.get("promoter_holding")
@@ -1550,26 +1760,10 @@ class DiscoverStockScraper(BaseScraper):
             # DII > 25% = domestic institutional backing
             parts["dii_level"] = self._clamp(dii * 3 + 15)
 
-        # QoQ trend signals (buying = bullish, selling = bearish)
-        promoter_chg = row.get("promoter_holding_change")
-        if promoter_chg is not None:
-            parts["promoter_trend"] = self._clamp(50 + promoter_chg * 20)  # +0.5% → 60, -1% → 30
-
-        fii_chg = row.get("fii_holding_change")
-        if fii_chg is not None:
-            parts["fii_trend"] = self._clamp(50 + fii_chg * 15)
-
-        dii_chg = row.get("dii_holding_change")
-        if dii_chg is not None:
-            parts["dii_trend"] = self._clamp(50 + dii_chg * 15)
-
         if not parts:
             return None, {}
 
-        weights = {
-            "promoter_level": 0.25, "fii_level": 0.20, "dii_level": 0.15,
-            "promoter_trend": 0.20, "fii_trend": 0.10, "dii_trend": 0.10,
-        }
+        weights = {"promoter_level": 0.40, "fii_level": 0.30, "dii_level": 0.30}
         total_w = sum(weights.get(k, 0.10) for k in parts)
         score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
 
@@ -1711,6 +1905,32 @@ class DiscoverStockScraper(BaseScraper):
             candidates.append(("FII Buying", 4))
         if dii_chg is not None and dii_chg >= 1.0:
             candidates.append(("DII Buying", 4))
+
+        # --- Historical JSONB-derived tags ---
+        sales_cons = row.get("_hist_sales_growth_consistency", 0)
+        profit_cons = row.get("_hist_profit_growth_consistency", 0)
+        if sales_cons >= 4 and profit_cons >= 4:
+            candidates.append(("Consistent Compounder", 2))
+
+        debt_traj = row.get("_hist_debt_trajectory")
+        if debt_traj is not None and debt_traj < -0.15:
+            candidates.append(("Deleveraging", 4))
+
+        ocf_years = row.get("_hist_ocf_positive_years", 0)
+        if ocf_years >= 4:
+            candidates.append(("Strong Cash Flow", 4))
+
+        opm_trend = row.get("_hist_opm_trend_3y")
+        if opm_trend is not None and opm_trend >= 3:
+            candidates.append(("Margin Expansion", 4))
+
+        # Turnaround: negative profit 3yr ago, positive now
+        if profit_cons is not None and profit_cons >= 2:
+            pl_data = row.get("pl_annual")
+            if pl_data and isinstance(pl_data, dict) and "net_profit" in pl_data:
+                nps = [v for v in pl_data["net_profit"] if v is not None]
+                if len(nps) >= 4 and nps[-4] < 0 and nps[-1] > 0:
+                    candidates.append(("Turnaround", 3))
 
         # --- Technical trend tags (50/200 DMA) ---
         if fifty_dma and two_hundred_dma and last_price:
@@ -2158,6 +2378,12 @@ class DiscoverStockScraper(BaseScraper):
         for row in rows:
             symbol = str(row.get("symbol") or "")
             sector = str(row.get("sector") or "Other")
+
+            # Mine JSONB annual tables for multi-year trend signals
+            historical_metrics = self._compute_historical_metrics(row)
+            for _hk, _hv in historical_metrics.items():
+                row[f"_hist_{_hk}"] = _hv
+
             pct_raw = float(row.get("percent_change") or 0.0)
             pct = max(pct_lo, min(pct_hi, pct_raw))
             tv_log = math.log1p(max(0.0, float(row.get("traded_value") or 0.0)))
@@ -2271,29 +2497,49 @@ class DiscoverStockScraper(BaseScraper):
                         volatility_score = min(volatility_score, 50.0)
 
             # ── Growth (fundamental-only; price returns live in momentum) ──
-            # Prefer Screener compounded_sales_growth_3y > sales_growth_yoy > Yahoo revenue_growth.
-            # Cap at 50% to prevent M&A-inflated spikes from scoring 100.
+            # Blends sales growth (35%), profit growth (35%), and consistency (30%).
+            # Falls back to sales-only or price-based when historical data unavailable.
             has_growth = False
             growth_score: float | None = None
 
-            # Screener compounded sales growth (3Y) is the gold standard — filters M&A noise
+            # Sales growth signal
             csg_3y = row.get("compounded_sales_growth_3y")
             sg_yoy = row.get("sales_growth_yoy")
             rg = row.get("revenue_growth")
-
-            # Pick best growth signal
-            growth_signal = None
+            sales_growth_signal = None
             if csg_3y is not None:
-                growth_signal = csg_3y / 100.0  # Screener gives % as integer
+                sales_growth_signal = csg_3y / 100.0
             elif sg_yoy is not None:
-                growth_signal = sg_yoy
+                sales_growth_signal = sg_yoy
             elif rg is not None:
-                growth_signal = rg
+                sales_growth_signal = rg
 
-            if growth_signal is not None:
-                # Cap at 50% to avoid M&A/one-time spikes getting perfect 100
-                capped = min(growth_signal, 0.50)
-                growth_score = self._clamp(50 + capped * 200)  # 10% → 70, 25% → 100, >50% → 100
+            # Profit growth signal (from historical JSONB)
+            profit_cagr = row.get("_hist_profit_growth_3y_cagr")
+
+            # Consistency signals (from historical JSONB)
+            sales_cons = row.get("_hist_sales_growth_consistency", 0)
+            profit_cons = row.get("_hist_profit_growth_consistency", 0)
+
+            growth_parts: list[tuple[float, float]] = []  # (score, weight)
+
+            if sales_growth_signal is not None:
+                capped = min(sales_growth_signal, 0.50)
+                sales_score = self._clamp(50 + capped * 200)
+                growth_parts.append((sales_score, 0.35))
+
+            if profit_cagr is not None:
+                capped = min(profit_cagr, 0.50)
+                profit_score = self._clamp(50 + capped * 200)
+                growth_parts.append((profit_score, 0.35))
+
+            if sales_cons > 0 or profit_cons > 0:
+                consistency_score = self._clamp((sales_cons + profit_cons) / 10.0 * 100)
+                growth_parts.append((consistency_score, 0.30))
+
+            if growth_parts:
+                gw = sum(w for _, w in growth_parts)
+                growth_score = self._clamp(sum(s * (w / gw) for s, w in growth_parts))
                 has_growth = True
             else:
                 # Fallback: use price-based growth at 0.5× weight
@@ -2307,7 +2553,6 @@ class DiscoverStockScraper(BaseScraper):
                 if price_growth_parts:
                     pgw = sum(w for _, w in price_growth_parts)
                     raw_price_growth = self._clamp(sum(s * (w / pgw) for s, w in price_growth_parts))
-                    # Blend toward neutral (50) since this is a weak proxy
                     growth_score = self._clamp(50 + (raw_price_growth - 50) * 0.50)
                     has_growth = True
 
@@ -2345,6 +2590,12 @@ class DiscoverStockScraper(BaseScraper):
                 ref_pe = ind_pe_med or sector_medians.get(sector, {}).get("pe", 25.0)
                 pe_ratio_to_ref = pe_val / max(ref_pe, 1.0)
                 val_parts["pe_relative"] = self._clamp(100 - pe_ratio_to_ref * 50)
+
+            # Inject improved synthetic forward PE from historical EPS CAGR
+            improved_fwd_eps = row.get("_hist_improved_forward_eps")
+            lp = row.get("last_price")
+            if improved_fwd_eps and lp and lp > 0:
+                row["synthetic_forward_pe"] = lp / improved_fwd_eps
 
             # Forward PE discount/premium
             fpe = row.get("forward_pe") or row.get("synthetic_forward_pe")
@@ -2403,10 +2654,23 @@ class DiscoverStockScraper(BaseScraper):
                 # >3 = comfortable, >6 = strong, <1 = danger
                 eq_parts["interest_coverage"] = self._clamp(int_cov * 12)
 
+            # Cumulative accrual ratio (from historical JSONB)
+            accrual = row.get("_hist_cumulative_accrual_ratio")
+            if accrual is not None:
+                # Lower = higher quality; <0.1 = excellent, >0.5 = poor
+                eq_parts["accrual_quality"] = self._clamp(80 - accrual * 100)
+
+            # OPM stability (from historical JSONB)
+            opm_std = row.get("_hist_opm_std_5y")
+            if opm_std is not None:
+                # Lower std = more stable margins; <2 = excellent, >10 = volatile
+                eq_parts["margin_stability"] = self._clamp(90 - opm_std * 5)
+
             if eq_parts:
                 eq_weights = {
-                    "cfo_to_profit": 0.35, "margin_trend": 0.25,
-                    "reserves_growth": 0.20, "interest_coverage": 0.20,
+                    "cfo_to_profit": 0.25, "margin_trend": 0.20,
+                    "reserves_growth": 0.15, "interest_coverage": 0.15,
+                    "accrual_quality": 0.15, "margin_stability": 0.10,
                 }
                 eq_total = sum(eq_weights.get(k, 0.10) for k in eq_parts)
                 earnings_quality_score = round(
@@ -2414,8 +2678,8 @@ class DiscoverStockScraper(BaseScraper):
                 )
                 has_earnings_quality = True
 
-            # ── Smart Money component (NEW) ──
-            # FII/DII/Promoter holding changes + shareholder trend
+            # ── Smart Money component ──
+            # QoQ flows + multi-quarter sustained trends from shareholding_quarterly
             has_smart_money = False
             smart_money_score: float | None = None
             sm_parts: dict[str, float] = {}
@@ -2431,6 +2695,15 @@ class DiscoverStockScraper(BaseScraper):
             prom_chg = row.get("promoter_holding_change")
             if prom_chg is not None:
                 sm_parts["promoter_flow"] = self._clamp(50 + prom_chg * 25)
+
+            # Multi-quarter sustained trends (from shareholding_quarterly JSONB)
+            fii_4q = row.get("_hist_fii_trend_4q")
+            if fii_4q is not None:
+                sm_parts["fii_sustained"] = self._clamp(50 + fii_4q * 10)
+
+            promoter_4q = row.get("_hist_promoter_trend_4q")
+            if promoter_4q is not None:
+                sm_parts["promoter_sustained"] = self._clamp(50 + promoter_4q * 12)
 
             sh_yoy = row.get("num_shareholders_change_yoy")
             if sh_yoy is not None:
@@ -2448,8 +2721,9 @@ class DiscoverStockScraper(BaseScraper):
 
             if sm_parts:
                 sm_weights = {
-                    "fii_flow": 0.40, "dii_flow": 0.25,
-                    "promoter_flow": 0.25, "shareholder_trend": 0.10,
+                    "fii_flow": 0.20, "fii_sustained": 0.20,
+                    "dii_flow": 0.15, "promoter_flow": 0.15,
+                    "promoter_sustained": 0.15, "shareholder_trend": 0.15,
                 }
                 sm_total = sum(sm_weights.get(k, 0.10) for k in sm_parts)
                 smart_money_score = round(
@@ -2458,30 +2732,19 @@ class DiscoverStockScraper(BaseScraper):
                 has_smart_money = True
 
             # ── 10-component weighted total ──
-            # Fundamentals 18%, Momentum 16%, Growth 14%, Financial Health 14%,
-            # Valuation 12%, Ownership 10%, Smart Money 8%,
-            # Volatility 5%, Liquidity 3%
-            # (Earnings Quality folded into Financial Health as enhancement)
+            # Earnings Quality is now its own independent component.
             target_weights = {
-                "fundamentals": 0.18,
-                "momentum": 0.16,
-                "growth": 0.14,
-                "financial_health": 0.14,
-                "valuation": 0.12,
-                "ownership": 0.10,
+                "fundamentals": 0.16,
+                "momentum": 0.14,
+                "growth": 0.13,
+                "financial_health": 0.11,
+                "valuation": 0.11,
+                "earnings_quality": 0.09,
+                "ownership": 0.08,
                 "smart_money": 0.08,
                 "volatility": 0.05,
-                "liquidity": 0.03,
+                "liquidity": 0.05,
             }
-
-            # Blend earnings quality into financial health when available
-            if has_earnings_quality and has_financial_health:
-                financial_health_score = round(
-                    financial_health_score * 0.55 + earnings_quality_score * 0.45, 2
-                )
-            elif has_earnings_quality and not has_financial_health:
-                financial_health_score = earnings_quality_score
-                has_financial_health = True
 
             scores_map = {
                 "momentum": momentum,
@@ -2492,6 +2755,7 @@ class DiscoverStockScraper(BaseScraper):
                 "volatility": volatility_score if has_volatility else 0.0,
                 "ownership": ownership_score if has_ownership else 0.0,
                 "valuation": valuation_score if has_valuation else 0.0,
+                "earnings_quality": earnings_quality_score if has_earnings_quality else 0.0,
                 "smart_money": smart_money_score if has_smart_money else 0.0,
             }
 
@@ -2509,6 +2773,8 @@ class DiscoverStockScraper(BaseScraper):
                 if k == "ownership" and not has_ownership:
                     continue
                 if k == "valuation" and not has_valuation:
+                    continue
+                if k == "earnings_quality" and not has_earnings_quality:
                     continue
                 if k == "smart_money" and not has_smart_money:
                     continue
@@ -2832,6 +3098,7 @@ class DiscoverStockScraper(BaseScraper):
             "pl_annual": fundamentals.get("pl_annual"),
             "bs_annual": fundamentals.get("bs_annual"),
             "cf_annual": fundamentals.get("cf_annual"),
+            "shareholding_quarterly": fundamentals.get("shareholding_quarterly"),
             # Shareholder trends
             "num_shareholders_change_qoq": fundamentals.get("num_shareholders_change_qoq"),
             "num_shareholders_change_yoy": fundamentals.get("num_shareholders_change_yoy"),

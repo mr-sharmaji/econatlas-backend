@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from datetime import date, datetime, timezone
 from typing import Literal
 
 from app.core.database import get_pool, parse_ts, record_to_dict
-
-logger = logging.getLogger(__name__)
 
 STOCK_TABLE = "discover_stock_snapshots"
 MF_TABLE = "discover_mutual_fund_snapshots"
@@ -321,7 +318,7 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
             tags = []
     item["tags"] = tags if isinstance(tags, list) else []
     # Parse JSONB columns that come back as strings from asyncpg
-    for jkey in ("pl_annual", "bs_annual", "cf_annual"):
+    for jkey in ("pl_annual", "bs_annual", "cf_annual", "shareholding_quarterly"):
         val = item.get(jkey)
         if isinstance(val, str):
             try:
@@ -358,20 +355,6 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
         return 0
     pool = await get_pool()
     count = 0
-    # Log JSONB data presence for first row in batch (debug)
-    if rows:
-        _first = rows[0]
-        _has_pl = _first.get("pl_annual") is not None
-        _has_bs = _first.get("bs_annual") is not None
-        _has_cf = _first.get("cf_annual") is not None
-        if _has_pl or _has_bs or _has_cf:
-            logger.info(
-                "JSONB upsert batch[0] %s: pl=%s bs=%s cf=%s",
-                _first.get("symbol"),
-                type(_first.get("pl_annual")).__name__ if _has_pl else "None",
-                type(_first.get("bs_annual")).__name__ if _has_bs else "None",
-                type(_first.get("cf_annual")).__name__ if _has_cf else "None",
-            )
     async with pool.acquire() as conn:
         for row in rows:
             await conn.execute(
@@ -403,7 +386,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     num_shareholders_change_qoq, num_shareholders_change_yoy,
                     synthetic_forward_pe,
                     score_valuation, score_earnings_quality, score_smart_money,
-                    pl_annual, bs_annual, cf_annual
+                    pl_annual, bs_annual, cf_annual,
+                    shareholding_quarterly
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -431,7 +415,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     $81, $82,
                     $83,
                     $84, $85, $86,
-                    $87, $88, $89
+                    $87, $88, $89,
+                    $90
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -523,7 +508,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     score_smart_money = COALESCE(EXCLUDED.score_smart_money, {STOCK_TABLE}.score_smart_money),
                     pl_annual = COALESCE(EXCLUDED.pl_annual, {STOCK_TABLE}.pl_annual),
                     bs_annual = COALESCE(EXCLUDED.bs_annual, {STOCK_TABLE}.bs_annual),
-                    cf_annual = COALESCE(EXCLUDED.cf_annual, {STOCK_TABLE}.cf_annual)
+                    cf_annual = COALESCE(EXCLUDED.cf_annual, {STOCK_TABLE}.cf_annual),
+                    shareholding_quarterly = COALESCE(EXCLUDED.shareholding_quarterly, {STOCK_TABLE}.shareholding_quarterly)
                 """,
                 str(row.get("market") or "IN"),                                    # $1
                 str(row.get("symbol") or ""),                                      # $2
@@ -615,6 +601,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 json.dumps(row.get("pl_annual")) if row.get("pl_annual") else None,  # $87
                 json.dumps(row.get("bs_annual")) if row.get("bs_annual") else None,  # $88
                 json.dumps(row.get("cf_annual")) if row.get("cf_annual") else None,  # $89
+                json.dumps(row.get("shareholding_quarterly")) if row.get("shareholding_quarterly") else None,  # $90
             )
             count += 1
     return count
@@ -969,7 +956,7 @@ async def list_discover_stocks(
             cash_from_operations, cash_from_investing, cash_from_financing,
             num_shareholders_change_qoq, num_shareholders_change_yoy,
             synthetic_forward_pe,
-            pl_annual, bs_annual, cf_annual,
+            pl_annual, bs_annual, cf_annual, shareholding_quarterly,
             percent_change_3m, percent_change_1w,
             percent_change_1y, percent_change_3y,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,
@@ -1869,7 +1856,7 @@ async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
             cash_from_operations, cash_from_investing, cash_from_financing,
             num_shareholders_change_qoq, num_shareholders_change_yoy,
             synthetic_forward_pe,
-            pl_annual, bs_annual, cf_annual,
+            pl_annual, bs_annual, cf_annual, shareholding_quarterly,
             percent_change_3m, percent_change_1w,
             percent_change_1y, percent_change_3y,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,

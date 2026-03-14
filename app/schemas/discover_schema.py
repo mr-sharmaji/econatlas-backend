@@ -120,6 +120,7 @@ class DiscoverStockItemResponse(BaseModel):
     pl_annual: dict | None = None
     bs_annual: dict | None = None
     cf_annual: dict | None = None
+    shareholding_quarterly: dict | None = None
     score_breakdown: DiscoverStockScoreBreakdown
     tags: list[str] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)

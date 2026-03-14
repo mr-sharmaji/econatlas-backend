@@ -522,3 +522,6 @@ ALTER TABLE discover_stock_snapshots ALTER COLUMN score_breakdown DROP NOT NULL;
 ALTER TABLE discover_stock_snapshots ALTER COLUMN score_breakdown DROP DEFAULT;
 ALTER TABLE discover_stock_snapshots ALTER COLUMN tags DROP NOT NULL;
 ALTER TABLE discover_stock_snapshots ALTER COLUMN tags DROP DEFAULT;
+
+-- v0.6: Shareholding quarterly history (12 quarters from Screener)
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS shareholding_quarterly JSONB;
