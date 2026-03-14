@@ -733,6 +733,76 @@ class DiscoverStockScraper(BaseScraper):
         return nums
 
     # ------------------------------------------------------------------
+    # Full table extractor (complete YoY history as JSONB)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_full_table(html: str, section_id: str) -> dict | None:
+        """Extract complete table from a Screener.in section as JSONB-ready dict.
+
+        Returns dict with:
+          "years": ["Mar 2014", ..., "Mar 2025"],
+          "sales": [389178, 328013, ...],
+          "expenses": [358244, ...],
+          ...
+        Returns None if the section is not found.
+        """
+        match = re.search(rf'id="{section_id}"', html)
+        if not match:
+            return None
+        chunk = html[match.start(): match.start() + 30000]
+
+        # Extract year headers from <thead>
+        thead = re.search(r'<thead>(.*?)</thead>', chunk, re.DOTALL)
+        years = (
+            re.findall(r'>\s*((?:Mar|Jun|Sep|Dec)\s+\d{4})\s*<', thead.group(1))
+            if thead else []
+        )
+        if not years:
+            return None
+
+        result: dict = {"years": years}
+
+        # Extract each <tr> in <tbody>
+        tbody_match = re.search(r'<tbody>(.*?)</tbody>', chunk, re.DOTALL)
+        if not tbody_match:
+            return result
+        tbody = tbody_match.group(1)
+        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', tbody, re.DOTALL)
+
+        for tr in rows:
+            tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
+            if len(tds) < 2:
+                continue
+            # First td = label
+            label_raw = re.sub(r'<[^>]+>', '', tds[0]).strip()
+            label = label_raw.replace('\xa0', ' ').replace('&nbsp;', ' ').rstrip(' +').strip()
+            if not label:
+                continue
+            # Normalize to snake_case key
+            key = label.lower().replace(' ', '_').replace('%', 'pct').replace('.', '')
+            key = re.sub(r'[^a-z0-9_]', '', key)
+            # Clean common suffixes from Screener HTML
+            key = re.sub(r'nbsp$', '', key)
+            # Remaining tds = values (one per year)
+            values: list[float | None] = []
+            for td in tds[1:]:
+                text = re.sub(r'<[^>]+>', '', td).strip().replace(',', '')
+                if text == '' or text == '-':
+                    values.append(None)
+                elif '%' in text:
+                    m = re.search(r'([\-]?\d+)', text)
+                    values.append(float(m.group(1)) if m else None)
+                else:
+                    try:
+                        values.append(float(text))
+                    except ValueError:
+                        values.append(None)
+            result[key] = values
+
+        return result
+
+    # ------------------------------------------------------------------
     # P&L extractor
     # ------------------------------------------------------------------
 
@@ -1123,6 +1193,17 @@ class DiscoverStockScraper(BaseScraper):
                     cg_data = self._extract_compounded_growth(html)
                     if cg_data:
                         fundamentals.update(cg_data)
+
+                    # --- Extract full historical tables (JSONB) ---
+                    pl_full = self._extract_full_table(html, "profit-loss")
+                    if pl_full:
+                        fundamentals["pl_annual"] = pl_full
+                    bs_full = self._extract_full_table(html, "balance-sheet")
+                    if bs_full:
+                        fundamentals["bs_annual"] = bs_full
+                    cf_full = self._extract_full_table(html, "cash-flow")
+                    if cf_full:
+                        fundamentals["cf_annual"] = cf_full
 
                     return fundamentals, "screener_in"
                 except requests.exceptions.HTTPError as e:
@@ -2737,6 +2818,10 @@ class DiscoverStockScraper(BaseScraper):
             "cash_from_operations": fundamentals.get("cash_from_operations"),
             "cash_from_investing": fundamentals.get("cash_from_investing"),
             "cash_from_financing": fundamentals.get("cash_from_financing"),
+            # Full historical tables (JSONB)
+            "pl_annual": fundamentals.get("pl_annual"),
+            "bs_annual": fundamentals.get("bs_annual"),
+            "cf_annual": fundamentals.get("cf_annual"),
             # Shareholder trends
             "num_shareholders_change_qoq": fundamentals.get("num_shareholders_change_qoq"),
             "num_shareholders_change_yoy": fundamentals.get("num_shareholders_change_yoy"),

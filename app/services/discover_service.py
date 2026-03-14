@@ -317,6 +317,14 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
         except (ValueError, TypeError):
             tags = []
     item["tags"] = tags if isinstance(tags, list) else []
+    # Parse JSONB columns that come back as strings from asyncpg
+    for jkey in ("pl_annual", "bs_annual", "cf_annual"):
+        val = item.get(jkey)
+        if isinstance(val, str):
+            try:
+                item[jkey] = _json.loads(val)
+            except (ValueError, TypeError):
+                item[jkey] = None
     item["why_ranked"] = _stock_why_ranked(item, sector_stats)
     item["quality_tier"] = _compute_quality_tier(_to_float(item.get("score")))
     return item
@@ -377,7 +385,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     cash_from_operations, cash_from_investing, cash_from_financing,
                     num_shareholders_change_qoq, num_shareholders_change_yoy,
                     synthetic_forward_pe,
-                    score_valuation, score_earnings_quality, score_smart_money
+                    score_valuation, score_earnings_quality, score_smart_money,
+                    pl_annual, bs_annual, cf_annual
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -404,7 +413,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     $78, $79, $80,
                     $81, $82,
                     $83,
-                    $84, $85, $86
+                    $84, $85, $86,
+                    $87, $88, $89
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -493,7 +503,10 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     synthetic_forward_pe = EXCLUDED.synthetic_forward_pe,
                     score_valuation = COALESCE(EXCLUDED.score_valuation, {STOCK_TABLE}.score_valuation),
                     score_earnings_quality = COALESCE(EXCLUDED.score_earnings_quality, {STOCK_TABLE}.score_earnings_quality),
-                    score_smart_money = COALESCE(EXCLUDED.score_smart_money, {STOCK_TABLE}.score_smart_money)
+                    score_smart_money = COALESCE(EXCLUDED.score_smart_money, {STOCK_TABLE}.score_smart_money),
+                    pl_annual = COALESCE(EXCLUDED.pl_annual, {STOCK_TABLE}.pl_annual),
+                    bs_annual = COALESCE(EXCLUDED.bs_annual, {STOCK_TABLE}.bs_annual),
+                    cf_annual = COALESCE(EXCLUDED.cf_annual, {STOCK_TABLE}.cf_annual)
                 """,
                 str(row.get("market") or "IN"),                                    # $1
                 str(row.get("symbol") or ""),                                      # $2
@@ -582,6 +595,9 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("score_valuation")),                               # $84
                 _to_float(row.get("score_earnings_quality")),                        # $85
                 _to_float(row.get("score_smart_money")),                             # $86
+                json.dumps(row.get("pl_annual")) if row.get("pl_annual") else None,  # $87
+                json.dumps(row.get("bs_annual")) if row.get("bs_annual") else None,  # $88
+                json.dumps(row.get("cf_annual")) if row.get("cf_annual") else None,  # $89
             )
             count += 1
     return count
@@ -930,6 +946,13 @@ async def list_discover_stocks(
             score_financial_health, score_ownership, score_analyst,
             score_valuation, score_earnings_quality, score_smart_money,
             pledged_promoter_pct,
+            sales_growth_yoy, profit_growth_yoy, opm_change, interest_coverage,
+            compounded_sales_growth_3y, compounded_profit_growth_3y,
+            total_assets, asset_growth_yoy, reserves_growth, debt_direction, cwip,
+            cash_from_operations, cash_from_investing, cash_from_financing,
+            num_shareholders_change_qoq, num_shareholders_change_yoy,
+            synthetic_forward_pe,
+            pl_annual, bs_annual, cf_annual,
             percent_change_3m, percent_change_1w,
             percent_change_1y, percent_change_3y,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,
@@ -1823,6 +1846,13 @@ async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
             score_financial_health, score_ownership, score_analyst,
             score_valuation, score_earnings_quality, score_smart_money,
             pledged_promoter_pct,
+            sales_growth_yoy, profit_growth_yoy, opm_change, interest_coverage,
+            compounded_sales_growth_3y, compounded_profit_growth_3y,
+            total_assets, asset_growth_yoy, reserves_growth, debt_direction, cwip,
+            cash_from_operations, cash_from_investing, cash_from_financing,
+            num_shareholders_change_qoq, num_shareholders_change_yoy,
+            synthetic_forward_pe,
+            pl_annual, bs_annual, cf_annual,
             percent_change_3m, percent_change_1w,
             percent_change_1y, percent_change_3y,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,

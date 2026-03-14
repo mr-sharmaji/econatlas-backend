@@ -98,6 +98,28 @@ class DiscoverStockItemResponse(BaseModel):
     percent_change_1w: float | None = None
     percent_change_1y: float | None = None
     percent_change_3y: float | None = None
+    # Screener-derived signals
+    sales_growth_yoy: float | None = None
+    profit_growth_yoy: float | None = None
+    opm_change: float | None = None
+    interest_coverage: float | None = None
+    compounded_sales_growth_3y: float | None = None
+    compounded_profit_growth_3y: float | None = None
+    total_assets: float | None = None
+    asset_growth_yoy: float | None = None
+    reserves_growth: float | None = None
+    debt_direction: float | None = None
+    cwip: float | None = None
+    cash_from_operations: float | None = None
+    cash_from_investing: float | None = None
+    cash_from_financing: float | None = None
+    num_shareholders_change_qoq: float | None = None
+    num_shareholders_change_yoy: float | None = None
+    synthetic_forward_pe: float | None = None
+    # Complete annual financial tables (JSONB — full YoY history)
+    pl_annual: dict | None = None
+    bs_annual: dict | None = None
+    cf_annual: dict | None = None
     score_breakdown: DiscoverStockScoreBreakdown
     tags: list[str] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)

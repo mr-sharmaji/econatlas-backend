@@ -502,3 +502,8 @@ ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS synthetic_forward_
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_valuation DOUBLE PRECISION;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_earnings_quality DOUBLE PRECISION;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_smart_money DOUBLE PRECISION;
+
+-- v0.5: Complete Screener financial tables (full YoY history as JSONB)
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS pl_annual JSONB;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS bs_annual JSONB;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS cf_annual JSONB;
