@@ -143,16 +143,29 @@ def _stock_breakdown_payload(row: dict) -> dict:
         result["earnings_quality"] = round(earnings_quality, 2)
     if smart_money:
         result["smart_money"] = round(smart_money, 2)
-    # Additional coverage/quality metadata
-    pos_52w = _to_float(row.get("position_52w"))
+    # Additional coverage/quality metadata from the stored score_breakdown JSON
+    import json as _json
+    stored_sb = row.get("score_breakdown")
+    if isinstance(stored_sb, str):
+        try:
+            stored_sb = _json.loads(stored_sb)
+        except (ValueError, TypeError):
+            stored_sb = {}
+    elif not isinstance(stored_sb, dict):
+        stored_sb = {}
+
+    pos_52w = _to_float(stored_sb.get("52w_position") or row.get("position_52w"))
     if pos_52w is not None:
         result["52w_position"] = round(pos_52w, 2)
-    fc = row.get("fundamentals_coverage")
+    fc = stored_sb.get("fundamentals_coverage") or row.get("fundamentals_coverage")
     if fc:
         result["fundamentals_coverage"] = str(fc)
-    dq = row.get("data_quality")
+    dq = stored_sb.get("data_quality") or row.get("data_quality")
     if dq:
         result["data_quality"] = str(dq)
+    wn = stored_sb.get("why_narrative")
+    if wn:
+        result["why_narrative"] = str(wn)
     return result
 
 
@@ -293,10 +306,16 @@ def _compute_quality_badges(row: dict) -> list[str]:
 
 
 def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
+    import json as _json
     item = dict(row)
     item["source_status"] = _normalize_source_status(item.get("source_status"))
     item["score_breakdown"] = _stock_breakdown_payload(item)
     tags = item.get("tags")
+    if isinstance(tags, str):
+        try:
+            tags = _json.loads(tags)
+        except (ValueError, TypeError):
+            tags = []
     item["tags"] = tags if isinstance(tags, list) else []
     item["why_ranked"] = _stock_why_ranked(item, sector_stats)
     item["quality_tier"] = _compute_quality_tier(_to_float(item.get("score")))
