@@ -2158,10 +2158,21 @@ async def run_discover_stock_job() -> None:
         #    Incremental upsert every 50 rows for early DB visibility (unscored).
         loop = asyncio.get_event_loop()
 
+        # Keys that only exist after scoring — strip from incremental upserts
+        # so we don't overwrite existing scores with 0/None.
+        _SCORE_KEYS = {
+            "score", "score_momentum", "score_liquidity", "score_fundamentals",
+            "score_volatility", "score_growth", "score_financial_health",
+            "score_ownership", "score_analyst", "score_breakdown",
+            "quality_tier", "tags", "why_ranked",
+        }
+
         def _incremental_upsert(batch: list[dict]) -> None:
             """Called from sync thread every 50 rows — upserts raw (unscored) data."""
+            # Strip score fields so we don't overwrite existing scores with 0/None
+            clean_batch = [{k: v for k, v in row.items() if k not in _SCORE_KEYS} for row in batch]
             future = asyncio.run_coroutine_threadsafe(
-                discover_service.upsert_discover_stock_snapshots(batch),
+                discover_service.upsert_discover_stock_snapshots(clean_batch),
                 loop,
             )
             try:
