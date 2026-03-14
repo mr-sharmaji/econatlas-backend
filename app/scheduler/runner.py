@@ -25,6 +25,7 @@ def _get_intervals() -> dict:
         "crypto_seconds": getattr(settings, "crypto_interval_seconds", None),
         "crypto_minutes": getattr(settings, "crypto_interval_minutes", 1),
         "brief_minutes": getattr(settings, "brief_interval_minutes", 5),
+        "discover_cron_enabled": getattr(settings, "discover_cron_enabled", False),
         "discover_stock_daily_hour_ist": getattr(settings, "discover_stock_daily_hour_ist", 16),
         "discover_stock_daily_minute_ist": getattr(settings, "discover_stock_daily_minute_ist", 0),
         "discover_stock_daily_days": getattr(settings, "discover_stock_daily_days", "mon-fri"),
@@ -164,74 +165,88 @@ def start_scheduler() -> None:
         logger.info("Scheduler: crypto every %dm", intervals["crypto_minutes"])
 
     _scheduler.add_job(_run_brief, "interval", minutes=intervals["brief_minutes"], id="brief", replace_existing=True)
-    _scheduler.add_job(
-        _run_discover_stock,
-        "cron",
-        day_of_week=intervals["discover_stock_daily_days"],
-        hour=intervals["discover_stock_daily_hour_ist"],
-        minute=intervals["discover_stock_daily_minute_ist"],
-        timezone="Asia/Kolkata",
-        id="discover_stock",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=10800,
-    )
-    if intervals["discover_stock_retry_enabled"]:
+    if intervals["discover_cron_enabled"]:
         _scheduler.add_job(
-            _run_discover_stock_retry,
+            _run_discover_stock,
             "cron",
             day_of_week=intervals["discover_stock_daily_days"],
-            hour=intervals["discover_stock_retry_hour_ist"],
-            minute=intervals["discover_stock_retry_minute_ist"],
+            hour=intervals["discover_stock_daily_hour_ist"],
+            minute=intervals["discover_stock_daily_minute_ist"],
             timezone="Asia/Kolkata",
-            id="discover_stock_retry",
+            id="discover_stock",
             replace_existing=True,
             max_instances=1,
             coalesce=True,
             misfire_grace_time=10800,
         )
-    _scheduler.add_job(
-        _run_discover_mutual_funds,
-        "cron",
-        day_of_week=intervals["discover_mf_daily_days"],
-        hour=intervals["discover_mf_daily_hour_ist"],
-        minute=intervals["discover_mf_daily_minute_ist"],
-        timezone="Asia/Kolkata",
-        id="discover_mutual_funds",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=10800,
-    )
-    # Daily stock price history update (runs 30 min after stock snapshot job)
-    _scheduler.add_job(
-        _run_discover_stock_price,
-        "cron",
-        day_of_week=intervals["discover_stock_daily_days"],
-        hour=intervals["discover_stock_daily_hour_ist"],
-        minute=intervals["discover_stock_daily_minute_ist"] + 30,
-        timezone="Asia/Kolkata",
-        id="discover_stock_price",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=10800,
-    )
-    # Daily MF NAV history update (runs 30 min after MF snapshot job)
-    _scheduler.add_job(
-        _run_discover_mf_nav,
-        "cron",
-        day_of_week=intervals["discover_mf_daily_days"],
-        hour=intervals["discover_mf_daily_hour_ist"],
-        minute=intervals["discover_mf_daily_minute_ist"] + 30,
-        timezone="Asia/Kolkata",
-        id="discover_mf_nav",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=10800,
-    )
+        if intervals["discover_stock_retry_enabled"]:
+            _scheduler.add_job(
+                _run_discover_stock_retry,
+                "cron",
+                day_of_week=intervals["discover_stock_daily_days"],
+                hour=intervals["discover_stock_retry_hour_ist"],
+                minute=intervals["discover_stock_retry_minute_ist"],
+                timezone="Asia/Kolkata",
+                id="discover_stock_retry",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=10800,
+            )
+        _scheduler.add_job(
+            _run_discover_mutual_funds,
+            "cron",
+            day_of_week=intervals["discover_mf_daily_days"],
+            hour=intervals["discover_mf_daily_hour_ist"],
+            minute=intervals["discover_mf_daily_minute_ist"],
+            timezone="Asia/Kolkata",
+            id="discover_mutual_funds",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=10800,
+        )
+        # Daily stock price history update (runs 30 min after stock snapshot job)
+        _scheduler.add_job(
+            _run_discover_stock_price,
+            "cron",
+            day_of_week=intervals["discover_stock_daily_days"],
+            hour=intervals["discover_stock_daily_hour_ist"],
+            minute=intervals["discover_stock_daily_minute_ist"] + 30,
+            timezone="Asia/Kolkata",
+            id="discover_stock_price",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=10800,
+        )
+        # Daily MF NAV history update (runs 30 min after MF snapshot job)
+        _scheduler.add_job(
+            _run_discover_mf_nav,
+            "cron",
+            day_of_week=intervals["discover_mf_daily_days"],
+            hour=intervals["discover_mf_daily_hour_ist"],
+            minute=intervals["discover_mf_daily_minute_ist"] + 30,
+            timezone="Asia/Kolkata",
+            id="discover_mf_nav",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=10800,
+        )
+        logger.info(
+            "Scheduler: discover cron ENABLED — stocks %s@%02d:%02d IST, MF %s@%02d:%02d IST",
+            intervals["discover_stock_daily_days"],
+            intervals["discover_stock_daily_hour_ist"],
+            intervals["discover_stock_daily_minute_ist"],
+            intervals["discover_mf_daily_days"],
+            intervals["discover_mf_daily_hour_ist"],
+            intervals["discover_mf_daily_minute_ist"],
+        )
+    else:
+        logger.warning(
+            "Scheduler: discover cron DISABLED — use /ops/jobs/trigger to run manually"
+        )
     _scheduler.add_job(
         _run_ipo,
         "interval",
