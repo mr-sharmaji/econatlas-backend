@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 import logging
 import math
 import re
@@ -816,10 +817,25 @@ class DiscoverStockScraper(BaseScraper):
         import statistics
 
         out: dict = {}
-        pl = row.get("pl_annual")
-        bs = row.get("bs_annual")
-        cf = row.get("cf_annual")
-        sh = row.get("shareholding_quarterly")
+
+        def _ensure_dict(val: object) -> dict | None:
+            if val is None:
+                return None
+            if isinstance(val, dict):
+                return val
+            if isinstance(val, str):
+                try:
+                    parsed = json.loads(val)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except (ValueError, TypeError):
+                    pass
+            return None
+
+        pl = _ensure_dict(row.get("pl_annual"))
+        bs = _ensure_dict(row.get("bs_annual"))
+        cf = _ensure_dict(row.get("cf_annual"))
+        sh = _ensure_dict(row.get("shareholding_quarterly"))
 
         def _tail(lst: list | None, n: int) -> list:
             """Last n non-None values from list."""
@@ -856,7 +872,7 @@ class DiscoverStockScraper(BaseScraper):
             net_profits = pl.get("net_profit", [])
             sales = pl.get("sales", [])
             opm_vals = pl.get("opm_pct") or pl.get("opm_pct", [])
-            eps_vals = pl.get("eps", [])
+            eps_vals = pl.get("eps_in_rs") or pl.get("eps", [])
 
             # Profit growth 3Y CAGR
             tail_np = _tail(net_profits, 4)
