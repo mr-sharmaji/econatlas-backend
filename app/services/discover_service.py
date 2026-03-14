@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import date, datetime, timezone
 from typing import Literal
@@ -48,7 +49,10 @@ def _to_float(value) -> float | None:
     try:
         if value is None:
             return None
-        return float(value)
+        f = float(value)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
     except (TypeError, ValueError):
         return None
 
@@ -78,9 +82,37 @@ def _to_date(value) -> date | None:
     return None
 
 
+def _safe_json_dumps(obj) -> str:
+    """JSON serialize with NaN/Inf replaced by None."""
+    def _sanitize(o):
+        if isinstance(o, float) and (math.isnan(o) or math.isinf(o)):
+            return None
+        return o
+
+    class _SafeEncoder(json.JSONEncoder):
+        def default(self, o):
+            if isinstance(o, float) and (math.isnan(o) or math.isinf(o)):
+                return None
+            return super().default(o)
+
+        def encode(self, o):
+            return super().encode(_walk(o))
+
+    def _walk(node):
+        if isinstance(node, dict):
+            return {k: _walk(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [_walk(v) for v in node]
+        if isinstance(node, float) and (math.isnan(node) or math.isinf(node)):
+            return None
+        return node
+
+    return json.dumps(_walk(obj), separators=(",", ":"), ensure_ascii=True)
+
+
 def _to_jsonb(value, default):
     payload = value if value is not None else default
-    return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+    return _safe_json_dumps(payload)
 
 
 def _to_jsonb_raw(value) -> str | None:
@@ -94,17 +126,17 @@ def _to_jsonb_raw(value) -> str | None:
     if value is None:
         return None
     if isinstance(value, dict):
-        return json.dumps(value, separators=(",", ":"), ensure_ascii=True)
+        return _safe_json_dumps(value)
     if isinstance(value, str):
         # Could be a previously double-encoded string — try to parse it
         try:
             parsed = json.loads(value)
             if isinstance(parsed, dict):
-                return json.dumps(parsed, separators=(",", ":"), ensure_ascii=True)
+                return _safe_json_dumps(parsed)
         except (ValueError, TypeError):
             pass
         return value
-    return json.dumps(value, separators=(",", ":"), ensure_ascii=True)
+    return _safe_json_dumps(value)
 
 
 def _normalize_source_status(value: str | None) -> SourceStatus:
