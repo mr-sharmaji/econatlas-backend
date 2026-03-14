@@ -122,9 +122,13 @@ async def _startup_collection() -> None:
     logger.info("Enqueuing startup data collection...")
     startup_jobs = [
         "market", "commodity", "crypto", "brief",
-        "discover_stock", "discover_mutual_funds",
         "ipo", "macro", "tax", "news",
     ]
+    settings = get_settings()
+    if getattr(settings, "discover_cron_enabled", False):
+        startup_jobs.extend(["discover_stock", "discover_mutual_funds"])
+    else:
+        logger.info("Skipping discover jobs at startup (discover_cron_enabled=false)")
     for name in startup_jobs:
         await _enqueue(name, job_id=f"startup_{name}")
     logger.info("Startup data collection enqueued (%d jobs).", len(startup_jobs))

@@ -255,7 +255,9 @@ async def clear_abort(
 ) -> dict:
     """Clear an abort flag so the job can run again."""
     _authorize(x_ops_token)
-    pool = get_redis_pool()
+    from app.queue.redis_pool import get_redis_pool
+
+    pool = await get_redis_pool()
     abort_key = f"job:abort:{job_name}"
     deleted = await pool.delete(abort_key)
     logger.info("Cleared abort flag for %s (deleted=%d)", job_name, deleted)
