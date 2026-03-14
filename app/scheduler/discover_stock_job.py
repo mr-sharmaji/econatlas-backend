@@ -67,6 +67,7 @@ _SCREENER_BROAD_SECTOR_MAP: dict[str, str] = {
     "consumer services": "Services",
     "oil gas & consumable fuels": "Energy",
     "power": "Energy",
+    "commodities": "Commodities",
     "realty": "Real Estate",
 }
 
@@ -212,6 +213,7 @@ _SECTOR_LAYER_WEIGHTS: dict[str, dict[str, float]] = {
     "Services":               {"quality": 0.30, "valuation": 0.25, "growth": 0.20, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
     "Media & Entertainment":  {"quality": 0.25, "valuation": 0.25, "growth": 0.25, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
     "Diversified":            {"quality": 0.30, "valuation": 0.25, "growth": 0.20, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
+    "Commodities":            {"quality": 0.20, "valuation": 0.25, "growth": 0.15, "momentum": 0.25, "institutional": 0.10, "risk": 0.05},
 }
 
 # Sub-metric weights within Quality layer, per sector
@@ -228,6 +230,13 @@ _SECTOR_QUALITY_WEIGHTS: dict[str, dict[str, float]] = {
     "Energy":       {"roce": 0.25, "op_margin": 0.20, "fcf_yield": 0.20, "margin_stability": 0.15, "net_cash": 0.10, "ocf_consistency": 0.10},
     "Materials":    {"roce": 0.25, "op_margin": 0.20, "fcf_yield": 0.20, "margin_stability": 0.15, "net_cash": 0.10, "ocf_consistency": 0.10},
     "Chemicals":    {"roce": 0.25, "op_margin": 0.20, "cwip_to_assets": 0.15, "fcf_yield": 0.15, "margin_stability": 0.15, "profit_consistency": 0.10},
+    "Consumer Discretionary": {"roe": 0.20, "roce": 0.20, "op_margin": 0.20, "fcf_yield": 0.15, "margin_stability": 0.15, "profit_consistency": 0.10},
+    "Telecom":      {"roce": 0.25, "op_margin": 0.25, "fcf_yield": 0.20, "profit_consistency": 0.15, "net_cash": 0.15},
+    "Textiles":     {"roce": 0.25, "op_margin": 0.25, "margin_stability": 0.20, "fcf_yield": 0.15, "profit_consistency": 0.15},
+    "Services":     {"roe": 0.25, "op_margin": 0.25, "fcf_yield": 0.20, "profit_consistency": 0.15, "ocf_consistency": 0.15},
+    "Media & Entertainment": {"roe": 0.20, "op_margin": 0.25, "fcf_yield": 0.20, "profit_consistency": 0.20, "margin_stability": 0.15},
+    "Diversified":  {"roe": 0.25, "roce": 0.20, "op_margin": 0.15, "fcf_yield": 0.15, "profit_consistency": 0.15, "net_cash": 0.10},
+    "Commodities":  {"roce": 0.25, "op_margin": 0.25, "fcf_yield": 0.20, "margin_stability": 0.15, "net_cash": 0.15},
 }
 
 # Sub-metric weights within Valuation layer, per sector
@@ -239,10 +248,45 @@ _SECTOR_VALUATION_WEIGHTS: dict[str, dict[str, float]] = {
     "Utilities":    {"div_yield": 0.35, "peg": 0.25, "pe_relative": 0.20, "pb_relative": 0.20},
     "Energy":       {"pb_relative": 0.30, "peg": 0.25, "pe_relative": 0.20, "div_yield": 0.15, "forward_pe": 0.10},
     "Materials":    {"pb_relative": 0.30, "peg": 0.25, "pe_relative": 0.20, "div_yield": 0.15, "forward_pe": 0.10},
+    "Healthcare":   {"peg": 0.40, "pe_relative": 0.25, "forward_pe": 0.15, "pb_relative": 0.10, "div_yield": 0.10},
+    "Industrials":  {"peg": 0.30, "pe_relative": 0.25, "pb_relative": 0.20, "forward_pe": 0.15, "div_yield": 0.10},
+    "FMCG":         {"peg": 0.30, "pe_relative": 0.30, "forward_pe": 0.15, "div_yield": 0.15, "pb_relative": 0.10},
+    "Auto":         {"peg": 0.30, "pe_relative": 0.25, "pb_relative": 0.20, "forward_pe": 0.15, "div_yield": 0.10},
+    "Chemicals":    {"peg": 0.35, "pe_relative": 0.25, "pb_relative": 0.15, "forward_pe": 0.15, "div_yield": 0.10},
+    "Telecom":      {"peg": 0.30, "pe_relative": 0.20, "pb_relative": 0.20, "forward_pe": 0.15, "div_yield": 0.15},
+    "Consumer Discretionary": {"peg": 0.35, "pe_relative": 0.25, "pb_relative": 0.15, "forward_pe": 0.15, "div_yield": 0.10},
+    "Textiles":     {"peg": 0.25, "pe_relative": 0.25, "pb_relative": 0.25, "forward_pe": 0.10, "div_yield": 0.15},
+    "Services":     {"peg": 0.35, "pe_relative": 0.25, "forward_pe": 0.15, "pb_relative": 0.15, "div_yield": 0.10},
+    "Media & Entertainment": {"peg": 0.35, "pe_relative": 0.25, "forward_pe": 0.15, "pb_relative": 0.15, "div_yield": 0.10},
+    "Diversified":  {"peg": 0.30, "pe_relative": 0.25, "pb_relative": 0.20, "forward_pe": 0.10, "div_yield": 0.15},
+    "Commodities":  {"pb_relative": 0.30, "peg": 0.25, "pe_relative": 0.20, "div_yield": 0.15, "forward_pe": 0.10},
+}
+
+# Sub-metric weights within Growth layer, per sector
+_SECTOR_GROWTH_WEIGHTS: dict[str, dict[str, float]] = {
+    "DEFAULT":      {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.25, "compounding_bonus": 0.15},
+    "Financials":   {"revenue_cagr": 0.20, "profit_cagr": 0.35, "consistency": 0.30, "compounding_bonus": 0.15},
+    "IT":           {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.20, "compounding_bonus": 0.20},
+    "Healthcare":   {"revenue_cagr": 0.30, "profit_cagr": 0.25, "consistency": 0.25, "compounding_bonus": 0.20},
+    "Real Estate":  {"revenue_cagr": 0.25, "profit_cagr": 0.30, "consistency": 0.35, "compounding_bonus": 0.10},
+    "Industrials":  {"revenue_cagr": 0.25, "profit_cagr": 0.25, "consistency": 0.35, "compounding_bonus": 0.15},
+    "FMCG":         {"revenue_cagr": 0.35, "profit_cagr": 0.25, "consistency": 0.30, "compounding_bonus": 0.10},
+    "Auto":         {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.20, "compounding_bonus": 0.20},
+    "Utilities":    {"revenue_cagr": 0.20, "profit_cagr": 0.25, "consistency": 0.40, "compounding_bonus": 0.15},
+    "Energy":       {"revenue_cagr": 0.25, "profit_cagr": 0.30, "consistency": 0.30, "compounding_bonus": 0.15},
+    "Materials":    {"revenue_cagr": 0.25, "profit_cagr": 0.30, "consistency": 0.30, "compounding_bonus": 0.15},
+    "Chemicals":    {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.20, "compounding_bonus": 0.20},
+    "Telecom":      {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.25, "compounding_bonus": 0.15},
+    "Consumer Discretionary": {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.25, "compounding_bonus": 0.15},
+    "Textiles":     {"revenue_cagr": 0.30, "profit_cagr": 0.25, "consistency": 0.30, "compounding_bonus": 0.15},
+    "Services":     {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.25, "compounding_bonus": 0.15},
+    "Media & Entertainment": {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.20, "compounding_bonus": 0.20},
+    "Diversified":  {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.25, "compounding_bonus": 0.15},
+    "Commodities":  {"revenue_cagr": 0.25, "profit_cagr": 0.25, "consistency": 0.30, "compounding_bonus": 0.20},
 }
 
 # Cyclical sectors (for Lynch classification and scoring adjustments)
-_CYCLICAL_SECTORS = frozenset({"Materials", "Energy", "Chemicals", "Real Estate", "Auto", "Textiles"})
+_CYCLICAL_SECTORS = frozenset({"Materials", "Energy", "Chemicals", "Real Estate", "Auto", "Textiles", "Commodities"})
 
 
 @dataclass(frozen=True)
@@ -2032,11 +2076,7 @@ class DiscoverStockScraper(BaseScraper):
                 parts["compounding_bonus"] = 70.0
 
         if parts:
-            # Capital Goods: weight sales consistency higher
-            if sector == "Industrials":
-                w = {"revenue_cagr": 0.25, "profit_cagr": 0.25, "consistency": 0.35, "compounding_bonus": 0.15}
-            else:
-                w = {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.25, "compounding_bonus": 0.15}
+            w = _SECTOR_GROWTH_WEIGHTS.get(sector, _SECTOR_GROWTH_WEIGHTS["DEFAULT"])
             tw = sum(w.get(k, 0.10) for k in parts)
             score = sum(parts[k] * w.get(k, 0.10) for k in parts) / tw
             return round(score, 2), parts
