@@ -391,6 +391,11 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
     item = dict(row)
     item["source_status"] = _normalize_source_status(item.get("source_status"))
     item["score_breakdown"] = _stock_breakdown_payload(item)
+    # Promote action_tag / technical_score from breakdown if top-level columns are NULL
+    sb = item["score_breakdown"]
+    for _k in ("action_tag", "action_tag_reasoning", "technical_score", "rsi_14"):
+        if item.get(_k) is None and sb.get(_k) is not None:
+            item[_k] = sb[_k]
     tags = item.get("tags")
     if isinstance(tags, str):
         try:
