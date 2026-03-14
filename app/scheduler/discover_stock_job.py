@@ -856,7 +856,7 @@ class DiscoverStockScraper(BaseScraper):
             net_profits = pl.get("net_profit", [])
             sales = pl.get("sales", [])
             opm_vals = pl.get("opm_pct") or pl.get("opm_pct", [])
-            eps_vals = pl.get("eps", [])
+            eps_vals = pl.get("eps_in_rs") or pl.get("eps", [])
 
             # Profit growth 3Y CAGR
             tail_np = _tail(net_profits, 4)
@@ -2383,6 +2383,16 @@ class DiscoverStockScraper(BaseScraper):
             historical_metrics = self._compute_historical_metrics(row)
             for _hk, _hv in historical_metrics.items():
                 row[f"_hist_{_hk}"] = _hv
+
+            # Diagnostic: log first 3 stocks with JSONB data
+            if symbol in ("RELIANCE", "HDFCBANK", "TCS"):
+                pl_type = type(row.get("pl_annual")).__name__
+                pl_keys = list(row.get("pl_annual", {}).keys())[:5] if isinstance(row.get("pl_annual"), dict) else "N/A"
+                logger.info(
+                    "HIST_DEBUG %s: pl_type=%s, pl_keys=%s, hist_metrics=%d keys: %s",
+                    symbol, pl_type, pl_keys, len(historical_metrics),
+                    list(historical_metrics.keys())[:8],
+                )
 
             pct_raw = float(row.get("percent_change") or 0.0)
             pct = max(pct_lo, min(pct_hi, pct_raw))
