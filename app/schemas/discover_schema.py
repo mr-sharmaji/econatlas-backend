@@ -18,10 +18,14 @@ class DiscoverStockScoreBreakdown(BaseModel):
     financial_health: float | None = None
     ownership: float | None = None
     analyst: float | None = None
+    valuation: float | None = None
+    earnings_quality: float | None = None
+    smart_money: float | None = None
     combined_signal: float
     position_52w: float | None = Field(None, alias="52w_position")
     fundamentals_coverage: str | None = None
     data_quality: str | None = None
+    why_narrative: str | None = None
 
 
 class DiscoverStockItemResponse(BaseModel):
@@ -54,6 +58,11 @@ class DiscoverStockItemResponse(BaseModel):
     score_financial_health: float | None = None
     score_ownership: float | None = None
     score_analyst: float | None = None
+    score_valuation: float | None = None
+    score_earnings_quality: float | None = None
+    score_smart_money: float | None = None
+    # Pledged shares
+    pledged_promoter_pct: float | None = None
     # Shareholding
     promoter_holding: float | None = None
     fii_holding: float | None = None
