@@ -274,8 +274,12 @@ async def rescore_job(
     if job_name == "discover_stock":
         from app.scheduler.discover_stock_job import rescore_discover_stocks
 
-        result = await rescore_discover_stocks()
-        return result
+        try:
+            result = await rescore_discover_stocks()
+            return result
+        except Exception:
+            logger.exception("Rescore failed for %s", job_name)
+            raise HTTPException(status_code=500, detail="Rescore failed — check logs")
     raise HTTPException(status_code=400, detail=f"Rescore not supported for '{job_name}'")
 
 

@@ -2303,7 +2303,7 @@ async def rescore_discover_stocks() -> dict:
     t0 = time_mod.time()
 
     # 1. Read all raw rows from the DB
-    from app.db.pool import get_pool
+    from app.core.database import get_pool
 
     pool = await get_pool()
     async with pool.acquire() as conn:
