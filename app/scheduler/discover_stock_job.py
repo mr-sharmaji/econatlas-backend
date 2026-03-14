@@ -2311,21 +2311,105 @@ async def rescore_discover_stocks() -> dict:
             f"SELECT * FROM {discover_service.STOCK_TABLE} WHERE market = 'IN'"
         )
     raw_rows = [dict(r) for r in db_rows]
-    logger.info("Rescore: read %d rows from DB in %.1fs", len(raw_rows), time_mod.time() - t0)
+    read_elapsed = time_mod.time() - t0
+    logger.info("Rescore: read %d rows from DB in %.1fs", len(raw_rows), read_elapsed)
 
     if not raw_rows:
         return {"status": "empty", "rows": 0}
 
-    # 2. Pre-fetch volatility data
-    volatility_data = await discover_service.get_bulk_stock_volatility_data()
+    # 2. Data quality audit — track missing fields
+    _KEY_FIELDS = {
+        "price": ["last_price", "percent_change", "volume"],
+        "fundamentals": ["pe_ratio", "roe", "roce", "debt_to_equity", "eps", "price_to_book"],
+        "yahoo": ["beta", "gross_margins", "operating_margins", "profit_margins",
+                   "forward_pe", "revenue_growth", "earnings_growth",
+                   "total_debt", "total_revenue", "total_cash"],
+        "shareholding": ["promoter_holding", "fii_holding", "dii_holding", "public_holding"],
+        "analyst": ["analyst_count", "analyst_target_mean", "analyst_recommendation"],
+        "meta": ["sector", "industry", "market_cap", "high_52w", "low_52w"],
+    }
+    missing_stats: dict[str, dict[str, int]] = {}
+    stocks_missing_all: dict[str, list[str]] = {}  # group → symbols with ALL fields missing
 
-    # 3. Score
+    for group, fields in _KEY_FIELDS.items():
+        field_counts: dict[str, int] = {}
+        all_missing_syms: list[str] = []
+        for row in raw_rows:
+            missing_in_group = 0
+            for f in fields:
+                if row.get(f) is None:
+                    field_counts[f] = field_counts.get(f, 0) + 1
+                    missing_in_group += 1
+            if missing_in_group == len(fields):
+                all_missing_syms.append(str(row.get("symbol", "?")))
+        if field_counts:
+            missing_stats[group] = field_counts
+        if all_missing_syms:
+            stocks_missing_all[group] = all_missing_syms
+
+    total = len(raw_rows)
+    for group, counts in missing_stats.items():
+        parts = ", ".join(f"{f}={c}/{total}" for f, c in sorted(counts.items(), key=lambda x: -x[1]))
+        logger.info("Rescore data gaps [%s]: %s", group, parts)
+
+    for group, syms in stocks_missing_all.items():
+        logger.warning(
+            "Rescore: %d stocks missing ALL %s fields (first 10): %s",
+            len(syms), group, syms[:10],
+        )
+
+    # Coverage summary
+    has_yahoo = sum(1 for r in raw_rows if r.get("beta") is not None)
+    has_shareholding = sum(1 for r in raw_rows if r.get("promoter_holding") is not None)
+    has_analyst = sum(1 for r in raw_rows if r.get("analyst_count") is not None)
+    has_fundamentals = sum(1 for r in raw_rows if r.get("pe_ratio") is not None)
+    has_industry = sum(1 for r in raw_rows if r.get("industry") is not None)
+    logger.info(
+        "Rescore coverage: %d total | fundamentals=%d (%.0f%%) | yahoo=%d (%.0f%%) | "
+        "shareholding=%d (%.0f%%) | analyst=%d (%.0f%%) | industry=%d (%.0f%%)",
+        total,
+        has_fundamentals, has_fundamentals / total * 100,
+        has_yahoo, has_yahoo / total * 100,
+        has_shareholding, has_shareholding / total * 100,
+        has_analyst, has_analyst / total * 100,
+        has_industry, has_industry / total * 100,
+    )
+
+    # 3. Pre-fetch volatility data
+    volatility_data = await discover_service.get_bulk_stock_volatility_data()
+    logger.info("Rescore: volatility data for %d symbols", len(volatility_data))
+
+    # 4. Score
     score_t0 = time_mod.time()
     scored_rows = _scraper._compute_scores(raw_rows, volatility_data=volatility_data)
     score_elapsed = time_mod.time() - score_t0
     logger.info("Rescore: scored %d rows in %.1fs", len(scored_rows), score_elapsed)
 
-    # 4. Upsert scored rows back
+    # Score distribution
+    scores = [r.get("score", 0) for r in scored_rows if r.get("score") is not None]
+    if scores:
+        scores.sort()
+        p25 = scores[len(scores) // 4]
+        p50 = scores[len(scores) // 2]
+        p75 = scores[3 * len(scores) // 4]
+        tiers = {"Strong": 0, "Good": 0, "Average": 0, "Weak": 0}
+        for s in scores:
+            if s >= 75:
+                tiers["Strong"] += 1
+            elif s >= 50:
+                tiers["Good"] += 1
+            elif s >= 25:
+                tiers["Average"] += 1
+            else:
+                tiers["Weak"] += 1
+        logger.info(
+            "Rescore scores: min=%.1f p25=%.1f p50=%.1f p75=%.1f max=%.1f | "
+            "Strong=%d Good=%d Average=%d Weak=%d",
+            scores[0], p25, p50, p75, scores[-1],
+            tiers["Strong"], tiers["Good"], tiers["Average"], tiers["Weak"],
+        )
+
+    # 5. Upsert scored rows back
     upsert_t0 = time_mod.time()
     total_upserted = 0
     for batch_start in range(0, len(scored_rows), _UPSERT_BATCH_SIZE):
@@ -2335,12 +2419,23 @@ async def rescore_discover_stocks() -> dict:
 
     total_elapsed = time_mod.time() - t0
     logger.info(
-        "Rescore complete: %d rows scored and upserted in %.1fs (score=%.1fs, upsert=%.1fs)",
-        total_upserted, total_elapsed, score_elapsed, time_mod.time() - upsert_t0,
+        "Rescore complete: %d rows in %.1fs (read=%.1fs, score=%.1fs, upsert=%.1fs)",
+        total_upserted, total_elapsed, read_elapsed, score_elapsed, time_mod.time() - upsert_t0,
     )
+
     return {
         "status": "completed",
         "rows_scored": len(scored_rows),
         "rows_upserted": total_upserted,
         "elapsed_seconds": round(total_elapsed, 1),
+        "coverage": {
+            "total": total,
+            "fundamentals": has_fundamentals,
+            "yahoo": has_yahoo,
+            "shareholding": has_shareholding,
+            "analyst": has_analyst,
+            "industry": has_industry,
+        },
+        "missing_all": {group: len(syms) for group, syms in stocks_missing_all.items()},
+        "score_distribution": tiers if scores else {},
     }
