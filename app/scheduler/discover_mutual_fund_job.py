@@ -740,67 +740,357 @@ class DiscoverMutualFundScraper(BaseScraper):
         factor = min_factor + ((1.0 - min_factor) * c)
         return neutral + ((score - neutral) * factor)
 
-    def _risk_score(
+    # ── Sub-category normalization map ────────────────────────────────
+    _SUBCATEGORY_NORMALIZE_MAP: dict[str, str] = {
+        # Equity — exact and variant forms
+        "large cap fund": "Large Cap", "large cap": "Large Cap",
+        "mid cap fund": "Mid Cap", "mid cap": "Mid Cap",
+        "small cap fund": "Small Cap", "small cap": "Small Cap",
+        "flexi cap fund": "Flexi Cap", "flexi cap": "Flexi Cap",
+        "multi cap fund": "Multi Cap", "multi cap": "Multi Cap",
+        "focused fund": "Focused", "value fund": "Value",
+        "contra fund": "Contra", "dividend yield fund": "Dividend Yield",
+        "large & mid cap fund": "Large & Mid Cap", "large & midcap": "Large & Mid Cap",
+        "elss": "ELSS",
+        # Index
+        "index funds": "Index", "large cap index": "Index", "mid cap index": "Index",
+        "small cap index": "Index", "multi cap index": "Index",
+        "large & midcap index": "Index", "international index": "Index",
+        "other equity index": "Index", "long debt index": "Index", "other etfs": "Index",
+        # Sectoral/Thematic
+        "sectoral/ thematic": "Sectoral", "sectoral-banking": "Sectoral",
+        "sectoral-pharma": "Sectoral", "sectoral-technology": "Sectoral",
+        "sectoral-infrastructure": "Sectoral", "thematic": "Thematic",
+        "thematic-consumption": "Thematic", "thematic-esg": "Thematic",
+        "thematic-mnc": "Thematic", "thematic-psu": "Thematic",
+        "energy": "Sectoral", "international": "International",
+        # Debt
+        "liquid fund": "Liquid", "liquid": "Liquid",
+        "money market fund": "Money Market", "money market": "Money Market",
+        "overnight fund": "Overnight", "overnight": "Overnight",
+        "ultra short duration fund": "Ultra Short Duration", "ultra short duration": "Ultra Short Duration",
+        "short duration fund": "Short Duration", "short duration": "Short Duration",
+        "low duration fund": "Low Duration", "low duration": "Low Duration",
+        "medium duration fund": "Medium Duration", "medium duration": "Medium Duration",
+        "medium to long duration fund": "Medium to Long Duration", "medium to long duration": "Medium to Long Duration",
+        "long duration fund": "Long Duration", "long duration": "Long Duration",
+        "corporate bond fund": "Corporate Bond", "corporate bond": "Corporate Bond",
+        "banking and psu fund": "Banking & PSU", "banking and psu": "Banking & PSU",
+        "credit risk fund": "Credit Risk", "credit risk": "Credit Risk",
+        "gilt fund": "Gilt", "gilt": "Gilt",
+        "gilt fund with 10 year constant duration": "Gilt", "gilt with 10 year constant duration": "Gilt",
+        "floater fund": "Floater", "floater": "Floater",
+        "dynamic bond": "Dynamic Bond", "target maturity": "Target Maturity",
+        "fmp": "Target Maturity", "tax efficient income": "Dynamic Bond",
+        # Hybrid
+        "aggressive hybrid fund": "Aggressive Hybrid", "aggressive hybrid": "Aggressive Hybrid",
+        "balanced hybrid fund": "Balanced Hybrid", "balanced hybrid": "Balanced Hybrid",
+        "conservative hybrid fund": "Conservative Hybrid", "conservative hybrid": "Conservative Hybrid",
+        "dynamic asset allocation or balanced advantage": "Dynamic Asset Allocation",
+        "dynamic asset allocation": "Dynamic Asset Allocation",
+        "arbitrage fund": "Arbitrage", "arbitrage": "Arbitrage",
+        "multi asset allocation": "Multi-Asset", "equity savings": "Equity Savings",
+        # Special
+        "fof domestic": "FoF Domestic", "fof overseas": "FoF Overseas",
+        "strategy": "Value",
+        "retirement fund": "Retirement", "retirement solutions": "Retirement",
+        "children\u2019s fund": "Children", "children solutions": "Children",
+        "children's fund": "Children",
+    }
+
+    # ── Sub-category-specific layer weights ────────────────────────────
+    _SUBCATEGORY_LAYER_WEIGHTS: dict[str, dict[str, float]] = {
+        "DEFAULT":        {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        # Equity
+        "Large Cap":      {"performance": 0.25, "consistency": 0.25, "risk": 0.15, "cost": 0.15, "category_fit": 0.20},
+        "Mid Cap":        {"performance": 0.30, "consistency": 0.20, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "Small Cap":      {"performance": 0.30, "consistency": 0.20, "risk": 0.15, "cost": 0.15, "category_fit": 0.20},
+        "Flexi Cap":      {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "Multi Cap":      {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "ELSS":           {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "Index":          {"performance": 0.20, "consistency": 0.20, "risk": 0.10, "cost": 0.30, "category_fit": 0.20},
+        "Sectoral":       {"performance": 0.30, "consistency": 0.15, "risk": 0.20, "cost": 0.15, "category_fit": 0.20},
+        "Thematic":       {"performance": 0.30, "consistency": 0.15, "risk": 0.20, "cost": 0.15, "category_fit": 0.20},
+        "Focused":        {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "Contra":         {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "Value":          {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "Dividend Yield": {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "Large & Mid Cap": {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "International":  {"performance": 0.30, "consistency": 0.20, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        # Debt
+        "Liquid":         {"performance": 0.15, "consistency": 0.20, "risk": 0.25, "cost": 0.30, "category_fit": 0.10},
+        "Money Market":   {"performance": 0.15, "consistency": 0.20, "risk": 0.25, "cost": 0.30, "category_fit": 0.10},
+        "Overnight":      {"performance": 0.10, "consistency": 0.15, "risk": 0.25, "cost": 0.35, "category_fit": 0.15},
+        "Gilt":           {"performance": 0.20, "consistency": 0.25, "risk": 0.25, "cost": 0.20, "category_fit": 0.10},
+        "Corporate Bond": {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
+        "Credit Risk":    {"performance": 0.20, "consistency": 0.15, "risk": 0.30, "cost": 0.15, "category_fit": 0.20},
+        "Short Duration": {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
+        "Medium Duration": {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
+        "Long Duration":  {"performance": 0.25, "consistency": 0.20, "risk": 0.25, "cost": 0.15, "category_fit": 0.15},
+        "Ultra Short Duration": {"performance": 0.15, "consistency": 0.20, "risk": 0.25, "cost": 0.25, "category_fit": 0.15},
+        "Low Duration":   {"performance": 0.15, "consistency": 0.20, "risk": 0.25, "cost": 0.25, "category_fit": 0.15},
+        "Banking & PSU":  {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
+        "Floater":        {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
+        "Dynamic Bond":   {"performance": 0.20, "consistency": 0.25, "risk": 0.25, "cost": 0.15, "category_fit": 0.15},
+        "Target Maturity": {"performance": 0.15, "consistency": 0.25, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
+        "Medium to Long Duration": {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
+        # Hybrid
+        "Aggressive Hybrid":      {"performance": 0.25, "consistency": 0.20, "risk": 0.20, "cost": 0.15, "category_fit": 0.20},
+        "Balanced Hybrid":        {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "Conservative Hybrid":    {"performance": 0.20, "consistency": 0.25, "risk": 0.25, "cost": 0.15, "category_fit": 0.15},
+        "Dynamic Asset Allocation": {"performance": 0.20, "consistency": 0.25, "risk": 0.25, "cost": 0.15, "category_fit": 0.15},
+        "Arbitrage":              {"performance": 0.15, "consistency": 0.20, "risk": 0.20, "cost": 0.30, "category_fit": 0.15},
+        "Multi-Asset":            {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "Equity Savings":         {"performance": 0.20, "consistency": 0.25, "risk": 0.25, "cost": 0.15, "category_fit": 0.15},
+        # Special
+        "FoF Domestic":   {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.20, "category_fit": 0.10},
+        "FoF Overseas":   {"performance": 0.30, "consistency": 0.20, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "Retirement":     {"performance": 0.20, "consistency": 0.30, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "Children":       {"performance": 0.20, "consistency": 0.30, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+    }
+
+    @staticmethod
+    def _median(values: list[float]) -> float:
+        if not values:
+            return 0.0
+        s = sorted(values)
+        n = len(s)
+        mid = n // 2
+        return (s[mid - 1] + s[mid]) / 2.0 if n % 2 == 0 else s[mid]
+
+    @classmethod
+    def _resolve_sub_category(cls, row: dict) -> str:
+        """Normalize raw sub_category to canonical form for weight lookup."""
+        sub = (str(row.get("sub_category") or "")).strip()
+        if sub:
+            normalized = cls._SUBCATEGORY_NORMALIZE_MAP.get(sub.lower())
+            if normalized:
+                return normalized
+        # Infer from scheme name for empty/unrecognized sub_category
+        name = (str(row.get("scheme_name") or "")).lower()
+        if "fmp" in name or "fixed maturity" in name or "fixed term" in name:
+            return "Target Maturity"
+        if "capital protection" in name:
+            return "Conservative Hybrid"
+        cat = (str(row.get("category") or "")).strip().lower()
+        if cat == "solution oriented":
+            if "retirement" in name:
+                return "Retirement"
+            if "child" in name:
+                return "Children"
+        return "DEFAULT"
+
+    def _peer_percentile(
         self,
-        risk_level: str | None,
-        std_dev: float | None,
-        category_std_devs: list[float],
-        global_std_devs: list[float],
-        *,
-        max_drawdown: float | None = None,
-    ) -> float:
-        """Blended risk score: categorical + std_dev percentile + max drawdown."""
-        mapping = {
-            "low": 85.0,
-            "moderately low": 75.0,
-            "moderate": 65.0,
-            "moderately high": 45.0,
-            "high": 35.0,
-            "very high": 20.0,
-        }
-        categorical: float | None = None
-        if risk_level:
-            lowered = risk_level.strip().lower()
-            for key, score in mapping.items():
-                if key in lowered:
-                    categorical = score
-                    break
+        value: float | None,
+        sub_peers: list[float],
+        cat_peers: list[float],
+        global_peers: list[float],
+    ) -> float | None:
+        """Percentile rank with sub-category → category → global fallback."""
+        if value is None:
+            return None
+        if len(sub_peers) >= 5:
+            return self._percentile_rank(sub_peers, value)
+        if len(cat_peers) >= 8:
+            return self._percentile_rank(cat_peers, value)
+        if sub_peers:
+            return self._percentile_rank(sub_peers, value)
+        if cat_peers:
+            return self._percentile_rank(cat_peers, value)
+        if global_peers:
+            return self._percentile_rank(global_peers, value)
+        return None
 
-        continuous: float | None = None
-        if std_dev is not None:
-            peer_values: list[float] = []
-            if len(category_std_devs) >= 5:
-                peer_values = category_std_devs
-            elif len(global_std_devs) >= 8:
-                peer_values = global_std_devs
-            elif category_std_devs:
-                peer_values = category_std_devs
-            elif global_std_devs:
-                peer_values = global_std_devs
+    def _score_performance(self, row: dict, peer_sets: dict) -> float | None:
+        """Percentile-ranked returns within sub-category peers. Blend: 50% 3Y + 30% 5Y + 20% 1Y."""
+        sub_cat = self._resolve_sub_category(row)
+        cat = str(row.get("category") or "Other")
 
-            if peer_values:
-                continuous = max(0.0, min(100.0, 100.0 - self._percentile_rank(peer_values, std_dev)))
-            else:
-                continuous = max(0.0, min(100.0, 100.0 - (std_dev * 2.5)))
-
-        # Max drawdown component: lower drawdown = better (10% DD → 75, 30% DD → 25)
-        dd_score: float | None = None
-        if max_drawdown is not None:
-            dd_score = max(0.0, min(100.0, 100.0 - (max_drawdown * 2.5)))
-
-        # Blend: 45% categorical + 35% continuous + 20% drawdown (when all available)
         parts: list[tuple[float, float]] = []
-        if categorical is not None:
-            parts.append((categorical, 0.45))
-        if continuous is not None:
-            parts.append((continuous, 0.35))
-        if dd_score is not None:
-            parts.append((dd_score, 0.20))
+        for key, weight in [("returns_3y", 0.50), ("returns_5y", 0.30), ("returns_1y", 0.20)]:
+            val = self._to_float(row.get(key))
+            pctl = self._peer_percentile(
+                val,
+                peer_sets.get(f"sub_{key}", {}).get(sub_cat, []),
+                peer_sets.get(f"cat_{key}", {}).get(cat, []),
+                peer_sets.get(f"global_{key}", []),
+            )
+            if pctl is not None:
+                parts.append((pctl, weight))
 
         if not parts:
-            return 50.0
+            return None
         total_w = sum(w for _, w in parts)
-        return sum(s * (w / total_w) for s, w in parts)
+        return sum(s * w for s, w in parts) / total_w
+
+    def _score_consistency(self, row: dict, peer_sets: dict) -> float | None:
+        """Sortino percentile (60%) + rolling return consistency (40%). Drops Sharpe."""
+        sub_cat = self._resolve_sub_category(row)
+        cat = str(row.get("category") or "Other")
+        parts: list[tuple[float, float]] = []
+
+        # Sortino — higher is better
+        sortino = self._to_float(row.get("sortino"))
+        sortino_pctl = self._peer_percentile(
+            sortino,
+            peer_sets.get("sub_sortino", {}).get(sub_cat, []),
+            peer_sets.get("cat_sortino", {}).get(cat, []),
+            peer_sets.get("global_sortino", []),
+        )
+        if sortino_pctl is not None:
+            parts.append((sortino_pctl, 0.60))
+
+        # Rolling return consistency — lower std = better (inverted percentile)
+        rolling = self._to_float(row.get("rolling_return_consistency"))
+        rolling_pctl = self._peer_percentile(
+            rolling,
+            peer_sets.get("sub_rolling", {}).get(sub_cat, []),
+            peer_sets.get("cat_rolling", {}).get(cat, []),
+            peer_sets.get("global_rolling", []),
+        )
+        if rolling_pctl is not None:
+            # Invert: lower rolling consistency std = better score
+            parts.append((100.0 - rolling_pctl, 0.40))
+
+        if not parts:
+            return None
+        total_w = sum(w for _, w in parts)
+        return sum(s * w for s, w in parts) / total_w
+
+    def _score_risk(self, row: dict, peer_sets: dict) -> float | None:
+        """Max drawdown percentile (60%) + categorical risk level (40%)."""
+        sub_cat = self._resolve_sub_category(row)
+        cat = str(row.get("category") or "Other")
+        parts: list[tuple[float, float]] = []
+
+        # Max drawdown — lower (closer to 0) is better → inverted percentile
+        dd = self._to_float(row.get("max_drawdown"))
+        dd_pctl = self._peer_percentile(
+            dd,
+            peer_sets.get("sub_drawdown", {}).get(sub_cat, []),
+            peer_sets.get("cat_drawdown", {}).get(cat, []),
+            peer_sets.get("global_drawdown", []),
+        )
+        if dd_pctl is not None:
+            # Drawdown is negative; lower absolute = better. Since _percentile_rank
+            # gives higher rank for higher values, and drawdown is negative (more
+            # negative = worse), a fund with dd=-5% ranks higher than dd=-30%.
+            # So higher percentile = less drawdown = better. No inversion needed.
+            parts.append((dd_pctl, 0.60))
+
+        # Categorical risk level
+        risk_level = str(row.get("risk_level") or "").strip().lower()
+        _RISK_MAP = {
+            "low": 90.0, "moderately low": 75.0, "moderate": 60.0,
+            "moderately high": 40.0, "high": 25.0, "very high": 15.0,
+        }
+        for key, score in _RISK_MAP.items():
+            if key in risk_level:
+                parts.append((score, 0.40))
+                break
+
+        if not parts:
+            return None
+        total_w = sum(w for _, w in parts)
+        return sum(s * w for s, w in parts) / total_w
+
+    def _score_category_fit(self, row: dict, peer_sets: dict) -> float | None:
+        """Sub-category-specific quality assessment."""
+        sub_cat = self._resolve_sub_category(row)
+        cat = str(row.get("category") or "Other")
+        fund_type = self._determine_fund_type(row)
+
+        def _pctl(metric: str, val: float | None) -> float | None:
+            return self._peer_percentile(
+                val,
+                peer_sets.get(f"sub_{metric}", {}).get(sub_cat, []),
+                peer_sets.get(f"cat_{metric}", {}).get(cat, []),
+                peer_sets.get(f"global_{metric}", []),
+            )
+
+        std = self._to_float(row.get("std_dev"))
+        dd = self._to_float(row.get("max_drawdown"))
+        sortino = self._to_float(row.get("sortino"))
+        expense = self._to_float(row.get("expense_ratio"))
+        ret1y = self._to_float(row.get("returns_1y"))
+        ret3y = self._to_float(row.get("returns_3y"))
+        age = self._to_float(row.get("fund_age_years"))
+
+        std_pctl = _pctl("std_dev", std)
+        dd_pctl = _pctl("drawdown", dd)
+        sortino_pctl = _pctl("sortino", sortino)
+        ret1y_pctl = _pctl("returns_1y", ret1y)
+        ret3y_pctl = _pctl("returns_3y", ret3y)
+
+        parts: list[tuple[float, float]] = []
+
+        if sub_cat == "Large Cap":
+            # Consistency premium: low std + low drawdown
+            if std_pctl is not None:
+                parts.append((100.0 - std_pctl, 0.50))  # lower std = better
+            if dd_pctl is not None:
+                parts.append((dd_pctl, 0.50))
+        elif sub_cat in ("Small Cap", "Mid Cap"):
+            # Alpha generation: returns vs peers + drawdown control
+            if ret3y_pctl is not None:
+                parts.append((ret3y_pctl, 0.60))
+            if dd_pctl is not None:
+                parts.append((dd_pctl, 0.40))
+        elif sub_cat == "Index":
+            # Tracking error proxy: expense ratio (lower=better) + std_dev vs peers
+            if expense is not None:
+                cost_fit = max(0.0, min(100.0, 100.0 - (expense * 60.0)))
+                parts.append((cost_fit, 0.60))
+            if std_pctl is not None:
+                parts.append((100.0 - std_pctl, 0.40))
+        elif sub_cat in ("Sectoral", "Thematic"):
+            # Momentum delivery
+            if ret1y_pctl is not None:
+                parts.append((ret1y_pctl, 0.70))
+            if ret3y_pctl is not None:
+                parts.append((ret3y_pctl, 0.30))
+        elif sub_cat == "ELSS":
+            if ret3y_pctl is not None:
+                parts.append((ret3y_pctl, 0.50))
+            if std_pctl is not None:
+                parts.append((100.0 - std_pctl, 0.30))
+            if age is not None:
+                age_score = min(100.0, age * 10.0)
+                parts.append((age_score, 0.20))
+        elif sub_cat == "Arbitrage":
+            # Near-zero drawdown + positive returns
+            if dd is not None:
+                dd_fit = max(0.0, min(100.0, 100.0 + (dd * 10.0)))  # dd near 0 → ~100
+                parts.append((dd_fit, 0.60))
+            if ret1y is not None:
+                ret_fit = 80.0 if ret1y > 0 else 20.0
+                parts.append((ret_fit, 0.40))
+        elif fund_type == "debt":
+            # Credit quality + stability
+            risk_level = str(row.get("risk_level") or "").strip().lower()
+            risk_fit = {"low": 90.0, "moderately low": 75.0, "moderate": 60.0,
+                        "moderately high": 40.0, "high": 25.0}.get(risk_level, 50.0)
+            parts.append((risk_fit, 0.50))
+            if std_pctl is not None:
+                parts.append((100.0 - std_pctl, 0.50))
+        elif fund_type == "hybrid":
+            # Downside protection
+            if dd_pctl is not None:
+                parts.append((dd_pctl, 0.50))
+            if sortino_pctl is not None:
+                parts.append((sortino_pctl, 0.50))
+        else:
+            # Default equity: returns vs peers + stability
+            if ret3y_pctl is not None:
+                parts.append((ret3y_pctl, 0.50))
+            if std_pctl is not None:
+                parts.append((100.0 - std_pctl, 0.50))
+
+        if not parts:
+            return None
+        total_w = sum(w for _, w in parts)
+        return sum(s * w for s, w in parts) / total_w
 
     @staticmethod
     def _cost_score(expense_ratio: float | None) -> float:
@@ -809,97 +1099,36 @@ class DiscoverMutualFundScraper(BaseScraper):
             return 50.0
         return max(0.0, min(100.0, 100.0 - (expense_ratio * 45.0)))
 
-    def _consistency_score(
-        self,
-        sharpe: float | None,
-        sortino: float | None,
-        category_sharpes: list[float],
-        category_sortinos: list[float],
-        global_sharpes: list[float],
-        global_sortinos: list[float],
-    ) -> float:
-        """Percentile-rank Sharpe/Sortino using category peers with global fallback."""
-        values: list[float] = []
-        if sharpe is not None:
-            if len(category_sharpes) >= 5:
-                values.append(self._percentile_rank(category_sharpes, sharpe))
-            elif len(global_sharpes) >= 8:
-                values.append(self._percentile_rank(global_sharpes, sharpe))
-            elif category_sharpes:
-                values.append(self._percentile_rank(category_sharpes, sharpe))
-            elif global_sharpes:
-                values.append(self._percentile_rank(global_sharpes, sharpe))
-            else:
-                values.append(max(0.0, min(100.0, sharpe * 35.0)))
-        if sortino is not None:
-            if len(category_sortinos) >= 5:
-                values.append(self._percentile_rank(category_sortinos, sortino))
-            elif len(global_sortinos) >= 8:
-                values.append(self._percentile_rank(global_sortinos, sortino))
-            elif category_sortinos:
-                values.append(self._percentile_rank(category_sortinos, sortino))
-            elif global_sortinos:
-                values.append(self._percentile_rank(global_sortinos, sortino))
-            else:
-                values.append(max(0.0, min(100.0, sortino * 22.0)))
-        if not values:
-            return 50.0
-        return sum(values) / len(values)
-
-    def _return_score(self, rows: list[dict], current: dict) -> float:
-        """Blended return score using percentile peers (category-first, global fallback)."""
-        category = str(current.get("category") or "Other")
-        bucket = [r for r in rows if str(r.get("category") or "Other") == category]
-
-        def _peer_percentile(key: str) -> float | None:
-            cur = self._to_float(current.get(key))
-            if cur is None:
-                return None
-            category_values = [self._to_float(r.get(key)) for r in bucket]
-            cat_numeric = [v for v in category_values if v is not None]
-            all_values = [self._to_float(r.get(key)) for r in rows]
-            global_numeric = [v for v in all_values if v is not None]
-
-            peer_values: list[float] = []
-            if len(cat_numeric) >= 5:
-                peer_values = cat_numeric
-            elif len(global_numeric) >= 8:
-                peer_values = global_numeric
-            elif cat_numeric:
-                peer_values = cat_numeric
-            elif global_numeric:
-                peer_values = global_numeric
-
-            if peer_values:
-                return self._percentile_rank(peer_values, cur)
-            return max(0.0, min(100.0, 30.0 + (cur * 3.0)))
-
-        r3 = _peer_percentile("returns_3y")
-        r5 = _peer_percentile("returns_5y")
-        r1 = _peer_percentile("returns_1y")
-
-        # Weighted blend based on what's available
-        parts: list[tuple[float, float]] = []  # (score, weight)
-        if r3 is not None:
-            parts.append((r3, 0.50))
-        if r5 is not None:
-            parts.append((r5, 0.30))
-        if r1 is not None:
-            parts.append((r1, 0.20))
-
-        if not parts:
-            return 50.0
-        total_w = sum(w for _, w in parts)
-        return sum(s * w for s, w in parts) / total_w
-
     @staticmethod
     def _determine_fund_type(row: dict) -> str:
-        """Classify fund as 'equity', 'debt', or 'hybrid' from category/sub_category."""
+        """Classify fund as 'equity', 'debt', or 'hybrid' from category/sub_category.
+
+        Handles 8 live AMFI categories: Equity, Debt, Income (=debt), Hybrid,
+        Index, Other (=FoFs), Growth (=closed-ended equity), Solution Oriented.
+        """
         cat = (str(row.get("category") or "")).strip().lower()
         sub = (str(row.get("sub_category") or "")).strip().lower()
         combined = f"{cat} {sub}"
+
+        # Direct category matches (handles Income, Growth, Index, Solution Oriented, Other)
+        if cat == "income":
+            return "debt"
+        if cat == "growth":
+            return "equity"
+        if cat == "solution oriented":
+            return "hybrid"
+        if cat == "other":
+            # FoFs — check sub_category
+            if any(k in sub for k in ("fof overseas", "international")):
+                return "equity"
+            return "equity"  # most FoFs are equity-oriented
+        if cat == "index":
+            if any(k in sub for k in ("long debt", "gilt")):
+                return "debt"
+            return "equity"
+
         if any(k in combined for k in ("equity", "elss", "large cap", "mid cap", "small cap",
-                                        "flexi", "multi cap", "index", "sectoral", "thematic",
+                                        "flexi", "multi cap", "sectoral", "thematic",
                                         "focused", "contra", "value", "dividend yield")):
             return "equity"
         if any(k in combined for k in ("debt", "liquid", "money market", "overnight",
@@ -920,202 +1149,179 @@ class DiscoverMutualFundScraper(BaseScraper):
             return "equity"
         return "equity"  # default to equity
 
-    def _alpha_score(self, row: dict, cat_avg_returns: dict[str, float]) -> float | None:
-        """Alpha proxy: fund 3Y return minus category average 3Y return."""
+    def _generate_mf_tags(self, row: dict, sub_cat: str, sub_cat_scores: list[float],
+                          sub_cat_expenses: list[float], sub_cat_avg_ret3y: float | None) -> list[str]:
+        """Priority-ranked tag system. Max 10 tags per fund."""
+        tags: list[str] = []
+        score = row.get("_final_score")
         ret3 = self._to_float(row.get("returns_3y"))
-        if ret3 is None:
-            return None
-        cat = str(row.get("category") or "Other")
-        avg = cat_avg_returns.get(cat)
-        if avg is None:
-            return None
-        # Alpha = excess return; 0 alpha = 50, positive = higher
-        alpha = ret3 - avg
-        return max(0.0, min(100.0, 50.0 + (alpha * 5.0)))
-
-    def _beta_score(self, row: dict, cat_std_devs: dict[str, list[float]], global_std_devs: list[float]) -> float | None:
-        """Beta proxy: fund std_dev relative to category median std_dev. Lower beta = higher score."""
-        std = self._to_float(row.get("std_dev"))
-        if std is None:
-            return None
-        cat = str(row.get("category") or "Other")
-        peers = cat_std_devs.get(cat, [])
-        if len(peers) < 3:
-            peers = global_std_devs
-        if not peers:
-            return None
-        median_std = self._median(peers)
-        if median_std <= 0:
-            return 50.0
-        beta_ratio = std / median_std
-        # beta_ratio ~1 = 50, lower = better
-        return max(0.0, min(100.0, 100.0 - (beta_ratio * 50.0)))
-
-    def _credit_quality_score(self, row: dict) -> float | None:
-        """Credit quality proxy for debt funds: based on risk_level + category keywords."""
+        ret5 = self._to_float(row.get("returns_5y"))
+        ret1 = self._to_float(row.get("returns_1y"))
+        expense = self._to_float(row.get("expense_ratio"))
+        sharpe = self._to_float(row.get("sharpe"))
+        std_dev = self._to_float(row.get("std_dev"))
+        rolling = self._to_float(row.get("rolling_return_consistency"))
+        aum = self._to_float(row.get("aum_cr"))
+        age = self._to_float(row.get("fund_age_years"))
         risk = str(row.get("risk_level") or "").strip().lower()
-        sub = str(row.get("sub_category") or "").strip().lower()
-        cat = str(row.get("category") or "").strip().lower()
-        combined = f"{cat} {sub}"
 
-        # AAA-heavy categories
-        if any(k in combined for k in ("gilt", "overnight", "liquid", "money market")):
-            base = 90.0
-        elif any(k in combined for k in ("corporate bond", "banking")):
-            base = 75.0
-        elif "credit risk" in combined:
-            base = 40.0
-        elif any(k in combined for k in ("short duration", "medium duration", "low duration")):
-            base = 70.0
-        else:
-            base = 60.0
+        # Pri 1: Sub-category leader
+        if score is not None and sub_cat_scores:
+            pctl = self._percentile_rank(sub_cat_scores, score)
+            if pctl >= 90:
+                label = f"{sub_cat} Leader" if sub_cat != "DEFAULT" else "Category Leader"
+                tags.append(label)
 
-        # Adjust by risk level
-        risk_adj = {"low": 10, "moderately low": 5, "moderate": 0,
-                    "moderately high": -10, "high": -15}.get(risk, 0)
-        return max(0.0, min(100.0, base + risk_adj))
+        # Pri 1: Sub-category label
+        if sub_cat not in ("DEFAULT",):
+            tags.append(sub_cat)
 
-    def _duration_score(self, row: dict) -> float | None:
-        """Duration proxy for debt: lower volatility (std_dev) = better for debt funds."""
-        std = self._to_float(row.get("std_dev"))
-        if std is None:
-            return None
-        # For debt, lower std_dev = higher score
-        return max(0.0, min(100.0, 100.0 - (std * 12.0)))
+        # Pri 2: Consistent compounder
+        if rolling is not None and rolling < 5.0 and std_dev is not None and std_dev < 15.0:
+            tags.append("Consistent Compounder")
+
+        # Pri 2: Low cost leader
+        if expense is not None and sub_cat_expenses:
+            cost_pctl = self._percentile_rank(sub_cat_expenses, expense)
+            if cost_pctl <= 20:
+                tags.append("Low Cost Leader")
+
+        # Pri 3
+        if ret3 is not None and sub_cat_avg_ret3y is not None and ret3 > sub_cat_avg_ret3y + 3.0:
+            tags.append("Strong Alpha")
+        if sharpe is not None and sharpe > 1.5:
+            tags.append("High Sharpe")
+        if age is not None and age > 10:
+            tags.append("Decade Veteran")
+        if ret3 is not None and ret3 >= 12:
+            tags.append("Strong Returns")
+        if ret5 is not None and ret5 >= 12:
+            tags.append("5Y Consistent")
+
+        # Pri 4: Risk/warning tags
+        if risk in ("high", "very high"):
+            tags.append("High Risk")
+        if age is not None and age < 3:
+            tags.append("New Fund")
+        if aum is not None and aum < 25:
+            tags.append("Very Small Fund")
+        elif aum is not None and aum < 50:
+            tags.append("Small Fund")
+        if expense is not None and expense > 2.0:
+            tags.append("High Cost")
+        if ret1 is not None and ret1 < 0:
+            tags.append("Negative Returns")
+
+        return tags[:10]
 
     def _compute_scores(self, rows: list[dict]) -> list[dict]:
+        """5-layer scoring model with sub-category-specific weights."""
         if not rows:
             return []
 
-        # Pre-compute category/global peer sets for percentile-based scoring.
-        cat_sharpes: dict[str, list[float]] = {}
-        cat_sortinos: dict[str, list[float]] = {}
-        cat_std_devs: dict[str, list[float]] = {}
-        cat_rolling: dict[str, list[float]] = {}
-        global_sharpes: list[float] = []
-        global_sortinos: list[float] = []
-        global_std_devs: list[float] = []
-        global_rolling: list[float] = []
-        cat_returns_3y: dict[str, list[float]] = {}
+        # ── Pre-compute peer sets by sub_category, category, and global ──
+        _METRICS = ("returns_1y", "returns_3y", "returns_5y", "sortino",
+                     "std_dev", "rolling_return_consistency", "max_drawdown")
+        peer_sets: dict[str, Any] = {}
+        for metric in _METRICS:
+            peer_sets[f"sub_{metric}"] = {}
+            peer_sets[f"cat_{metric}"] = {}
+            peer_sets[f"global_{metric}"] = []
+
+        # Also track expenses per sub-category for tags
+        sub_expenses: dict[str, list[float]] = {}
+        sub_ret3y: dict[str, list[float]] = {}
+        # Track sub_sortino separately since it's named differently in peer_sets
+        # (already covered above via _METRICS)
+
         for r in rows:
+            sub_cat = self._resolve_sub_category(r)
             cat = str(r.get("category") or "Other")
-            s = self._to_float(r.get("sharpe"))
-            if s is not None:
-                cat_sharpes.setdefault(cat, []).append(s)
-                global_sharpes.append(s)
-            t = self._to_float(r.get("sortino"))
-            if t is not None:
-                cat_sortinos.setdefault(cat, []).append(t)
-                global_sortinos.append(t)
-            d = self._to_float(r.get("std_dev"))
-            if d is not None:
-                cat_std_devs.setdefault(cat, []).append(d)
-                global_std_devs.append(d)
-            rc = self._to_float(r.get("rolling_return_consistency"))
-            if rc is not None:
-                cat_rolling.setdefault(cat, []).append(rc)
-                global_rolling.append(rc)
+            for metric in _METRICS:
+                val = self._to_float(r.get(metric))
+                if val is not None:
+                    peer_sets[f"sub_{metric}"].setdefault(sub_cat, []).append(val)
+                    peer_sets[f"cat_{metric}"].setdefault(cat, []).append(val)
+                    peer_sets[f"global_{metric}"].append(val)
+            exp = self._to_float(r.get("expense_ratio"))
+            if exp is not None:
+                sub_expenses.setdefault(sub_cat, []).append(exp)
             r3 = self._to_float(r.get("returns_3y"))
             if r3 is not None:
-                cat_returns_3y.setdefault(cat, []).append(r3)
+                sub_ret3y.setdefault(sub_cat, []).append(r3)
 
-        cat_avg_returns: dict[str, float] = {
-            cat: sum(vals) / len(vals) for cat, vals in cat_returns_3y.items() if vals
-        }
+        # Also need sortino peers under the name used by _score_consistency
+        peer_sets["sub_sortino"] = peer_sets.get("sub_sortino", {})
+        peer_sets["cat_sortino"] = peer_sets.get("cat_sortino", {})
+        peer_sets["global_sortino"] = peer_sets.get("global_sortino", [])
+        peer_sets["sub_rolling"] = peer_sets.get("sub_rolling_return_consistency", {})
+        peer_sets["cat_rolling"] = peer_sets.get("cat_rolling_return_consistency", {})
+        peer_sets["global_rolling"] = peer_sets.get("global_rolling_return_consistency", [])
+        peer_sets["sub_drawdown"] = peer_sets.get("sub_max_drawdown", {})
+        peer_sets["cat_drawdown"] = peer_sets.get("cat_max_drawdown", {})
+        peer_sets["global_drawdown"] = peer_sets.get("global_max_drawdown", [])
 
         out: list[dict] = []
-        for row in rows:
-            cat = str(row.get("category") or "Other")
+        # Collect scores per sub-category for post-scoring percentile ranking
+        sub_cat_scored: dict[str, list[tuple[int, float]]] = {}
+
+        for idx, row in enumerate(rows):
+            sub_cat = self._resolve_sub_category(row)
             fund_type = self._determine_fund_type(row)
-            return_score = self._return_score(rows, row)
-            risk_score = self._risk_score(
-                risk_level=str(row.get("risk_level") or "").strip() or None,
-                std_dev=self._to_float(row.get("std_dev")),
-                category_std_devs=cat_std_devs.get(cat, []),
-                global_std_devs=global_std_devs,
-                max_drawdown=self._to_float(row.get("max_drawdown")),
-            )
+
+            # ── Null score for no-data funds ──
+            has_returns = any(self._to_float(row.get(k)) is not None
+                              for k in ("returns_1y", "returns_3y", "returns_5y"))
+            has_risk = (self._to_float(row.get("std_dev")) is not None
+                        or bool(str(row.get("risk_level") or "").strip())
+                        or self._to_float(row.get("max_drawdown")) is not None)
+            has_expense = self._to_float(row.get("expense_ratio")) is not None
+
+            if not has_returns and not has_risk and not has_expense:
+                out.append({
+                    **row,
+                    "fund_type": fund_type,
+                    "fund_classification": sub_cat,
+                    "score": None,
+                    "score_return": None,
+                    "score_risk": None,
+                    "score_cost": None,
+                    "score_consistency": None,
+                    "score_performance": None,
+                    "score_category_fit": None,
+                    "alpha": None, "beta": None,
+                    "score_alpha": None, "score_beta": None,
+                    "sub_category_percentile": None,
+                    "score_breakdown": {},
+                    "source_status": "limited",
+                    "tags": ["unrated"],
+                })
+                continue
+
+            # ── Compute 5 layer scores ──
+            performance = self._score_performance(row, peer_sets)
+            consistency = self._score_consistency(row, peer_sets)
+            risk_score = self._score_risk(row, peer_sets)
             cost_score = self._cost_score(self._to_float(row.get("expense_ratio")))
-            consistency_score = self._consistency_score(
-                self._to_float(row.get("sharpe")),
-                self._to_float(row.get("sortino")),
-                cat_sharpes.get(cat, []),
-                cat_sortinos.get(cat, []),
-                global_sharpes,
-                global_sortinos,
-                rolling_consistency=self._to_float(row.get("rolling_return_consistency")),
-                category_rolling=cat_rolling.get(cat),
-                global_rolling=global_rolling,
+            category_fit = self._score_category_fit(row, peer_sets)
+
+            # ── Look up sub-category weights ──
+            weights = self._SUBCATEGORY_LAYER_WEIGHTS.get(
+                sub_cat, self._SUBCATEGORY_LAYER_WEIGHTS["DEFAULT"]
             )
 
-            # Type-specific extra scores + store alpha/beta raw values
-            alpha_score = self._alpha_score(row, cat_avg_returns)
-            beta_score = self._beta_score(row, cat_std_devs, global_std_devs)
-            credit_quality_score = self._credit_quality_score(row)
-            duration_score = self._duration_score(row)
-
-            # Compute raw alpha and beta values for storage
-            ret3y = self._to_float(row.get("returns_3y"))
-            cat_avg = cat_avg_returns.get(cat)
-            alpha_value = round(ret3y - cat_avg, 2) if ret3y is not None and cat_avg is not None else None
-
-            std = self._to_float(row.get("std_dev"))
-            cat_stds = cat_std_devs.get(cat, [])
-            if std is not None and len(cat_stds) >= 3:
-                med_std = self._median(cat_stds)
-                beta_value = round(std / max(med_std, 0.01), 2) if med_std > 0 else None
-            elif std is not None and global_std_devs:
-                med_std = self._median(global_std_devs)
-                beta_value = round(std / max(med_std, 0.01), 2) if med_std > 0 else None
-            else:
-                beta_value = None
-
-            return_available = any(
-                self._to_float(row.get(k)) is not None
-                for k in ("returns_1y", "returns_3y", "returns_5y")
-            )
-            risk_available = bool(str(row.get("risk_level") or "").strip()) or self._to_float(row.get("std_dev")) is not None
-            cost_available = self._to_float(row.get("expense_ratio")) is not None
-            consistency_available = (
-                self._to_float(row.get("sharpe")) is not None
-                or self._to_float(row.get("sortino")) is not None
-                or self._to_float(row.get("rolling_return_consistency")) is not None
-            )
-
-            # Type-specific weight distributions
-            if fund_type == "equity":
-                base_weights: dict[str, tuple[float, float | None, bool]] = {
-                    # (weight, score, available)
-                    "return":      (0.30, return_score, return_available),
-                    "risk":        (0.15, risk_score, risk_available),
-                    "cost":        (0.10, cost_score, cost_available),
-                    "consistency": (0.20, consistency_score, consistency_available),
-                    "alpha":       (0.15, alpha_score, alpha_score is not None),
-                    "beta":        (0.10, beta_score, beta_score is not None),
-                }
-            elif fund_type == "debt":
-                base_weights = {
-                    "return":         (0.15, return_score, return_available),
-                    "risk":           (0.25, risk_score, risk_available),
-                    "cost":           (0.20, cost_score, cost_available),
-                    "consistency":    (0.15, consistency_score, consistency_available),
-                    "credit_quality": (0.15, credit_quality_score, credit_quality_score is not None),
-                    "duration":       (0.10, duration_score, duration_score is not None),
-                }
-            else:
-                # Hybrid: blend equity and debt approach
-                base_weights = {
-                    "return":         (0.25, return_score, return_available),
-                    "risk":           (0.20, risk_score, risk_available),
-                    "cost":           (0.15, cost_score, cost_available),
-                    "consistency":    (0.20, consistency_score, consistency_available),
-                    "alpha":          (0.10, alpha_score, alpha_score is not None),
-                    "credit_quality": (0.10, credit_quality_score, credit_quality_score is not None),
-                }
+            # ── Dynamic weight rebalancing for unavailable layers ──
+            layer_scores: dict[str, tuple[float, float | None]] = {
+                "performance":  (weights["performance"], performance),
+                "consistency":  (weights["consistency"], consistency),
+                "risk":         (weights["risk"], risk_score),
+                "cost":         (weights["cost"], cost_score if has_expense else None),
+                "category_fit": (weights["category_fit"], category_fit),
+            }
 
             parts: list[tuple[float, float]] = []
-            for _, (w, s, avail) in base_weights.items():
-                if avail and s is not None:
+            for _layer, (w, s) in layer_scores.items():
+                if s is not None:
                     parts.append((s, w))
 
             if parts:
@@ -1124,36 +1330,37 @@ class DiscoverMutualFundScraper(BaseScraper):
             else:
                 score = 50.0
 
-            advanced_coverage_signals = [
-                self._to_float(row.get("returns_3y")) is not None,
-                self._to_float(row.get("returns_5y")) is not None,
-                self._to_float(row.get("expense_ratio")) is not None,
-                risk_available,
-                consistency_available,
+            # ── Coverage shrinkage ──
+            coverage_signals = [
+                has_returns,
+                has_risk,
+                has_expense,
+                self._to_float(row.get("sortino")) is not None,
+                self._to_float(row.get("rolling_return_consistency")) is not None,
             ]
-            coverage = sum(1 for signal in advanced_coverage_signals if signal) / len(advanced_coverage_signals)
+            coverage = sum(1 for sig in coverage_signals if sig) / len(coverage_signals)
             score = self._shrink_to_neutral(score, coverage)
 
-            # Tiered AUM penalty: strongest for very small funds.
+            # ── Risk flags (hard caps) instead of multiplicative AUM penalty ──
             aum = self._to_float(row.get("aum_cr"))
-            if aum is not None and aum < 100:
-                if aum < 25:
-                    score *= 0.82
-                elif aum < 50:
-                    score *= 0.88
-                else:
-                    score *= 0.94
-            elif aum is not None and aum < 250:
-                score *= 0.97
+            age = self._to_float(row.get("fund_age_years"))
+            expense = self._to_float(row.get("expense_ratio"))
 
-            # Source status: primary if has returns + risk + meta, fallback if partial
+            if age is not None and age < 3:
+                score = min(score, 65.0)
+            if aum is not None and aum < 25:
+                score = min(score, 55.0)
+            elif aum is not None and aum < 50:
+                score = min(score, 65.0)
+            if expense is not None and expense > 2.0:
+                score = min(score, 70.0)
+
+            # ── Source status ──
             status = str(row.get("source_status") or "limited").strip().lower()
-            has_returns = self._to_float(row.get("returns_1y")) is not None or self._to_float(row.get("returns_3y")) is not None
-            has_risk_metrics = self._to_float(row.get("std_dev")) is not None or bool(str(row.get("risk_level") or "").strip())
-            has_meta = self._to_float(row.get("expense_ratio")) is not None
-            if has_returns and has_risk_metrics and has_meta:
+            has_meta = has_expense
+            if has_returns and has_risk and has_meta:
                 status = "primary"
-            elif has_returns or has_risk_metrics:
+            elif has_returns or has_risk:
                 if status == "limited":
                     status = "fallback"
             elif status == "primary":
@@ -1161,57 +1368,78 @@ class DiscoverMutualFundScraper(BaseScraper):
 
             status_penalty = 0.0
             if status == "fallback":
-                status_penalty = 7.0
+                status_penalty = 5.0
             elif status == "limited":
-                status_penalty = 15.0
+                status_penalty = 12.0
 
-            tags: list[str] = []
-            ret3 = self._to_float(row.get("returns_3y"))
-            if ret3 is not None and ret3 >= 12:
-                tags.append("strong_returns")
-            ret5 = self._to_float(row.get("returns_5y"))
-            if ret5 is not None and ret5 >= 12:
-                tags.append("consistent_performer")
-            if cost_score >= 80:
-                tags.append("low_cost")
-            if risk_score >= 75:
-                tags.append("lower_risk")
-            if aum is not None and aum < 100:
-                tags.append("small_fund")
-            if status != "primary":
-                tags.append("limited_data")
-            if not tags:
-                tags.append("balanced")
+            final_score = round(max(0.0, min(100.0, score - status_penalty)), 2)
 
-            out.append(
-                {
-                    **row,
-                    "fund_type": fund_type,
-                    "score": round(max(0.0, min(100.0, score - status_penalty)), 2),
-                    "score_return": round(return_score, 2),
-                    "score_risk": round(risk_score, 2),
-                    "score_cost": round(cost_score, 2),
-                    "score_consistency": round(consistency_score, 2),
-                    "alpha": alpha_value,
-                    "beta": beta_value,
-                    "score_alpha": round(alpha_score, 2) if alpha_score is not None else None,
-                    "score_beta": round(beta_score, 2) if beta_score is not None else None,
-                    "score_breakdown": {
-                        "return_score": round(return_score, 2),
-                        "risk_score": round(risk_score, 2),
-                        "cost_score": round(cost_score, 2),
-                        "consistency_score": round(consistency_score, 2),
-                        "alpha_score": round(alpha_score, 2) if alpha_score is not None else None,
-                        "beta_score": round(beta_score, 2) if beta_score is not None else None,
-                    },
-                    "source_status": status,
-                    "tags": tags,
-                }
-            )
+            # Store for sub-category percentile post-processing
+            sub_cat_scored.setdefault(sub_cat, []).append((idx, final_score))
+
+            # Compute legacy alpha/beta values for backward compat
+            ret3y = self._to_float(row.get("returns_3y"))
+            sub_avg = None
+            sub_rets = sub_ret3y.get(sub_cat)
+            if sub_rets:
+                sub_avg = sum(sub_rets) / len(sub_rets)
+            alpha_value = round(ret3y - sub_avg, 2) if ret3y is not None and sub_avg is not None else None
+
+            out.append({
+                **row,
+                "fund_type": fund_type,
+                "fund_classification": sub_cat,
+                "_final_score": final_score,
+                "score": final_score,
+                "score_return": round(performance, 2) if performance is not None else None,
+                "score_risk": round(risk_score, 2) if risk_score is not None else None,
+                "score_cost": round(cost_score, 2),
+                "score_consistency": round(consistency, 2) if consistency is not None else None,
+                "score_performance": round(performance, 2) if performance is not None else None,
+                "score_category_fit": round(category_fit, 2) if category_fit is not None else None,
+                "alpha": alpha_value,
+                "beta": None,  # beta concept removed
+                "score_alpha": None,  # removed
+                "score_beta": None,   # removed
+                "score_breakdown": {
+                    "performance_score": round(performance, 2) if performance is not None else None,
+                    "consistency_score": round(consistency, 2) if consistency is not None else None,
+                    "risk_score": round(risk_score, 2) if risk_score is not None else None,
+                    "cost_score": round(cost_score, 2),
+                    "category_fit_score": round(category_fit, 2) if category_fit is not None else None,
+                    # Legacy keys for backward compat
+                    "return_score": round(performance, 2) if performance is not None else None,
+                },
+                "source_status": status,
+                "tags": [],  # populated below after percentile computation
+            })
+
+        # ── Post-scoring: sub-category percentile + tags ──
+        for sub_cat, entries in sub_cat_scored.items():
+            scores_in_sub = [s for _, s in entries]
+            sub_exps = sub_expenses.get(sub_cat, [])
+            sub_avg = None
+            sub_rets = sub_ret3y.get(sub_cat)
+            if sub_rets:
+                sub_avg = sum(sub_rets) / len(sub_rets)
+
+            for out_idx, final_score in entries:
+                pctl = self._percentile_rank(scores_in_sub, final_score)
+                out[out_idx]["sub_category_percentile"] = round(pctl, 1)
+                out[out_idx]["tags"] = self._generate_mf_tags(
+                    out[out_idx], sub_cat, scores_in_sub, sub_exps, sub_avg
+                )
+                # Clean up internal field
+                out[out_idx].pop("_final_score", None)
+
+        # Also handle unrated funds (they don't appear in sub_cat_scored)
+        for item in out:
+            if item.get("score") is None:
+                item.setdefault("sub_category_percentile", None)
 
         out.sort(
             key=lambda item: (
-                -float(item.get("score") or 0.0),
+                -(float(item["score"]) if item.get("score") is not None else -1.0),
                 -float(item.get("returns_3y") or -9999.0),
                 str(item.get("scheme_code") or ""),
             )
@@ -1594,3 +1822,115 @@ async def run_discover_mutual_fund_job() -> None:
         logger.exception("Discover mutual fund job failed due to network exception")
     except Exception:
         logger.exception("Discover mutual fund job failed")
+
+
+# ── Module-level rescore function ──────────────────────────────────
+_scraper = DiscoverMutualFundScraper()
+_UPSERT_BATCH_SIZE = 200
+
+
+async def rescore_discover_mutual_funds() -> dict:
+    """Read all MF rows from DB, re-compute scores, and write back.
+
+    No network fetching — purely DB read → score → DB write.
+    """
+    import time as time_mod
+
+    t0 = time_mod.time()
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        db_rows = await conn.fetch(
+            f"SELECT * FROM {discover_service.MF_TABLE}"
+        )
+    raw_rows = [dict(r) for r in db_rows]
+    read_elapsed = time_mod.time() - t0
+    logger.info("MF Rescore: read %d rows from DB in %.1fs", len(raw_rows), read_elapsed)
+
+    if not raw_rows:
+        return {"status": "empty", "rows": 0}
+
+    # Coverage summary
+    total = len(raw_rows)
+    has_returns = sum(1 for r in raw_rows if r.get("returns_3y") is not None)
+    has_risk = sum(1 for r in raw_rows if r.get("std_dev") is not None or r.get("risk_level"))
+    has_expense = sum(1 for r in raw_rows if r.get("expense_ratio") is not None)
+    has_sortino = sum(1 for r in raw_rows if r.get("sortino") is not None)
+    logger.info(
+        "MF Rescore coverage: %d total | returns=%d (%.0f%%) | risk=%d (%.0f%%) | "
+        "expense=%d (%.0f%%) | sortino=%d (%.0f%%)",
+        total,
+        has_returns, has_returns / total * 100,
+        has_risk, has_risk / total * 100,
+        has_expense, has_expense / total * 100,
+        has_sortino, has_sortino / total * 100,
+    )
+
+    # Score
+    score_t0 = time_mod.time()
+    scored_rows = _scraper._compute_scores(raw_rows)
+    score_elapsed = time_mod.time() - score_t0
+    logger.info("MF Rescore: scored %d rows in %.1fs", len(scored_rows), score_elapsed)
+
+    # Score distribution
+    scores = [r.get("score") for r in scored_rows if r.get("score") is not None]
+    unrated = sum(1 for r in scored_rows if r.get("score") is None)
+    tiers: dict[str, int] = {}
+    if scores:
+        scores.sort()
+        p25 = scores[len(scores) // 4]
+        p50 = scores[len(scores) // 2]
+        p75 = scores[3 * len(scores) // 4]
+        tiers = {"Strong": 0, "Good": 0, "Average": 0, "Weak": 0}
+        for s in scores:
+            if s >= 75:
+                tiers["Strong"] += 1
+            elif s >= 50:
+                tiers["Good"] += 1
+            elif s >= 25:
+                tiers["Average"] += 1
+            else:
+                tiers["Weak"] += 1
+        logger.info(
+            "MF Rescore scores: min=%.1f p25=%.1f p50=%.1f p75=%.1f max=%.1f | "
+            "Strong=%d Good=%d Average=%d Weak=%d | Unrated=%d",
+            scores[0], p25, p50, p75, scores[-1],
+            tiers["Strong"], tiers["Good"], tiers["Average"], tiers["Weak"], unrated,
+        )
+
+    # Upsert
+    upsert_t0 = time_mod.time()
+    total_upserted = 0
+    for batch_start in range(0, len(scored_rows), _UPSERT_BATCH_SIZE):
+        batch = scored_rows[batch_start: batch_start + _UPSERT_BATCH_SIZE]
+        count = await discover_service.upsert_discover_mutual_fund_snapshots(batch)
+        total_upserted += count
+
+    total_elapsed = time_mod.time() - t0
+    logger.info(
+        "MF Rescore complete: %d rows in %.1fs (read=%.1fs, score=%.1fs, upsert=%.1fs)",
+        total_upserted, total_elapsed, read_elapsed, score_elapsed, time_mod.time() - upsert_t0,
+    )
+
+    # Sub-category distribution
+    sub_cat_counts: dict[str, int] = {}
+    for r in scored_rows:
+        sc = r.get("fund_classification", "DEFAULT")
+        sub_cat_counts[sc] = sub_cat_counts.get(sc, 0) + 1
+
+    return {
+        "status": "completed",
+        "rows_scored": len(scores),
+        "rows_unrated": unrated,
+        "rows_upserted": total_upserted,
+        "elapsed_seconds": round(total_elapsed, 1),
+        "coverage": {
+            "total": total,
+            "returns": has_returns,
+            "risk": has_risk,
+            "expense": has_expense,
+            "sortino": has_sortino,
+        },
+        "score_distribution": tiers,
+        "sub_category_distribution": dict(sorted(sub_cat_counts.items(), key=lambda x: -x[1])[:20]),
+    }

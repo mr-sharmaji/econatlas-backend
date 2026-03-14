@@ -16,6 +16,10 @@ class DiscoverStockScoreBreakdown(BaseModel):
     momentum: float
     institutional: float | None = None
     risk: float | None = None
+    technical_score: float | None = None
+    rsi_14: float | None = None
+    action_tag: str | None = None
+    action_tag_reasoning: str | None = None
     combined_signal: float
     position_52w: float | None = Field(None, alias="52w_position")
     quality_coverage: str | None = None
@@ -120,6 +124,11 @@ class DiscoverStockItemResponse(BaseModel):
     bs_annual: dict | None = None
     cf_annual: dict | None = None
     shareholding_quarterly: dict | None = None
+    # Technical & action tag
+    technical_score: float | None = None
+    rsi_14: float | None = None
+    action_tag: str | None = None
+    action_tag_reasoning: str | None = None
     score_breakdown: DiscoverStockScoreBreakdown
     tags: list[str] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)
@@ -140,10 +149,13 @@ class DiscoverStockListResponse(BaseModel):
 
 
 class DiscoverMutualFundScoreBreakdown(BaseModel):
-    return_score: float
-    risk_score: float
-    cost_score: float
-    consistency_score: float
+    performance_score: float | None = None
+    consistency_score: float | None = None
+    risk_score: float | None = None
+    cost_score: float | None = None
+    category_fit_score: float | None = None
+    # Legacy keys for backward compat
+    return_score: float | None = None
     alpha_score: float | None = None
     beta_score: float | None = None
 
@@ -181,14 +193,18 @@ class DiscoverMutualFundItemResponse(BaseModel):
     category_avg_returns_1y: float | None = None
     category_avg_returns_3y: float | None = None
     category_avg_returns_5y: float | None = None
-    score: float
-    score_return: float
-    score_risk: float
-    score_cost: float
-    score_consistency: float
+    score: float | None = None
+    score_return: float | None = None
+    score_risk: float | None = None
+    score_cost: float | None = None
+    score_consistency: float | None = None
+    score_performance: float | None = None
+    score_category_fit: float | None = None
     score_alpha: float | None = None
     score_beta: float | None = None
-    score_breakdown: DiscoverMutualFundScoreBreakdown
+    sub_category_percentile: float | None = None
+    fund_classification: str | None = None
+    score_breakdown: DiscoverMutualFundScoreBreakdown | None = None
     tags: list[str] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)
     source_status: SourceStatus

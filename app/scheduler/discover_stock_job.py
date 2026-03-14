@@ -2010,14 +2010,6 @@ class DiscoverStockScraper(BaseScraper):
         self,
         row: dict,
         sector: str,
-        pct_3m: float | None,
-        pct_1y: float | None,
-        pct_3y: float | None,
-        pct_5y: float | None,
-        all_pct_3m: list[float],
-        all_pct_1y: list[float],
-        all_pct_3y: list[float],
-        all_pct_5y: list[float],
     ) -> tuple[float | None, dict]:
         """Growth score with 5Y compounding and sector-specific weights."""
         parts: dict[str, float] = {}
@@ -2081,22 +2073,8 @@ class DiscoverStockScraper(BaseScraper):
             score = sum(parts[k] * w.get(k, 0.10) for k in parts) / tw
             return round(score, 2), parts
 
-        # Fallback: price-based growth at 0.5x
-        price_parts: list[tuple[float, float]] = []
-        if pct_3m is not None and all_pct_3m:
-            price_parts.append((self._percentile_rank(all_pct_3m, pct_3m), 0.20))
-        if pct_1y is not None and all_pct_1y:
-            price_parts.append((self._percentile_rank(all_pct_1y, pct_1y), 0.25))
-        if pct_3y is not None and all_pct_3y:
-            price_parts.append((self._percentile_rank(all_pct_3y, pct_3y), 0.25))
-        if pct_5y is not None and all_pct_5y:
-            price_parts.append((self._percentile_rank(all_pct_5y, pct_5y), 0.30))
-        if price_parts:
-            pgw = sum(w for _, w in price_parts)
-            raw = self._clamp(sum(s * w / pgw for s, w in price_parts))
-            score = self._clamp(50 + (raw - 50) * 0.50)
-            return round(score, 2), {"price_fallback": raw}
-
+        # No fundamental growth data available — return None instead of
+        # proxying via price returns (which would double-count with momentum layer)
         return None, {}
 
     def _score_momentum_v2(
@@ -2105,29 +2083,26 @@ class DiscoverStockScraper(BaseScraper):
         pos_52w: float | None,
         pct_3m: float | None,
         pct_1y: float | None,
-        pct_3y: float | None,
-        pct_5y: float | None,
         all_pct_3m: list[float],
         all_pct_1y: list[float],
-        all_pct_3y: list[float],
-        all_pct_5y: list[float],
     ) -> float:
-        """Multi-period momentum with 5Y returns."""
+        """Short/medium-term momentum (3M and 1Y only).
+
+        3Y/5Y returns removed — those are long-term capital appreciation,
+        already captured by the Growth and Valuation layers.
+        """
         multi_parts: list[tuple[float, float]] = []
         if pct_3m is not None and all_pct_3m:
-            multi_parts.append((self._percentile_rank(all_pct_3m, pct_3m), 0.20))
+            multi_parts.append((self._percentile_rank(all_pct_3m, pct_3m), 0.55))
         if pct_1y is not None and all_pct_1y:
-            multi_parts.append((self._percentile_rank(all_pct_1y, pct_1y), 0.25))
-        if pct_3y is not None and all_pct_3y:
-            multi_parts.append((self._percentile_rank(all_pct_3y, pct_3y), 0.25))
-        if pct_5y is not None and all_pct_5y:
-            multi_parts.append((self._percentile_rank(all_pct_5y, pct_5y), 0.20))
+            multi_parts.append((self._percentile_rank(all_pct_1y, pct_1y), 0.45))
 
         if multi_parts:
             mp_w = sum(w for _, w in multi_parts)
             multi_score = self._clamp(sum(s * w / mp_w for s, w in multi_parts))
             if pos_52w is not None:
-                return self._clamp(short_term_momentum * 0.10 + pos_52w * 0.20 + multi_score * 0.70)
+                # short-term 10%, 52W position 15%, multi-period 75%
+                return self._clamp(short_term_momentum * 0.10 + pos_52w * 0.15 + multi_score * 0.75)
             return self._clamp(short_term_momentum * 0.15 + multi_score * 0.85)
         elif pos_52w is not None:
             return self._clamp(short_term_momentum * 0.60 + pos_52w * 0.40)
@@ -2264,16 +2239,405 @@ class DiscoverStockScraper(BaseScraper):
         # Stalwart (default)
         return "stalwart"
 
-    @staticmethod
-    def _detect_market_regime() -> str:
-        """Simple regime detection: check if we can determine bear/bull.
+    # ── Technical Score & Action Tag ──
 
-        Falls back to 'bull' since we don't have real-time Nifty 200-DMA
-        in the scoring context. The regime can be injected via settings later.
+    @staticmethod
+    def _compute_ema(prices: list[float], period: int) -> list[float]:
+        """Compute exponential moving average for a price series."""
+        if not prices or period <= 0:
+            return []
+        multiplier = 2.0 / (period + 1)
+        ema = [prices[0]]
+        for i in range(1, len(prices)):
+            ema.append(prices[i] * multiplier + ema[-1] * (1.0 - multiplier))
+        return ema
+
+    @staticmethod
+    def _compute_sma(prices: list[float], period: int) -> float | None:
+        """Simple moving average of the last `period` values."""
+        if len(prices) < period:
+            return None
+        return sum(prices[-period:]) / period
+
+    def _compute_technical_score(
+        self,
+        history: list[dict],
+        sector: str,
+        row: dict,
+    ) -> tuple[float | None, dict]:
+        """Compute technical confirmation score (0-100) from price history.
+
+        Returns (score, details_dict) or (None, {}) if insufficient data.
+        history: list of {"date", "close", "volume"} sorted by date ascending.
         """
-        # TODO: Query market_prices for Nifty 50 200-DMA comparison
-        # For now, default to bull market
-        return "bull"
+        if len(history) < 30:
+            return None, {}
+
+        closes = [h["close"] for h in history]
+        volumes = [h["volume"] for h in history]
+        current_price = closes[-1]
+
+        details: dict[str, float] = {}
+
+        # ── RSI-14 ──
+        rsi_score = None
+        rsi_value = None
+        if len(closes) >= 15:
+            gains, losses = [], []
+            for i in range(1, len(closes)):
+                delta = closes[i] - closes[i - 1]
+                gains.append(max(delta, 0))
+                losses.append(max(-delta, 0))
+
+            period = 14
+            if len(gains) >= period:
+                avg_gain = sum(gains[-period:]) / period
+                avg_loss = sum(losses[-period:]) / period
+                # Use Wilder's smoothing for remaining periods
+                for i in range(len(gains) - period, len(gains)):
+                    avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+                    avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+                if avg_loss == 0:
+                    rsi_value = 100.0
+                else:
+                    rs = avg_gain / avg_loss
+                    rsi_value = 100.0 - (100.0 / (1.0 + rs))
+
+                details["rsi_14"] = round(rsi_value, 2)
+
+                # Score RSI: oversold is bullish, overbought is bearish
+                if rsi_value < 30:
+                    rsi_score = self._clamp(70 + (30 - rsi_value) * 1.0)
+                elif rsi_value > 70:
+                    rsi_score = self._clamp(30 - (rsi_value - 70) * 1.0)
+                else:
+                    rsi_score = self._clamp(50 + (rsi_value - 50) * 1.5)
+
+        # ── MACD ──
+        macd_score = None
+        if len(closes) >= 35:
+            ema_12 = self._compute_ema(closes, 12)
+            ema_26 = self._compute_ema(closes, 26)
+            macd_line = [ema_12[i] - ema_26[i] for i in range(len(closes))]
+            signal_line = self._compute_ema(macd_line[25:], 9)  # 9-EMA of MACD after 26 warmup
+
+            if signal_line:
+                macd_val = macd_line[-1]
+                signal_val = signal_line[-1]
+                histogram = macd_val - signal_val
+
+                details["macd"] = round(macd_val, 4)
+                details["macd_signal"] = round(signal_val, 4)
+                details["macd_histogram"] = round(histogram, 4)
+
+                if macd_val > signal_val and macd_val > 0:
+                    macd_score = 82.0  # strong bullish
+                elif macd_val > signal_val and macd_val <= 0:
+                    macd_score = 62.0  # bullish crossover from weakness
+                elif macd_val <= signal_val and macd_val > 0:
+                    macd_score = 38.0  # bearish crossover from strength
+                else:
+                    macd_score = 18.0  # strong bearish
+
+                # Histogram acceleration bonus
+                if len(macd_line) >= 2 and len(signal_line) >= 2:
+                    prev_hist = macd_line[-2] - signal_line[-2]
+                    if abs(histogram) > abs(prev_hist) and histogram > 0:
+                        macd_score = min(macd_score + 8.0, 95.0)
+                    elif abs(histogram) > abs(prev_hist) and histogram < 0:
+                        macd_score = max(macd_score - 8.0, 5.0)
+
+        # ── Volume Trend ──
+        vol_score = None
+        if len(volumes) >= 50 and len(closes) >= 20:
+            recent_vol = volumes[-20:]
+            medium_vol = volumes[-50:]
+            avg_vol_20 = sum(recent_vol) / 20 if any(v > 0 for v in recent_vol) else 0
+            avg_vol_50 = sum(medium_vol) / 50 if any(v > 0 for v in medium_vol) else 0
+
+            price_trend_20d = (closes[-1] - closes[-20]) / closes[-20] if closes[-20] > 0 else 0
+            price_up = price_trend_20d > 0.01
+            vol_up = avg_vol_20 > avg_vol_50 * 1.05 if avg_vol_50 > 0 else False
+
+            if price_up and vol_up:
+                vol_score = 80.0  # confirmed advance
+            elif price_up and not vol_up:
+                vol_score = 45.0  # weak advance
+            elif not price_up and vol_up:
+                vol_score = 25.0  # confirmed decline
+            else:
+                vol_score = 55.0  # declining on low interest
+
+            details["vol_ratio_20_50"] = round(avg_vol_20 / max(avg_vol_50, 1), 2)
+
+        # ── Moving Average Trend ──
+        ma_score = None
+        ema_20 = self._compute_ema(closes, 20)[-1] if len(closes) >= 20 else None
+        sma_50 = self._compute_sma(closes, 50)
+        sma_200 = self._compute_sma(closes, 200)
+
+        if ema_20 is not None and sma_50 is not None:
+            if sma_200 is not None:
+                # Full MA alignment scoring
+                if current_price > ema_20 > sma_50 > sma_200:
+                    ma_score = 90.0  # all aligned bullish
+                elif current_price > sma_50 > sma_200:
+                    ma_score = 72.0  # above key MAs
+                elif current_price > sma_50 and sma_50 < sma_200:
+                    ma_score = 52.0  # mixed — above 50 but death cross
+                elif current_price < sma_50 and sma_50 > sma_200:
+                    ma_score = 38.0  # below 50 but golden cross intact
+                elif current_price < sma_50 < sma_200:
+                    ma_score = 20.0  # weak — below both
+                elif current_price < ema_20 < sma_50 < sma_200:
+                    ma_score = 10.0  # all aligned bearish
+                else:
+                    ma_score = 50.0  # neutral/mixed
+
+                # Golden/death cross recency bonus
+                if len(closes) >= 220:
+                    sma_50_prev = self._compute_sma(closes[:-20], 50)
+                    sma_200_prev = self._compute_sma(closes[:-20], 200)
+                    if sma_50_prev and sma_200_prev:
+                        if sma_50_prev < sma_200_prev and sma_50 > sma_200:
+                            ma_score = min(ma_score + 10.0, 95.0)  # recent golden cross
+                        elif sma_50_prev > sma_200_prev and sma_50 < sma_200:
+                            ma_score = max(ma_score - 10.0, 5.0)  # recent death cross
+            else:
+                # No 200-DMA available — use price vs 20/50 only
+                if current_price > ema_20 > sma_50:
+                    ma_score = 75.0
+                elif current_price > sma_50:
+                    ma_score = 60.0
+                elif current_price < ema_20 < sma_50:
+                    ma_score = 25.0
+                else:
+                    ma_score = 45.0
+
+        # ── Support/Resistance Proximity ──
+        sr_score = None
+        high_52w = row.get("high_52w")
+        low_52w = row.get("low_52w")
+        if high_52w and low_52w and current_price > 0 and high_52w > low_52w:
+            dist_to_high_pct = (high_52w - current_price) / current_price * 100
+            dist_to_low_pct = (current_price - low_52w) / current_price * 100
+
+            if dist_to_low_pct < 5:
+                # Near 52W low — potential support zone
+                sr_score = 65.0
+            elif dist_to_high_pct < 5:
+                # Near 52W high — breakout or resistance
+                if vol_up if vol_score is not None else False:
+                    sr_score = 75.0  # breakout with volume
+                else:
+                    sr_score = 35.0  # resistance without volume
+            elif dist_to_high_pct < 15:
+                sr_score = 60.0  # upper range
+            elif dist_to_low_pct < 15:
+                sr_score = 40.0  # lower range
+            else:
+                sr_score = 50.0  # mid-range
+
+            details["dist_to_52w_high_pct"] = round(dist_to_high_pct, 2)
+            details["dist_to_52w_low_pct"] = round(dist_to_low_pct, 2)
+
+        # ── Weighted composite with sector adjustments ──
+        base_weights = {
+            "rsi": 0.25, "macd": 0.20, "volume": 0.20, "ma": 0.20, "sr": 0.15,
+        }
+
+        # Sector-conditional adjustments
+        if sector in ("Energy", "Materials", "Commodities"):
+            base_weights["macd"] += 0.05
+            base_weights["rsi"] -= 0.05
+        elif sector in ("FMCG", "Utilities"):
+            base_weights["volume"] -= 0.05
+            base_weights["sr"] += 0.05
+        elif sector in ("IT", "Healthcare"):
+            base_weights["rsi"] += 0.05
+            base_weights["macd"] -= 0.05
+
+        components = {}
+        if rsi_score is not None:
+            components["rsi"] = rsi_score
+        if macd_score is not None:
+            components["macd"] = macd_score
+        if vol_score is not None:
+            components["volume"] = vol_score
+        if ma_score is not None:
+            components["ma"] = ma_score
+        if sr_score is not None:
+            components["sr"] = sr_score
+
+        if not components:
+            return None, {}
+
+        total_w = sum(base_weights.get(k, 0.10) for k in components)
+        tech_score = sum(components[k] * base_weights.get(k, 0.10) for k in components) / total_w
+        tech_score = round(self._clamp(tech_score), 2)
+
+        details["technical_score"] = tech_score
+        if rsi_value is not None:
+            details["rsi_14"] = round(rsi_value, 2)
+
+        return tech_score, details
+
+    @staticmethod
+    def _compute_action_tag(
+        score: float,
+        tech_score: float | None,
+        quality_score: float,
+        momentum_score: float,
+        quality_cap: float | None,
+        data_quality: str,
+        *,
+        quality_sub: float | None = None,
+        valuation_sub: float | None = None,
+        growth_sub: float | None = None,
+        institutional_sub: float | None = None,
+        risk_sub: float | None = None,
+        tech_details: dict | None = None,
+    ) -> tuple[str, str]:
+        """Assign a user-facing action tag based on fundamentals + technicals.
+
+        Returns (tag, reasoning).
+        """
+        tech_details = tech_details or {}
+
+        # Identify top 2 contributing layers
+        layer_scores = [
+            ("Quality", quality_score),
+            ("Valuation", valuation_sub),
+            ("Growth", growth_sub),
+            ("Momentum", momentum_score),
+            ("Institutional", institutional_sub),
+            ("Risk", risk_sub),
+        ]
+        valid_layers = [(n, s) for n, s in layer_scores if s is not None]
+        valid_layers.sort(key=lambda x: x[1], reverse=True)
+        top_layers = valid_layers[:2]
+        top_str = " and ".join(f"{n} ({s:.0f})" for n, s in top_layers) if top_layers else "limited data"
+
+        # Build tech summary string
+        rsi_val = tech_details.get("rsi_14")
+        macd_hist = tech_details.get("macd_histogram")
+        tech_summary_parts: list[str] = []
+        if rsi_val is not None:
+            tech_summary_parts.append(f"RSI at {rsi_val:.0f}")
+        if macd_hist is not None:
+            direction = "bullish" if macd_hist > 0 else "bearish"
+            tech_summary_parts.append(f"{direction} MACD")
+        tech_summary = ", ".join(tech_summary_parts) if tech_summary_parts else "limited technical data"
+
+        # 1. Quality gate triggered
+        if quality_cap is not None and score <= quality_cap:
+            if quality_cap <= 35:
+                return ("Avoid",
+                        f"Avoid — Structural red flags cap the score at {quality_cap:.0f}. "
+                        f"Fundamental weakness is confirmed regardless of technical position.")
+            if quality_cap <= 45:
+                return ("Deteriorating",
+                        f"Deteriorating — Quality gates limit the score to {quality_cap:.0f}. "
+                        f"Core fundamentals show persistent weakness.")
+
+        # 2. No technical data
+        if tech_score is None:
+            if score >= 70:
+                return ("Outperformer",
+                        f"Outperformer — Strong fundamentals (score {score:.0f}) driven by {top_str}. "
+                        f"Technical data unavailable for confirmation.")
+            if score >= 50:
+                return ("Hold",
+                        f"Hold — Decent fundamentals (score {score:.0f}) but technical data unavailable. "
+                        f"Primary drivers: {top_str}.")
+            if quality_score < 40:
+                return ("Deteriorating",
+                        f"Deteriorating — Weak fundamentals (score {score:.0f}, quality {quality_score:.0f}). "
+                        f"No technical data to suggest otherwise.")
+            return ("Watchlist",
+                    f"Watchlist — Score {score:.0f} with {top_str} as drivers. "
+                    f"Technical data unavailable; monitor for clarity.")
+
+        # 3. Data quality downgrade — limited data caps at Hold
+        if data_quality == "limited":
+            tag = "Hold"
+            reason = (f"Hold — Limited data quality restricts confidence. "
+                      f"Score {score:.0f}, tech {tech_score:.0f}. "
+                      f"More data needed before a stronger signal.")
+            return tag, reason
+
+        # 4. Full data — decision tree
+        # Check for fundamental-technical divergence first
+        aligned = abs(score - tech_score) < 25
+        tech_confirms = "confirm" if aligned else "diverge from"
+
+        if score >= 75 and tech_score >= 60:
+            return ("Strong Outperformer",
+                    f"Strong Outperformer — {top_str} are the primary drivers. "
+                    f"{tech_summary} {tech_confirms} the fundamental strength. "
+                    f"Reflects both long-term quality and favorable short-term positioning.")
+
+        if score >= 60 and tech_score >= 45:
+            return ("Outperformer",
+                    f"Outperformer — Solid fundamentals (score {score:.0f}) led by {top_str}. "
+                    f"Technicals ({tech_summary}) are supportive at {tech_score:.0f}.")
+
+        if score >= 50 and tech_score >= 50:
+            return ("Accumulate",
+                    f"Accumulate — Fundamentals (score {score:.0f}) and technicals ({tech_score:.0f}) "
+                    f"are both moderately positive. {top_str} lead the score. "
+                    f"Suitable for gradual position building.")
+
+        if score >= 55 and tech_score < 40:
+            return ("Watchlist",
+                    f"Watchlist — Fundamentals are solid (score {score:.0f}) led by {top_str}, "
+                    f"but technicals are weak ({tech_score:.0f}) with {tech_summary}. "
+                    f"Technical weakness may present a better entry point if fundamentals hold.")
+
+        if score < 45 and tech_score >= 65:
+            return ("Technically Strong, Fundamentally Weak",
+                    f"Technically Strong, Fundamentally Weak — "
+                    f"Price momentum (tech {tech_score:.0f}, {tech_summary}) "
+                    f"is not supported by fundamentals (score {score:.0f}). "
+                    f"High risk — momentum may not sustain without quality backing.")
+
+        if score < 35:
+            return ("Avoid",
+                    f"Avoid — Weak fundamentals (score {score:.0f}) with {top_str}. "
+                    f"Technical position ({tech_score:.0f}) does not offset structural weakness.")
+
+        if score < 50 and tech_score < 40:
+            return ("Deteriorating",
+                    f"Deteriorating — Both fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) "
+                    f"are weak. {tech_summary} confirms the downward pressure. {top_str}.")
+
+        # Default: Hold
+        return ("Hold",
+                f"Hold — Mixed signals with score {score:.0f} and tech {tech_score:.0f}. "
+                f"{top_str} are the main drivers. {tech_summary}. "
+                f"No strong case for action in either direction.")
+
+    @staticmethod
+    def _detect_market_regime(
+        nifty_price: float | None = None,
+        nifty_200dma: float | None = None,
+    ) -> str:
+        """Regime detection based on Nifty 50 vs its 200-DMA.
+
+        Returns 'bull' if Nifty is >3% above 200-DMA, 'bear' if >3% below,
+        'neutral' otherwise. Falls back to 'neutral' if data unavailable.
+
+        nifty_price and nifty_200dma are pre-fetched async and passed in.
+        """
+        if nifty_price is None or nifty_200dma is None or nifty_200dma <= 0:
+            return "neutral"
+        deviation = (nifty_price - nifty_200dma) / nifty_200dma
+        if deviation > 0.03:
+            return "bull"
+        elif deviation < -0.03:
+            return "bear"
+        return "neutral"
 
     @staticmethod
     def _generate_tags(
@@ -2605,14 +2969,18 @@ class DiscoverStockScraper(BaseScraper):
         rows: list[dict],
         *,
         volatility_data: dict[str, dict] | None = None,
+        nifty_price: float | None = None,
+        nifty_200dma: float | None = None,
+        price_history: dict[str, list[dict]] | None = None,
     ) -> list[dict]:
         if not rows:
             return []
 
         vol_data = volatility_data or {}
+        ph_data = price_history or {}
 
         # ── Market regime detection ──
-        market_regime = self._detect_market_regime()
+        market_regime = self._detect_market_regime(nifty_price, nifty_200dma)
 
         # ── Sanitize numeric fields (Screener.in can return strings) ──
         _NUMERIC_FIELDS = {
@@ -2928,12 +3296,12 @@ class DiscoverStockScraper(BaseScraper):
             pct_change_3y = pct_3y_by_sym.get(symbol)
             pct_change_5y = pct_5y_by_sym.get(symbol)
 
-            # ── Momentum v2 (multi-period with 5Y) ──
+            # ── Momentum v2 (short/medium-term only — 3M and 1Y) ──
             momentum = self._score_momentum_v2(
                 short_term_momentum,
                 pos_52w_by_sym.get(symbol),
-                pct_change_3m, pct_change_1y, pct_change_3y, pct_change_5y,
-                all_pct_3m, all_pct_1y, all_pct_3y, all_pct_5y,
+                pct_change_3m, pct_change_1y,
+                all_pct_3m, all_pct_1y,
             )
 
             # ── Liquidity ──
@@ -2992,11 +3360,7 @@ class DiscoverStockScraper(BaseScraper):
             )
 
             # ── Growth v2 (with 5Y compounding) ──
-            growth_score, _growth_parts = self._score_growth_v2(
-                row, sector,
-                pct_change_3m, pct_change_1y, pct_change_3y, pct_change_5y,
-                all_pct_3m, all_pct_1y, all_pct_3y, all_pct_5y,
-            )
+            growth_score, _growth_parts = self._score_growth_v2(row, sector)
 
             # ── Institutional (merged ownership + smart money) ──
             institutional_score, _inst_parts = self._score_institutional(row)
@@ -3122,6 +3486,23 @@ class DiscoverStockScraper(BaseScraper):
                 paper_profits=paper_profits,
             )
 
+            # ── Technical score (from price history) ──
+            sym_history = ph_data.get(symbol, [])
+            tech_score, tech_details = self._compute_technical_score(sym_history, sector, row)
+
+            # ── Action tag ──
+            action_tag, action_tag_reasoning = self._compute_action_tag(
+                score, tech_score,
+                quality_score, momentum,
+                quality_cap, data_quality,
+                quality_sub=quality_score,
+                valuation_sub=valuation_score,
+                growth_sub=growth_score,
+                institutional_sub=institutional_score,
+                risk_sub=risk_score,
+                tech_details=tech_details,
+            )
+
             enriched = {
                 **row,
                 "score": score,
@@ -3138,6 +3519,10 @@ class DiscoverStockScraper(BaseScraper):
                 "percent_change_1y": pct_change_1y,
                 "percent_change_3y": pct_change_3y,
                 "percent_change_5y": pct_change_5y,
+                "technical_score": tech_score,
+                "rsi_14": tech_details.get("rsi_14"),
+                "action_tag": action_tag,
+                "action_tag_reasoning": action_tag_reasoning,
                 "score_breakdown": {
                     "quality": round(quality_score, 2),
                     "valuation": round(valuation_score, 2) if valuation_score is not None else None,
@@ -3145,6 +3530,10 @@ class DiscoverStockScraper(BaseScraper):
                     "momentum": round(momentum, 2),
                     "institutional": round(institutional_score, 2) if institutional_score is not None else None,
                     "risk": round(risk_score, 2) if risk_score is not None else None,
+                    "technical_score": tech_score,
+                    "rsi_14": tech_details.get("rsi_14"),
+                    "action_tag": action_tag,
+                    "action_tag_reasoning": action_tag_reasoning,
                     "52w_position": pos_52w_by_sym.get(symbol),
                     "combined_signal": round((momentum + liquidity) / 2.0, 2),
                     "quality_coverage": f"{metrics_used}/5",
@@ -3582,6 +3971,7 @@ async def run_discover_stock_job() -> None:
             "score_momentum", "score_institutional", "score_risk",
             "score_breakdown", "tags", "why_ranked",
             "sector_percentile", "lynch_classification",
+            "technical_score", "rsi_14", "action_tag", "action_tag_reasoning",
         }
 
         def _incremental_upsert(batch: list[dict]) -> None:
@@ -3630,9 +4020,62 @@ async def run_discover_stock_job() -> None:
             (other_count / max(len(raw_rows), 1)) * 100,
         )
 
+        # 2b. Pre-fetch Nifty 50 regime data and price history for technical scoring.
+        from app.core.database import get_pool as _get_pool
+        _pool = await _get_pool()
+        nifty_price, nifty_200dma = None, None
+        try:
+            nifty_row = await _pool.fetchrow(
+                """SELECT price FROM market_prices
+                   WHERE asset = 'Nifty 50' AND instrument_type = 'index'
+                   ORDER BY "timestamp" DESC LIMIT 1"""
+            )
+            if nifty_row:
+                nifty_price = float(nifty_row["price"])
+            nifty_200dma_row = await _pool.fetchrow(
+                """SELECT AVG(close) AS dma200
+                   FROM (
+                       SELECT close FROM discover_stock_price_history
+                       WHERE symbol = 'NIFTY 50'
+                       ORDER BY trade_date DESC LIMIT 200
+                   ) sub"""
+            )
+            if nifty_200dma_row and nifty_200dma_row["dma200"]:
+                nifty_200dma = float(nifty_200dma_row["dma200"])
+        except Exception:
+            logger.warning("Failed to fetch Nifty regime data — defaulting to neutral")
+
+        # Fetch price history for technical score computation
+        price_history: dict[str, list[dict]] = {}
+        try:
+            ph_rows = await _pool.fetch(
+                """SELECT symbol, trade_date, close, volume
+                   FROM discover_stock_price_history
+                   WHERE trade_date >= CURRENT_DATE - INTERVAL '260 days'
+                   ORDER BY symbol, trade_date"""
+            )
+            for ph_row in ph_rows:
+                sym = ph_row["symbol"]
+                if sym not in price_history:
+                    price_history[sym] = []
+                price_history[sym].append({
+                    "date": ph_row["trade_date"],
+                    "close": float(ph_row["close"]),
+                    "volume": int(ph_row["volume"]) if ph_row["volume"] else 0,
+                })
+            logger.info("Discover stock: loaded price history for %d symbols", len(price_history))
+        except Exception:
+            logger.warning("Failed to fetch price history for technical scoring")
+
         # 3. Score with 6-layer model (CPU-bound, fast).
         score_t0 = time_mod.time()
-        rows = _scraper._compute_scores(raw_rows, volatility_data=volatility_data)
+        rows = _scraper._compute_scores(
+            raw_rows,
+            volatility_data=volatility_data,
+            nifty_price=nifty_price,
+            nifty_200dma=nifty_200dma,
+            price_history=price_history,
+        )
         logger.info(
             "Discover stock: scored %d rows in %.1fs",
             len(rows), time_mod.time() - score_t0,
@@ -3767,9 +4210,59 @@ async def rescore_discover_stocks() -> dict:
     volatility_data = await discover_service.get_bulk_stock_volatility_data()
     logger.info("Rescore: volatility data for %d symbols", len(volatility_data))
 
+    # 3b. Pre-fetch Nifty regime data and price history
+    nifty_price, nifty_200dma = None, None
+    try:
+        nifty_row = await pool.fetchrow(
+            """SELECT price FROM market_prices
+               WHERE asset = 'Nifty 50' AND instrument_type = 'index'
+               ORDER BY "timestamp" DESC LIMIT 1"""
+        )
+        if nifty_row:
+            nifty_price = float(nifty_row["price"])
+        nifty_200dma_row = await pool.fetchrow(
+            """SELECT AVG(close) AS dma200
+               FROM (
+                   SELECT close FROM discover_stock_price_history
+                   WHERE symbol = 'NIFTY 50'
+                   ORDER BY trade_date DESC LIMIT 200
+               ) sub"""
+        )
+        if nifty_200dma_row and nifty_200dma_row["dma200"]:
+            nifty_200dma = float(nifty_200dma_row["dma200"])
+    except Exception:
+        logger.warning("Rescore: failed to fetch Nifty regime data")
+
+    price_history: dict[str, list[dict]] = {}
+    try:
+        ph_rows = await pool.fetch(
+            """SELECT symbol, trade_date, close, volume
+               FROM discover_stock_price_history
+               WHERE trade_date >= CURRENT_DATE - INTERVAL '260 days'
+               ORDER BY symbol, trade_date"""
+        )
+        for ph_row in ph_rows:
+            sym = ph_row["symbol"]
+            if sym not in price_history:
+                price_history[sym] = []
+            price_history[sym].append({
+                "date": ph_row["trade_date"],
+                "close": float(ph_row["close"]),
+                "volume": int(ph_row["volume"]) if ph_row["volume"] else 0,
+            })
+        logger.info("Rescore: loaded price history for %d symbols", len(price_history))
+    except Exception:
+        logger.warning("Rescore: failed to fetch price history")
+
     # 4. Score
     score_t0 = time_mod.time()
-    scored_rows = _scraper._compute_scores(raw_rows, volatility_data=volatility_data)
+    scored_rows = _scraper._compute_scores(
+        raw_rows,
+        volatility_data=volatility_data,
+        nifty_price=nifty_price,
+        nifty_200dma=nifty_200dma,
+        price_history=price_history,
+    )
     score_elapsed = time_mod.time() - score_t0
     logger.info("Rescore: scored %d rows in %.1fs", len(scored_rows), score_elapsed)
 

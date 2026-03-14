@@ -533,3 +533,34 @@ ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS lynch_classificati
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_quality DOUBLE PRECISION;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_institutional DOUBLE PRECISION;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_risk DOUBLE PRECISION;
+
+-- ================================================================
+-- v0.8: MF scoring model overhaul — 5-layer model
+-- ================================================================
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS score_performance DOUBLE PRECISION;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS score_category_fit DOUBLE PRECISION;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS sub_category_percentile DOUBLE PRECISION;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS fund_classification TEXT;
+-- Allow NULL for score (NULL = unrated, no data)
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN score DROP NOT NULL;
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN score DROP DEFAULT;
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN score_return DROP NOT NULL;
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN score_return DROP DEFAULT;
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN score_risk DROP NOT NULL;
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN score_risk DROP DEFAULT;
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN score_cost DROP NOT NULL;
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN score_cost DROP DEFAULT;
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN score_consistency DROP NOT NULL;
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN score_consistency DROP DEFAULT;
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN score_breakdown DROP NOT NULL;
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN score_breakdown DROP DEFAULT;
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN tags DROP NOT NULL;
+ALTER TABLE discover_mutual_fund_snapshots ALTER COLUMN tags DROP DEFAULT;
+
+-- ================================================================
+-- v0.9: Technical score & action tag for stocks
+-- ================================================================
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS technical_score DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS rsi_14 DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS action_tag TEXT;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS action_tag_reasoning TEXT;

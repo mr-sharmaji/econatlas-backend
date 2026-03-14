@@ -232,23 +232,41 @@ def _stock_breakdown_payload(row: dict) -> dict:
     if wn:
         result["why_narrative"] = str(wn)
 
+    ts = _to_float(stored_sb.get("technical_score") or row.get("technical_score"))
+    if ts is not None:
+        result["technical_score"] = round(ts, 2)
+
+    rsi = _to_float(stored_sb.get("rsi_14") or row.get("rsi_14"))
+    if rsi is not None:
+        result["rsi_14"] = round(rsi, 2)
+
+    at = stored_sb.get("action_tag") or row.get("action_tag")
+    if at is not None:
+        result["action_tag"] = str(at)
+
+    atr = stored_sb.get("action_tag_reasoning") or row.get("action_tag_reasoning")
+    if atr is not None:
+        result["action_tag_reasoning"] = str(atr)
+
     return result
 
 
 def _mf_breakdown_payload(row: dict) -> dict:
-    result = {
-        "return_score": round(_to_float(row.get("score_return")) or 0.0, 2),
-        "risk_score": round(_to_float(row.get("score_risk")) or 0.0, 2),
-        "cost_score": round(_to_float(row.get("score_cost")) or 0.0, 2),
-        "consistency_score": round(_to_float(row.get("score_consistency")) or 0.0, 2),
+    # If score_breakdown is already a dict with the new keys, use it directly
+    existing = row.get("score_breakdown")
+    if isinstance(existing, dict) and "performance_score" in existing:
+        return existing
+    perf = _to_float(row.get("score_performance"))
+    cat_fit = _to_float(row.get("score_category_fit"))
+    return {
+        "performance_score": round(perf, 2) if perf is not None else None,
+        "consistency_score": round(_to_float(row.get("score_consistency")) or 0.0, 2) if _to_float(row.get("score_consistency")) is not None else None,
+        "risk_score": round(_to_float(row.get("score_risk")) or 0.0, 2) if _to_float(row.get("score_risk")) is not None else None,
+        "cost_score": round(_to_float(row.get("score_cost")) or 0.0, 2) if _to_float(row.get("score_cost")) is not None else None,
+        "category_fit_score": round(cat_fit, 2) if cat_fit is not None else None,
+        # Legacy
+        "return_score": round(perf, 2) if perf is not None else None,
     }
-    alpha_score = _to_float(row.get("score_alpha"))
-    beta_score = _to_float(row.get("score_beta"))
-    if alpha_score:
-        result["alpha_score"] = round(alpha_score, 2)
-    if beta_score:
-        result["beta_score"] = round(beta_score, 2)
-    return result
 
 
 def _stock_why_ranked(row: dict, sector_stats: dict | None = None) -> list[str]:
@@ -299,51 +317,59 @@ def _stock_why_ranked(row: dict, sector_stats: dict | None = None) -> list[str]:
 
 def _mf_why_ranked(row: dict, category_stats: dict | None = None) -> list[str]:
     reasons: list[str] = []
+    sub_cat = row.get("fund_classification") or row.get("sub_category") or ""
     ret3 = _to_float(row.get("returns_3y"))
-    if ret3 is not None and ret3 >= 12:
-        if category_stats and category_stats.get("avg_ret3y"):
-            reasons.append(f"3Y return of {ret3:.1f}% vs category avg {category_stats['avg_ret3y']:.1f}%.")
-        else:
+
+    # Return context vs sub-category avg
+    if ret3 is not None:
+        avg = category_stats.get("avg_ret3y") if category_stats else None
+        if avg is not None:
+            reasons.append(f"3Y return of {ret3:.1f}% vs {sub_cat} avg {avg:.1f}%.")
+        elif ret3 >= 12:
             reasons.append(f"Strong 3Y return of {ret3:.1f}%.")
 
-    ret5 = _to_float(row.get("returns_5y"))
-    if ret5 is not None and ret5 >= 12:
-        reasons.append(f"Consistent 5Y return of {ret5:.1f}%.")
+    # Risk-adjusted quality
+    sharpe = _to_float(row.get("sharpe"))
+    sortino = _to_float(row.get("sortino"))
+    if sortino is not None and sortino >= 1.5:
+        reasons.append(f"Sortino of {sortino:.2f} shows strong risk-adjusted performance.")
+    elif sharpe is not None and sharpe >= 1.5:
+        reasons.append(f"Sharpe of {sharpe:.2f} indicates strong risk-adjusted returns.")
 
+    # Cost context
     expense = _to_float(row.get("expense_ratio"))
     if expense is not None and expense <= 1.0:
-        reasons.append(f"Low expense ratio of {expense:.2f}% supports compounding.")
+        reasons.append(f"Low expense ratio of {expense:.2f}%.")
 
-    risk = str(row.get("risk_level") or "").strip().lower()
-    if risk in {"low", "moderately low"}:
-        reasons.append(f"Risk level: {row.get('risk_level', '').strip()}.")
-
-    sharpe = _to_float(row.get("sharpe"))
-    if sharpe is not None and sharpe >= 1.5:
-        reasons.append(f"Sharpe ratio of {sharpe:.2f} indicates strong risk-adjusted returns.")
+    # Rank context
+    sub_pctl = _to_float(row.get("sub_category_percentile"))
+    if sub_pctl is not None and sub_pctl >= 75:
+        reasons.append(f"Top {100 - sub_pctl:.0f}% within {sub_cat} funds.")
 
     aum = _to_float(row.get("aum_cr"))
     if aum is not None and aum < 100:
         reasons.append("Small fund size (< 100 Cr) — metrics may be less stable.")
 
-    if str(row.get("plan_type") or "").strip().lower() == "direct":
-        reasons.append("Direct plan selected for lower cost drag.")
-
     status = _normalize_source_status(row.get("source_status"))
     if status != "primary":
-        reasons.append("Some advanced metrics are unavailable in fallback mode.")
+        reasons.append("Some metrics are based on limited data.")
     if not reasons:
-        reasons.append("Balanced risk-return-cost score within category.")
+        reasons.append("Balanced risk-return-cost score within sub-category.")
     return reasons[:4]
 
 
 def _compute_quality_badges(row: dict) -> list[str]:
     badges: list[str] = []
-    category_rank = _to_int(row.get("category_rank"))
-    category_total = _to_int(row.get("category_total"))
-    if category_rank is not None and category_total is not None:
-        if category_rank <= max(1, int(category_total * 0.1)):
-            badges.append("Top Performer")
+    # Use sub_category_percentile if available, fallback to category_rank
+    sub_pctl = _to_float(row.get("sub_category_percentile"))
+    if sub_pctl is not None and sub_pctl >= 90:
+        badges.append("Top Performer")
+    elif sub_pctl is None:
+        category_rank = _to_int(row.get("category_rank"))
+        category_total = _to_int(row.get("category_total"))
+        if category_rank is not None and category_total is not None:
+            if category_rank <= max(1, int(category_total * 0.1)):
+                badges.append("Top Performer")
     returns_1y = _to_float(row.get("returns_1y"))
     returns_3y = _to_float(row.get("returns_3y"))
     returns_5y = _to_float(row.get("returns_5y"))
@@ -385,18 +411,29 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
 
 
 def _decorate_mf_row(row: dict, category_stats: dict | None = None) -> dict:
+    import json as _json
     item = dict(row)
     item["source_status"] = _normalize_source_status(item.get("source_status"))
     item["score_breakdown"] = _mf_breakdown_payload(item)
     item["display_name"] = _clean_mf_display_name(item.get("scheme_name", ""))
     tags = item.get("tags")
+    if isinstance(tags, str):
+        try:
+            tags = _json.loads(tags)
+        except (ValueError, TypeError):
+            tags = []
     item["tags"] = tags if isinstance(tags, list) else []
-    item["why_ranked"] = _mf_why_ranked(item, category_stats)
-    item["quality_badges"] = _compute_quality_badges(item)
+    # Look up sub-category stats using fund_classification
+    sub_cat = item.get("fund_classification") or item.get("sub_category") or ""
+    sub_stats = None
     if category_stats:
-        item["category_avg_returns_1y"] = category_stats.get("avg_ret1y")
-        item["category_avg_returns_3y"] = category_stats.get("avg_ret3y")
-        item["category_avg_returns_5y"] = category_stats.get("avg_ret5y")
+        sub_stats = category_stats.get(sub_cat) or category_stats.get(item.get("category", ""))
+    item["why_ranked"] = _mf_why_ranked(item, sub_stats)
+    item["quality_badges"] = _compute_quality_badges(item)
+    if sub_stats:
+        item["category_avg_returns_1y"] = sub_stats.get("avg_ret1y")
+        item["category_avg_returns_3y"] = sub_stats.get("avg_ret3y")
+        item["category_avg_returns_5y"] = sub_stats.get("avg_ret5y")
     else:
         item["category_avg_returns_1y"] = None
         item["category_avg_returns_3y"] = None
@@ -443,7 +480,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     pl_annual, bs_annual, cf_annual,
                     shareholding_quarterly,
                     score_quality, score_institutional, score_risk,
-                    sector_percentile, lynch_classification, percent_change_5y
+                    sector_percentile, lynch_classification, percent_change_5y,
+                    technical_score, rsi_14, action_tag, action_tag_reasoning
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -474,7 +512,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     $79, $80, $81,
                     $82,
                     $83, $84, $85,
-                    $86, $87, $88
+                    $86, $87, $88,
+                    $89, $90, $91, $92
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -573,7 +612,11 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     score_risk = COALESCE(EXCLUDED.score_risk, {STOCK_TABLE}.score_risk),
                     sector_percentile = COALESCE(EXCLUDED.sector_percentile, {STOCK_TABLE}.sector_percentile),
                     lynch_classification = COALESCE(EXCLUDED.lynch_classification, {STOCK_TABLE}.lynch_classification),
-                    percent_change_5y = EXCLUDED.percent_change_5y
+                    percent_change_5y = EXCLUDED.percent_change_5y,
+                    technical_score = COALESCE(EXCLUDED.technical_score, {STOCK_TABLE}.technical_score),
+                    rsi_14 = COALESCE(EXCLUDED.rsi_14, {STOCK_TABLE}.rsi_14),
+                    action_tag = COALESCE(EXCLUDED.action_tag, {STOCK_TABLE}.action_tag),
+                    action_tag_reasoning = COALESCE(EXCLUDED.action_tag_reasoning, {STOCK_TABLE}.action_tag_reasoning)
                 """,
                 str(row.get("market") or "IN"),                                    # $1
                 str(row.get("symbol") or ""),                                      # $2
@@ -663,6 +706,10 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("sector_percentile")),                           # $86
                 row.get("lynch_classification"),                                   # $87
                 _to_float(row.get("percent_change_5y")),                           # $88
+                _to_float(row.get("technical_score")),                             # $89
+                _to_float(row.get("rsi_14")),                                     # $90
+                row.get("action_tag"),                                             # $91
+                row.get("action_tag_reasoning"),                                   # $92
             )
             count += 1
     return count
@@ -735,7 +782,8 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     score_breakdown, tags, source_status, source_timestamp, ingested_at,
                     primary_source, secondary_source, fund_age_years,
                     max_drawdown, rolling_return_consistency,
-                    alpha, beta, score_alpha, score_beta
+                    alpha, beta, score_alpha, score_beta,
+                    score_performance, score_category_fit, sub_category_percentile, fund_classification
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -745,7 +793,8 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     $24, $25, $26, $27, NOW(),
                     $28, $29, $30,
                     $31, $32,
-                    $33, $34, $35, $36
+                    $33, $34, $35, $36,
+                    $37, $38, $39, $40
                 )
                 ON CONFLICT (scheme_code)
                 DO UPDATE SET
@@ -784,7 +833,11 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     alpha = EXCLUDED.alpha,
                     beta = EXCLUDED.beta,
                     score_alpha = EXCLUDED.score_alpha,
-                    score_beta = EXCLUDED.score_beta
+                    score_beta = EXCLUDED.score_beta,
+                    score_performance = EXCLUDED.score_performance,
+                    score_category_fit = EXCLUDED.score_category_fit,
+                    sub_category_percentile = EXCLUDED.sub_category_percentile,
+                    fund_classification = EXCLUDED.fund_classification
                 """,
                 str(row.get("scheme_code") or ""),
                 str(row.get("scheme_name") or ""),
@@ -804,11 +857,11 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("std_dev")),
                 _to_float(row.get("sharpe")),
                 _to_float(row.get("sortino")),
-                _to_float(row.get("score")) or 0.0,
-                _to_float(row.get("score_return")) or 0.0,
-                _to_float(row.get("score_risk")) or 0.0,
-                _to_float(row.get("score_cost")) or 0.0,
-                _to_float(row.get("score_consistency")) or 0.0,
+                _to_float(row.get("score")),
+                _to_float(row.get("score_return")),
+                _to_float(row.get("score_risk")),
+                _to_float(row.get("score_cost")),
+                _to_float(row.get("score_consistency")),
                 _to_jsonb(row.get("score_breakdown"), _mf_breakdown_payload(row)),
                 _to_jsonb(row.get("tags"), []),
                 _normalize_source_status(row.get("source_status")),
@@ -822,6 +875,10 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("beta")),
                 _to_float(row.get("score_alpha")),
                 _to_float(row.get("score_beta")),
+                _to_float(row.get("score_performance")),
+                _to_float(row.get("score_category_fit")),
+                _to_float(row.get("sub_category_percentile")),
+                row.get("fund_classification"),
             )
             count += 1
     return count
@@ -861,24 +918,30 @@ async def _get_stock_sector_stats(pool) -> dict[str, dict]:
 
 
 async def _get_mf_category_stats(pool) -> dict[str, dict]:
-    """Fetch per-category avg returns for contextual why_ranked."""
+    """Fetch per-sub-category avg returns for contextual why_ranked.
+
+    Uses fund_classification (canonical sub-category) when available,
+    falls back to raw category for backward compat.
+    """
     rows = await pool.fetch(f"""
         SELECT
-            COALESCE(NULLIF(category, ''), 'Other') AS category,
+            COALESCE(NULLIF(fund_classification, ''), COALESCE(NULLIF(category, ''), 'Other')) AS sub_cat,
             ROUND(AVG(returns_1y)::numeric, 1) AS avg_ret1y,
             ROUND(AVG(returns_3y)::numeric, 1) AS avg_ret3y,
-            ROUND(AVG(returns_5y)::numeric, 1) AS avg_ret5y
+            ROUND(AVG(returns_5y)::numeric, 1) AS avg_ret5y,
+            COUNT(*) AS fund_count
         FROM {MF_TABLE}
         WHERE returns_3y IS NOT NULL
-        GROUP BY COALESCE(NULLIF(category, ''), 'Other')
+        GROUP BY COALESCE(NULLIF(fund_classification, ''), COALESCE(NULLIF(category, ''), 'Other'))
     """)
     out: dict[str, dict] = {}
     for r in rows:
-        cat = str(r["category"])
-        out[cat] = {
+        sub_cat = str(r["sub_cat"])
+        out[sub_cat] = {
             "avg_ret1y": float(r["avg_ret1y"]) if r["avg_ret1y"] is not None else None,
             "avg_ret3y": float(r["avg_ret3y"]) if r["avg_ret3y"] is not None else None,
             "avg_ret5y": float(r["avg_ret5y"]) if r["avg_ret5y"] is not None else None,
+            "fund_count": int(r["fund_count"]),
         }
     return out
 
@@ -1066,6 +1129,7 @@ async def list_discover_mutual_funds(
     category: str | None = None,
     risk_level: str | None = None,
     direct_only: bool = True,
+    include_idcw: bool = False,
     min_score: float | None = None,
     min_aum_cr: float | None = None,
     max_expense_ratio: float | None = None,
@@ -1101,6 +1165,10 @@ async def list_discover_mutual_funds(
 
     if direct_only:
         conds.append("LOWER(COALESCE(plan_type, 'direct')) = 'direct'")
+
+    # Filter IDCW variants by default (3218 variants, only 13 with data)
+    if not include_idcw:
+        conds.append("(COALESCE(option_type, '') NOT ILIKE '%idcw%')")
 
     preset_norm = str(preset or "all").strip().lower()
     if preset_norm == "large-cap":
@@ -1220,11 +1288,13 @@ async def list_discover_mutual_funds(
             expense_ratio, aum_cr, risk_level,
             returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
             score, score_return, score_risk, score_cost, score_consistency,
+            score_performance, score_category_fit,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
             category_rank, category_total, fund_age_years,
             max_drawdown, rolling_return_consistency,
-            alpha, beta, score_alpha, score_beta
+            alpha, beta, score_alpha, score_beta,
+            sub_category_percentile, fund_classification
         FROM {MF_TABLE}
         {where_sql}
         ORDER BY {order_col} {order_dir} NULLS LAST, scheme_name ASC
@@ -2000,11 +2070,13 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
             expense_ratio, aum_cr, risk_level,
             returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
             score, score_return, score_risk, score_cost, score_consistency,
+            score_performance, score_category_fit,
             score_breakdown, tags, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
             category_rank, category_total, fund_age_years,
             max_drawdown, rolling_return_consistency,
-            alpha, beta, score_alpha, score_beta
+            alpha, beta, score_alpha, score_beta,
+            sub_category_percentile, fund_classification
         FROM {MF_TABLE}
         WHERE COALESCE(NULLIF(sub_category, ''), category) = $1
           AND scheme_code != $2

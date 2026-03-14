@@ -351,6 +351,15 @@ async def rescore_job(
         except Exception:
             logger.exception("Rescore failed for %s", job_name)
             raise HTTPException(status_code=500, detail="Rescore failed — check logs")
+    if job_name == "discover_mf":
+        from app.scheduler.discover_mutual_fund_job import rescore_discover_mutual_funds
+
+        try:
+            result = await rescore_discover_mutual_funds()
+            return result
+        except Exception:
+            logger.exception("Rescore failed for %s", job_name)
+            raise HTTPException(status_code=500, detail="Rescore failed — check logs")
     raise HTTPException(status_code=400, detail=f"Rescore not supported for '{job_name}'")
 
 
