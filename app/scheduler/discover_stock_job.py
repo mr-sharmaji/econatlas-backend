@@ -1353,6 +1353,43 @@ class DiscoverStockScraper(BaseScraper):
                     except (ValueError, TypeError):
                         r[field] = None
 
+        # ── Derive missing fields from available data ──
+        _derived_pe = 0
+        _derived_pb = 0
+        _defaulted_fii = 0
+        _defaulted_dii = 0
+        for r in rows:
+            price = r.get("last_price")
+            # PE = price / EPS when PE is missing but both inputs exist
+            if r.get("pe_ratio") is None and price and price > 0:
+                eps = r.get("eps")
+                if eps is not None and eps > 0:
+                    r["pe_ratio"] = round(price / eps, 2)
+                    _derived_pe += 1
+            # P/B = price / (EPS / ROE) when P/B is missing
+            if r.get("price_to_book") is None and price and price > 0:
+                eps = r.get("eps")
+                roe = r.get("roe")
+                if eps is not None and eps > 0 and roe is not None and roe > 0:
+                    book_value = eps / (roe / 100.0)
+                    if book_value > 0:
+                        r["price_to_book"] = round(price / book_value, 2)
+                        _derived_pb += 1
+            # Default FII/DII to 0 when promoter data exists (no FII ≠ unknown)
+            if r.get("promoter_holding") is not None:
+                if r.get("fii_holding") is None:
+                    r["fii_holding"] = 0.0
+                    _defaulted_fii += 1
+                if r.get("dii_holding") is None:
+                    r["dii_holding"] = 0.0
+                    _defaulted_dii += 1
+
+        if _derived_pe or _derived_pb or _defaulted_fii or _defaulted_dii:
+            logger.info(
+                "Derived fields: PE=%d, P/B=%d, FII→0=%d, DII→0=%d",
+                _derived_pe, _derived_pb, _defaulted_fii, _defaulted_dii,
+            )
+
         # ── Pre-compute sector medians for PE, PB, and D/E ──
         sector_pe: dict[str, list[float]] = {}
         sector_pb: dict[str, list[float]] = {}
