@@ -83,6 +83,30 @@ def _to_jsonb(value, default):
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
 
 
+def _to_jsonb_raw(value) -> str | None:
+    """Convert a value to a JSON string for asyncpg JSONB columns.
+
+    asyncpg sends text params to PostgreSQL, which parses them as JSONB.
+    So we need: dict → json.dumps → string like '{"key": val}' → PG stores as JSONB object.
+    If value is already a string (e.g. from a previous DB read of double-encoded data),
+    try to parse it first to ensure we store a proper JSONB object, not a JSONB string scalar.
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return json.dumps(value, separators=(",", ":"), ensure_ascii=True)
+    if isinstance(value, str):
+        # Could be a previously double-encoded string — try to parse it
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return json.dumps(parsed, separators=(",", ":"), ensure_ascii=True)
+        except (ValueError, TypeError):
+            pass
+        return value
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=True)
+
+
 def _normalize_source_status(value: str | None) -> SourceStatus:
     v = str(value or "").strip().lower()
     if v == "primary":
@@ -598,10 +622,10 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("score_valuation")),                               # $84
                 _to_float(row.get("score_earnings_quality")),                        # $85
                 _to_float(row.get("score_smart_money")),                             # $86
-                json.dumps(row.get("pl_annual")) if row.get("pl_annual") else None,  # $87
-                json.dumps(row.get("bs_annual")) if row.get("bs_annual") else None,  # $88
-                json.dumps(row.get("cf_annual")) if row.get("cf_annual") else None,  # $89
-                json.dumps(row.get("shareholding_quarterly")) if row.get("shareholding_quarterly") else None,  # $90
+                _to_jsonb_raw(row.get("pl_annual")),                                    # $87
+                _to_jsonb_raw(row.get("bs_annual")),                                    # $88
+                _to_jsonb_raw(row.get("cf_annual")),                                    # $89
+                _to_jsonb_raw(row.get("shareholding_quarterly")),                       # $90
             )
             count += 1
     return count
