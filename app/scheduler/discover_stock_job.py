@@ -757,7 +757,7 @@ class DiscoverStockScraper(BaseScraper):
             after_start = close_td + 5
             end_tr = sh_chunk.find("</tr>", after_start)
             row_slice = sh_chunk[after_start: end_tr] if end_tr > 0 else sh_chunk[after_start: after_start + 2000]
-            nums = re.findall(r'<td[^>]*>\s*([\d,]+(?:\.\d+)?)\s*</td>', row_slice)
+            nums = re.findall(r'<td[^>]*>\s*([\d,]+(?:\.\d+)?)\s*%?\s*</td>', row_slice)
             latest = None
             prev = None
             if nums:
@@ -2031,17 +2031,12 @@ class DiscoverStockScraper(BaseScraper):
                 src = row.get("primary_source", "")
                 if "yahoo" in src:
                     _yahoo_ok += 1
-                elif src == "screener_in+yahoo":
-                    _yahoo_ok += 1
+                if "screener" in src:
                     _screener_ok += 1
-                elif src == "screener_in":
-                    _screener_ok += 1
+                if src == "screener_in" and "yahoo" not in src:
                     _yahoo_fail += 1
-                elif src == "unavailable":
+                if src == "unavailable":
                     _yahoo_skip += 1
-                else:
-                    if "screener" in src:
-                        _screener_ok += 1
                 _log_progress()
             if not _aborted and missing and self._missing_quote_retry_limit > 0:
                 retry_batch = missing[: self._missing_quote_retry_limit]

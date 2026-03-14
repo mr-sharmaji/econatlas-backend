@@ -248,6 +248,20 @@ async def abort_job(
     }
 
 
+@router.delete("/jobs/abort/{job_name}")
+async def clear_abort(
+    job_name: str,
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Clear an abort flag so the job can run again."""
+    _authorize(x_ops_token)
+    pool = get_redis_pool()
+    abort_key = f"job:abort:{job_name}"
+    deleted = await pool.delete(abort_key)
+    logger.info("Cleared abort flag for %s (deleted=%d)", job_name, deleted)
+    return {"status": "cleared", "job_name": job_name, "deleted": bool(deleted)}
+
+
 @router.get("/jobs")
 async def list_jobs(
     x_ops_token: str | None = Header(default=None),
