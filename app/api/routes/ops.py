@@ -823,20 +823,26 @@ async def execute_sql(
 
     if not query:
         raise HTTPException(status_code=400, detail="Empty query")
-    # Only allow read-only statements
+
     first_word = query.split()[0].upper() if query.split() else ""
-    if first_word not in ("SELECT", "WITH", "EXPLAIN"):
-        raise HTTPException(status_code=400, detail="Only SELECT/WITH/EXPLAIN queries allowed")
+    _READ_ONLY = {"SELECT", "WITH", "EXPLAIN"}
+    _WRITE_ALLOWED = {"ALTER", "CREATE", "DROP", "UPDATE", "INSERT", "DELETE"}
 
     pool = await _get_pool()
     from app.core.database import record_to_dict
 
     try:
-        rows = await pool.fetch(query, *params)
-        return {
-            "rows": [record_to_dict(r) for r in rows],
-            "count": len(rows),
-        }
+        if first_word in _READ_ONLY:
+            rows = await pool.fetch(query, *params)
+            return {
+                "rows": [record_to_dict(r) for r in rows],
+                "count": len(rows),
+            }
+        elif first_word in _WRITE_ALLOWED:
+            result = await pool.execute(query, *params)
+            return {"status": "ok", "result": result}
+        else:
+            raise HTTPException(status_code=400, detail=f"Statement type '{first_word}' not allowed")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
