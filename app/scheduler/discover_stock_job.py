@@ -1967,8 +1967,12 @@ class DiscoverStockScraper(BaseScraper):
             return None
         return self._build_snapshot_row(stock, quote, quote_source)
 
-    def fetch_raw_rows(self) -> list[dict]:
-        """Fetch quotes + fundamentals (sync I/O). Does NOT score."""
+    def fetch_raw_rows(self, on_batch: "Callable[[list[dict]], None] | None" = None, batch_size: int = 50) -> list[dict]:
+        """Fetch quotes + fundamentals (sync I/O). Does NOT score.
+
+        If *on_batch* is provided, it is called every *batch_size* rows with
+        the latest batch for incremental DB visibility.
+        """
         universe = self._build_effective_universe()
         bulk_quotes, _ = self._fetch_latest_bhavcopy_quotes()
         raw_rows: list[dict] = []
@@ -1983,6 +1987,21 @@ class DiscoverStockScraper(BaseScraper):
         _t_start = time_mod.time()
 
         _aborted = False
+        _pending_batch: list[dict] = []
+        _batch_count = 0
+
+        def _flush_batch(force: bool = False) -> None:
+            nonlocal _batch_count
+            if on_batch is None or (not force and len(_pending_batch) < batch_size):
+                return
+            if _pending_batch:
+                batch = list(_pending_batch)
+                _pending_batch.clear()
+                _batch_count += 1
+                try:
+                    on_batch(batch)
+                except Exception as exc:
+                    logger.warning("Incremental upsert batch %d failed: %s", _batch_count, exc)
 
         def _log_progress(force: bool = False) -> None:
             nonlocal _processed, _aborted
@@ -2026,6 +2045,7 @@ class DiscoverStockScraper(BaseScraper):
                     fundamentals_enabled=stock.nse_symbol in fundamentals_symbols,
                 )
                 raw_rows.append(row)
+                _pending_batch.append(row)
                 _processed += 1
                 # Track Yahoo / Screener stats from primary_source
                 src = row.get("primary_source", "")
@@ -2037,6 +2057,7 @@ class DiscoverStockScraper(BaseScraper):
                     _yahoo_fail += 1
                 if src == "unavailable":
                     _yahoo_skip += 1
+                _flush_batch()
                 _log_progress()
             if not _aborted and missing and self._missing_quote_retry_limit > 0:
                 retry_batch = missing[: self._missing_quote_retry_limit]
@@ -2052,7 +2073,9 @@ class DiscoverStockScraper(BaseScraper):
                     item = self._fetch_one(stock)
                     if item is not None:
                         raw_rows.append(item)
+                        _pending_batch.append(item)
                     _processed += 1
+                    _flush_batch()
                     _log_progress()
         else:
             logger.warning("Bhavcopy unavailable — using fallback quote path for all symbols")
@@ -2064,7 +2087,9 @@ class DiscoverStockScraper(BaseScraper):
                 item = self._fetch_one(stock)
                 if item is not None:
                     raw_rows.append(item)
+                    _pending_batch.append(item)
                 _processed += 1
+                _flush_batch()
                 _log_progress()
             if len(raw_rows) < len(fallback_universe):
                 logger.warning(
@@ -2072,14 +2097,16 @@ class DiscoverStockScraper(BaseScraper):
                     len(raw_rows),
                     len(fallback_universe),
                 )
+        _flush_batch(force=True)  # flush remaining rows
         _log_progress(force=True)
         elapsed_total = time_mod.time() - _t_start
         status_word = "ABORTED" if _aborted else "complete"
         logger.info(
-            "Stock fetch %s: %d rows in %.1fm | yahoo ok=%d fail=%d skip=%d | screener ok=%d fail=%d",
+            "Stock fetch %s: %d rows in %.1fm | yahoo ok=%d fail=%d skip=%d | "
+            "screener ok=%d fail=%d | incremental batches=%d",
             status_word, len(raw_rows), elapsed_total / 60,
             _yahoo_ok, _yahoo_fail, _yahoo_skip,
-            _screener_ok, _screener_fail,
+            _screener_ok, _screener_fail, _batch_count,
         )
         return raw_rows
 
@@ -2112,6 +2139,7 @@ def _fetch_discover_stock_raw_sync() -> list[dict]:
 
 
 _UPSERT_BATCH_SIZE = 200
+_INCREMENTAL_BATCH_SIZE = 50
 
 
 async def run_discover_stock_job() -> None:
@@ -2127,10 +2155,27 @@ async def run_discover_stock_job() -> None:
         )
 
         # 2. Fetch quotes + fundamentals (sync network I/O in executor).
+        #    Incremental upsert every 50 rows for early DB visibility (unscored).
         loop = asyncio.get_event_loop()
+
+        def _incremental_upsert(batch: list[dict]) -> None:
+            """Called from sync thread every 50 rows — upserts raw (unscored) data."""
+            future = asyncio.run_coroutine_threadsafe(
+                discover_service.upsert_discover_stock_snapshots(batch),
+                loop,
+            )
+            try:
+                count = future.result(timeout=30)
+                logger.info("Incremental upsert: %d rows written to DB", count)
+            except Exception as exc:
+                logger.warning("Incremental upsert failed: %s", exc)
+
         raw_rows = await loop.run_in_executor(
             get_job_executor("discover-stock"),
-            _fetch_discover_stock_raw_sync,
+            lambda: _scraper.fetch_raw_rows(
+                on_batch=_incremental_upsert,
+                batch_size=_INCREMENTAL_BATCH_SIZE,
+            ),
         )
         fetch_elapsed = time_mod.time() - job_t0
         logger.info(
