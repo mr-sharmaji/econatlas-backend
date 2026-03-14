@@ -264,6 +264,21 @@ async def clear_abort(
     return {"status": "cleared", "job_name": job_name, "deleted": bool(deleted)}
 
 
+@router.post("/jobs/rescore/{job_name}")
+async def rescore_job(
+    job_name: str,
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Re-score existing data without fetching. Reads rows from DB, scores, writes back."""
+    _authorize(x_ops_token)
+    if job_name == "discover_stock":
+        from app.scheduler.discover_stock_job import rescore_discover_stocks
+
+        result = await rescore_discover_stocks()
+        return result
+    raise HTTPException(status_code=400, detail=f"Rescore not supported for '{job_name}'")
+
+
 @router.get("/jobs")
 async def list_jobs(
     x_ops_token: str | None = Header(default=None),

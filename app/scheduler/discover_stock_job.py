@@ -2293,3 +2293,54 @@ async def run_discover_stock_job() -> None:
         logger.exception("Discover stock job failed due to network exception")
     except Exception:
         logger.exception("Discover stock job failed")
+
+
+async def rescore_discover_stocks() -> dict:
+    """Read all stock rows from DB, re-compute scores, and write back.
+
+    No network fetching — purely DB read → score → DB write.
+    """
+    t0 = time_mod.time()
+
+    # 1. Read all raw rows from the DB
+    from app.db.pool import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        db_rows = await conn.fetch(
+            f"SELECT * FROM {discover_service.STOCK_TABLE} WHERE market = 'IN'"
+        )
+    raw_rows = [dict(r) for r in db_rows]
+    logger.info("Rescore: read %d rows from DB in %.1fs", len(raw_rows), time_mod.time() - t0)
+
+    if not raw_rows:
+        return {"status": "empty", "rows": 0}
+
+    # 2. Pre-fetch volatility data
+    volatility_data = await discover_service.get_bulk_stock_volatility_data()
+
+    # 3. Score
+    score_t0 = time_mod.time()
+    scored_rows = _scraper._compute_scores(raw_rows, volatility_data=volatility_data)
+    score_elapsed = time_mod.time() - score_t0
+    logger.info("Rescore: scored %d rows in %.1fs", len(scored_rows), score_elapsed)
+
+    # 4. Upsert scored rows back
+    upsert_t0 = time_mod.time()
+    total_upserted = 0
+    for batch_start in range(0, len(scored_rows), _UPSERT_BATCH_SIZE):
+        batch = scored_rows[batch_start: batch_start + _UPSERT_BATCH_SIZE]
+        count = await discover_service.upsert_discover_stock_snapshots(batch)
+        total_upserted += count
+
+    total_elapsed = time_mod.time() - t0
+    logger.info(
+        "Rescore complete: %d rows scored and upserted in %.1fs (score=%.1fs, upsert=%.1fs)",
+        total_upserted, total_elapsed, score_elapsed, time_mod.time() - upsert_t0,
+    )
+    return {
+        "status": "completed",
+        "rows_scored": len(scored_rows),
+        "rows_upserted": total_upserted,
+        "elapsed_seconds": round(total_elapsed, 1),
+    }
