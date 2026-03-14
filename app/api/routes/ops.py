@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -13,6 +14,9 @@ from app.services import market_intel_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ops", tags=["ops"])
+
+# ── Direct-run tracking for long-running jobs ────────────────────────
+_running_direct_jobs: dict[str, asyncio.Task] = {}
 
 # Valid job names that can be triggered manually.
 _VALID_JOBS = {
@@ -98,26 +102,93 @@ async def ops_logs(
 # Jobs
 # ═════════════════════════════════════════════════════════════════════
 
+# Jobs that are run directly (bypass ARQ) because ARQ manual trigger
+# fails for long-timeout functions.  Maps job_name → async import path.
+_DIRECT_RUN_JOBS: dict[str, tuple[str, str]] = {
+    "discover_stock": (
+        "app.scheduler.discover_stock_job",
+        "run_discover_stock_job",
+    ),
+    "discover_mutual_funds": (
+        "app.scheduler.discover_mutual_fund_job",
+        "run_discover_mutual_fund_job",
+    ),
+    "discover_stock_price": (
+        "app.scheduler.discover_stock_price_job",
+        "run_discover_stock_price_job",
+    ),
+    "discover_mf_nav": (
+        "app.scheduler.discover_mf_nav_job",
+        "run_discover_mf_nav_job",
+    ),
+}
+
+
+async def _direct_run_wrapper(job_name: str, module_path: str, func_name: str) -> None:
+    """Run a job function directly as an asyncio task."""
+    import importlib
+
+    t0 = datetime.now(timezone.utc)
+    logger.info("Direct-run STARTED: %s", job_name)
+    try:
+        mod = importlib.import_module(module_path)
+        fn = getattr(mod, func_name)
+        await fn()
+        elapsed = (datetime.now(timezone.utc) - t0).total_seconds()
+        logger.info("Direct-run COMPLETED: %s in %.1fs", job_name, elapsed)
+    except Exception:
+        elapsed = (datetime.now(timezone.utc) - t0).total_seconds()
+        logger.exception("Direct-run FAILED: %s after %.1fs", job_name, elapsed)
+    finally:
+        _running_direct_jobs.pop(job_name, None)
+
+
 @router.post("/jobs/trigger/{job_name}")
 async def trigger_job(
     job_name: str = Path(..., description="Name of the job to trigger"),
     force: bool = Query(default=False, description="Force enqueue even if a previous run exists"),
     x_ops_token: str | None = Header(default=None),
 ) -> dict:
-    """Manually enqueue a background job for immediate execution."""
+    """Manually trigger a background job for immediate execution."""
     _authorize(x_ops_token)
     if job_name not in _VALID_JOBS:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown job '{job_name}'. Valid: {sorted(_VALID_JOBS)}",
         )
+
+    # ── Direct-run path for discover_* jobs (ARQ manual trigger is broken
+    #    for long-timeout functions) ──
+    if job_name in _DIRECT_RUN_JOBS:
+        existing = _running_direct_jobs.get(job_name)
+        if existing is not None and not existing.done():
+            if not force:
+                return {
+                    "status": "already_running",
+                    "job_name": job_name,
+                    "message": "Job is already running. Use force=true to start another.",
+                }
+        module_path, func_name = _DIRECT_RUN_JOBS[job_name]
+        task = asyncio.create_task(
+            _direct_run_wrapper(job_name, module_path, func_name),
+            name=f"direct-run-{job_name}",
+        )
+        _running_direct_jobs[job_name] = task
+        logger.info("Direct-run triggered: %s (bypassing ARQ)", job_name)
+        return {
+            "status": "started",
+            "job_name": job_name,
+            "mode": "direct",
+            "message": "Job started directly (bypassing ARQ queue).",
+        }
+
+    # ── Standard ARQ enqueue for short-lived jobs ──
     from app.queue.redis_pool import get_redis_pool
 
     pool = await get_redis_pool()
 
     job_id = f"{job_name}_manual"
     if force:
-        # Use a unique job ID to bypass ARQ deduplication
         job_id = f"{job_name}_manual_{int(datetime.now(timezone.utc).timestamp())}"
 
     job = await pool.enqueue_job(job_name, _job_id=job_id)
@@ -434,6 +505,18 @@ async def running_jobs(
             "queued": queued_list,
             "complete": complete,
         }
+
+    # Include direct-run jobs in the running list
+    for name, task in list(_running_direct_jobs.items()):
+        if task.done():
+            _running_direct_jobs.pop(name, None)
+            continue
+        running.append({
+            "job_id": f"direct-run-{name}",
+            "function": name,
+            "status": "running",
+            "mode": "direct",
+        })
 
     return {
         "running": running,
