@@ -126,13 +126,23 @@ def _stock_breakdown_payload(row: dict) -> dict:
         "growth": round(growth, 2),
         "combined_signal": round(combined_signal, 2),
     }
-    # Only include v0.2.4 scores if they have non-zero values
+    # Only include v0.2.4+ scores if they have non-zero values
     if financial_health:
         result["financial_health"] = round(financial_health, 2)
     if ownership:
         result["ownership"] = round(ownership, 2)
     if analyst:
         result["analyst"] = round(analyst, 2)
+    # v0.4 score components
+    valuation = _to_float(row.get("score_valuation")) or 0.0
+    earnings_quality = _to_float(row.get("score_earnings_quality")) or 0.0
+    smart_money = _to_float(row.get("score_smart_money")) or 0.0
+    if valuation:
+        result["valuation"] = round(valuation, 2)
+    if earnings_quality:
+        result["earnings_quality"] = round(earnings_quality, 2)
+    if smart_money:
+        result["smart_money"] = round(smart_money, 2)
     # Additional coverage/quality metadata
     pos_52w = _to_float(row.get("position_52w"))
     if pos_52w is not None:
@@ -341,7 +351,14 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     revenue_growth, earnings_growth, forward_pe,
                     analyst_target_mean, analyst_count, analyst_recommendation, analyst_recommendation_mean,
                     industry, payout_ratio,
-                    pledged_promoter_pct
+                    pledged_promoter_pct,
+                    sales_growth_yoy, profit_growth_yoy, opm_change, interest_coverage,
+                    compounded_sales_growth_3y, compounded_profit_growth_3y,
+                    total_assets, asset_growth_yoy, reserves_growth, debt_direction, cwip,
+                    cash_from_operations, cash_from_investing, cash_from_financing,
+                    num_shareholders_change_qoq, num_shareholders_change_yoy,
+                    synthetic_forward_pe,
+                    score_valuation, score_earnings_quality, score_smart_money
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -361,7 +378,14 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     $57, $58, $59,
                     $60, $61, $62, $63,
                     $64, $65,
-                    $66
+                    $66,
+                    $67, $68, $69, $70,
+                    $71, $72,
+                    $73, $74, $75, $76, $77,
+                    $78, $79, $80,
+                    $81, $82,
+                    $83,
+                    $84, $85, $86
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -430,7 +454,27 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     analyst_recommendation_mean = EXCLUDED.analyst_recommendation_mean,
                     industry = EXCLUDED.industry,
                     payout_ratio = EXCLUDED.payout_ratio,
-                    pledged_promoter_pct = EXCLUDED.pledged_promoter_pct
+                    pledged_promoter_pct = EXCLUDED.pledged_promoter_pct,
+                    sales_growth_yoy = EXCLUDED.sales_growth_yoy,
+                    profit_growth_yoy = EXCLUDED.profit_growth_yoy,
+                    opm_change = EXCLUDED.opm_change,
+                    interest_coverage = EXCLUDED.interest_coverage,
+                    compounded_sales_growth_3y = EXCLUDED.compounded_sales_growth_3y,
+                    compounded_profit_growth_3y = EXCLUDED.compounded_profit_growth_3y,
+                    total_assets = EXCLUDED.total_assets,
+                    asset_growth_yoy = EXCLUDED.asset_growth_yoy,
+                    reserves_growth = EXCLUDED.reserves_growth,
+                    debt_direction = EXCLUDED.debt_direction,
+                    cwip = EXCLUDED.cwip,
+                    cash_from_operations = EXCLUDED.cash_from_operations,
+                    cash_from_investing = EXCLUDED.cash_from_investing,
+                    cash_from_financing = EXCLUDED.cash_from_financing,
+                    num_shareholders_change_qoq = EXCLUDED.num_shareholders_change_qoq,
+                    num_shareholders_change_yoy = EXCLUDED.num_shareholders_change_yoy,
+                    synthetic_forward_pe = EXCLUDED.synthetic_forward_pe,
+                    score_valuation = COALESCE(EXCLUDED.score_valuation, {STOCK_TABLE}.score_valuation),
+                    score_earnings_quality = COALESCE(EXCLUDED.score_earnings_quality, {STOCK_TABLE}.score_earnings_quality),
+                    score_smart_money = COALESCE(EXCLUDED.score_smart_money, {STOCK_TABLE}.score_smart_money)
                 """,
                 str(row.get("market") or "IN"),                                    # $1
                 str(row.get("symbol") or ""),                                      # $2
@@ -498,6 +542,27 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 row.get("industry"),                                               # $64
                 _to_float(row.get("payout_ratio")),                                # $65
                 _to_float(row.get("pledged_promoter_pct")),                        # $66
+                # v0.4: P&L, Balance Sheet, Cash Flow, Shareholder Trends
+                _to_float(row.get("sales_growth_yoy")),                              # $67
+                _to_float(row.get("profit_growth_yoy")),                             # $68
+                _to_float(row.get("opm_change")),                                    # $69
+                _to_float(row.get("interest_coverage")),                             # $70
+                _to_float(row.get("compounded_sales_growth_3y")),                    # $71
+                _to_float(row.get("compounded_profit_growth_3y")),                   # $72
+                _to_float(row.get("total_assets")),                                  # $73
+                _to_float(row.get("asset_growth_yoy")),                              # $74
+                _to_float(row.get("reserves_growth")),                               # $75
+                _to_float(row.get("debt_direction")),                                # $76
+                _to_float(row.get("cwip")),                                          # $77
+                _to_float(row.get("cash_from_operations")),                          # $78
+                _to_float(row.get("cash_from_investing")),                           # $79
+                _to_float(row.get("cash_from_financing")),                           # $80
+                _to_float(row.get("num_shareholders_change_qoq")),                   # $81
+                _to_float(row.get("num_shareholders_change_yoy")),                   # $82
+                _to_float(row.get("synthetic_forward_pe")),                          # $83
+                _to_float(row.get("score_valuation")),                               # $84
+                _to_float(row.get("score_earnings_quality")),                        # $85
+                _to_float(row.get("score_smart_money")),                             # $86
             )
             count += 1
     return count
@@ -527,17 +592,19 @@ async def insert_score_history(rows: list[dict]) -> int:
 
 async def prune_score_history(days: int = 30) -> int:
     """Delete score history rows older than N days."""
+    from datetime import timedelta
     pool = await get_pool()
     async with pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM discover_stock_score_history WHERE scored_at < NOW() - $1::interval",
-            f"{days} days",
+            timedelta(days=days),
         )
     return int(result.split()[-1]) if result else 0
 
 
 async def get_previous_score(symbol: str, days_ago: int = 7) -> float | None:
     """Fetch the most recent historical score at least `days_ago` days old."""
+    from datetime import timedelta
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -545,7 +612,7 @@ async def get_previous_score(symbol: str, days_ago: int = 7) -> float | None:
             "WHERE symbol = $1 AND scored_at < NOW() - $2::interval "
             "ORDER BY scored_at DESC LIMIT 1",
             symbol,
-            f"{days_ago} days",
+            timedelta(days=days_ago),
         )
     return float(row["score"]) if row else None
 

@@ -695,42 +695,240 @@ class DiscoverStockScraper(BaseScraper):
                 continue
         return None
 
+    # ------------------------------------------------------------------
+    # Generic Screener table row extractor (reused across P&L, BS, CF)
+    # ------------------------------------------------------------------
+
     @staticmethod
-    def _extract_balance_sheet_de(html: str) -> float | None:
-        """Compute Debt-to-Equity from the balance sheet table on Screener.in."""
+    def _extract_table_row_numbers(
+        chunk: str, label: str, *, signed: bool = True
+    ) -> list[float]:
+        """Extract ALL numeric cell values from a Screener table row.
+
+        Args:
+            chunk: HTML slice containing the relevant table section.
+            label: Row label text to search for (e.g. "Sales", "Borrowings").
+            signed: If True, allows negative numbers (for cash-flow rows).
+
+        Returns:
+            List of floats in column order (oldest → latest).  Empty if not found.
+        """
+        idx = chunk.find(label)
+        if idx < 0:
+            return []
+        close_td = chunk.find("</td>", idx)
+        if close_td < 0:
+            return []
+        after_start = close_td + 5
+        end_tr = chunk.find("</tr>", after_start)
+        row_slice = chunk[after_start: end_tr] if end_tr > 0 else chunk[after_start: after_start + 3000]
+        pat = r'<td[^>]*>\s*([\-]?[\d,]+(?:\.\d+)?)\s*</td>' if signed else r'<td[^>]*>\s*([\d,]+(?:\.\d+)?)\s*</td>'
+        raw = re.findall(pat, row_slice)
+        nums: list[float] = []
+        for r in raw:
+            try:
+                nums.append(float(r.replace(",", "")))
+            except ValueError:
+                pass
+        return nums
+
+    # ------------------------------------------------------------------
+    # P&L extractor
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_profit_loss(html: str) -> dict:
+        """Extract key P&L signals from Screener.in annual Profit & Loss table.
+
+        Returns dict with: sales_growth_yoy, profit_growth_yoy, opm_change,
+        interest_coverage, eps_latest, eps_prev.
+        """
+        result: dict = {}
+        pl_match = re.search(r'id="profit-loss"', html)
+        if not pl_match:
+            return result
+        pl_chunk = html[pl_match.start(): pl_match.start() + 25000]
+
+        _ext = DiscoverStockJob._extract_table_row_numbers
+
+        sales = _ext(pl_chunk, "Sales")
+        op_profit = _ext(pl_chunk, "Operating Profit")
+        net_profit = _ext(pl_chunk, "Net Profit")
+        interest = _ext(pl_chunk, "Interest")
+        eps_row = _ext(pl_chunk, "EPS in Rs")
+
+        # Sales YoY growth (latest vs previous year)
+        if len(sales) >= 2 and sales[-2] and sales[-2] > 0:
+            result["sales_growth_yoy"] = round((sales[-1] / sales[-2]) - 1, 4)
+
+        # Net Profit YoY growth
+        if len(net_profit) >= 2 and net_profit[-2] and net_profit[-2] > 0:
+            result["profit_growth_yoy"] = round((net_profit[-1] / net_profit[-2]) - 1, 4)
+
+        # Operating Profit Margin change (latest OPM - previous OPM)
+        if len(op_profit) >= 2 and len(sales) >= 2 and sales[-1] > 0 and sales[-2] > 0:
+            opm_latest = op_profit[-1] / sales[-1]
+            opm_prev = op_profit[-2] / sales[-2]
+            result["opm_change"] = round(opm_latest - opm_prev, 4)
+
+        # Interest coverage = Operating Profit / Interest
+        if len(op_profit) >= 1 and len(interest) >= 1 and interest[-1] and interest[-1] > 0:
+            result["interest_coverage"] = round(op_profit[-1] / interest[-1], 2)
+
+        # EPS latest and previous (for synthetic forward PE)
+        if len(eps_row) >= 1:
+            result["eps_latest"] = eps_row[-1]
+        if len(eps_row) >= 2:
+            result["eps_prev"] = eps_row[-2]
+
+        # Store raw latest values for downstream signals
+        if len(net_profit) >= 1:
+            result["_net_profit_latest"] = net_profit[-1]
+        if len(sales) >= 1:
+            result["_sales_latest"] = sales[-1]
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Balance Sheet extractor (enhanced — replaces old D/E-only version)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_balance_sheet(html: str) -> dict:
+        """Extract balance sheet signals from Screener.in.
+
+        Returns dict with: debt_to_equity, total_assets, asset_growth_yoy,
+        reserves_growth, debt_direction, cwip.
+        """
+        result: dict = {}
         bs_match = re.search(r'id="balance-sheet"', html)
         if not bs_match:
-            return None
-        bs_chunk = html[bs_match.start(): bs_match.start() + 20000]
+            return result
+        bs_chunk = html[bs_match.start(): bs_match.start() + 25000]
 
-        def _last_number(label: str) -> float | None:
-            idx = bs_chunk.find(label)
+        _ext = DiscoverStockJob._extract_table_row_numbers
+
+        borrowings = _ext(bs_chunk, "Borrowings")
+        equity_capital = _ext(bs_chunk, "Equity Capital", signed=False)
+        reserves = _ext(bs_chunk, "Reserves")
+        total_assets = _ext(bs_chunk, "Total Assets", signed=False)
+        cwip = _ext(bs_chunk, "CWIP", signed=False)
+        investments = _ext(bs_chunk, "Investments")
+
+        # D/E from latest period (backward-compatible)
+        if borrowings:
+            latest_borrow = borrowings[-1]
+            latest_eq = (equity_capital[-1] if equity_capital else 0) + (reserves[-1] if reserves else 0)
+            if latest_eq > 0:
+                result["debt_to_equity"] = round(latest_borrow / latest_eq, 2)
+
+        # Total Assets (latest, in Cr)
+        if total_assets:
+            result["total_assets"] = total_assets[-1]
+            # Asset growth YoY
+            if len(total_assets) >= 2 and total_assets[-2] > 0:
+                result["asset_growth_yoy"] = round((total_assets[-1] / total_assets[-2]) - 1, 4)
+
+        # Reserves growth (internal value creation)
+        if len(reserves) >= 2 and reserves[-2] > 0:
+            result["reserves_growth"] = round((reserves[-1] / reserves[-2]) - 1, 4)
+
+        # Debt direction (positive = debt increasing, negative = deleveraging)
+        if len(borrowings) >= 2 and borrowings[-2] > 0:
+            result["debt_direction"] = round((borrowings[-1] / borrowings[-2]) - 1, 4)
+        elif len(borrowings) >= 1:
+            # If only one period or prev was 0, just store latest
+            result["debt_direction"] = 0.0 if borrowings[-1] == 0 else None
+
+        # CWIP (Capital Work in Progress — future growth pipeline)
+        if cwip:
+            result["cwip"] = cwip[-1]
+
+        return result
+
+    @staticmethod
+    def _extract_balance_sheet_de(html: str) -> float | None:
+        """Backward-compatible D/E extraction (delegates to full extractor)."""
+        bs_data = DiscoverStockJob._extract_balance_sheet(html)
+        return bs_data.get("debt_to_equity")
+
+    # ------------------------------------------------------------------
+    # Cash Flow extractor
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_cash_flow(html: str) -> dict:
+        """Extract cash flow signals from Screener.in Cash Flow section.
+
+        Returns dict with: cash_from_operations, cash_from_investing,
+        cash_from_financing.  Values are in Cr (latest annual period).
+        """
+        result: dict = {}
+        cf_match = re.search(r'id="cash-flow"', html)
+        if not cf_match:
+            return result
+        cf_chunk = html[cf_match.start(): cf_match.start() + 15000]
+
+        _ext = DiscoverStockJob._extract_table_row_numbers
+
+        cfo = _ext(cf_chunk, "Cash from Operating Activity")
+        cfi = _ext(cf_chunk, "Cash from Investing Activity")
+        cff = _ext(cf_chunk, "Cash from Financing Activity")
+
+        if cfo:
+            result["cash_from_operations"] = cfo[-1]
+        if cfi:
+            result["cash_from_investing"] = cfi[-1]
+        if cff:
+            result["cash_from_financing"] = cff[-1]
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Compounded Growth extractor
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_compounded_growth(html: str) -> dict:
+        """Extract pre-computed compounded growth rates from Screener.in.
+
+        Screener shows: Compounded Sales Growth, Compounded Profit Growth,
+        Stock Price CAGR, Return on Equity — each with 10Y, 5Y, 3Y, TTM/1Y.
+
+        Returns dict with: compounded_sales_growth_3y, compounded_profit_growth_3y,
+        stock_price_cagr_3y, roe_3y_avg.
+        """
+        result: dict = {}
+
+        def _extract_growth_value(section_label: str, period_label: str) -> float | None:
+            # Find the section
+            idx = html.find(section_label)
             if idx < 0:
                 return None
-            close_td = bs_chunk.find("</td>", idx)
-            if close_td < 0:
-                return None
-            after_start = close_td + 5
-            end_tr = bs_chunk.find("</tr>", after_start)
-            row_slice = bs_chunk[after_start: end_tr] if end_tr > 0 else bs_chunk[after_start: after_start + 2000]
-            nums = re.findall(r'<td[^>]*>\s*([\-]?[\d,]+(?:\.\d+)?)\s*</td>', row_slice)
-            if not nums:
-                return None
-            try:
-                return float(nums[-1].replace(",", ""))
-            except ValueError:
-                return None
-
-        borrowings = _last_number("Borrowings")
-        equity_capital = _last_number("Equity Capital")
-        reserves = _last_number("Reserves")
-
-        if borrowings is None:
+            # Search within a reasonable window after the label
+            window = html[idx: idx + 500]
+            # Look for "3 Years:" or "TTM:" followed by a number and %
+            pat = re.compile(
+                period_label + r'\s*[:\s]*\s*([\-]?\d+)\s*%',
+                re.IGNORECASE,
+            )
+            m = pat.search(window)
+            if m:
+                try:
+                    return float(m.group(1))
+                except ValueError:
+                    return None
             return None
-        equity = (equity_capital or 0) + (reserves or 0)
-        if equity <= 0:
-            return None
-        return round(borrowings / equity, 2)
+
+        csg_3y = _extract_growth_value("Compounded Sales Growth", "3 Years")
+        cpg_3y = _extract_growth_value("Compounded Profit Growth", "3 Years")
+
+        if csg_3y is not None:
+            result["compounded_sales_growth_3y"] = csg_3y
+        if cpg_3y is not None:
+            result["compounded_profit_growth_3y"] = cpg_3y
+
+        return result
 
     @staticmethod
     def _extract_shareholding(html: str) -> dict:
@@ -802,10 +1000,21 @@ class DiscoverStockScraper(BaseScraper):
         if pub is not None:
             result["public_holding"] = pub
 
-        # Number of shareholders
-        ns, _ = _extract_row("No. of Shareholders")
-        if ns is not None:
-            result["num_shareholders"] = int(ns)
+        # Number of shareholders — extract all available quarters for QoQ + YoY
+        _ext_all = DiscoverStockJob._extract_table_row_numbers
+        ns_all = _ext_all(sh_chunk, "No. of Shareholders", signed=False)
+        if ns_all:
+            result["num_shareholders"] = int(ns_all[-1])
+            # QoQ change (latest vs previous quarter)
+            if len(ns_all) >= 2 and ns_all[-2] > 0:
+                result["num_shareholders_change_qoq"] = round(
+                    (ns_all[-1] / ns_all[-2] - 1) * 100, 2
+                )
+            # YoY change (latest vs 4 quarters ago)
+            if len(ns_all) >= 5 and ns_all[-5] > 0:
+                result["num_shareholders_change_yoy"] = round(
+                    (ns_all[-1] / ns_all[-5] - 1) * 100, 2
+                )
 
         # Pledged promoter shares (critical risk signal)
         pledged, _ = _extract_row("Pledged")
@@ -888,6 +1097,31 @@ class DiscoverStockScraper(BaseScraper):
                             shareholding.get("promoter_holding") or 0,
                         )
                     fundamentals.update(shareholding)
+
+                    # --- Extract P&L signals from annual table ---
+                    pl_data = self._extract_profit_loss(html)
+                    if pl_data:
+                        fundamentals.update(pl_data)
+
+                    # --- Extract Balance Sheet signals ---
+                    bs_data = self._extract_balance_sheet(html)
+                    if bs_data:
+                        # Don't overwrite D/E if already set from old extractor
+                        if "debt_to_equity" in bs_data and fundamentals.get("debt_to_equity") is None:
+                            fundamentals["debt_to_equity"] = bs_data.pop("debt_to_equity")
+                        else:
+                            bs_data.pop("debt_to_equity", None)
+                        fundamentals.update(bs_data)
+
+                    # --- Extract Cash Flow signals ---
+                    cf_data = self._extract_cash_flow(html)
+                    if cf_data:
+                        fundamentals.update(cf_data)
+
+                    # --- Extract Compounded Growth metrics ---
+                    cg_data = self._extract_compounded_growth(html)
+                    if cg_data:
+                        fundamentals.update(cg_data)
 
                     return fundamentals, "screener_in"
                 except requests.exceptions.HTTPError as e:
@@ -1021,6 +1255,18 @@ class DiscoverStockScraper(BaseScraper):
 
         roe = row.get("roe")
         roce = row.get("roce")
+
+        # Sanitize extreme outliers — cap at 100% to prevent
+        # absurd scores from data anomalies (e.g. ROE 644%, ROCE 318%)
+        if roe is not None:
+            roe = min(roe, 100.0)
+            if roe < -50.0:
+                roe = -50.0
+        if roce is not None:
+            roce = min(roce, 100.0)
+            if roce < -50.0:
+                roce = -50.0
+
         if roe is not None:
             roe_score = self._clamp(roe * 4.5)
             # DuPont discount: if ROE is >1.5× ROCE, it's leverage-inflated
@@ -1381,6 +1627,27 @@ class DiscoverStockScraper(BaseScraper):
             elif fifty_dma < two_hundred_dma and last_price < fifty_dma:
                 candidates.append(("Bearish Trend", 5))
 
+        # --- Valuation warning ---
+        if (pe is not None and pe > 0 and pe > sector_pe_median * 1.8
+                and fundamentals_score < 60):
+            candidates.append(("Richly Valued", 3))
+
+        # --- Momentum / Quality divergence ---
+        if has_growth and growth_score >= 65 and fundamentals_score < 40:
+            candidates.append(("Momentum Without Fundamentals", 4))
+        elif fundamentals_score >= 65 and has_growth and growth_score < 35:
+            candidates.append(("Quality Weak Momentum", 4))
+
+        # --- Return divergence (high score but poor returns) ---
+        pct_1y = row.get("percent_change_1y")
+        pct_3y = row.get("percent_change_3y")
+        if (pct_3y is not None and pct_3y < 15
+                and fundamentals_score >= 60 and pct_raw >= 65):
+            candidates.append(("Return Divergence", 4))
+        elif (pct_1y is not None and pct_1y < -10
+              and fundamentals_score >= 55):
+            candidates.append(("Return Divergence", 4))
+
         # --- Low Volatility ---
         if has_volatility and volatility_score >= 75:
             candidates.append(("Low Volatility", 6))
@@ -1408,6 +1675,9 @@ class DiscoverStockScraper(BaseScraper):
         fundamentals: float,
         growth_score: float | None,
         volatility_score: float | None,
+        valuation_score: float | None = None,
+        earnings_quality_score: float | None = None,
+        smart_money_score: float | None = None,
         paper_profits: bool = False,
     ) -> str:
         """Generate a 1-2 sentence human-readable score explanation."""
@@ -1429,6 +1699,9 @@ class DiscoverStockScraper(BaseScraper):
         high_52w = row.get("high_52w")
         rg = row.get("revenue_growth")
         promoter = row.get("promoter_holding")
+        cfo = row.get("cash_from_operations")
+        opm_chg = row.get("opm_change")
+        fii_chg = row.get("fii_holding_change")
 
         # Strengths
         if roe is not None and roe >= 15:
@@ -1447,12 +1720,24 @@ class DiscoverStockScraper(BaseScraper):
             strengths.append("high promoter stake")
         if volatility_score is not None and volatility_score >= 75:
             strengths.append("low volatility")
+        if valuation_score is not None and valuation_score >= 70:
+            strengths.append("attractively valued")
+        if earnings_quality_score is not None and earnings_quality_score >= 70:
+            strengths.append("high earnings quality")
+        if cfo is not None and cfo > 0 and opm_chg is not None and opm_chg > 2:
+            strengths.append("expanding margins with strong cash flow")
+        if smart_money_score is not None and smart_money_score >= 70:
+            strengths.append("institutional accumulation")
+        if fii_chg is not None and fii_chg >= 2.0:
+            strengths.append("FII buying")
 
         # Concerns
         if paper_profits:
             concerns.append("negative cash flow despite positive earnings")
         if pe is not None and pe > 50:
             concerns.append(f"expensive at PE {pe:.0f}x")
+        if valuation_score is not None and valuation_score < 30:
+            concerns.append("expensive relative to sector peers")
         if price and high_52w and high_52w > 0 and price > high_52w * 0.95:
             concerns.append("trading near 52-week high")
         if dte is not None and dte > 2.0:
@@ -1461,6 +1746,12 @@ class DiscoverStockScraper(BaseScraper):
             concerns.append("declining revenue")
         if eps is not None and eps < 0:
             concerns.append("loss-making")
+        if opm_chg is not None and opm_chg < -3:
+            concerns.append("margins contracting")
+        if earnings_quality_score is not None and earnings_quality_score < 30:
+            concerns.append("weak earnings quality")
+        if smart_money_score is not None and smart_money_score < 30:
+            concerns.append("institutional selling")
 
         pledged = row.get("pledged_promoter_pct")
         if pledged is not None and pledged > 20:
@@ -1494,6 +1785,11 @@ class DiscoverStockScraper(BaseScraper):
             "promoter_holding", "fii_holding", "dii_holding",
             "total_cash", "total_debt", "total_revenue",
             "free_cash_flow", "operating_cash_flow", "payout_ratio",
+            "sales_growth_yoy", "profit_growth_yoy", "opm_change",
+            "interest_coverage", "compounded_sales_growth_3y", "compounded_profit_growth_3y",
+            "total_assets", "asset_growth_yoy", "reserves_growth", "debt_direction",
+            "cash_from_operations", "cash_from_investing", "cash_from_financing",
+            "num_shareholders_change_qoq", "num_shareholders_change_yoy",
         }
         for r in rows:
             for field in _NUMERIC_FIELDS:
@@ -1595,6 +1891,53 @@ class DiscoverStockScraper(BaseScraper):
                 "pb": statistics.median(pb_vals) if len(pb_vals) >= 3 else overall_pb_med,
                 "de": statistics.median(de_vals) if len(de_vals) >= 3 else overall_de_med,
             }
+
+        # ── Pre-compute INDUSTRY-level medians (hierarchical: industry → sector → universe) ──
+        industry_pe: dict[str, list[float]] = {}
+        industry_pb: dict[str, list[float]] = {}
+        for r in rows:
+            ind = str(r.get("industry") or "").strip()
+            if not ind:
+                continue
+            pe = _safe_float(r.get("pe_ratio"))
+            if pe is not None and 0 < pe < 500:
+                industry_pe.setdefault(ind, []).append(pe)
+            pb = _safe_float(r.get("price_to_book"))
+            if pb is not None and pb > 0:
+                industry_pb.setdefault(ind, []).append(pb)
+
+        industry_medians: dict[str, dict[str, float]] = {}
+        for ind in set(str(r.get("industry") or "").strip() for r in rows if r.get("industry")):
+            pe_vals = industry_pe.get(ind, [])
+            pb_vals = industry_pb.get(ind, [])
+            industry_medians[ind] = {
+                "pe": statistics.median(pe_vals) if len(pe_vals) >= 5 else None,
+                "pb": statistics.median(pb_vals) if len(pb_vals) >= 5 else None,
+            }
+
+        # ── Pre-compute dividend yield percentiles ──
+        all_div_yields: list[float] = []
+        for r in rows:
+            dy = _safe_float(r.get("dividend_yield"))
+            if dy is not None and dy > 0:
+                all_div_yields.append(dy)
+
+        # ── Compute synthetic forward PE where Yahoo forward PE is missing ──
+        _synth_fpe_count = 0
+        for r in rows:
+            if r.get("forward_pe") is None:
+                pe = _safe_float(r.get("pe_ratio"))
+                # Prefer Screener profit_growth_yoy over Yahoo earnings_growth
+                pg = _safe_float(r.get("profit_growth_yoy")) or _safe_float(r.get("earnings_growth"))
+                if pe is not None and pe > 0 and pg is not None:
+                    # Cap growth assumption to avoid extreme forward PEs
+                    capped_pg = max(pg, -0.50)  # don't assume >50% decline
+                    denom = 1 + capped_pg
+                    if denom > 0.2:
+                        r["synthetic_forward_pe"] = round(pe / denom, 2)
+                        _synth_fpe_count += 1
+        if _synth_fpe_count:
+            logger.info("Computed synthetic forward PE for %d stocks", _synth_fpe_count)
 
         # ── Pre-compute robust percentile data for daily momentum (winsorized) ──
         all_pcts_raw = [float(r.get("percent_change") or 0.0) for r in rows]
@@ -1795,10 +2138,9 @@ class DiscoverStockScraper(BaseScraper):
                 )
 
             # ── OCF earnings quality gate ──
-            # If operating cash flow is negative but EPS is positive,
-            # the company generates "paper profits" — cap fundamentals.
+            # Use Screener cash_from_operations (2200 coverage) with Yahoo OCF as fallback
             paper_profits = False
-            _ocf = row.get("operating_cash_flow")
+            _ocf = row.get("cash_from_operations") or row.get("operating_cash_flow")
             _eps_val = row.get("eps")
             if _ocf is not None and _eps_val is not None and _eps_val > 0 and _ocf < 0:
                 fundamentals = min(fundamentals, 45.0)
@@ -1837,16 +2179,29 @@ class DiscoverStockScraper(BaseScraper):
                         volatility_score = min(volatility_score, 50.0)
 
             # ── Growth (fundamental-only; price returns live in momentum) ──
-            # Revenue growth is the primary signal (97% coverage).
-            # Earnings growth and forward PE dropped (poor coverage: 25%/47%).
-            # If no fundamental growth data, fall back to price-based growth
-            # at half weight to avoid zeroing out data-poor stocks.
+            # Prefer Screener compounded_sales_growth_3y > sales_growth_yoy > Yahoo revenue_growth.
+            # Cap at 50% to prevent M&A-inflated spikes from scoring 100.
             has_growth = False
             growth_score: float | None = None
 
+            # Screener compounded sales growth (3Y) is the gold standard — filters M&A noise
+            csg_3y = row.get("compounded_sales_growth_3y")
+            sg_yoy = row.get("sales_growth_yoy")
             rg = row.get("revenue_growth")
-            if rg is not None:
-                growth_score = self._clamp(50 + rg * 200)  # 10% → 70, 25% → 100
+
+            # Pick best growth signal
+            growth_signal = None
+            if csg_3y is not None:
+                growth_signal = csg_3y / 100.0  # Screener gives % as integer
+            elif sg_yoy is not None:
+                growth_signal = sg_yoy
+            elif rg is not None:
+                growth_signal = rg
+
+            if growth_signal is not None:
+                # Cap at 50% to avoid M&A/one-time spikes getting perfect 100
+                capped = min(growth_signal, 0.50)
+                growth_score = self._clamp(50 + capped * 200)  # 10% → 70, 25% → 100, >50% → 100
                 has_growth = True
             else:
                 # Fallback: use price-based growth at 0.5× weight
@@ -1880,18 +2235,162 @@ class DiscoverStockScraper(BaseScraper):
                 ownership_score = own_score
                 has_ownership = True
 
-            # ── 7-component weighted total ──
-            # Momentum 13%, Liquidity 5%, Fundamentals 25%, Growth 18%,
-            # Financial Health 17%, Volatility 9%, Ownership 13%
+            # ── Valuation component (NEW) ──
+            # Industry-level PE comparison + forward PE discount + P/B + dividend yield
+            has_valuation = False
+            valuation_score: float | None = None
+            val_parts: dict[str, float] = {}
+
+            ind = str(row.get("industry") or "").strip()
+            pe_val = row.get("pe_ratio")
+            pb_val = row.get("price_to_book")
+            dy_val = row.get("dividend_yield")
+
+            # PE vs industry/sector median (hierarchical)
+            if pe_val is not None and pe_val > 0:
+                ind_pe_med = (industry_medians.get(ind, {}).get("pe")
+                              if ind else None)
+                ref_pe = ind_pe_med or sector_medians.get(sector, {}).get("pe", 25.0)
+                pe_ratio_to_ref = pe_val / max(ref_pe, 1.0)
+                val_parts["pe_relative"] = self._clamp(100 - pe_ratio_to_ref * 50)
+
+            # Forward PE discount/premium
+            fpe = row.get("forward_pe") or row.get("synthetic_forward_pe")
+            if fpe is not None and pe_val is not None and pe_val > 0 and fpe > 0:
+                discount = 1 - (fpe / pe_val)  # positive = earnings improving
+                val_parts["forward_pe_discount"] = self._clamp(50 + discount * 200)
+
+            # P/B vs industry/sector median
+            if pb_val is not None and pb_val > 0:
+                ind_pb_med = (industry_medians.get(ind, {}).get("pb")
+                              if ind else None)
+                ref_pb = ind_pb_med or sector_medians.get(sector, {}).get("pb", 4.0)
+                pb_ratio_to_ref = pb_val / max(ref_pb, 0.5)
+                val_parts["pb_relative"] = self._clamp(100 - pb_ratio_to_ref * 40)
+
+            # Dividend yield percentile
+            if dy_val is not None and dy_val > 0 and all_div_yields:
+                val_parts["div_yield"] = self._percentile_rank(all_div_yields, dy_val)
+
+            if val_parts:
+                val_weights = {
+                    "pe_relative": 0.35, "forward_pe_discount": 0.30,
+                    "pb_relative": 0.20, "div_yield": 0.15,
+                }
+                vw_total = sum(val_weights.get(k, 0.10) for k in val_parts)
+                valuation_score = round(
+                    sum(val_parts[k] * val_weights.get(k, 0.10) for k in val_parts) / vw_total, 2
+                )
+                has_valuation = True
+
+            # ── Earnings Quality component (NEW) ──
+            # CFO/Profit ratio, margin trend, reserves growth, interest coverage
+            has_earnings_quality = False
+            earnings_quality_score: float | None = None
+            eq_parts: dict[str, float] = {}
+
+            cfo = row.get("cash_from_operations")
+            net_profit_screener = row.get("_net_profit_latest")
+            if cfo is not None and net_profit_screener is not None and net_profit_screener > 0:
+                cfo_ratio = cfo / net_profit_screener
+                # CFO/Profit >= 1.0 = high quality, < 0.5 = poor, < 0 = paper profits
+                eq_parts["cfo_to_profit"] = self._clamp(cfo_ratio * 50 + 20)
+
+            opm_chg = row.get("opm_change")
+            if opm_chg is not None:
+                # Positive = margin expanding, negative = contracting
+                eq_parts["margin_trend"] = self._clamp(50 + opm_chg * 500)
+
+            res_growth = row.get("reserves_growth")
+            if res_growth is not None:
+                # Reserves growing = retained earnings accumulating
+                eq_parts["reserves_growth"] = self._clamp(50 + res_growth * 200)
+
+            int_cov = row.get("interest_coverage")
+            if int_cov is not None:
+                # >3 = comfortable, >6 = strong, <1 = danger
+                eq_parts["interest_coverage"] = self._clamp(int_cov * 12)
+
+            if eq_parts:
+                eq_weights = {
+                    "cfo_to_profit": 0.35, "margin_trend": 0.25,
+                    "reserves_growth": 0.20, "interest_coverage": 0.20,
+                }
+                eq_total = sum(eq_weights.get(k, 0.10) for k in eq_parts)
+                earnings_quality_score = round(
+                    sum(eq_parts[k] * eq_weights.get(k, 0.10) for k in eq_parts) / eq_total, 2
+                )
+                has_earnings_quality = True
+
+            # ── Smart Money component (NEW) ──
+            # FII/DII/Promoter holding changes + shareholder trend
+            has_smart_money = False
+            smart_money_score: float | None = None
+            sm_parts: dict[str, float] = {}
+
+            fii_chg = row.get("fii_holding_change")
+            if fii_chg is not None:
+                sm_parts["fii_flow"] = self._clamp(50 + fii_chg * 20)
+
+            dii_chg = row.get("dii_holding_change")
+            if dii_chg is not None:
+                sm_parts["dii_flow"] = self._clamp(50 + dii_chg * 20)
+
+            prom_chg = row.get("promoter_holding_change")
+            if prom_chg is not None:
+                sm_parts["promoter_flow"] = self._clamp(50 + prom_chg * 25)
+
+            sh_yoy = row.get("num_shareholders_change_yoy")
+            if sh_yoy is not None:
+                # Moderate increase = healthy interest; massive spike = retail frenzy
+                if sh_yoy > 100:
+                    sm_parts["shareholder_trend"] = 35.0  # retail crowding
+                elif sh_yoy > 50:
+                    sm_parts["shareholder_trend"] = 45.0
+                elif sh_yoy > 0:
+                    sm_parts["shareholder_trend"] = 60.0  # healthy growth
+                elif sh_yoy > -20:
+                    sm_parts["shareholder_trend"] = 55.0  # mild consolidation (OK)
+                else:
+                    sm_parts["shareholder_trend"] = 40.0  # retail exodus
+
+            if sm_parts:
+                sm_weights = {
+                    "fii_flow": 0.40, "dii_flow": 0.25,
+                    "promoter_flow": 0.25, "shareholder_trend": 0.10,
+                }
+                sm_total = sum(sm_weights.get(k, 0.10) for k in sm_parts)
+                smart_money_score = round(
+                    sum(sm_parts[k] * sm_weights.get(k, 0.10) for k in sm_parts) / sm_total, 2
+                )
+                has_smart_money = True
+
+            # ── 10-component weighted total ──
+            # Fundamentals 18%, Momentum 16%, Growth 14%, Financial Health 14%,
+            # Valuation 12%, Ownership 10%, Smart Money 8%,
+            # Volatility 5%, Liquidity 3%
+            # (Earnings Quality folded into Financial Health as enhancement)
             target_weights = {
-                "momentum": 0.13,
-                "liquidity": 0.05,
-                "fundamentals": 0.25,
-                "growth": 0.18,
-                "financial_health": 0.17,
-                "volatility": 0.09,
-                "ownership": 0.13,
+                "fundamentals": 0.18,
+                "momentum": 0.16,
+                "growth": 0.14,
+                "financial_health": 0.14,
+                "valuation": 0.12,
+                "ownership": 0.10,
+                "smart_money": 0.08,
+                "volatility": 0.05,
+                "liquidity": 0.03,
             }
+
+            # Blend earnings quality into financial health when available
+            if has_earnings_quality and has_financial_health:
+                financial_health_score = round(
+                    financial_health_score * 0.55 + earnings_quality_score * 0.45, 2
+                )
+            elif has_earnings_quality and not has_financial_health:
+                financial_health_score = earnings_quality_score
+                has_financial_health = True
+
             scores_map = {
                 "momentum": momentum,
                 "liquidity": liquidity,
@@ -1900,6 +2399,8 @@ class DiscoverStockScraper(BaseScraper):
                 "financial_health": financial_health_score if has_financial_health else 0.0,
                 "volatility": volatility_score if has_volatility else 0.0,
                 "ownership": ownership_score if has_ownership else 0.0,
+                "valuation": valuation_score if has_valuation else 0.0,
+                "smart_money": smart_money_score if has_smart_money else 0.0,
             }
 
             # Dynamic reweighting: exclude unavailable components
@@ -1914,6 +2415,10 @@ class DiscoverStockScraper(BaseScraper):
                 if k == "financial_health" and not has_financial_health:
                     continue
                 if k == "ownership" and not has_ownership:
+                    continue
+                if k == "valuation" and not has_valuation:
+                    continue
+                if k == "smart_money" and not has_smart_money:
                     continue
                 available_weights[k] = w
 
@@ -1967,7 +2472,12 @@ class DiscoverStockScraper(BaseScraper):
 
             # ── Auto-tags ──
             med_pe = sector_medians.get(sector, {}).get("pe", 25.0)
-            row_for_tags = {**row, "_pct_change_3m": pct_change_3m}
+            row_for_tags = {
+                **row,
+                "_pct_change_3m": pct_change_3m,
+                "percent_change_1y": pct_change_1y,
+                "percent_change_3y": pct_change_3y,
+            }
             tags = self._generate_tags(
                 row_for_tags,
                 sector_pe_median=med_pe,
@@ -1994,6 +2504,9 @@ class DiscoverStockScraper(BaseScraper):
                 fundamentals=fundamentals,
                 growth_score=growth_score,
                 volatility_score=volatility_score,
+                valuation_score=valuation_score,
+                earnings_quality_score=earnings_quality_score,
+                smart_money_score=smart_money_score,
                 paper_profits=paper_profits,
             )
 
@@ -2007,6 +2520,9 @@ class DiscoverStockScraper(BaseScraper):
                 "score_growth": round(growth_score, 2) if growth_score is not None else None,
                 "score_financial_health": round(financial_health_score, 2) if financial_health_score is not None else None,
                 "score_ownership": round(ownership_score, 2) if ownership_score is not None else None,
+                "score_valuation": round(valuation_score, 2) if valuation_score is not None else None,
+                "score_earnings_quality": round(earnings_quality_score, 2) if earnings_quality_score is not None else None,
+                "score_smart_money": round(smart_money_score, 2) if smart_money_score is not None else None,
                 "score_analyst": None,
                 "percent_change_3m": pct_change_3m,
                 "percent_change_1w": pct_change_1w,
@@ -2020,6 +2536,9 @@ class DiscoverStockScraper(BaseScraper):
                     "growth": round(growth_score, 2) if growth_score is not None else None,
                     "financial_health": round(financial_health_score, 2) if financial_health_score is not None else None,
                     "ownership": round(ownership_score, 2) if ownership_score is not None else None,
+                    "valuation": round(valuation_score, 2) if valuation_score is not None else None,
+                    "earnings_quality": round(earnings_quality_score, 2) if earnings_quality_score is not None else None,
+                    "smart_money": round(smart_money_score, 2) if smart_money_score is not None else None,
                     "52w_position": pos_52w_by_sym.get(symbol),
                     "combined_signal": round((momentum + liquidity) / 2.0, 2),
                     "fundamentals_coverage": f"{metrics_used}/5",
@@ -2200,6 +2719,26 @@ class DiscoverStockScraper(BaseScraper):
             "two_hundred_day_avg": fundamentals.get("two_hundred_day_avg"),
             "payout_ratio": fundamentals.get("payout_ratio"),
             "pledged_promoter_pct": fundamentals.get("pledged_promoter_pct"),
+            # P&L derived signals (Screener.in)
+            "sales_growth_yoy": fundamentals.get("sales_growth_yoy"),
+            "profit_growth_yoy": fundamentals.get("profit_growth_yoy"),
+            "opm_change": fundamentals.get("opm_change"),
+            "interest_coverage": fundamentals.get("interest_coverage"),
+            "compounded_sales_growth_3y": fundamentals.get("compounded_sales_growth_3y"),
+            "compounded_profit_growth_3y": fundamentals.get("compounded_profit_growth_3y"),
+            # Balance sheet derived signals (Screener.in)
+            "total_assets": fundamentals.get("total_assets"),
+            "asset_growth_yoy": fundamentals.get("asset_growth_yoy"),
+            "reserves_growth": fundamentals.get("reserves_growth"),
+            "debt_direction": fundamentals.get("debt_direction"),
+            "cwip": fundamentals.get("cwip"),
+            # Cash flow signals (Screener.in — fixes Yahoo OCF gap)
+            "cash_from_operations": fundamentals.get("cash_from_operations"),
+            "cash_from_investing": fundamentals.get("cash_from_investing"),
+            "cash_from_financing": fundamentals.get("cash_from_financing"),
+            # Shareholder trends
+            "num_shareholders_change_qoq": fundamentals.get("num_shareholders_change_qoq"),
+            "num_shareholders_change_yoy": fundamentals.get("num_shareholders_change_yoy"),
             # Metadata
             "source_status": source_status,
             "source_timestamp": quote.get("source_timestamp") or datetime.now(timezone.utc),

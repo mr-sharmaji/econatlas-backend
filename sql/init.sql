@@ -466,3 +466,39 @@ CREATE TABLE IF NOT EXISTS discover_stock_score_history (
 );
 CREATE INDEX IF NOT EXISTS idx_stock_score_history_symbol_scored
 ON discover_stock_score_history (symbol, scored_at DESC);
+
+-- ================================================================
+-- Scoring v0.4: P&L, Balance Sheet, Cash Flow, Shareholder Trends
+-- ================================================================
+
+-- P&L derived signals (from Screener.in annual data)
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS sales_growth_yoy DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS profit_growth_yoy DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS opm_change DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS interest_coverage DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS compounded_sales_growth_3y DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS compounded_profit_growth_3y DOUBLE PRECISION;
+
+-- Balance sheet derived signals
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS total_assets DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS asset_growth_yoy DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS reserves_growth DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS debt_direction DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS cwip DOUBLE PRECISION;
+
+-- Cash flow (from Screener.in — fixes Yahoo OCF gap: 72 → ~2200 stocks)
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS cash_from_operations DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS cash_from_investing DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS cash_from_financing DOUBLE PRECISION;
+
+-- Shareholder trends (QoQ and YoY)
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS num_shareholders_change_qoq DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS num_shareholders_change_yoy DOUBLE PRECISION;
+
+-- Synthetic forward PE (computed from profit_growth_yoy when Yahoo forward PE missing)
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS synthetic_forward_pe DOUBLE PRECISION;
+
+-- New score components
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_valuation DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_earnings_quality DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_smart_money DOUBLE PRECISION;
