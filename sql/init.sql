@@ -520,3 +520,5 @@ ALTER TABLE discover_stock_snapshots ALTER COLUMN score_fundamentals DROP NOT NU
 ALTER TABLE discover_stock_snapshots ALTER COLUMN score_fundamentals DROP DEFAULT;
 ALTER TABLE discover_stock_snapshots ALTER COLUMN score_breakdown DROP NOT NULL;
 ALTER TABLE discover_stock_snapshots ALTER COLUMN score_breakdown DROP DEFAULT;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN tags DROP NOT NULL;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN tags DROP DEFAULT;
