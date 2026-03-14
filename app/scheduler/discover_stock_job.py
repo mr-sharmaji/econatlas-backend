@@ -240,11 +240,20 @@ class YahooFinanceSession:
     def _ensure_session(self) -> None:
         if self._session and self._crumb and time_mod.time() - self._crumb_ts < self._crumb_ttl:
             return
+        # Try curl_cffi first (bypasses TLS fingerprinting), fall back to requests
+        session = None
         try:
             from curl_cffi import requests as cffi_requests
-        except ImportError:
-            raise RuntimeError("curl_cffi not installed; Yahoo v10 unavailable")
-        self._session = cffi_requests.Session(impersonate="chrome")
+            session = cffi_requests.Session(impersonate="chrome")
+            logger.info("Yahoo v10: using curl_cffi session")
+        except Exception as exc:
+            logger.warning("curl_cffi unavailable (%s), falling back to requests", exc)
+            import requests as std_requests
+            session = std_requests.Session()
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            })
+        self._session = session
         try:
             self._session.get("https://fc.yahoo.com", timeout=10)
         except Exception:
@@ -252,11 +261,11 @@ class YahooFinanceSession:
         time_mod.sleep(1)
         r = self._session.get("https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=10)
         crumb = r.text.strip()
-        if "Too Many" in crumb or "error" in crumb.lower():
-            raise RuntimeError(f"Yahoo crumb failed: {crumb}")
+        if "Too Many" in crumb or "error" in crumb.lower() or len(crumb) < 5:
+            raise RuntimeError(f"Yahoo crumb failed: {crumb!r}")
         self._crumb = crumb
         self._crumb_ts = time_mod.time()
-        logger.info("Yahoo v10: crumb obtained successfully")
+        logger.info("Yahoo v10: crumb obtained successfully (len=%d)", len(crumb))
 
     def get_stock_data(self, nse_symbol: str) -> dict:
         """Fetch comprehensive stock data from Yahoo v10 quoteSummary."""
@@ -1833,8 +1842,8 @@ class DiscoverStockScraper(BaseScraper):
                     fundamentals_source = "yahoo_fundamentals"
                 elif fundamentals_source == "screener_in":
                     fundamentals_source = "screener_in+yahoo"
-            except Exception:
-                logger.debug("Yahoo v10 failed for %s", stock.nse_symbol, exc_info=True)
+            except Exception as exc:
+                logger.warning("Yahoo v10 failed for %s: %s", stock.nse_symbol, exc)
         else:
             fundamentals = {
                 "pe_ratio": None, "roe": None, "roce": None,

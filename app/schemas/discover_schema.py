@@ -84,6 +84,7 @@ class DiscoverStockItemResponse(BaseModel):
     analyst_recommendation_mean: float | None = None
     # Industry sub-sector
     industry: str | None = None
+    payout_ratio: float | None = None
     percent_change_3m: float | None = None
     percent_change_1w: float | None = None
     percent_change_1y: float | None = None
@@ -238,6 +239,11 @@ class DiscoverHomeStockItem(BaseModel):
     percent_change_3m: float | None = None
     percent_change_1w: float | None = None
     score: float
+    score_volatility: float | None = None
+    score_growth: float | None = None
+    high_52w: float | None = None
+    low_52w: float | None = None
+    market_cap: float | None = None
     quality_tier: str | None = None
 
 
