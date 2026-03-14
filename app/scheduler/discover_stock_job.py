@@ -1333,21 +1333,49 @@ class DiscoverStockScraper(BaseScraper):
 
         vol_data = volatility_data or {}
 
+        # ── Sanitize numeric fields (Screener.in can return strings) ──
+        _NUMERIC_FIELDS = {
+            "pe_ratio", "price_to_book", "debt_to_equity", "roe", "roce",
+            "eps", "dividend_yield", "last_price", "percent_change",
+            "volume", "traded_value", "high_52w", "low_52w", "market_cap",
+            "beta", "forward_pe", "gross_margins", "operating_margins",
+            "profit_margins", "revenue_growth", "earnings_growth",
+            "promoter_holding", "fii_holding", "dii_holding",
+            "total_cash", "total_debt", "total_revenue",
+            "free_cash_flow", "operating_cash_flow", "payout_ratio",
+        }
+        for r in rows:
+            for field in _NUMERIC_FIELDS:
+                v = r.get(field)
+                if v is not None and not isinstance(v, (int, float)):
+                    try:
+                        r[field] = float(v)
+                    except (ValueError, TypeError):
+                        r[field] = None
+
         # ── Pre-compute sector medians for PE, PB, and D/E ──
         sector_pe: dict[str, list[float]] = {}
         sector_pb: dict[str, list[float]] = {}
         sector_de: dict[str, list[float]] = {}
+        def _safe_float(v: object) -> float | None:
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                return None
+
         for r in rows:
             sector = str(r.get("sector") or "Other")
-            pe = r.get("pe_ratio")
+            pe = _safe_float(r.get("pe_ratio"))
             if pe is not None and pe > 0:
-                sector_pe.setdefault(sector, []).append(float(pe))
-            pb = r.get("price_to_book")
+                sector_pe.setdefault(sector, []).append(pe)
+            pb = _safe_float(r.get("price_to_book"))
             if pb is not None and pb > 0:
-                sector_pb.setdefault(sector, []).append(float(pb))
-            de = r.get("debt_to_equity")
+                sector_pb.setdefault(sector, []).append(pb)
+            de = _safe_float(r.get("debt_to_equity"))
             if de is not None and de >= 0:
-                sector_de.setdefault(sector, []).append(float(de))
+                sector_de.setdefault(sector, []).append(de)
 
         all_pe = [v for vals in sector_pe.values() for v in vals]
         all_pb = [v for vals in sector_pb.values() for v in vals]
