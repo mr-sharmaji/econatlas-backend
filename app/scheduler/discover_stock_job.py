@@ -749,7 +749,7 @@ class DiscoverStockScraper(BaseScraper):
             return result
         pl_chunk = html[pl_match.start(): pl_match.start() + 25000]
 
-        _ext = DiscoverStockJob._extract_table_row_numbers
+        _ext = DiscoverStockScraper._extract_table_row_numbers
 
         sales = _ext(pl_chunk, "Sales")
         op_profit = _ext(pl_chunk, "Operating Profit")
@@ -806,7 +806,7 @@ class DiscoverStockScraper(BaseScraper):
             return result
         bs_chunk = html[bs_match.start(): bs_match.start() + 25000]
 
-        _ext = DiscoverStockJob._extract_table_row_numbers
+        _ext = DiscoverStockScraper._extract_table_row_numbers
 
         borrowings = _ext(bs_chunk, "Borrowings")
         equity_capital = _ext(bs_chunk, "Equity Capital", signed=False)
@@ -849,7 +849,7 @@ class DiscoverStockScraper(BaseScraper):
     @staticmethod
     def _extract_balance_sheet_de(html: str) -> float | None:
         """Backward-compatible D/E extraction (delegates to full extractor)."""
-        bs_data = DiscoverStockJob._extract_balance_sheet(html)
+        bs_data = DiscoverStockScraper._extract_balance_sheet(html)
         return bs_data.get("debt_to_equity")
 
     # ------------------------------------------------------------------
@@ -869,7 +869,7 @@ class DiscoverStockScraper(BaseScraper):
             return result
         cf_chunk = html[cf_match.start(): cf_match.start() + 15000]
 
-        _ext = DiscoverStockJob._extract_table_row_numbers
+        _ext = DiscoverStockScraper._extract_table_row_numbers
 
         cfo = _ext(cf_chunk, "Cash from Operating Activity")
         cfi = _ext(cf_chunk, "Cash from Investing Activity")
@@ -1001,7 +1001,7 @@ class DiscoverStockScraper(BaseScraper):
             result["public_holding"] = pub
 
         # Number of shareholders — extract all available quarters for QoQ + YoY
-        _ext_all = DiscoverStockJob._extract_table_row_numbers
+        _ext_all = DiscoverStockScraper._extract_table_row_numbers
         ns_all = _ext_all(sh_chunk, "No. of Shareholders", signed=False)
         if ns_all:
             result["num_shareholders"] = int(ns_all[-1])
