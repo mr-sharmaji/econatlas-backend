@@ -192,6 +192,59 @@ def _map_screener_sector(raw: str) -> str:
     return raw.strip().title()  # Use the raw value title-cased as fallback
 
 
+# ── 6-Layer Scoring Model: Sector Weight Profiles ──
+_SECTOR_LAYER_WEIGHTS: dict[str, dict[str, float]] = {
+    "DEFAULT":                {"quality": 0.30, "valuation": 0.25, "growth": 0.20, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
+    "Financials":             {"quality": 0.35, "valuation": 0.20, "growth": 0.15, "momentum": 0.10, "institutional": 0.15, "risk": 0.05},
+    "IT":                     {"quality": 0.35, "valuation": 0.20, "growth": 0.25, "momentum": 0.10, "institutional": 0.05, "risk": 0.05},
+    "Healthcare":             {"quality": 0.25, "valuation": 0.20, "growth": 0.25, "momentum": 0.10, "institutional": 0.10, "risk": 0.10},
+    "Real Estate":            {"quality": 0.20, "valuation": 0.35, "growth": 0.15, "momentum": 0.15, "institutional": 0.10, "risk": 0.05},
+    "Industrials":            {"quality": 0.25, "valuation": 0.20, "growth": 0.30, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
+    "FMCG":                   {"quality": 0.35, "valuation": 0.25, "growth": 0.15, "momentum": 0.05, "institutional": 0.10, "risk": 0.10},
+    "Auto":                   {"quality": 0.25, "valuation": 0.25, "growth": 0.20, "momentum": 0.15, "institutional": 0.10, "risk": 0.05},
+    "Utilities":              {"quality": 0.30, "valuation": 0.30, "growth": 0.10, "momentum": 0.05, "institutional": 0.15, "risk": 0.10},
+    "Energy":                 {"quality": 0.20, "valuation": 0.30, "growth": 0.15, "momentum": 0.20, "institutional": 0.10, "risk": 0.05},
+    "Materials":              {"quality": 0.20, "valuation": 0.30, "growth": 0.15, "momentum": 0.20, "institutional": 0.10, "risk": 0.05},
+    "Chemicals":              {"quality": 0.25, "valuation": 0.25, "growth": 0.25, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
+    "Telecom":                {"quality": 0.25, "valuation": 0.20, "growth": 0.25, "momentum": 0.10, "institutional": 0.10, "risk": 0.10},
+    "Consumer Discretionary": {"quality": 0.30, "valuation": 0.25, "growth": 0.20, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
+    "Textiles":               {"quality": 0.25, "valuation": 0.25, "growth": 0.20, "momentum": 0.15, "institutional": 0.10, "risk": 0.05},
+    "Services":               {"quality": 0.30, "valuation": 0.25, "growth": 0.20, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
+    "Media & Entertainment":  {"quality": 0.25, "valuation": 0.25, "growth": 0.25, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
+    "Diversified":            {"quality": 0.30, "valuation": 0.25, "growth": 0.20, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
+}
+
+# Sub-metric weights within Quality layer, per sector
+_SECTOR_QUALITY_WEIGHTS: dict[str, dict[str, float]] = {
+    "DEFAULT":      {"roe": 0.25, "roce": 0.20, "op_margin": 0.15, "fcf_yield": 0.15, "ocf_consistency": 0.10, "margin_stability": 0.10, "net_cash": 0.05},
+    "Financials":   {"roe": 0.35, "nim_proxy": 0.25, "profit_consistency": 0.20, "interest_to_rev": 0.10, "accrual_quality": 0.10},
+    "IT":           {"op_margin": 0.30, "margin_stability": 0.25, "fcf_yield": 0.20, "net_cash": 0.15, "profit_consistency": 0.10},
+    "Healthcare":   {"roce": 0.20, "op_margin": 0.20, "cwip_to_assets": 0.20, "fcf_yield": 0.15, "profit_consistency": 0.15, "margin_stability": 0.10},
+    "Real Estate":  {"roe": 0.25, "net_cash": 0.25, "profit_consistency": 0.20, "op_margin": 0.15, "fcf_yield": 0.15},
+    "Industrials":  {"roce": 0.25, "op_margin": 0.20, "cwip_to_assets": 0.20, "fcf_yield": 0.15, "profit_consistency": 0.10, "margin_stability": 0.10},
+    "FMCG":         {"margin_stability": 0.25, "gross_margin": 0.20, "profit_consistency": 0.20, "roe": 0.15, "fcf_yield": 0.10, "ocf_consistency": 0.10},
+    "Auto":         {"roce": 0.25, "op_margin": 0.20, "cwip_to_assets": 0.15, "margin_stability": 0.15, "fcf_yield": 0.15, "profit_consistency": 0.10},
+    "Utilities":    {"roe": 0.25, "profit_consistency": 0.25, "ocf_consistency": 0.20, "op_margin": 0.15, "fcf_yield": 0.15},
+    "Energy":       {"roce": 0.25, "op_margin": 0.20, "fcf_yield": 0.20, "margin_stability": 0.15, "net_cash": 0.10, "ocf_consistency": 0.10},
+    "Materials":    {"roce": 0.25, "op_margin": 0.20, "fcf_yield": 0.20, "margin_stability": 0.15, "net_cash": 0.10, "ocf_consistency": 0.10},
+    "Chemicals":    {"roce": 0.25, "op_margin": 0.20, "cwip_to_assets": 0.15, "fcf_yield": 0.15, "margin_stability": 0.15, "profit_consistency": 0.10},
+}
+
+# Sub-metric weights within Valuation layer, per sector
+_SECTOR_VALUATION_WEIGHTS: dict[str, dict[str, float]] = {
+    "DEFAULT":      {"peg": 0.35, "pe_relative": 0.25, "pb_relative": 0.20, "forward_pe": 0.10, "div_yield": 0.10},
+    "Financials":   {"peg": 0.25, "pb_relative": 0.35, "pe_relative": 0.20, "div_yield": 0.20},
+    "IT":           {"peg": 0.40, "pe_relative": 0.25, "forward_pe": 0.20, "div_yield": 0.15},
+    "Real Estate":  {"pb_relative": 0.50, "peg": 0.20, "pe_relative": 0.10, "div_yield": 0.10, "forward_pe": 0.10},
+    "Utilities":    {"div_yield": 0.35, "peg": 0.25, "pe_relative": 0.20, "pb_relative": 0.20},
+    "Energy":       {"pb_relative": 0.30, "peg": 0.25, "pe_relative": 0.20, "div_yield": 0.15, "forward_pe": 0.10},
+    "Materials":    {"pb_relative": 0.30, "peg": 0.25, "pe_relative": 0.20, "div_yield": 0.15, "forward_pe": 0.10},
+}
+
+# Cyclical sectors (for Lynch classification and scoring adjustments)
+_CYCLICAL_SECTORS = frozenset({"Materials", "Energy", "Chemicals", "Real Estate", "Auto", "Textiles"})
+
+
 @dataclass(frozen=True)
 class DiscoverStockDef:
     nse_symbol: str
@@ -232,11 +285,12 @@ CORE_UNIVERSE = _build_core_universe()
 class YahooFinanceSession:
     """Yahoo v10 quoteSummary via curl_cffi with crumb caching."""
 
-    def __init__(self, crumb_ttl: int = 600):
+    def __init__(self, crumb_ttl: int = 600, timeout: int = 10):
         self._session = None
         self._crumb: str | None = None
         self._crumb_ts: float = 0.0
         self._crumb_ttl = crumb_ttl
+        self._yahoo_timeout = max(2, timeout)
 
     def _ensure_session(self) -> None:
         if self._session and self._crumb and time_mod.time() - self._crumb_ts < self._crumb_ttl:
@@ -256,11 +310,11 @@ class YahooFinanceSession:
             })
         self._session = session
         try:
-            self._session.get("https://fc.yahoo.com", timeout=10)
+            self._session.get("https://fc.yahoo.com", timeout=self._yahoo_timeout)
         except Exception:
             pass
         time_mod.sleep(1)
-        r = self._session.get("https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=10)
+        r = self._session.get("https://query2.finance.yahoo.com/v1/test/getcrumb", timeout=self._yahoo_timeout)
         crumb = r.text.strip()
         if "Too Many" in crumb or "error" in crumb.lower() or len(crumb) < 5:
             raise RuntimeError(f"Yahoo crumb failed: {crumb!r}")
@@ -276,7 +330,7 @@ class YahooFinanceSession:
             f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/"
             f"{nse_symbol}.NS?modules={modules}&crumb={self._crumb}"
         )
-        r = self._session.get(url, timeout=10)
+        r = self._session.get(url, timeout=self._yahoo_timeout)
         data = r.json()
         result = data.get("quoteSummary", {}).get("result", [{}])[0]
         ks = result.get("defaultKeyStatistics", {})
@@ -365,6 +419,7 @@ class DiscoverStockScraper(BaseScraper):
         self._screener_batch_delay = max(0.0, float(getattr(self.settings, "discover_stock_screener_batch_delay", 0.5)))
         self._yahoo_batch_delay = max(0.0, float(getattr(self.settings, "discover_stock_yahoo_batch_delay", 0.5)))
         self._yahoo_crumb_ttl = max(60, int(getattr(self.settings, "discover_stock_yahoo_crumb_ttl", 600)))
+        self._yahoo_timeout = max(2, int(getattr(self.settings, "discover_stock_yahoo_timeout_seconds", 10)))
         self._fundamentals_limit = max(
             len(CORE_UNIVERSE),
             int(getattr(self.settings, "discover_stock_fundamentals_limit", 5000)),
@@ -389,7 +444,7 @@ class DiscoverStockScraper(BaseScraper):
 
     def _get_yahoo_session(self) -> YahooFinanceSession:
         if self._yahoo_session is None:
-            self._yahoo_session = YahooFinanceSession(crumb_ttl=self._yahoo_crumb_ttl)
+            self._yahoo_session = YahooFinanceSession(crumb_ttl=self._yahoo_crumb_ttl, timeout=self._yahoo_timeout)
         return self._yahoo_session
 
     def _nse_on_cooldown(self) -> bool:
@@ -1011,6 +1066,102 @@ class DiscoverStockScraper(BaseScraper):
                 else:
                     out["fii_trend_direction"] = "stable"
 
+        # ── New derived metrics ──
+
+        # 5Y revenue CAGR
+        if pl and isinstance(pl, dict):
+            sales = pl.get("sales", [])
+            tail_sales_5y = _tail(sales, 6)
+            if len(tail_sales_5y) >= 2:
+                cagr = _cagr(tail_sales_5y, len(tail_sales_5y) - 1)
+                if cagr is not None:
+                    out["5y_revenue_cagr"] = cagr
+
+            # 5Y profit CAGR
+            net_profits = pl.get("net_profit", [])
+            tail_np_5y = _tail(net_profits, 6)
+            if len(tail_np_5y) >= 2:
+                cagr = _cagr(tail_np_5y, len(tail_np_5y) - 1)
+                if cagr is not None:
+                    out["5y_profit_cagr"] = cagr
+
+        # 5Y ROE stability (stddev)
+        if pl and bs and isinstance(pl, dict) and isinstance(bs, dict):
+            np_5 = _tail(pl.get("net_profit", []), 5)
+            res_5 = _tail(bs.get("reserves", []), 5)
+            if len(np_5) >= 3 and len(res_5) >= 3:
+                roes = [n/r*100 for n, r in zip(np_5, res_5) if n is not None and r is not None and r > 0]
+                if len(roes) >= 3:
+                    try:
+                        out["5y_roe_stability"] = statistics.stdev(roes)
+                    except statistics.StatisticsError:
+                        pass
+
+        # CWIP to assets ratio
+        if bs and isinstance(bs, dict):
+            cwip_vals = bs.get("cwip", [])
+            ta_vals = bs.get("total_assets", [])
+            if cwip_vals and ta_vals:
+                c = _tail(cwip_vals, 1)
+                a = _tail(ta_vals, 1)
+                if c and a and a[0] > 0:
+                    out["cwip_to_assets"] = c[0] / a[0]
+
+        # Interest to revenue (bank lending efficiency)
+        if pl and isinstance(pl, dict):
+            interest_vals = pl.get("interest", [])
+            sales_vals = pl.get("sales", [])
+            if interest_vals and sales_vals:
+                i = _tail(interest_vals, 1)
+                s = _tail(sales_vals, 1)
+                if i and s and s[0] > 0:
+                    out["interest_to_revenue"] = i[0] / s[0]
+
+        # Incremental ROE
+        if pl and bs and isinstance(pl, dict) and isinstance(bs, dict):
+            np_vals = pl.get("net_profit", [])
+            res_vals = bs.get("reserves", [])
+            np_t = _tail(np_vals, 2)
+            res_t = _tail(res_vals, 2)
+            if len(np_t) >= 2 and len(res_t) >= 2:
+                d_np = np_t[-1] - np_t[0]
+                d_res = res_t[-1] - res_t[0]
+                if d_res > 0:
+                    out["incremental_roe"] = (d_np / d_res) * 100
+
+        # Negative FCF streak (consecutive recent years with OCF < 0)
+        if cf and isinstance(cf, dict):
+            ocf_key = None
+            for k in ("cash_from_operating_activity", "cash_from_operations", "cash_from_operating_activities"):
+                if k in cf:
+                    ocf_key = k
+                    break
+            if ocf_key:
+                ocf_vals_streak = _tail(cf.get(ocf_key, []), 5)
+                streak = 0
+                for v in reversed(ocf_vals_streak):
+                    if v is not None and v < 0:
+                        streak += 1
+                    else:
+                        break
+                out["negative_fcf_streak"] = streak
+
+        # Low ROE streak (consecutive recent years with ROE < 5%)
+        if pl and bs and isinstance(pl, dict) and isinstance(bs, dict):
+            np_streak = _tail(pl.get("net_profit", []), 5)
+            res_streak = _tail(bs.get("reserves", []), 5)
+            streak = 0
+            for n, r in zip(reversed(np_streak), reversed(res_streak)):
+                if n is not None and r is not None and r > 0:
+                    roe_val = (n / r) * 100
+                    if roe_val < 5:
+                        streak += 1
+                    else:
+                        break
+                else:
+                    break
+            out["low_roe_streak"] = streak
+
         return out
 
     # ------------------------------------------------------------------
@@ -1520,273 +1671,216 @@ class DiscoverStockScraper(BaseScraper):
             return min(100.0, vol_score * 1.08)
         return min(100.0, vol_score * 1.15)
 
-    def _score_fundamentals(
+    def _score_quality(
         self,
         row: dict,
+        sector: str,
         sector_medians: dict[str, dict[str, float]],
     ) -> tuple[float, int]:
-        """Weighted fundamentals score with sector-relative PE/PB/D/E.
+        """Unified quality score merging fundamentals, financial health, and earnings quality.
 
-        Uses sector-specific weight profiles:
-        - Financials: ROE-heavy, skip D/E (banks are naturally leveraged),
-          use operating_margins as NIM proxy.
-        - Cyclicals (Commodities, Energy): P/B over PE (high PE = buy signal
-          at cycle bottoms).
-        - Default: balanced ROE/ROCE/PE/D/E/P/B weights.
+        Sector-specific sub-metric weights eliminate double-counting.
         """
-        sector = str(row.get("sector") or "Other")
-        medians = sector_medians.get(sector, {})
         parts: dict[str, float] = {}
         metrics_used = 0
 
         is_financial = sector == "Financials"
-        is_cyclical = sector in ("Commodities", "Energy")
+        weights = _SECTOR_QUALITY_WEIGHTS.get(sector, _SECTOR_QUALITY_WEIGHTS["DEFAULT"])
 
-        pe = row.get("pe_ratio")
-        if pe is not None and pe > 0:
-            median_pe = medians.get("pe", 25.0)
-            ratio = pe / max(median_pe, 1.0)
-            parts["pe"] = self._clamp(100 - (ratio * 50))
-            metrics_used += 1
-
+        # ROE (blended current + 3Y historical)
         roe = row.get("roe")
-        roce = row.get("roce")
-
-        # Blend with 3-year historical average when available (60% current, 40% historical)
         hist_roe = row.get("_hist_avg_roe_3y")
         if hist_roe is not None and roe is not None:
             roe = roe * 0.6 + hist_roe * 0.4
-        hist_roce = row.get("_hist_avg_roce_3y")
-        if hist_roce is not None and roce is not None:
-            roce = roce * 0.6 + hist_roce * 0.4
-
-        # Sanitize extreme outliers — cap at 100% to prevent
-        # absurd scores from data anomalies (e.g. ROE 644%, ROCE 318%)
         if roe is not None:
-            roe = min(roe, 100.0)
-            if roe < -50.0:
-                roe = -50.0
-        if roce is not None:
-            roce = min(roce, 100.0)
-            if roce < -50.0:
-                roce = -50.0
-
-        if roe is not None:
+            roe = max(-50.0, min(roe, 100.0))
             roe_score = self._clamp(roe * 4.5)
-            # DuPont discount: if ROE is >1.5× ROCE, it's leverage-inflated
+            # DuPont discount
+            roce = row.get("roce")
             if roce is not None and roce > 0 and roe > roce * 1.5:
                 roe_score *= 0.85
             parts["roe"] = roe_score
             metrics_used += 1
 
+        # ROCE (blended current + 3Y historical)
+        roce = row.get("roce")
+        hist_roce = row.get("_hist_avg_roce_3y")
+        if hist_roce is not None and roce is not None:
+            roce = roce * 0.6 + hist_roce * 0.4
         if roce is not None:
+            roce = max(-50.0, min(roce, 100.0))
             parts["roce"] = self._clamp(roce * 4.0)
             metrics_used += 1
 
-        dte = row.get("debt_to_equity")
-        # Skip D/E for financials — banks are naturally leveraged
-        if not is_financial and dte is not None:
-            median_de = medians.get("de", 1.0)
-            ratio = dte / max(median_de, 0.1)
-            parts["dte"] = self._clamp(100 - (ratio * 40))
-            metrics_used += 1
-
-        pb = row.get("price_to_book")
-        if pb is not None and pb > 0:
-            median_pb = medians.get("pb", 4.0)
-            ratio = pb / max(median_pb, 0.5)
-            parts["pb"] = self._clamp(100 - (ratio * 40))
-            metrics_used += 1
-
-        # For financials: use operating_margins as NIM proxy
-        if is_financial:
-            op_margin = row.get("operating_margins")
-            if op_margin is not None:
-                parts["margins_proxy"] = self._clamp(op_margin * 200 + 30)
-                metrics_used += 1
-
-        if not parts:
-            return 50.0, metrics_used
-
-        # Sector-specific weight profiles
-        if is_financial:
-            weights = {
-                "roe": 0.35, "pb": 0.30, "margins_proxy": 0.20,
-                "pe": 0.15, "roce": 0.00, "dte": 0.00,
-            }
-        elif is_cyclical:
-            # P/B over PE for cyclicals (high PE = buy signal at trough)
-            weights = {
-                "roe": 0.30, "roce": 0.25, "pb": 0.20,
-                "dte": 0.15, "pe": 0.10,
-            }
-        else:
-            weights = {
-                "roe": 0.30, "roce": 0.25, "pe": 0.20,
-                "dte": 0.15, "pb": 0.10,
-            }
-
-        total_w = 0.0
-        weighted_sum = 0.0
-        for key, score in parts.items():
-            w = weights.get(key, 0.10)
-            if w <= 0:
-                continue
-            weighted_sum += score * w
-            total_w += w
-        result = weighted_sum / total_w if total_w > 0 else 50.0
-
-        eps = row.get("eps")
-        if eps is not None and eps < 0:
-            result = min(result, 40.0)
-
-        return round(result, 2), metrics_used
-
-    # ---------------------------------------------------------------------------
-    # NEW: Financial Health Score (weight 15%)
-    # ---------------------------------------------------------------------------
-    def _score_financial_health(self, row: dict) -> tuple[float | None, dict]:
-        """Score based on margins, FCF, cash position, debt coverage."""
-        parts: dict[str, float] = {}
-        mcap = row.get("market_cap")
-
-        # FCF Yield
-        fcf = row.get("free_cash_flow")
-        if fcf is not None and mcap and mcap > 0:
-            fcf_yield = (fcf / (mcap * 1e7)) * 100  # mcap in Cr, fcf in absolute
-            parts["fcf_yield"] = self._clamp(fcf_yield * 8 + 30)
-
-        # Operating Margin
+        # Operating margin
         op_margin = row.get("operating_margins")
         if op_margin is not None:
             parts["op_margin"] = self._clamp(op_margin * 200 + 20)
+            metrics_used += 1
 
-        # Profit Margin
-        profit_margin = row.get("profit_margins")
-        if profit_margin is not None:
-            parts["profit_margin"] = self._clamp(profit_margin * 200 + 20)
+        # NIM proxy for financials
+        if is_financial and op_margin is not None:
+            parts["nim_proxy"] = self._clamp(op_margin * 200 + 30)
 
-        # Net Cash Position
+        # Gross margin (FMCG brand moat proxy)
+        gross = row.get("gross_margins")
+        if gross is not None:
+            parts["gross_margin"] = self._clamp(gross * 150 + 10)
+
+        # FCF yield
+        fcf = row.get("free_cash_flow")
+        mcap = row.get("market_cap")
+        if fcf is not None and mcap and mcap > 0:
+            fcf_yield = (fcf / (mcap * 1e7)) * 100
+            parts["fcf_yield"] = self._clamp(fcf_yield * 8 + 30)
+            metrics_used += 1
+
+        # Net cash position
         cash = row.get("total_cash")
         debt = row.get("total_debt")
         if cash is not None and debt is not None and mcap and mcap > 0:
             net_cash_pct = ((cash - debt) / (mcap * 1e7)) * 100
             parts["net_cash"] = self._clamp(50 + net_cash_pct * 3)
 
-        # Payout Ratio
-        payout = row.get("payout_ratio")
-        if payout is not None and payout > 0:
-            if 0.1 <= payout <= 0.6:
-                parts["payout"] = 80.0
-            elif payout < 0.1:
-                parts["payout"] = 50.0
-            else:
-                parts["payout"] = max(20.0, 100 - payout * 80)
+        # Margin stability (low std = good)
+        opm_std = row.get("_hist_opm_std_5y")
+        if opm_std is not None:
+            parts["margin_stability"] = self._clamp(90 - opm_std * 5)
 
-        # Deleveraging signal (from bs_annual via historical metrics)
-        debt_traj = row.get("_hist_debt_trajectory")
-        if debt_traj is not None:
-            # negative = reducing debt = good; positive = leveraging up
-            parts["deleveraging"] = self._clamp(60 - debt_traj * 100)
-
-        # Multi-year OCF consistency (from cf_annual via historical metrics)
+        # OCF consistency
         ocf_years = row.get("_hist_ocf_positive_years")
         if ocf_years is not None:
             parts["ocf_consistency"] = self._clamp(ocf_years / 5.0 * 100)
 
-        if not parts:
-            return None, {}
+        # Profit consistency
+        profit_cons = row.get("_hist_profit_growth_consistency", 0)
+        sales_cons = row.get("_hist_sales_growth_consistency", 0)
+        if profit_cons > 0 or sales_cons > 0:
+            parts["profit_consistency"] = self._clamp((profit_cons + sales_cons) / 10.0 * 100)
 
-        weights = {
-            "fcf_yield": 0.25, "op_margin": 0.20, "profit_margin": 0.15,
-            "net_cash": 0.12, "payout": 0.08,
-            "deleveraging": 0.10, "ocf_consistency": 0.10,
-        }
-        total_w = sum(weights.get(k, 0.10) for k in parts)
-        score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
+        # Accrual quality (CFO/profit ratio)
+        cfo = row.get("cash_from_operations")
+        net_profit = row.get("_net_profit_latest")
+        if cfo is not None and net_profit is not None and net_profit > 0:
+            cfo_ratio = cfo / net_profit
+            parts["accrual_quality"] = self._clamp(cfo_ratio * 50 + 20)
 
-        return round(score, 2), parts
+        # Interest coverage
+        int_cov = row.get("interest_coverage")
+        if int_cov is not None:
+            parts["interest_coverage"] = self._clamp(int_cov * 12)
 
-    # ---------------------------------------------------------------------------
-    # NEW: Analyst Consensus Score (weight 10%)
-    # ---------------------------------------------------------------------------
-    def _score_analyst_consensus(self, row: dict) -> tuple[float | None, dict]:
-        """Score based on analyst recommendations and price target upside."""
-        parts: dict[str, float] = {}
+        # Interest to revenue (bank-specific)
+        int_rev = row.get("_hist_interest_to_revenue")
+        if int_rev is not None and is_financial:
+            parts["interest_to_rev"] = self._clamp(int_rev * 200 + 20)
 
-        target = row.get("analyst_target_mean")
-        price = row.get("last_price")
-        count = row.get("analyst_count")
+        # CWIP to assets (pharma/industrials R&D/capex proxy)
+        cwip_ratio = row.get("_hist_cwip_to_assets")
+        if cwip_ratio is not None:
+            # Higher CWIP = more investment; good for pharma/industrials
+            if sector in ("Healthcare", "Industrials", "Auto", "Chemicals"):
+                parts["cwip_to_assets"] = self._clamp(cwip_ratio * 300 + 30)
+            else:
+                parts["cwip_to_assets"] = self._clamp(50 + cwip_ratio * 100)
 
-        if target and price and price > 0:
-            upside_pct = ((target - price) / price) * 100
-            parts["upside"] = self._clamp(50 + upside_pct * 1.0)
-
-        rec_mean = row.get("analyst_recommendation_mean")
-        if rec_mean is not None:
-            parts["recommendation"] = self._clamp(100 - (rec_mean - 1.0) * 25)
-
-        if count is not None and count > 0:
-            parts["coverage"] = self._clamp(min(100, count * 4 + 20))
-
-        sb = row.get("analyst_strong_buy", 0) or 0
-        b = row.get("analyst_buy", 0) or 0
-        h = row.get("analyst_hold", 0) or 0
-        s = row.get("analyst_sell", 0) or 0
-        total = sb + b + h + s
-        if total >= 3:
-            buy_ratio = (sb + b) / total
-            parts["buy_ratio"] = self._clamp(buy_ratio * 100)
+        # Incremental ROE
+        inc_roe = row.get("_hist_incremental_roe")
+        if inc_roe is not None:
+            parts["incremental_roe"] = self._clamp(inc_roe * 2 + 20)
 
         if not parts:
-            return None, {}
+            return 50.0, metrics_used
 
-        weights = {"upside": 0.35, "recommendation": 0.25, "buy_ratio": 0.25, "coverage": 0.15}
-        total_w = sum(weights.get(k, 0.10) for k in parts)
-        score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
+        # Weighted score using sector-specific weights
+        total_w = 0.0
+        weighted_sum = 0.0
+        for key, score_val in parts.items():
+            w = weights.get(key, 0.05)
+            weighted_sum += score_val * w
+            total_w += w
+        result = weighted_sum / total_w if total_w > 0 else 50.0
 
-        return round(score, 2), parts
+        # Negative EPS penalty
+        eps = row.get("eps")
+        if eps is not None and eps < 0:
+            result = min(result, 40.0)
 
-    # ---------------------------------------------------------------------------
-    # NEW: Ownership Score (weight 12%)
-    # ---------------------------------------------------------------------------
-    def _score_ownership(self, row: dict) -> tuple[float | None, dict]:
-        """Score based on promoter/FII/DII static levels only.
+        return round(result, 2), metrics_used
 
-        Trend/flow signals are now exclusively in Smart Money to avoid overlap.
-        """
+    def _score_institutional(self, row: dict) -> tuple[float | None, dict]:
+        """Merged ownership + smart money: static levels + flows + sustained trends."""
         parts: dict[str, float] = {}
 
+        # Promoter level (static)
         promoter = row.get("promoter_holding")
         if promoter is not None:
-            # 50-75% promoter is ideal; too low = weak control, too high = low float
             if 50 <= promoter <= 75:
                 parts["promoter_level"] = 80.0
             elif promoter > 75:
-                parts["promoter_level"] = 60.0  # Low float risk
+                parts["promoter_level"] = 60.0
             elif promoter >= 30:
                 parts["promoter_level"] = 65.0
             else:
                 parts["promoter_level"] = 40.0
 
+        # FII level + flow + sustained
         fii = row.get("fii_holding")
         if fii is not None:
-            # FII > 20% = strong institutional confidence
             parts["fii_level"] = self._clamp(fii * 3 + 20)
 
+        fii_chg = row.get("fii_holding_change")
+        if fii_chg is not None:
+            parts["fii_flow"] = self._clamp(50 + fii_chg * 20)
+
+        fii_4q = row.get("_hist_fii_trend_4q")
+        if fii_4q is not None:
+            parts["fii_sustained"] = self._clamp(50 + fii_4q * 10)
+
+        # DII level + flow
         dii = row.get("dii_holding")
         if dii is not None:
-            # DII > 25% = domestic institutional backing
             parts["dii_level"] = self._clamp(dii * 3 + 15)
+
+        dii_chg = row.get("dii_holding_change")
+        if dii_chg is not None:
+            parts["dii_flow"] = self._clamp(50 + dii_chg * 20)
+
+        # Promoter flow + sustained
+        prom_chg = row.get("promoter_holding_change")
+        if prom_chg is not None:
+            parts["promoter_flow"] = self._clamp(50 + prom_chg * 25)
+
+        promoter_4q = row.get("_hist_promoter_trend_4q")
+        if promoter_4q is not None:
+            parts["promoter_sustained"] = self._clamp(50 + promoter_4q * 12)
+
+        # Shareholder trend
+        sh_yoy = row.get("num_shareholders_change_yoy")
+        if sh_yoy is not None:
+            if sh_yoy > 100:
+                parts["shareholder_trend"] = 35.0
+            elif sh_yoy > 50:
+                parts["shareholder_trend"] = 45.0
+            elif sh_yoy > 0:
+                parts["shareholder_trend"] = 60.0
+            elif sh_yoy > -20:
+                parts["shareholder_trend"] = 55.0
+            else:
+                parts["shareholder_trend"] = 40.0
 
         if not parts:
             return None, {}
 
-        weights = {"promoter_level": 0.40, "fii_level": 0.30, "dii_level": 0.30}
-        total_w = sum(weights.get(k, 0.10) for k in parts)
-        score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
+        weights = {
+            "promoter_level": 0.20, "fii_level": 0.15, "fii_flow": 0.15,
+            "fii_sustained": 0.10, "dii_level": 0.10, "dii_flow": 0.10,
+            "promoter_flow": 0.05, "promoter_sustained": 0.05, "shareholder_trend": 0.10,
+        }
+        total_w = sum(weights.get(k, 0.05) for k in parts)
+        score = sum(parts[k] * weights.get(k, 0.05) for k in parts) / total_w
 
-        # Pledged promoter shares penalty (#1 Indian small-cap risk factor)
+        # Pledging penalty
         pledged = row.get("pledged_promoter_pct")
         if pledged is not None:
             if pledged > 40:
@@ -1794,306 +1888,677 @@ class DiscoverStockScraper(BaseScraper):
             elif pledged > 20:
                 score = max(0, score - 15)
 
-        # Low free-float penalty (manipulation risk)
+        # Low free-float penalty
         public = row.get("public_holding")
         if public is not None and public < 15:
             score = max(0, score - 10)
 
         return round(score, 2), parts
 
+    def _score_valuation_v2(
+        self,
+        row: dict,
+        sector: str,
+        sector_medians: dict[str, dict[str, float]],
+        industry_medians: dict[str, dict[str, float]],
+        all_div_yields: list[float],
+    ) -> tuple[float | None, dict, float | None]:
+        """Deduplicated valuation score with PEG ratio. Returns (score, parts, peg_ratio)."""
+        parts: dict[str, float] = {}
+        peg_ratio = None
+        weights = _SECTOR_VALUATION_WEIGHTS.get(sector, _SECTOR_VALUATION_WEIGHTS["DEFAULT"])
+
+        pe_val = row.get("pe_ratio")
+        pb_val = row.get("price_to_book")
+        dy_val = row.get("dividend_yield")
+        ind = str(row.get("industry") or "").strip()
+        medians = sector_medians.get(sector, {})
+
+        # PEG ratio
+        earnings_growth = row.get("earnings_growth")
+        eg_cagr = row.get("_hist_profit_growth_3y_cagr")
+        growth_rate = None
+        if earnings_growth is not None and earnings_growth > 0:
+            growth_rate = earnings_growth * 100
+        elif eg_cagr is not None and eg_cagr > 0:
+            growth_rate = eg_cagr * 100
+
+        if pe_val is not None and pe_val > 0 and growth_rate is not None:
+            peg_ratio = pe_val / max(growth_rate, 5.0)
+            parts["peg"] = self._clamp(100 - peg_ratio * 25)
+
+        # PE relative to sector/industry median
+        if pe_val is not None and pe_val > 0:
+            ind_pe = (industry_medians.get(ind, {}).get("pe") if ind else None)
+            ref_pe = ind_pe or medians.get("pe", 25.0)
+            ratio = pe_val / max(ref_pe, 1.0)
+            parts["pe_relative"] = self._clamp(100 - ratio * 50)
+
+        # Forward PE discount
+        improved_fwd_eps = row.get("_hist_improved_forward_eps")
+        lp = row.get("last_price")
+        if improved_fwd_eps and lp and lp > 0:
+            row["synthetic_forward_pe"] = lp / improved_fwd_eps
+        fpe = row.get("forward_pe") or row.get("synthetic_forward_pe")
+        if fpe is not None and pe_val is not None and pe_val > 0 and fpe > 0:
+            discount = 1 - (fpe / pe_val)
+            parts["forward_pe"] = self._clamp(50 + discount * 200)
+
+        # P/B relative
+        if pb_val is not None and pb_val > 0:
+            ind_pb = (industry_medians.get(ind, {}).get("pb") if ind else None)
+            ref_pb = ind_pb or medians.get("pb", 4.0)
+            ratio = pb_val / max(ref_pb, 0.5)
+            parts["pb_relative"] = self._clamp(100 - ratio * 40)
+
+        # Dividend yield percentile
+        if dy_val is not None and dy_val > 0 and all_div_yields:
+            parts["div_yield"] = self._percentile_rank(all_div_yields, dy_val)
+
+        if not parts:
+            return None, {}, None
+
+        total_w = sum(weights.get(k, 0.10) for k in parts)
+        score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
+        return round(score, 2), parts, peg_ratio
+
+    def _score_growth_v2(
+        self,
+        row: dict,
+        sector: str,
+        pct_3m: float | None,
+        pct_1y: float | None,
+        pct_3y: float | None,
+        pct_5y: float | None,
+        all_pct_3m: list[float],
+        all_pct_1y: list[float],
+        all_pct_3y: list[float],
+        all_pct_5y: list[float],
+    ) -> tuple[float | None, dict]:
+        """Growth score with 5Y compounding and sector-specific weights."""
+        parts: dict[str, float] = {}
+
+        # Revenue CAGR: blend 3Y and 5Y
+        csg_3y = row.get("compounded_sales_growth_3y")
+        sg_yoy = row.get("sales_growth_yoy")
+        rg = row.get("revenue_growth")
+        rev_cagr_5y = row.get("_hist_5y_revenue_cagr")
+
+        sales_signal_3y = None
+        if csg_3y is not None:
+            sales_signal_3y = csg_3y / 100.0
+        elif sg_yoy is not None:
+            sales_signal_3y = sg_yoy
+        elif rg is not None:
+            sales_signal_3y = rg
+
+        rev_parts: list[tuple[float, float]] = []
+        if sales_signal_3y is not None:
+            capped = min(sales_signal_3y, 0.50)
+            rev_parts.append((self._clamp(50 + capped * 200), 0.50))
+        if rev_cagr_5y is not None:
+            capped = min(rev_cagr_5y, 0.50)
+            rev_parts.append((self._clamp(50 + capped * 200), 0.50))
+        if rev_parts:
+            rw = sum(w for _, w in rev_parts)
+            parts["revenue_cagr"] = self._clamp(sum(s * w / rw for s, w in rev_parts))
+
+        # Profit CAGR: blend 3Y and 5Y
+        profit_cagr_3y = row.get("_hist_profit_growth_3y_cagr")
+        profit_cagr_5y = row.get("_hist_5y_profit_cagr")
+
+        prof_parts: list[tuple[float, float]] = []
+        if profit_cagr_3y is not None and isinstance(profit_cagr_3y, (int, float)):
+            capped = min(profit_cagr_3y, 0.50)
+            prof_parts.append((self._clamp(50 + capped * 200), 0.50))
+        if profit_cagr_5y is not None:
+            capped = min(profit_cagr_5y, 0.50)
+            prof_parts.append((self._clamp(50 + capped * 200), 0.50))
+        if prof_parts:
+            pw = sum(w for _, w in prof_parts)
+            parts["profit_cagr"] = self._clamp(sum(s * w / pw for s, w in prof_parts))
+
+        # Consistency
+        sales_cons = row.get("_hist_sales_growth_consistency", 0)
+        profit_cons = row.get("_hist_profit_growth_consistency", 0)
+        if sales_cons > 0 or profit_cons > 0:
+            parts["consistency"] = self._clamp((sales_cons + profit_cons) / 10.0 * 100)
+
+        # 5Y compounding bonus
+        if rev_cagr_5y is not None and profit_cagr_5y is not None:
+            if rev_cagr_5y > 0.15 and profit_cagr_5y > 0.15:
+                parts["compounding_bonus"] = 85.0
+            elif rev_cagr_5y > 0.10 and profit_cagr_5y > 0.10:
+                parts["compounding_bonus"] = 70.0
+
+        if parts:
+            # Capital Goods: weight sales consistency higher
+            if sector == "Industrials":
+                w = {"revenue_cagr": 0.25, "profit_cagr": 0.25, "consistency": 0.35, "compounding_bonus": 0.15}
+            else:
+                w = {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.25, "compounding_bonus": 0.15}
+            tw = sum(w.get(k, 0.10) for k in parts)
+            score = sum(parts[k] * w.get(k, 0.10) for k in parts) / tw
+            return round(score, 2), parts
+
+        # Fallback: price-based growth at 0.5x
+        price_parts: list[tuple[float, float]] = []
+        if pct_3m is not None and all_pct_3m:
+            price_parts.append((self._percentile_rank(all_pct_3m, pct_3m), 0.20))
+        if pct_1y is not None and all_pct_1y:
+            price_parts.append((self._percentile_rank(all_pct_1y, pct_1y), 0.25))
+        if pct_3y is not None and all_pct_3y:
+            price_parts.append((self._percentile_rank(all_pct_3y, pct_3y), 0.25))
+        if pct_5y is not None and all_pct_5y:
+            price_parts.append((self._percentile_rank(all_pct_5y, pct_5y), 0.30))
+        if price_parts:
+            pgw = sum(w for _, w in price_parts)
+            raw = self._clamp(sum(s * w / pgw for s, w in price_parts))
+            score = self._clamp(50 + (raw - 50) * 0.50)
+            return round(score, 2), {"price_fallback": raw}
+
+        return None, {}
+
+    def _score_momentum_v2(
+        self,
+        short_term_momentum: float,
+        pos_52w: float | None,
+        pct_3m: float | None,
+        pct_1y: float | None,
+        pct_3y: float | None,
+        pct_5y: float | None,
+        all_pct_3m: list[float],
+        all_pct_1y: list[float],
+        all_pct_3y: list[float],
+        all_pct_5y: list[float],
+    ) -> float:
+        """Multi-period momentum with 5Y returns."""
+        multi_parts: list[tuple[float, float]] = []
+        if pct_3m is not None and all_pct_3m:
+            multi_parts.append((self._percentile_rank(all_pct_3m, pct_3m), 0.20))
+        if pct_1y is not None and all_pct_1y:
+            multi_parts.append((self._percentile_rank(all_pct_1y, pct_1y), 0.25))
+        if pct_3y is not None and all_pct_3y:
+            multi_parts.append((self._percentile_rank(all_pct_3y, pct_3y), 0.25))
+        if pct_5y is not None and all_pct_5y:
+            multi_parts.append((self._percentile_rank(all_pct_5y, pct_5y), 0.20))
+
+        if multi_parts:
+            mp_w = sum(w for _, w in multi_parts)
+            multi_score = self._clamp(sum(s * w / mp_w for s, w in multi_parts))
+            if pos_52w is not None:
+                return self._clamp(short_term_momentum * 0.10 + pos_52w * 0.20 + multi_score * 0.70)
+            return self._clamp(short_term_momentum * 0.15 + multi_score * 0.85)
+        elif pos_52w is not None:
+            return self._clamp(short_term_momentum * 0.60 + pos_52w * 0.40)
+        return short_term_momentum
+
+    def _score_risk(
+        self,
+        row: dict,
+        liquidity: float,
+        volatility_score: float | None,
+    ) -> tuple[float | None, dict]:
+        """Gate-based risk score: liquidity, volatility, pledging, free-float, EPS."""
+        parts: dict[str, float] = {}
+
+        # Liquidity gate
+        traded_val = row.get("traded_value")
+        if traded_val is not None:
+            if traded_val < 10_00_000:
+                parts["liquidity"] = 30.0
+            elif traded_val < 1_00_00_000:
+                parts["liquidity"] = 50.0
+            else:
+                parts["liquidity"] = min(liquidity, 100.0)
+        else:
+            parts["liquidity"] = min(liquidity, 80.0)
+
+        # Volatility (inverse = stability premium)
+        if volatility_score is not None:
+            parts["volatility"] = volatility_score
+
+        # Pledging risk
+        pledged = row.get("pledged_promoter_pct")
+        if pledged is not None:
+            if pledged > 40:
+                parts["pledging"] = 20.0
+            elif pledged > 20:
+                parts["pledging"] = 50.0
+            else:
+                parts["pledging"] = 80.0
+
+        # Free-float
+        public = row.get("public_holding")
+        if public is not None:
+            if public < 15:
+                parts["free_float"] = 40.0
+            elif public < 25:
+                parts["free_float"] = 60.0
+            else:
+                parts["free_float"] = 80.0
+
+        # Negative EPS
+        eps = row.get("eps")
+        if eps is not None:
+            parts["eps_sign"] = 80.0 if eps > 0 else 30.0
+
+        if not parts:
+            return None, {}
+
+        weights = {
+            "liquidity": 0.25, "volatility": 0.25, "pledging": 0.20,
+            "free_float": 0.15, "eps_sign": 0.15,
+        }
+        total_w = sum(weights.get(k, 0.10) for k in parts)
+        score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
+        return round(score, 2), parts
+
+    def _apply_quality_gates(self, row: dict) -> float | None:
+        """Hard score caps for structural red flags. Returns max cap or None."""
+        caps: list[float] = []
+
+        # Negative FCF for 3+ consecutive years
+        fcf_streak = row.get("_hist_negative_fcf_streak", 0)
+        if fcf_streak >= 3:
+            caps.append(40.0)
+
+        # ROE < 5% for 3+ years
+        roe_streak = row.get("_hist_low_roe_streak", 0)
+        if roe_streak >= 3:
+            caps.append(45.0)
+
+        # Extreme pledging
+        pledged = row.get("pledged_promoter_pct")
+        if pledged is not None and pledged > 40:
+            caps.append(30.0)
+
+        # Negative EPS + negative OCF
+        eps = row.get("eps")
+        ocf = row.get("cash_from_operations") or row.get("operating_cash_flow")
+        if eps is not None and eps < 0 and ocf is not None and ocf < 0:
+            caps.append(35.0)
+
+        return min(caps) if caps else None
+
+    def _classify_lynch(self, row: dict, sector: str) -> str:
+        """Peter Lynch stock classification."""
+        mcap = row.get("market_cap") or 0
+        rev_cagr = row.get("_hist_5y_revenue_cagr") or row.get("_hist_profit_growth_3y_cagr")
+        profit_cagr = row.get("_hist_5y_profit_cagr") or row.get("_hist_profit_growth_3y_cagr")
+        opm_std = row.get("_hist_opm_std_5y")
+        pb = row.get("price_to_book")
+        net_profit_cons = row.get("_hist_profit_growth_consistency", 0)
+
+        # Turnaround: was unprofitable, now profitable
+        np_latest = row.get("_net_profit_latest")
+        profit_cagr_3y = row.get("_hist_profit_growth_3y_cagr")
+        eps = row.get("eps")
+        if profit_cagr_3y is not None and profit_cagr_3y > 0.3 and net_profit_cons <= 2:
+            if eps is not None and eps > 0:
+                return "turnaround"
+
+        # Asset play: P/B < 0.7 or net cash heavy
+        cash = row.get("total_cash")
+        debt = row.get("total_debt")
+        if pb is not None and pb < 0.7:
+            return "asset_play"
+        if cash and debt and mcap and mcap > 0:
+            net_cash_pct = ((cash - debt) / (mcap * 1e7)) * 100
+            if net_cash_pct > 30:
+                return "asset_play"
+
+        # Fast grower
+        if rev_cagr is not None and profit_cagr is not None:
+            if rev_cagr > 0.15 and profit_cagr > 0.15:
+                return "fast_grower"
+
+        # Cyclical
+        if sector in _CYCLICAL_SECTORS and opm_std is not None and opm_std > 5:
+            return "cyclical"
+
+        # Slow grower
+        if rev_cagr is not None and rev_cagr < 0.05 and mcap >= 20000:
+            return "slow_grower"
+
+        # Stalwart (default)
+        return "stalwart"
+
+    @staticmethod
+    def _detect_market_regime() -> str:
+        """Simple regime detection: check if we can determine bear/bull.
+
+        Falls back to 'bull' since we don't have real-time Nifty 200-DMA
+        in the scoring context. The regime can be injected via settings later.
+        """
+        # TODO: Query market_prices for Nifty 50 200-DMA comparison
+        # For now, default to bull market
+        return "bull"
+
     @staticmethod
     def _generate_tags(
         row: dict,
         *,
-        sector_pe_median: float,
-        has_volatility: bool,
-        volatility_score: float,
-        has_growth: bool,
-        growth_score: float,
-        fundamentals_score: float,
-        liquidity_score: float,
-        pct_raw: float,
-        source_status: str,
+        quality_score: float,
+        valuation_score: float | None,
+        growth_score: float | None,
+        momentum_score: float,
+        institutional_score: float | None,
+        risk_score: float | None,
+        lynch_classification: str,
+        market_regime: str,
+        sector: str,
+        pct_change_5y: float | None,
+        peg_ratio: float | None,
         paper_profits: bool = False,
+        sector_pe_median: float = 25.0,
     ) -> list[str]:
-        """Generate descriptive auto-tags (max 5)."""
-        candidates: list[tuple[str, int]] = []  # (tag, priority) — lower priority = more important
-        market_cap = row.get("market_cap")
+        """Generate prioritized tags for the 6-layer model."""
+        # (priority, tag_name)
+        tagged: list[tuple[int, str]] = []
+
+        mcap = row.get("market_cap")
+        pe = row.get("pe_ratio")
         roe = row.get("roe")
         roce = row.get("roce")
         dte = row.get("debt_to_equity")
         eps = row.get("eps")
-        pe = row.get("pe_ratio")
-        dividend_yield = row.get("dividend_yield")
-        pct_3m = row.get("_pct_change_3m")
-        revenue_growth = row.get("revenue_growth")
-        earnings_growth = row.get("earnings_growth")
-        fcf = row.get("free_cash_flow")
-        total_cash = row.get("total_cash")
-        total_debt = row.get("total_debt")
-        analyst_count = row.get("analyst_count")
-        rec_mean = row.get("analyst_recommendation_mean")
-        analyst_target = row.get("analyst_target_mean")
-        last_price = row.get("last_price")
+        dy = row.get("dividend_yield")
         promoter = row.get("promoter_holding")
         fii = row.get("fii_holding")
         dii = row.get("dii_holding")
-        promoter_chg = row.get("promoter_holding_change")
+        public = row.get("public_holding")
+        pledged = row.get("pledged_promoter_pct")
         fii_chg = row.get("fii_holding_change")
         dii_chg = row.get("dii_holding_change")
-        fifty_dma = row.get("fifty_day_avg")
-        two_hundred_dma = row.get("two_hundred_day_avg")
-
-        # --- Market Cap tags (always first) ---
-        if market_cap is not None and market_cap > 0:
-            if market_cap >= 20_000:
-                candidates.append(("Large Cap", 1))
-            elif market_cap >= 5_000:
-                candidates.append(("Mid Cap", 1))
-            else:
-                candidates.append(("Small Cap", 1))
-
-        # --- Quality tags ---
-        if (roe is not None and roe >= 20
-                and roce is not None and roce >= 20
-                and (dte is None or dte <= 0.5)):
-            candidates.append(("High Quality", 2))
-        elif dte is not None and dte == 0 and eps is not None and eps > 0:
-            candidates.append(("Debt Free", 3))
-
-        # --- Paper profits warning (OCF < 0 but EPS > 0) ---
-        if paper_profits:
-            candidates.append(("Paper Profits", 2))
-
-        # --- Pledged shares risk ---
-        pledged = row.get("pledged_promoter_pct")
-        if pledged is not None and pledged > 20:
-            candidates.append(("High Pledge Risk", 2))
-
-        # --- Financial Health tags ---
-        if fcf is not None and market_cap and market_cap > 0:
-            fcf_yield = (fcf / (market_cap * 1e7)) * 100
-            if fcf_yield > 5:
-                candidates.append(("FCF Machine", 3))
-        if total_cash is not None and total_debt is not None and market_cap and market_cap > 0:
-            net_cash = total_cash - total_debt
-            if net_cash > 0 and net_cash > (market_cap * 1e7 * 0.10):
-                candidates.append(("Cash Rich", 3))
-
-        # --- Value / Growth ---
-        if (pe is not None and pe > 0 and pe < sector_pe_median * 0.7
-                and roe is not None and roe >= 12):
-            candidates.append(("Value Pick", 3))
-
-        # Growth: fundamental or price-based
-        if revenue_growth is not None and revenue_growth >= 0.15:
-            candidates.append(("Growth Stock", 3))
-        elif earnings_growth is not None and earnings_growth >= 0.20:
-            candidates.append(("Growth Stock", 3))
-        elif (pct_3m is not None and pct_3m >= 15
-              and has_growth and growth_score >= 70):
-            candidates.append(("Growth Stock", 4))
-
-        # --- Dividend tag ---
-        if dividend_yield is not None and dividend_yield >= 2.0:
-            candidates.append(("High Dividend", 4))
-
-        # --- Analyst tags ---
-        if rec_mean is not None and rec_mean <= 1.5 and analyst_count is not None and analyst_count >= 10:
-            candidates.append(("Analyst Strong Buy", 3))
-        elif (analyst_target and last_price and last_price > 0
-              and ((analyst_target - last_price) / last_price) > 0.25
-              and analyst_count is not None and analyst_count >= 5):
-            candidates.append(("Analyst Undervalued", 4))
-
-        # --- Low free-float warning ---
-        public = row.get("public_holding")
-        if public is not None and public < 25:
-            candidates.append(("Low Free Float", 5))
-
-        # --- Ownership tags ---
-        if promoter is not None and promoter >= 55:
-            candidates.append(("High Promoter", 5))
-        if fii is not None and fii >= 20:
-            candidates.append(("FII Favorite", 5))
-        if dii is not None and dii >= 25:
-            candidates.append(("DII Backed", 5))
-        if promoter_chg is not None and promoter_chg >= 0.5:
-            candidates.append(("Promoter Buying", 4))
-        if fii_chg is not None and fii_chg >= 1.0:
-            candidates.append(("FII Buying", 4))
-        if dii_chg is not None and dii_chg >= 1.0:
-            candidates.append(("DII Buying", 4))
-
-        # --- Historical JSONB-derived tags ---
-        sales_cons = row.get("_hist_sales_growth_consistency", 0)
-        profit_cons = row.get("_hist_profit_growth_consistency", 0)
-        if sales_cons >= 4 and profit_cons >= 4:
-            candidates.append(("Consistent Compounder", 2))
-
-        debt_traj = row.get("_hist_debt_trajectory")
-        if debt_traj is not None and debt_traj < -0.15:
-            candidates.append(("Deleveraging", 4))
-
-        ocf_years = row.get("_hist_ocf_positive_years", 0)
-        if ocf_years >= 4:
-            candidates.append(("Strong Cash Flow", 4))
-
+        prom_chg = row.get("promoter_holding_change")
+        rg = row.get("revenue_growth")
+        eg = row.get("earnings_growth")
         opm_trend = row.get("_hist_opm_trend_3y")
+        debt_traj = row.get("_hist_debt_trajectory")
+        ocf_years = row.get("_hist_ocf_positive_years")
+        profit_cons = row.get("_hist_profit_growth_consistency", 0)
+        sales_cons = row.get("_hist_sales_growth_consistency", 0)
+        cwip_to_assets = row.get("_hist_cwip_to_assets")
+        opm_std = row.get("_hist_opm_std_5y")
+        inc_roe = row.get("_hist_incremental_roe")
+        rev_cagr_5y = row.get("_hist_5y_revenue_cagr")
+        prof_cagr_5y = row.get("_hist_5y_profit_cagr")
+        fcf = row.get("free_cash_flow")
+        total_cash = row.get("total_cash")
+        total_debt = row.get("total_debt")
+        rec_mean = row.get("analyst_recommendation_mean")
+        analyst_count = row.get("analyst_count")
+        target = row.get("analyst_target_mean")
+        price = row.get("last_price")
+        ma_50 = row.get("fifty_day_avg")
+        ma_200 = row.get("two_hundred_day_avg")
+        beta_val = row.get("beta")
+
+        # Priority 1: Market Cap
+        if mcap is not None:
+            if mcap >= 20000:
+                tagged.append((1, "Large Cap"))
+            elif mcap >= 5000:
+                tagged.append((1, "Mid Cap"))
+            else:
+                tagged.append((1, "Small Cap"))
+
+        # Priority 2: Lynch classification
+        lynch_tag_map = {
+            "turnaround": "Turnaround Story",
+            "fast_grower": "Fast Grower",
+            "stalwart": "Stalwart",
+            "cyclical": "Cyclical Play",
+            "asset_play": "Asset Play",
+            "slow_grower": "Slow Grower",
+        }
+        if lynch_classification in lynch_tag_map:
+            tagged.append((2, lynch_tag_map[lynch_classification]))
+
+        # Priority 2: Quality
+        if quality_score >= 75:
+            tagged.append((2, "High Quality"))
+        if paper_profits:
+            tagged.append((2, "Paper Profits"))
+        if pledged is not None and pledged > 20:
+            tagged.append((2, "High Pledge Risk"))
+        if sales_cons >= 4 and profit_cons >= 4:
+            tagged.append((2, "Consistent Compounder"))
+
+        # Priority 3: Compounding
+        if rev_cagr_5y is not None and rev_cagr_5y > 0.15 and prof_cagr_5y is not None and prof_cagr_5y > 0.15:
+            tagged.append((3, "Decade Compounder"))
+        elif (rev_cagr_5y is not None and rev_cagr_5y > 0.15) or (prof_cagr_5y is not None and prof_cagr_5y > 0.15):
+            tagged.append((3, "5Y Wealth Creator"))
+
+        # Priority 3: Quality signals
+        if dte is not None and dte == 0 and eps is not None and eps > 0:
+            tagged.append((3, "Debt Free"))
+        if fcf is not None and mcap and mcap > 0:
+            fcf_yield = (fcf / (mcap * 1e7)) * 100
+            if fcf_yield > 5:
+                tagged.append((3, "FCF Machine"))
+        if total_cash is not None and total_debt is not None and mcap and mcap > 0:
+            net_cash_pct = ((total_cash - total_debt) / (mcap * 1e7)) * 100
+            if net_cash_pct > 10:
+                tagged.append((3, "Cash Rich"))
+
+        # Priority 3: Valuation
+        if peg_ratio is not None and peg_ratio < 0.8 and quality_score > 50:
+            tagged.append((3, "PEG Bargain"))
+        if pe is not None and pe > 0 and pe < sector_pe_median * 0.7 and quality_score > 55:
+            tagged.append((3, "Value Pick"))
+        if rec_mean is not None and rec_mean <= 1.5 and analyst_count is not None and analyst_count >= 10:
+            tagged.append((3, "Analyst Strong Buy"))
+        if inc_roe is not None and inc_roe > 20:
+            tagged.append((3, "Capital Allocator"))
+
+        # Priority 4: Growth & Valuation
+        if peg_ratio is not None and 0.8 <= peg_ratio <= 1.2 and growth_score is not None and growth_score > 60:
+            tagged.append((4, "Growth at Fair Price"))
+        if peg_ratio is not None and peg_ratio > 2.5:
+            tagged.append((4, "Richly Valued"))
+        elif pe is not None and pe > sector_pe_median * 1.8:
+            tagged.append((4, "Richly Valued"))
+        if rg is not None and rg >= 0.15:
+            tagged.append((4, "Growth Stock"))
+        elif eg is not None and eg >= 0.20:
+            tagged.append((4, "Growth Stock"))
+        if dy is not None and dy >= 2.0:
+            tagged.append((4, "High Dividend"))
+        if target and price and price > 0 and analyst_count and analyst_count >= 5:
+            upside = ((target - price) / price) * 100
+            if upside >= 25:
+                tagged.append((4, "Analyst Undervalued"))
+
+        # Priority 4: Quality trends
         if opm_trend is not None and opm_trend >= 3:
-            candidates.append(("Margin Expansion", 4))
+            tagged.append((4, "Margin Expansion"))
+        if debt_traj is not None and debt_traj < -0.15:
+            tagged.append((4, "Deleveraging"))
+        if ocf_years is not None and ocf_years >= 4:
+            tagged.append((4, "Strong Cash Flow"))
 
-        # Turnaround: negative profit 3yr ago, positive now
-        if profit_cons is not None and profit_cons >= 2:
-            pl_data = row.get("pl_annual")
-            if pl_data and isinstance(pl_data, dict) and "net_profit" in pl_data:
-                nps = [v for v in pl_data["net_profit"] if v is not None]
-                if len(nps) >= 4 and nps[-4] < 0 and nps[-1] > 0:
-                    candidates.append(("Turnaround", 3))
+        # Priority 4: Divergence
+        if momentum_score >= 65 and quality_score < 40:
+            tagged.append((4, "Momentum Without Quality"))
+        if quality_score >= 65 and momentum_score < 35:
+            tagged.append((4, "Quality Weak Momentum"))
 
-        # --- Technical trend tags (50/200 DMA) ---
-        if fifty_dma and two_hundred_dma and last_price:
-            if fifty_dma > two_hundred_dma and last_price > fifty_dma:
-                candidates.append(("Bullish Trend", 5))
-            elif fifty_dma < two_hundred_dma and last_price < fifty_dma:
-                candidates.append(("Bearish Trend", 5))
+        # Priority 4: Sector-specific
+        if sector == "Financials" and opm_trend is not None and opm_trend > 0:
+            tagged.append((4, "NIM Expander"))
+        if sector == "Healthcare" and cwip_to_assets is not None and cwip_to_assets > 0.10:
+            tagged.append((4, "R&D Intensive"))
+        if sector in ("Industrials", "Auto") and cwip_to_assets is not None and cwip_to_assets > 0.15:
+            tagged.append((4, "Capacity Expansion"))
+        if sector == "FMCG" and opm_std is not None and opm_std < 2:
+            tagged.append((4, "Margin Fortress"))
 
-        # --- Valuation warning ---
-        if (pe is not None and pe > 0 and pe > sector_pe_median * 1.8
-                and fundamentals_score < 60):
-            candidates.append(("Richly Valued", 3))
+        # Priority 5: Regime
+        if market_regime == "bear":
+            if quality_score > 75 and risk_score is not None and risk_score > 70:
+                tagged.append((5, "Defensive Pick"))
+            if beta_val is not None and beta_val < 0.7 and quality_score > 70:
+                tagged.append((5, "Bear Market Resilient"))
 
-        # --- Momentum / Quality divergence ---
-        if has_growth and growth_score >= 65 and fundamentals_score < 40:
-            candidates.append(("Momentum Without Fundamentals", 4))
-        elif fundamentals_score >= 65 and has_growth and growth_score < 35:
-            candidates.append(("Quality Weak Momentum", 4))
+        # Priority 5: Ownership
+        if promoter is not None and promoter >= 55:
+            tagged.append((5, "High Promoter"))
+        if fii is not None and fii >= 20:
+            tagged.append((5, "FII Favorite"))
+        if dii is not None and dii >= 25:
+            tagged.append((5, "DII Backed"))
+        if prom_chg is not None and prom_chg > 0.5:
+            tagged.append((5, "Promoter Buying"))
+        if fii_chg is not None and fii_chg > 0.5:
+            tagged.append((5, "FII Buying"))
+        if dii_chg is not None and dii_chg > 0.5:
+            tagged.append((5, "DII Buying"))
 
-        # --- Return divergence (high score but poor returns) ---
-        pct_1y = row.get("percent_change_1y")
-        pct_3y = row.get("percent_change_3y")
-        if (pct_3y is not None and pct_3y < 15
-                and fundamentals_score >= 60 and pct_raw >= 65):
-            candidates.append(("Return Divergence", 4))
-        elif (pct_1y is not None and pct_1y < -10
-              and fundamentals_score >= 55):
-            candidates.append(("Return Divergence", 4))
+        # Priority 5: Technicals
+        if ma_50 and ma_200 and price:
+            if ma_50 > ma_200 and price > ma_50:
+                tagged.append((5, "Bullish Trend"))
+            elif ma_50 < ma_200 and price < ma_50:
+                tagged.append((5, "Bearish Trend"))
 
-        # --- Low Volatility ---
-        if has_volatility and volatility_score >= 75:
-            candidates.append(("Low Volatility", 6))
+        if public is not None and public < 25:
+            tagged.append((5, "Low Free Float"))
 
-        # --- Negative EPS warning ---
+        # Priority 6
         if eps is not None and eps < 0:
-            candidates.append(("Negative EPS", 6))
+            tagged.append((6, "Negative EPS"))
 
-        # Sort by priority, keep all unique tags
-        candidates.sort(key=lambda x: x[1])
-        tags = []
-        seen_tags: set[str] = set()
-        for tag, _ in candidates:
-            if tag not in seen_tags:
-                tags.append(tag)
-                seen_tags.add(tag)
-        return tags
+        # Sort by priority, deduplicate, limit to 15
+        seen: set[str] = set()
+        result: list[str] = []
+        for _, tag in sorted(tagged, key=lambda x: x[0]):
+            if tag not in seen:
+                seen.add(tag)
+                result.append(tag)
+            if len(result) >= 15:
+                break
+        return result
 
     @staticmethod
     def _generate_why_narrative(
         score: float,
         row: dict,
         *,
-        momentum: float,
-        fundamentals: float,
+        quality_score: float,
+        valuation_score: float | None,
         growth_score: float | None,
-        volatility_score: float | None,
-        valuation_score: float | None = None,
-        earnings_quality_score: float | None = None,
-        smart_money_score: float | None = None,
+        momentum_score: float,
+        institutional_score: float | None,
+        risk_score: float | None,
+        lynch_classification: str,
+        sector: str,
+        sector_percentile: float | None,
+        peg_ratio: float | None,
+        pct_change_5y: float | None,
+        market_regime: str,
         paper_profits: bool = False,
     ) -> str:
-        """Generate a 1-2 sentence human-readable score explanation."""
-        tier = (
-            "Strong" if score >= 75 else
-            "Good" if score >= 50 else
-            "Average" if score >= 25 else
-            "Weak"
-        )
-        strengths: list[str] = []
-        concerns: list[str] = []
+        """Generate rich, insightful 2-3 sentence narrative."""
+        # Lynch type opener
+        lynch_labels = {
+            "fast_grower": "A fast-growing",
+            "stalwart": "A steady",
+            "slow_grower": "A mature",
+            "cyclical": "A cyclical",
+            "turnaround": "A turnaround",
+            "asset_play": "An asset-rich",
+        }
+        opener = lynch_labels.get(lynch_classification, "A")
+        sector_label = sector if sector != "Other" else "company"
 
+        strengths: list[str] = []
+        risks: list[str] = []
+
+        # Key metrics
         roe = row.get("roe")
         roce = row.get("roce")
-        dte = row.get("debt_to_equity")
-        pe = row.get("pe_ratio")
-        eps = row.get("eps")
-        price = row.get("last_price")
-        high_52w = row.get("high_52w")
-        rg = row.get("revenue_growth")
-        promoter = row.get("promoter_holding")
-        cfo = row.get("cash_from_operations")
+        rev_cagr_5y = row.get("_hist_5y_revenue_cagr")
+        prof_cagr_5y = row.get("_hist_5y_profit_cagr")
+        opm_std = row.get("_hist_opm_std_5y")
         opm_chg = row.get("opm_change")
-        fii_chg = row.get("fii_holding_change")
+        dte = row.get("debt_to_equity")
+        fii_dir = row.get("_hist_fii_trend_direction")
+        pledged = row.get("pledged_promoter_pct")
+        eps = row.get("eps")
+        rg = row.get("revenue_growth")
+        cfo = row.get("cash_from_operations")
 
         # Strengths
-        if roe is not None and roe >= 15:
-            strengths.append(f"strong ROE of {roe:.0f}%")
-        if roce is not None and roce >= 18:
-            strengths.append(f"high ROCE of {roce:.0f}%")
-        if dte is not None and dte <= 0.3:
-            strengths.append("low debt" if dte > 0 else "debt-free")
-        elif dte is not None and dte == 0:
+        if prof_cagr_5y is not None and prof_cagr_5y > 0.15:
+            strengths.append(f"5Y profit CAGR of {prof_cagr_5y*100:.0f}%")
+        elif roe is not None and roe >= 18:
+            strengths.append(f"ROE of {roe:.0f}%")
+        if opm_std is not None and opm_std < 3:
+            strengths.append("stable margins")
+        elif roce is not None and roce >= 20:
+            strengths.append(f"ROCE of {roce:.0f}%")
+        if dte is not None and dte == 0:
             strengths.append("debt-free")
+        elif dte is not None and dte <= 0.3 and dte > 0:
+            strengths.append("low debt")
         if rg is not None and rg >= 0.15:
             strengths.append(f"revenue growing {rg*100:.0f}%")
-        if momentum >= 70:
-            strengths.append("strong price momentum")
-        if promoter is not None and promoter >= 55:
-            strengths.append("high promoter stake")
-        if volatility_score is not None and volatility_score >= 75:
-            strengths.append("low volatility")
-        if valuation_score is not None and valuation_score >= 70:
-            strengths.append("attractively valued")
-        if earnings_quality_score is not None and earnings_quality_score >= 70:
-            strengths.append("high earnings quality")
-        if cfo is not None and cfo > 0 and opm_chg is not None and opm_chg > 2:
-            strengths.append("expanding margins with strong cash flow")
-        if smart_money_score is not None and smart_money_score >= 70:
-            strengths.append("institutional accumulation")
-        if fii_chg is not None and fii_chg >= 2.0:
-            strengths.append("FII buying")
 
-        # Concerns
+        # Valuation context
+        val_text = ""
+        if peg_ratio is not None:
+            if peg_ratio < 1.0:
+                val_text = f"PEG {peg_ratio:.1f} — undervalued for its growth"
+            elif peg_ratio <= 1.5:
+                val_text = f"PEG {peg_ratio:.1f} — fairly valued"
+            elif peg_ratio <= 2.5:
+                val_text = f"PEG {peg_ratio:.1f} — growth priced in"
+            else:
+                val_text = f"PEG {peg_ratio:.1f} — premium valuation"
+
+        # Smart money
+        smart_text = ""
+        if fii_dir == "increasing":
+            smart_text = "FII accumulating"
+        elif fii_dir == "decreasing":
+            smart_text = "FII reducing exposure"
+
+        # Risks
         if paper_profits:
-            concerns.append("negative cash flow despite positive earnings")
-        if pe is not None and pe > 50:
-            concerns.append(f"expensive at PE {pe:.0f}x")
-        if valuation_score is not None and valuation_score < 30:
-            concerns.append("expensive relative to sector peers")
-        if price and high_52w and high_52w > 0 and price > high_52w * 0.95:
-            concerns.append("trading near 52-week high")
-        if dte is not None and dte > 2.0:
-            concerns.append(f"high debt (D/E {dte:.1f})")
-        if rg is not None and rg < -0.05:
-            concerns.append("declining revenue")
-        if eps is not None and eps < 0:
-            concerns.append("loss-making")
-        if opm_chg is not None and opm_chg < -3:
-            concerns.append("margins contracting")
-        if earnings_quality_score is not None and earnings_quality_score < 30:
-            concerns.append("weak earnings quality")
-        if smart_money_score is not None and smart_money_score < 30:
-            concerns.append("institutional selling")
-
-        pledged = row.get("pledged_promoter_pct")
+            risks.append("negative cash flow despite reported profits")
         if pledged is not None and pledged > 20:
-            concerns.append(f"{pledged:.0f}% shares pledged")
+            risks.append(f"{pledged:.0f}% promoter shares pledged")
+        if opm_chg is not None and opm_chg < -3:
+            risks.append(f"margins contracting (OPM {opm_chg:+.1f}% YoY)")
+        if eps is not None and eps < 0:
+            risks.append("loss-making")
+        if dte is not None and dte > 2.0:
+            risks.append(f"high leverage (D/E {dte:.1f})")
 
         # Build narrative
-        strength_text = ", ".join(strengths[:2]) if strengths else "balanced metrics"
-        parts = [f"Scored {score:.0f} ({tier}): {strength_text.capitalize()}"]
-        if concerns:
-            parts.append(f"but {concerns[0]}")
-        return ", ".join(parts) + "."
+        strength_str = " with " + " and ".join(strengths[:2]) if strengths else ""
+        parts = [f"{opener} {sector_label} play{strength_str}."]
+
+        if val_text:
+            parts.append(f"{val_text}.")
+        if smart_text:
+            parts.append(f"{smart_text}.")
+        if risks:
+            parts.append(f"Key risk: {risks[0]}.")
+
+        # Sector percentile context
+        if sector_percentile is not None:
+            if sector_percentile >= 80:
+                parts.append(f"Top {100-sector_percentile:.0f}% in {sector}.")
+            elif sector_percentile <= 20:
+                parts.append(f"Bottom {sector_percentile:.0f}% in {sector}.")
+
+        # Cap at 3 sentences total
+        narrative = " ".join(parts[:4])
+        return narrative
 
     def _compute_scores(
         self,
@@ -2105,6 +2570,9 @@ class DiscoverStockScraper(BaseScraper):
             return []
 
         vol_data = volatility_data or {}
+
+        # ── Market regime detection ──
+        market_regime = self._detect_market_regime()
 
         # ── Sanitize numeric fields (Screener.in can return strings) ──
         _NUMERIC_FIELDS = {
@@ -2154,8 +2622,7 @@ class DiscoverStockScraper(BaseScraper):
                     if book_value > 0:
                         r["price_to_book"] = round(price / book_value, 2)
                         _derived_pb += 1
-            # ROCE ≈ ROE × (1 + D/E) — standard approximation
-            # When D/E is unavailable, ROCE ≈ ROE (assumes no debt)
+            # ROCE approximation
             if r.get("roce") is None:
                 roe = r.get("roe")
                 if roe is not None:
@@ -2163,9 +2630,9 @@ class DiscoverStockScraper(BaseScraper):
                     if dte is not None and dte >= 0:
                         r["roce"] = round(roe * (1 + dte), 2)
                     else:
-                        r["roce"] = round(roe, 2)  # no-debt fallback
+                        r["roce"] = round(roe, 2)
                     _derived_roce += 1
-            # Default FII/DII to 0 when promoter data exists (no FII ≠ unknown)
+            # Default FII/DII to 0 when promoter data exists
             if r.get("promoter_holding") is not None:
                 if r.get("fii_holding") is None:
                     r["fii_holding"] = 0.0
@@ -2223,7 +2690,7 @@ class DiscoverStockScraper(BaseScraper):
                 "de": statistics.median(de_vals) if len(de_vals) >= 3 else overall_de_med,
             }
 
-        # ── Pre-compute INDUSTRY-level medians (hierarchical: industry → sector → universe) ──
+        # ── Pre-compute INDUSTRY-level medians ──
         industry_pe: dict[str, list[float]] = {}
         industry_pb: dict[str, list[float]] = {}
         for r in rows:
@@ -2258,11 +2725,9 @@ class DiscoverStockScraper(BaseScraper):
         for r in rows:
             if r.get("forward_pe") is None:
                 pe = _safe_float(r.get("pe_ratio"))
-                # Prefer Screener profit_growth_yoy over Yahoo earnings_growth
                 pg = _safe_float(r.get("profit_growth_yoy")) or _safe_float(r.get("earnings_growth"))
                 if pe is not None and pe > 0 and pg is not None:
-                    # Cap growth assumption to avoid extreme forward PEs
-                    capped_pg = max(pg, -0.50)  # don't assume >50% decline
+                    capped_pg = max(pg, -0.50)
                     denom = 1 + capped_pg
                     if denom > 0.2:
                         r["synthetic_forward_pe"] = round(pe / denom, 2)
@@ -2354,13 +2819,15 @@ class DiscoverStockScraper(BaseScraper):
             if vd and vd.get("std_dev") is not None:
                 all_std_devs.append(vd["std_dev"])
 
-        # ── Pre-compute multi-period growth data ──
+        # ── Pre-compute multi-period growth data (including 5Y) ──
         all_pct_3m: list[float] = []
         all_pct_1y: list[float] = []
         all_pct_3y: list[float] = []
+        all_pct_5y: list[float] = []
         pct_3m_by_sym: dict[str, float] = {}
         pct_1y_by_sym: dict[str, float] = {}
         pct_3y_by_sym: dict[str, float] = {}
+        pct_5y_by_sym: dict[str, float] = {}
         for r in rows:
             sym = str(r.get("symbol") or "")
             vd = vol_data.get(sym)
@@ -2378,19 +2845,12 @@ class DiscoverStockScraper(BaseScraper):
             if p3y is not None:
                 pct_3y_by_sym[sym] = p3y
                 all_pct_3y.append(p3y)
+            p5y = vd.get("pct_change_5y")
+            if p5y is not None:
+                pct_5y_by_sym[sym] = p5y
+                all_pct_5y.append(p5y)
 
-        # ── Pre-compute revenue/earnings growth percentile data ──
-        all_rev_growth: list[float] = []
-        all_earn_growth: list[float] = []
-        for r in rows:
-            rg = r.get("revenue_growth")
-            if rg is not None:
-                all_rev_growth.append(rg)
-            eg = r.get("earnings_growth")
-            if eg is not None:
-                all_earn_growth.append(eg)
-
-        # Track sector scores for sector_leader tag
+        # Track sector scores for sector_leader tag and sector percentile
         sector_best: dict[str, list[tuple[float, str]]] = {}
 
         out: list[dict] = []
@@ -2408,7 +2868,7 @@ class DiscoverStockScraper(BaseScraper):
             tv_log = math.log1p(max(0.0, float(row.get("traded_value") or 0.0)))
             vol_log = math.log1p(max(0.0, float(row.get("volume") or 0.0)))
 
-            # ── Momentum: blend short-term price + 52W + multi-period returns ──
+            # ── Short-term momentum (5d/20d/daily) ──
             daily_momentum = self._clamp(self._percentile_rank(all_pcts, pct))
             has_m5 = symbol in momentum_5d_by_sym and all_momentum_5d
             has_m20 = symbol in momentum_20d_by_sym and all_momentum_20d
@@ -2422,34 +2882,19 @@ class DiscoverStockScraper(BaseScraper):
             else:
                 short_term_momentum = daily_momentum
 
-            # Multi-period return percentiles (3M/1Y/3Y) — moved here from growth
-            has_3m = symbol in pct_3m_by_sym and all_pct_3m
-            has_1y = symbol in pct_1y_by_sym and all_pct_1y
-            has_3y = symbol in pct_3y_by_sym and all_pct_3y
-            multi_period_parts: list[tuple[float, float]] = []
-            if has_3m:
-                multi_period_parts.append((self._percentile_rank(all_pct_3m, pct_3m_by_sym[symbol]), 0.30))
-            if has_1y:
-                multi_period_parts.append((self._percentile_rank(all_pct_1y, pct_1y_by_sym[symbol]), 0.35))
-            if has_3y:
-                multi_period_parts.append((self._percentile_rank(all_pct_3y, pct_3y_by_sym[symbol]), 0.35))
+            # ── Per-stock return data ──
+            pct_change_3m = pct_3m_by_sym.get(symbol)
+            pct_change_1y = pct_1y_by_sym.get(symbol)
+            pct_change_3y = pct_3y_by_sym.get(symbol)
+            pct_change_5y = pct_5y_by_sym.get(symbol)
 
-            # Blend: short-term 0.30 + 52w 0.20 + multi-period 0.50
-            if multi_period_parts:
-                mp_w = sum(w for _, w in multi_period_parts)
-                multi_period_score = self._clamp(sum(s * (w / mp_w) for s, w in multi_period_parts))
-                if symbol in pos_52w_by_sym:
-                    momentum = self._clamp(
-                        short_term_momentum * 0.30
-                        + pos_52w_by_sym[symbol] * 0.20
-                        + multi_period_score * 0.50
-                    )
-                else:
-                    momentum = self._clamp(short_term_momentum * 0.40 + multi_period_score * 0.60)
-            elif symbol in pos_52w_by_sym:
-                momentum = self._clamp(short_term_momentum * 0.60 + pos_52w_by_sym[symbol] * 0.40)
-            else:
-                momentum = short_term_momentum
+            # ── Momentum v2 (multi-period with 5Y) ──
+            momentum = self._score_momentum_v2(
+                short_term_momentum,
+                pos_52w_by_sym.get(symbol),
+                pct_change_3m, pct_change_1y, pct_change_3y, pct_change_5y,
+                all_pct_3m, all_pct_1y, all_pct_3y, all_pct_5y,
+            )
 
             # ── Liquidity ──
             has_v5 = symbol in avg_vol_5d_by_sym and all_avg_vol_5d
@@ -2466,338 +2911,86 @@ class DiscoverStockScraper(BaseScraper):
                 vol_percentile = self._percentile_rank(all_vol_logs, vol_log)
                 liquidity = self._clamp((tv_percentile * 0.60) + (vol_percentile * 0.40))
 
-            # ── Fundamentals ──
-            fundamentals, metrics_used = self._score_fundamentals(row, sector_medians)
+            # ── Quality (merged fundamentals + financial health + earnings quality) ──
+            quality_score, metrics_used = self._score_quality(row, sector, sector_medians)
             if metrics_used > 0:
                 coverage = metrics_used / 5.0
-                fundamentals = self._clamp(
-                    self._shrink_to_neutral(fundamentals, coverage),
+                quality_score = self._clamp(
+                    self._shrink_to_neutral(quality_score, coverage),
                 )
 
             # ── OCF earnings quality gate ──
-            # Use Screener cash_from_operations (2200 coverage) with Yahoo OCF as fallback
             paper_profits = False
             _ocf = row.get("cash_from_operations") or row.get("operating_cash_flow")
             _eps_val = row.get("eps")
             if _ocf is not None and _eps_val is not None and _eps_val > 0 and _ocf < 0:
-                fundamentals = min(fundamentals, 45.0)
+                quality_score = min(quality_score, 45.0)
                 paper_profits = True
 
-            # ── Volatility (lower std_dev → higher score = stability premium) ──
+            # ── Volatility (lower std_dev -> higher score = stability premium) ──
             vd = vol_data.get(symbol)
-            has_volatility = False
             volatility_score: float | None = None
-            pct_change_3m = None
-            pct_change_1y = None
-            pct_change_3y = None
             if vd:
-                pct_change_3m = vd.get("pct_change_3m")
-                pct_change_1y = vd.get("pct_change_1y")
-                pct_change_3y = vd.get("pct_change_3y")
                 sd = vd.get("std_dev")
                 if sd is not None and all_std_devs:
                     raw_pctile = self._percentile_rank(all_std_devs, sd)
                     vol_raw = self._clamp(100.0 - raw_pctile)
                     vol_raw = self._adjust_volatility_for_cap(vol_raw, row.get("market_cap"))
-                    # Incorporate Yahoo beta if available
-                    # Lower beta = higher score (defensive premium)
                     beta = row.get("beta")
                     if beta is not None:
                         beta_score = self._clamp(100 - beta * 35)
                         volatility_score = self._clamp(vol_raw * 0.70 + beta_score * 0.30)
                     else:
                         volatility_score = vol_raw
-                    has_volatility = True
-
-                    # Liquidity gate: illiquid stocks shouldn't get high
-                    # volatility scores just because they don't trade often
                     traded_val = row.get("traded_value")
                     if traded_val is not None and traded_val < 10_00_000:
                         volatility_score = min(volatility_score, 50.0)
 
-            # ── Growth (fundamental-only; price returns live in momentum) ──
-            # Blends sales growth (35%), profit growth (35%), and consistency (30%).
-            # Falls back to sales-only or price-based when historical data unavailable.
-            has_growth = False
-            growth_score: float | None = None
+            # ── Valuation v2 (with PEG ratio) ──
+            valuation_score, _val_parts, peg_ratio = self._score_valuation_v2(
+                row, sector, sector_medians, industry_medians, all_div_yields,
+            )
 
-            # Sales growth signal
-            csg_3y = row.get("compounded_sales_growth_3y")
-            sg_yoy = row.get("sales_growth_yoy")
-            rg = row.get("revenue_growth")
-            sales_growth_signal = None
-            if csg_3y is not None:
-                sales_growth_signal = csg_3y / 100.0
-            elif sg_yoy is not None:
-                sales_growth_signal = sg_yoy
-            elif rg is not None:
-                sales_growth_signal = rg
+            # ── Growth v2 (with 5Y compounding) ──
+            growth_score, _growth_parts = self._score_growth_v2(
+                row, sector,
+                pct_change_3m, pct_change_1y, pct_change_3y, pct_change_5y,
+                all_pct_3m, all_pct_1y, all_pct_3y, all_pct_5y,
+            )
 
-            # Profit growth signal (from historical JSONB)
-            profit_cagr = row.get("_hist_profit_growth_3y_cagr")
+            # ── Institutional (merged ownership + smart money) ──
+            institutional_score, _inst_parts = self._score_institutional(row)
 
-            # Consistency signals (from historical JSONB)
-            sales_cons = row.get("_hist_sales_growth_consistency", 0)
-            profit_cons = row.get("_hist_profit_growth_consistency", 0)
+            # ── Risk ──
+            risk_score, _risk_parts = self._score_risk(row, liquidity, volatility_score)
 
-            growth_parts: list[tuple[float, float]] = []  # (score, weight)
+            # ── Lynch classification ──
+            lynch_class = self._classify_lynch(row, sector)
 
-            if sales_growth_signal is not None:
-                capped = min(sales_growth_signal, 0.50)
-                sales_score = self._clamp(50 + capped * 200)
-                growth_parts.append((sales_score, 0.35))
+            # ── Quality gates ──
+            quality_cap = self._apply_quality_gates(row)
 
-            if profit_cagr is not None and isinstance(profit_cagr, (int, float)):
-                capped = min(profit_cagr, 0.50)
-                profit_score = self._clamp(50 + capped * 200)
-                growth_parts.append((profit_score, 0.35))
+            # ── 6-Layer weighted total ──
+            layer_weights = _SECTOR_LAYER_WEIGHTS.get(sector, _SECTOR_LAYER_WEIGHTS["DEFAULT"])
 
-            if sales_cons > 0 or profit_cons > 0:
-                consistency_score = self._clamp((sales_cons + profit_cons) / 10.0 * 100)
-                growth_parts.append((consistency_score, 0.30))
-
-            if growth_parts:
-                gw = sum(w for _, w in growth_parts)
-                growth_score = self._clamp(sum(s * (w / gw) for s, w in growth_parts))
-                has_growth = True
-            else:
-                # Fallback: use price-based growth at 0.5× weight
-                price_growth_parts: list[tuple[float, float]] = []
-                if has_3m:
-                    price_growth_parts.append((self._percentile_rank(all_pct_3m, pct_3m_by_sym[symbol]), 0.30))
-                if has_1y:
-                    price_growth_parts.append((self._percentile_rank(all_pct_1y, pct_1y_by_sym[symbol]), 0.35))
-                if has_3y:
-                    price_growth_parts.append((self._percentile_rank(all_pct_3y, pct_3y_by_sym[symbol]), 0.35))
-                if price_growth_parts:
-                    pgw = sum(w for _, w in price_growth_parts)
-                    raw_price_growth = self._clamp(sum(s * (w / pgw) for s, w in price_growth_parts))
-                    growth_score = self._clamp(50 + (raw_price_growth - 50) * 0.50)
-                    has_growth = True
-
-            # ── Financial Health (NEW) ──
-            has_financial_health = False
-            financial_health_score: float | None = None
-            fh_score, _fh_parts = self._score_financial_health(row)
-            if fh_score is not None:
-                financial_health_score = fh_score
-                has_financial_health = True
-
-            # ── Ownership (NEW) ──
-            has_ownership = False
-            ownership_score: float | None = None
-            own_score, _own_parts = self._score_ownership(row)
-            if own_score is not None:
-                ownership_score = own_score
-                has_ownership = True
-
-            # ── Valuation component (NEW) ──
-            # Industry-level PE comparison + forward PE discount + P/B + dividend yield
-            has_valuation = False
-            valuation_score: float | None = None
-            val_parts: dict[str, float] = {}
-
-            ind = str(row.get("industry") or "").strip()
-            pe_val = row.get("pe_ratio")
-            pb_val = row.get("price_to_book")
-            dy_val = row.get("dividend_yield")
-
-            # PE vs industry/sector median (hierarchical)
-            if pe_val is not None and pe_val > 0:
-                ind_pe_med = (industry_medians.get(ind, {}).get("pe")
-                              if ind else None)
-                ref_pe = ind_pe_med or sector_medians.get(sector, {}).get("pe", 25.0)
-                pe_ratio_to_ref = pe_val / max(ref_pe, 1.0)
-                val_parts["pe_relative"] = self._clamp(100 - pe_ratio_to_ref * 50)
-
-            # Inject improved synthetic forward PE from historical EPS CAGR
-            improved_fwd_eps = row.get("_hist_improved_forward_eps")
-            lp = row.get("last_price")
-            if improved_fwd_eps and lp and lp > 0:
-                row["synthetic_forward_pe"] = lp / improved_fwd_eps
-
-            # Forward PE discount/premium
-            fpe = row.get("forward_pe") or row.get("synthetic_forward_pe")
-            if fpe is not None and pe_val is not None and pe_val > 0 and fpe > 0:
-                discount = 1 - (fpe / pe_val)  # positive = earnings improving
-                val_parts["forward_pe_discount"] = self._clamp(50 + discount * 200)
-
-            # P/B vs industry/sector median
-            if pb_val is not None and pb_val > 0:
-                ind_pb_med = (industry_medians.get(ind, {}).get("pb")
-                              if ind else None)
-                ref_pb = ind_pb_med or sector_medians.get(sector, {}).get("pb", 4.0)
-                pb_ratio_to_ref = pb_val / max(ref_pb, 0.5)
-                val_parts["pb_relative"] = self._clamp(100 - pb_ratio_to_ref * 40)
-
-            # Dividend yield percentile
-            if dy_val is not None and dy_val > 0 and all_div_yields:
-                val_parts["div_yield"] = self._percentile_rank(all_div_yields, dy_val)
-
-            if val_parts:
-                val_weights = {
-                    "pe_relative": 0.35, "forward_pe_discount": 0.30,
-                    "pb_relative": 0.20, "div_yield": 0.15,
-                }
-                vw_total = sum(val_weights.get(k, 0.10) for k in val_parts)
-                valuation_score = round(
-                    sum(val_parts[k] * val_weights.get(k, 0.10) for k in val_parts) / vw_total, 2
-                )
-                has_valuation = True
-
-            # ── Earnings Quality component (NEW) ──
-            # CFO/Profit ratio, margin trend, reserves growth, interest coverage
-            has_earnings_quality = False
-            earnings_quality_score: float | None = None
-            eq_parts: dict[str, float] = {}
-
-            cfo = row.get("cash_from_operations")
-            net_profit_screener = row.get("_net_profit_latest")
-            if cfo is not None and net_profit_screener is not None and net_profit_screener > 0:
-                cfo_ratio = cfo / net_profit_screener
-                # CFO/Profit >= 1.0 = high quality, < 0.5 = poor, < 0 = paper profits
-                eq_parts["cfo_to_profit"] = self._clamp(cfo_ratio * 50 + 20)
-
-            opm_chg = row.get("opm_change")
-            if opm_chg is not None:
-                # Positive = margin expanding, negative = contracting
-                eq_parts["margin_trend"] = self._clamp(50 + opm_chg * 500)
-
-            res_growth = row.get("reserves_growth")
-            if res_growth is not None:
-                # Reserves growing = retained earnings accumulating
-                eq_parts["reserves_growth"] = self._clamp(50 + res_growth * 200)
-
-            int_cov = row.get("interest_coverage")
-            if int_cov is not None:
-                # >3 = comfortable, >6 = strong, <1 = danger
-                eq_parts["interest_coverage"] = self._clamp(int_cov * 12)
-
-            # Cumulative accrual ratio (from historical JSONB)
-            accrual = row.get("_hist_cumulative_accrual_ratio")
-            if accrual is not None:
-                # Lower = higher quality; <0.1 = excellent, >0.5 = poor
-                eq_parts["accrual_quality"] = self._clamp(80 - accrual * 100)
-
-            # OPM stability (from historical JSONB)
-            opm_std = row.get("_hist_opm_std_5y")
-            if opm_std is not None:
-                # Lower std = more stable margins; <2 = excellent, >10 = volatile
-                eq_parts["margin_stability"] = self._clamp(90 - opm_std * 5)
-
-            if eq_parts:
-                eq_weights = {
-                    "cfo_to_profit": 0.25, "margin_trend": 0.20,
-                    "reserves_growth": 0.15, "interest_coverage": 0.15,
-                    "accrual_quality": 0.15, "margin_stability": 0.10,
-                }
-                eq_total = sum(eq_weights.get(k, 0.10) for k in eq_parts)
-                earnings_quality_score = round(
-                    sum(eq_parts[k] * eq_weights.get(k, 0.10) for k in eq_parts) / eq_total, 2
-                )
-                has_earnings_quality = True
-
-            # ── Smart Money component ──
-            # QoQ flows + multi-quarter sustained trends from shareholding_quarterly
-            has_smart_money = False
-            smart_money_score: float | None = None
-            sm_parts: dict[str, float] = {}
-
-            fii_chg = row.get("fii_holding_change")
-            if fii_chg is not None:
-                sm_parts["fii_flow"] = self._clamp(50 + fii_chg * 20)
-
-            dii_chg = row.get("dii_holding_change")
-            if dii_chg is not None:
-                sm_parts["dii_flow"] = self._clamp(50 + dii_chg * 20)
-
-            prom_chg = row.get("promoter_holding_change")
-            if prom_chg is not None:
-                sm_parts["promoter_flow"] = self._clamp(50 + prom_chg * 25)
-
-            # Multi-quarter sustained trends (from shareholding_quarterly JSONB)
-            fii_4q = row.get("_hist_fii_trend_4q")
-            if fii_4q is not None:
-                sm_parts["fii_sustained"] = self._clamp(50 + fii_4q * 10)
-
-            promoter_4q = row.get("_hist_promoter_trend_4q")
-            if promoter_4q is not None:
-                sm_parts["promoter_sustained"] = self._clamp(50 + promoter_4q * 12)
-
-            sh_yoy = row.get("num_shareholders_change_yoy")
-            if sh_yoy is not None:
-                # Moderate increase = healthy interest; massive spike = retail frenzy
-                if sh_yoy > 100:
-                    sm_parts["shareholder_trend"] = 35.0  # retail crowding
-                elif sh_yoy > 50:
-                    sm_parts["shareholder_trend"] = 45.0
-                elif sh_yoy > 0:
-                    sm_parts["shareholder_trend"] = 60.0  # healthy growth
-                elif sh_yoy > -20:
-                    sm_parts["shareholder_trend"] = 55.0  # mild consolidation (OK)
-                else:
-                    sm_parts["shareholder_trend"] = 40.0  # retail exodus
-
-            if sm_parts:
-                sm_weights = {
-                    "fii_flow": 0.20, "fii_sustained": 0.20,
-                    "dii_flow": 0.15, "promoter_flow": 0.15,
-                    "promoter_sustained": 0.15, "shareholder_trend": 0.15,
-                }
-                sm_total = sum(sm_weights.get(k, 0.10) for k in sm_parts)
-                smart_money_score = round(
-                    sum(sm_parts[k] * sm_weights.get(k, 0.10) for k in sm_parts) / sm_total, 2
-                )
-                has_smart_money = True
-
-            # ── 10-component weighted total ──
-            # Earnings Quality is now its own independent component.
-            target_weights = {
-                "fundamentals": 0.16,
-                "momentum": 0.14,
-                "growth": 0.13,
-                "financial_health": 0.11,
-                "valuation": 0.11,
-                "earnings_quality": 0.09,
-                "ownership": 0.08,
-                "smart_money": 0.08,
-                "volatility": 0.05,
-                "liquidity": 0.05,
-            }
-
-            scores_map = {
+            scores_map: dict[str, float | None] = {
+                "quality": quality_score,
+                "valuation": valuation_score,
+                "growth": growth_score,
                 "momentum": momentum,
-                "liquidity": liquidity,
-                "fundamentals": fundamentals,
-                "growth": growth_score if has_growth else 0.0,
-                "financial_health": financial_health_score if has_financial_health else 0.0,
-                "volatility": volatility_score if has_volatility else 0.0,
-                "ownership": ownership_score if has_ownership else 0.0,
-                "valuation": valuation_score if has_valuation else 0.0,
-                "earnings_quality": earnings_quality_score if has_earnings_quality else 0.0,
-                "smart_money": smart_money_score if has_smart_money else 0.0,
+                "institutional": institutional_score,
+                "risk": risk_score,
             }
 
             # Dynamic reweighting: exclude unavailable components
             available_weights: dict[str, float] = {}
-            for k, w in target_weights.items():
-                if k == "volatility" and not has_volatility:
-                    continue
-                if k == "growth" and not has_growth:
-                    continue
-                if k == "fundamentals" and metrics_used == 0:
-                    continue
-                if k == "financial_health" and not has_financial_health:
-                    continue
-                if k == "ownership" and not has_ownership:
-                    continue
-                if k == "valuation" and not has_valuation:
-                    continue
-                if k == "earnings_quality" and not has_earnings_quality:
-                    continue
-                if k == "smart_money" and not has_smart_money:
-                    continue
-                available_weights[k] = w
+            for k, w in layer_weights.items():
+                if scores_map.get(k) is not None:
+                    available_weights[k] = w
+                elif k == "quality" and metrics_used > 0:
+                    available_weights[k] = w
+                elif k == "momentum":
+                    available_weights[k] = w
 
             if not available_weights:
                 combined_signal = (momentum + liquidity) / 2.0
@@ -2805,10 +2998,11 @@ class DiscoverStockScraper(BaseScraper):
             else:
                 total_w = sum(available_weights.values())
                 total = sum(
-                    scores_map[k] * (w / total_w) for k, w in available_weights.items()
+                    (scores_map.get(k) or 50.0) * (w / total_w)
+                    for k, w in available_weights.items()
                 )
 
-            # Shrink fundamentals influence when coverage is low
+            # Shrink quality influence when coverage is low
             if metrics_used > 0 and metrics_used < 4:
                 signal_only = (momentum * 0.6 + liquidity * 0.4)
                 blend_factor = metrics_used / 5.0
@@ -2825,18 +3019,13 @@ class DiscoverStockScraper(BaseScraper):
 
             score = round(self._clamp(total - status_penalty), 2)
 
-            # ── Score range expansion ──
-            # Stretch the compressed middle band (was ~15 pts) to ~21 pts
-            score = round(self._clamp(50 + (score - 50) * 1.4), 2)
-
             # ── Confidence caps ──
             data_quality = "full"
             total_data_metrics = metrics_used
-            if has_financial_health:
+            if institutional_score is not None:
                 total_data_metrics += 1
-            if has_ownership:
+            if valuation_score is not None:
                 total_data_metrics += 1
-            # analyst data not used in scoring but kept for display
 
             if total_data_metrics == 0:
                 score = min(score, 65.0)
@@ -2847,26 +3036,27 @@ class DiscoverStockScraper(BaseScraper):
             elif total_data_metrics <= 4:
                 data_quality = "partial"
 
+            # Apply quality gates (hard caps)
+            if quality_cap is not None:
+                score = min(score, quality_cap)
+
             # ── Auto-tags ──
             med_pe = sector_medians.get(sector, {}).get("pe", 25.0)
-            row_for_tags = {
-                **row,
-                "_pct_change_3m": pct_change_3m,
-                "percent_change_1y": pct_change_1y,
-                "percent_change_3y": pct_change_3y,
-            }
             tags = self._generate_tags(
-                row_for_tags,
-                sector_pe_median=med_pe,
-                has_volatility=has_volatility,
-                volatility_score=volatility_score if volatility_score is not None else 50.0,
-                has_growth=has_growth,
-                growth_score=growth_score if growth_score is not None else 50.0,
-                fundamentals_score=fundamentals,
-                liquidity_score=liquidity,
-                pct_raw=pct_raw,
-                source_status=source_status,
+                row,
+                quality_score=quality_score,
+                valuation_score=valuation_score,
+                growth_score=growth_score,
+                momentum_score=momentum,
+                institutional_score=institutional_score,
+                risk_score=risk_score,
+                lynch_classification=lynch_class,
+                market_regime=market_regime,
+                sector=sector,
+                pct_change_5y=pct_change_5y,
+                peg_ratio=peg_ratio,
                 paper_profits=paper_profits,
+                sector_pe_median=med_pe,
             )
 
             # Track sector leaders (top 3)
@@ -2874,58 +3064,74 @@ class DiscoverStockScraper(BaseScraper):
 
             pct_change_1w = vd.get("pct_change_1w") if vd else None
 
-            # Generate human-readable narrative
+            # Generate human-readable narrative (sector_percentile filled in post-pass)
             why_narrative = self._generate_why_narrative(
                 score, row,
-                momentum=momentum,
-                fundamentals=fundamentals,
-                growth_score=growth_score,
-                volatility_score=volatility_score,
+                quality_score=quality_score,
                 valuation_score=valuation_score,
-                earnings_quality_score=earnings_quality_score,
-                smart_money_score=smart_money_score,
+                growth_score=growth_score,
+                momentum_score=momentum,
+                institutional_score=institutional_score,
+                risk_score=risk_score,
+                lynch_classification=lynch_class,
+                sector=sector,
+                sector_percentile=None,
+                peg_ratio=peg_ratio,
+                pct_change_5y=pct_change_5y,
+                market_regime=market_regime,
                 paper_profits=paper_profits,
             )
 
             enriched = {
                 **row,
                 "score": score,
-                "score_momentum": round(momentum, 2),
-                "score_liquidity": round(liquidity, 2),
-                "score_fundamentals": round(fundamentals, 2),
-                "score_volatility": round(volatility_score, 2) if volatility_score is not None else None,
-                "score_growth": round(growth_score, 2) if growth_score is not None else None,
-                "score_financial_health": round(financial_health_score, 2) if financial_health_score is not None else None,
-                "score_ownership": round(ownership_score, 2) if ownership_score is not None else None,
+                "score_quality": round(quality_score, 2),
                 "score_valuation": round(valuation_score, 2) if valuation_score is not None else None,
-                "score_earnings_quality": round(earnings_quality_score, 2) if earnings_quality_score is not None else None,
-                "score_smart_money": round(smart_money_score, 2) if smart_money_score is not None else None,
-                "score_analyst": None,
+                "score_growth": round(growth_score, 2) if growth_score is not None else None,
+                "score_momentum": round(momentum, 2),
+                "score_institutional": round(institutional_score, 2) if institutional_score is not None else None,
+                "score_risk": round(risk_score, 2) if risk_score is not None else None,
+                "sector_percentile": None,  # filled in post-pass
+                "lynch_classification": lynch_class,
                 "percent_change_3m": pct_change_3m,
                 "percent_change_1w": pct_change_1w,
                 "percent_change_1y": pct_change_1y,
                 "percent_change_3y": pct_change_3y,
+                "percent_change_5y": pct_change_5y,
                 "score_breakdown": {
-                    "momentum": round(momentum, 2),
-                    "liquidity": round(liquidity, 2),
-                    "fundamentals": round(fundamentals, 2),
-                    "volatility": round(volatility_score, 2) if volatility_score is not None else None,
-                    "growth": round(growth_score, 2) if growth_score is not None else None,
-                    "financial_health": round(financial_health_score, 2) if financial_health_score is not None else None,
-                    "ownership": round(ownership_score, 2) if ownership_score is not None else None,
+                    "quality": round(quality_score, 2),
                     "valuation": round(valuation_score, 2) if valuation_score is not None else None,
-                    "earnings_quality": round(earnings_quality_score, 2) if earnings_quality_score is not None else None,
-                    "smart_money": round(smart_money_score, 2) if smart_money_score is not None else None,
+                    "growth": round(growth_score, 2) if growth_score is not None else None,
+                    "momentum": round(momentum, 2),
+                    "institutional": round(institutional_score, 2) if institutional_score is not None else None,
+                    "risk": round(risk_score, 2) if risk_score is not None else None,
                     "52w_position": pos_52w_by_sym.get(symbol),
                     "combined_signal": round((momentum + liquidity) / 2.0, 2),
-                    "fundamentals_coverage": f"{metrics_used}/5",
+                    "quality_coverage": f"{metrics_used}/5",
                     "data_quality": data_quality,
+                    "peg_ratio": round(peg_ratio, 2) if peg_ratio is not None else None,
+                    "lynch_classification": lynch_class,
+                    "market_regime": market_regime,
                     "why_narrative": why_narrative,
                 },
                 "tags": tags,
                 "source_status": source_status,
             }
             out.append(enriched)
+
+        # ── Post-pass: sector percentiles and sector leaders ──
+        sector_scores: dict[str, list[float]] = {}
+        for enriched in out:
+            sec = str(enriched.get("sector") or "Other")
+            sector_scores.setdefault(sec, []).append(enriched["score"])
+
+        for enriched in out:
+            sec = str(enriched.get("sector") or "Other")
+            sec_scores = sector_scores.get(sec, [])
+            if sec_scores:
+                enriched["sector_percentile"] = round(
+                    self._percentile_rank(sec_scores, enriched["score"]), 1
+                )
 
         # Add sector_leader tag to top 3 scorers in each sector
         sector_leaders: set[str] = set()
@@ -3332,10 +3538,10 @@ async def run_discover_stock_job() -> None:
         # Keys that only exist after scoring — strip from incremental upserts
         # so we don't overwrite existing scores with 0/None.
         _SCORE_KEYS = {
-            "score", "score_momentum", "score_liquidity", "score_fundamentals",
-            "score_volatility", "score_growth", "score_financial_health",
-            "score_ownership", "score_analyst", "score_breakdown",
-            "quality_tier", "tags", "why_ranked",
+            "score", "score_quality", "score_valuation", "score_growth",
+            "score_momentum", "score_institutional", "score_risk",
+            "score_breakdown", "tags", "why_ranked",
+            "sector_percentile", "lynch_classification",
         }
 
         def _incremental_upsert(batch: list[dict]) -> None:
@@ -3384,7 +3590,7 @@ async def run_discover_stock_job() -> None:
             (other_count / max(len(raw_rows), 1)) * 100,
         )
 
-        # 3. Score with all 8 components (CPU-bound, fast).
+        # 3. Score with 6-layer model (CPU-bound, fast).
         score_t0 = time_mod.time()
         rows = _scraper._compute_scores(raw_rows, volatility_data=volatility_data)
         logger.info(
@@ -3397,16 +3603,16 @@ async def run_discover_stock_job() -> None:
             sample = rows[0]
             logger.info(
                 "Discover stock: sample scored row %s → score=%.2f "
-                "mom=%.1f liq=%.1f fun=%.1f vol=%s gro=%s fh=%s own=%s tags=%s",
+                "qual=%.1f val=%s gro=%s mom=%.1f inst=%s risk=%s lynch=%s tags=%s",
                 sample.get("symbol"),
                 sample.get("score", 0),
-                sample.get("score_momentum", 0),
-                sample.get("score_liquidity", 0),
-                sample.get("score_fundamentals", 0),
-                sample.get("score_volatility"),
+                sample.get("score_quality", 0),
+                sample.get("score_valuation"),
                 sample.get("score_growth"),
-                sample.get("score_financial_health"),
-                sample.get("score_ownership"),
+                sample.get("score_momentum", 0),
+                sample.get("score_institutional"),
+                sample.get("score_risk"),
+                sample.get("lynch_classification"),
                 sample.get("tags", [])[:5],
             )
 

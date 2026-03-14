@@ -10,21 +10,21 @@ SourceStatus = Literal["primary", "fallback", "limited"]
 
 
 class DiscoverStockScoreBreakdown(BaseModel):
-    momentum: float
-    liquidity: float
-    fundamentals: float
-    volatility: float | None = None
-    growth: float | None = None
-    financial_health: float | None = None
-    ownership: float | None = None
-    analyst: float | None = None
+    quality: float | None = None
     valuation: float | None = None
-    earnings_quality: float | None = None
-    smart_money: float | None = None
+    growth: float | None = None
+    momentum: float
+    institutional: float | None = None
+    risk: float | None = None
     combined_signal: float
     position_52w: float | None = Field(None, alias="52w_position")
-    fundamentals_coverage: str | None = None
+    quality_coverage: str | None = None
     data_quality: str | None = None
+    sector_percentile: float | None = None
+    lynch_classification: str | None = None
+    market_regime: str | None = None
+    peg_ratio: float | None = None
+    sector_data_coverage_pct: float | None = None
     why_narrative: str | None = None
 
 
@@ -48,19 +48,17 @@ class DiscoverStockItemResponse(BaseModel):
     low_52w: float | None = None
     market_cap: float | None = None
     dividend_yield: float | None = None
-    quality_tier: str | None = None
     score: float
-    score_momentum: float
-    score_liquidity: float
-    score_fundamentals: float
-    score_volatility: float | None = None
-    score_growth: float | None = None
-    score_financial_health: float | None = None
-    score_ownership: float | None = None
-    score_analyst: float | None = None
+    # 6-layer scores
+    score_quality: float | None = None
     score_valuation: float | None = None
-    score_earnings_quality: float | None = None
-    score_smart_money: float | None = None
+    score_growth: float | None = None
+    score_momentum: float | None = None
+    score_institutional: float | None = None
+    score_risk: float | None = None
+    # Percentile & classification
+    sector_percentile: float | None = None
+    lynch_classification: str | None = None
     # Pledged shares
     pledged_promoter_pct: float | None = None
     # Shareholding
@@ -98,6 +96,7 @@ class DiscoverStockItemResponse(BaseModel):
     percent_change_1w: float | None = None
     percent_change_1y: float | None = None
     percent_change_3y: float | None = None
+    percent_change_5y: float | None = None
     # Screener-derived signals
     sales_growth_yoy: float | None = None
     profit_growth_yoy: float | None = None
@@ -271,12 +270,11 @@ class DiscoverHomeStockItem(BaseModel):
     percent_change_3m: float | None = None
     percent_change_1w: float | None = None
     score: float
-    score_volatility: float | None = None
+    score_quality: float | None = None
     score_growth: float | None = None
     high_52w: float | None = None
     low_52w: float | None = None
     market_cap: float | None = None
-    quality_tier: str | None = None
 
 
 class DiscoverHomeMutualFundItem(BaseModel):

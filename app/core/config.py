@@ -56,7 +56,9 @@ class Settings(BaseSettings):
     discover_stock_screener_batch_delay: float = 0.5
     discover_stock_fundamentals_limit: int = 5000
     discover_stock_yahoo_batch_delay: float = 0.5
+    discover_stock_yahoo_timeout_seconds: int = 10
     discover_stock_yahoo_crumb_ttl: int = 600
+    discover_stock_job_timeout_minutes: int = 90
     discover_stock_universe_url: str = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
     discover_stock_bhavcopy_url_template: str = "https://archives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{yyyymmdd}_F_0000.csv.zip"
     discover_stock_bhavcopy_lookback_days: int = 7

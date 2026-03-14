@@ -525,3 +525,11 @@ ALTER TABLE discover_stock_snapshots ALTER COLUMN tags DROP DEFAULT;
 
 -- v0.6: Shareholding quarterly history (12 quarters from Screener)
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS shareholding_quarterly JSONB;
+
+-- v0.7: Scoring model overhaul — 6-layer model
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS percent_change_5y DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS sector_percentile DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS lynch_classification TEXT;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_quality DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_institutional DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_risk DOUBLE PRECISION;
