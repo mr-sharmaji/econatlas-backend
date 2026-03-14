@@ -1193,6 +1193,7 @@ class DiscoverStockScraper(BaseScraper):
                     cg_data = self._extract_compounded_growth(html)
                     if cg_data:
                         fundamentals.update(cg_data)
+                        logger.debug("Compounded growth for %s: %s", nse_symbol, cg_data)
 
                     # --- Extract full historical tables (JSONB) ---
                     pl_full = self._extract_full_table(html, "profit-loss")
@@ -1204,6 +1205,15 @@ class DiscoverStockScraper(BaseScraper):
                     cf_full = self._extract_full_table(html, "cash-flow")
                     if cf_full:
                         fundamentals["cf_annual"] = cf_full
+
+                    logger.info(
+                        "Screener full tables for %s: pl=%s bs=%s cf=%s (html=%d)",
+                        nse_symbol,
+                        f"{len(pl_full.get('years', []))}yr/{len(pl_full)-1}rows" if pl_full else "NONE",
+                        f"{len(bs_full.get('years', []))}yr/{len(bs_full)-1}rows" if bs_full else "NONE",
+                        f"{len(cf_full.get('years', []))}yr/{len(cf_full)-1}rows" if cf_full else "NONE",
+                        len(html),
+                    )
 
                     return fundamentals, "screener_in"
                 except requests.exceptions.HTTPError as e:

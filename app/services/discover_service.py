@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import date, datetime, timezone
 from typing import Literal
 
 from app.core.database import get_pool, parse_ts, record_to_dict
+
+logger = logging.getLogger(__name__)
 
 STOCK_TABLE = "discover_stock_snapshots"
 MF_TABLE = "discover_mutual_fund_snapshots"
@@ -355,6 +358,20 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
         return 0
     pool = await get_pool()
     count = 0
+    # Log JSONB data presence for first row in batch (debug)
+    if rows:
+        _first = rows[0]
+        _has_pl = _first.get("pl_annual") is not None
+        _has_bs = _first.get("bs_annual") is not None
+        _has_cf = _first.get("cf_annual") is not None
+        if _has_pl or _has_bs or _has_cf:
+            logger.info(
+                "JSONB upsert batch[0] %s: pl=%s bs=%s cf=%s",
+                _first.get("symbol"),
+                type(_first.get("pl_annual")).__name__ if _has_pl else "None",
+                type(_first.get("bs_annual")).__name__ if _has_bs else "None",
+                type(_first.get("cf_annual")).__name__ if _has_cf else "None",
+            )
     async with pool.acquire() as conn:
         for row in rows:
             await conn.execute(
