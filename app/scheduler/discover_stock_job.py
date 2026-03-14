@@ -873,6 +873,13 @@ class DiscoverStockScraper(BaseScraper):
 
                     # --- Extract shareholding from HTML ---
                     shareholding = self._extract_shareholding(html)
+                    sh_fields = sum(1 for v in shareholding.values() if v is not None)
+                    if sh_fields > 0:
+                        logger.debug(
+                            "Screener shareholding for %s: %d fields (promoter=%.1f%%)",
+                            nse_symbol, sh_fields,
+                            shareholding.get("promoter_holding") or 0,
+                        )
                     fundamentals.update(shareholding)
 
                     return fundamentals, "screener_in"
@@ -1820,11 +1827,14 @@ class DiscoverStockScraper(BaseScraper):
                 yahoo = yahoo_session.get_stock_data(stock.nse_symbol)
                 time_mod.sleep(self._yahoo_batch_delay)
 
+                yahoo_fields_filled = 0
+
                 # Fill missing Screener fields from Yahoo
                 for field in ("pe_ratio", "price_to_book", "eps", "debt_to_equity",
                               "market_cap", "high_52w", "low_52w", "dividend_yield"):
                     if fundamentals.get(field) is None and yahoo.get(field) is not None:
                         fundamentals[field] = yahoo[field]
+                        yahoo_fields_filled += 1
 
                 # Add Yahoo-exclusive fields (always overwrite with Yahoo data)
                 for field in ("beta", "free_cash_flow", "operating_cash_flow", "total_cash",
@@ -1837,11 +1847,17 @@ class DiscoverStockScraper(BaseScraper):
                               "payout_ratio", "fifty_day_avg", "two_hundred_day_avg"):
                     if yahoo.get(field) is not None:
                         fundamentals[field] = yahoo[field]
+                        yahoo_fields_filled += 1
 
                 if fundamentals_source == "unavailable":
                     fundamentals_source = "yahoo_fundamentals"
                 elif fundamentals_source == "screener_in":
                     fundamentals_source = "screener_in+yahoo"
+
+                logger.debug(
+                    "Yahoo v10 OK for %s: %d fields enriched → source=%s",
+                    stock.nse_symbol, yahoo_fields_filled, fundamentals_source,
+                )
             except Exception as exc:
                 logger.warning("Yahoo v10 failed for %s: %s", stock.nse_symbol, exc)
         else:
@@ -1956,22 +1972,69 @@ class DiscoverStockScraper(BaseScraper):
         universe = self._build_effective_universe()
         bulk_quotes, _ = self._fetch_latest_bhavcopy_quotes()
         raw_rows: list[dict] = []
+        # Counters for progress / diagnostic logging
+        _total = len(universe)
+        _processed = 0
+        _yahoo_ok = 0
+        _yahoo_fail = 0
+        _yahoo_skip = 0
+        _screener_ok = 0
+        _screener_fail = 0
+        _t_start = time_mod.time()
+
+        def _log_progress(force: bool = False) -> None:
+            nonlocal _processed
+            if not force and _processed % 100 != 0:
+                return
+            elapsed = time_mod.time() - _t_start
+            rate = _processed / elapsed if elapsed > 0 else 0
+            eta = (_total - _processed) / rate if rate > 0 else 0
+            logger.info(
+                "Stock progress: %d/%d (%.0f%%) | yahoo ok=%d fail=%d skip=%d | "
+                "screener ok=%d fail=%d | %.1f stocks/min | ETA %.0fm",
+                _processed, _total, (_processed / max(_total, 1)) * 100,
+                _yahoo_ok, _yahoo_fail, _yahoo_skip,
+                _screener_ok, _screener_fail,
+                rate * 60, eta / 60,
+            )
+
         if bulk_quotes:
             fundamentals_symbols = self._select_fundamentals_symbols(universe, bulk_quotes)
+            logger.info(
+                "Bhavcopy loaded: %d quotes for %d universe stocks, "
+                "fundamentals enabled for %d symbols",
+                len(bulk_quotes), _total, len(fundamentals_symbols),
+            )
             missing: list[DiscoverStockDef] = []
             for stock in universe:
                 quote = bulk_quotes.get(stock.nse_symbol)
                 if quote is None:
                     missing.append(stock)
                     continue
-                raw_rows.append(
-                    self._build_snapshot_row(
-                        stock,
-                        quote,
-                        "nse_bhavcopy",
-                        fundamentals_enabled=stock.nse_symbol in fundamentals_symbols,
-                    )
+                row = self._build_snapshot_row(
+                    stock,
+                    quote,
+                    "nse_bhavcopy",
+                    fundamentals_enabled=stock.nse_symbol in fundamentals_symbols,
                 )
+                raw_rows.append(row)
+                _processed += 1
+                # Track Yahoo / Screener stats from primary_source
+                src = row.get("primary_source", "")
+                if "yahoo" in src:
+                    _yahoo_ok += 1
+                elif src == "screener_in+yahoo":
+                    _yahoo_ok += 1
+                    _screener_ok += 1
+                elif src == "screener_in":
+                    _screener_ok += 1
+                    _yahoo_fail += 1
+                elif src == "unavailable":
+                    _yahoo_skip += 1
+                else:
+                    if "screener" in src:
+                        _screener_ok += 1
+                _log_progress()
             if missing and self._missing_quote_retry_limit > 0:
                 retry_batch = missing[: self._missing_quote_retry_limit]
                 logger.warning(
@@ -1984,18 +2047,32 @@ class DiscoverStockScraper(BaseScraper):
                     item = self._fetch_one(stock)
                     if item is not None:
                         raw_rows.append(item)
+                    _processed += 1
+                    _log_progress()
         else:
+            logger.warning("Bhavcopy unavailable — using fallback quote path for all symbols")
             fallback_universe = CORE_UNIVERSE if len(universe) > len(CORE_UNIVERSE) else universe
+            _total = len(fallback_universe)
             for stock in fallback_universe:
                 item = self._fetch_one(stock)
                 if item is not None:
                     raw_rows.append(item)
+                _processed += 1
+                _log_progress()
             if len(raw_rows) < len(fallback_universe):
                 logger.warning(
                     "Fallback quote path updated %d/%d symbols",
                     len(raw_rows),
                     len(fallback_universe),
                 )
+        _log_progress(force=True)
+        elapsed_total = time_mod.time() - _t_start
+        logger.info(
+            "Stock fetch complete: %d rows in %.1fm | yahoo ok=%d fail=%d skip=%d | screener ok=%d fail=%d",
+            len(raw_rows), elapsed_total / 60,
+            _yahoo_ok, _yahoo_fail, _yahoo_skip,
+            _screener_ok, _screener_fail,
+        )
         return raw_rows
 
     def fetch_all(self, *, volatility_data: dict[str, dict] | None = None) -> list[dict]:
@@ -2010,8 +2087,13 @@ def _fetch_discover_stock_raw_sync() -> list[dict]:
     return _scraper.fetch_raw_rows()
 
 
+_UPSERT_BATCH_SIZE = 200
+
+
 async def run_discover_stock_job() -> None:
     try:
+        job_t0 = time_mod.time()
+
         # 1. Pre-fetch volatility data from PostgreSQL (async).
         volatility_data = await discover_service.get_bulk_stock_volatility_data()
         logger.info(
@@ -2026,7 +2108,11 @@ async def run_discover_stock_job() -> None:
             get_job_executor("discover-stock"),
             _fetch_discover_stock_raw_sync,
         )
-        logger.info("Discover stock: fetched %d raw rows", len(raw_rows))
+        fetch_elapsed = time_mod.time() - job_t0
+        logger.info(
+            "Discover stock: fetched %d raw rows in %.1fm",
+            len(raw_rows), fetch_elapsed / 60,
+        )
 
         # Log data source distribution
         source_counts: dict[str, int] = {}
@@ -2048,7 +2134,12 @@ async def run_discover_stock_job() -> None:
         )
 
         # 3. Score with all 8 components (CPU-bound, fast).
+        score_t0 = time_mod.time()
         rows = _scraper._compute_scores(raw_rows, volatility_data=volatility_data)
+        logger.info(
+            "Discover stock: scored %d rows in %.1fs",
+            len(rows), time_mod.time() - score_t0,
+        )
 
         # Log sample scores
         if rows:
@@ -2069,8 +2160,27 @@ async def run_discover_stock_job() -> None:
                 sample.get("tags", [])[:5],
             )
 
-        count = await discover_service.upsert_discover_stock_snapshots(rows)
-        logger.info("Discover stock job complete: %d snapshots upserted", count)
+        # 4. Upsert in batches for incremental visibility + fault tolerance.
+        upsert_t0 = time_mod.time()
+        total_upserted = 0
+        for batch_start in range(0, len(rows), _UPSERT_BATCH_SIZE):
+            batch = rows[batch_start : batch_start + _UPSERT_BATCH_SIZE]
+            count = await discover_service.upsert_discover_stock_snapshots(batch)
+            total_upserted += count
+            logger.info(
+                "Discover stock: upserted batch %d–%d (%d rows, %d total so far)",
+                batch_start, batch_start + len(batch) - 1, count, total_upserted,
+            )
+
+        total_elapsed = time_mod.time() - job_t0
+        logger.info(
+            "Discover stock job complete: %d snapshots upserted in %.1fm "
+            "(fetch=%.1fm, score=%.1fs, upsert=%.1fs)",
+            total_upserted, total_elapsed / 60,
+            fetch_elapsed / 60,
+            time_mod.time() - score_t0,  # includes upsert time too but close enough
+            time_mod.time() - upsert_t0,
+        )
     except requests.RequestException:
         logger.exception("Discover stock job failed due to network exception")
     except Exception:
