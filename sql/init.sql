@@ -452,3 +452,17 @@ CREATE INDEX IF NOT EXISTS idx_job_dead_letters_job_name
 ON job_dead_letters (job_name);
 CREATE INDEX IF NOT EXISTS idx_job_dead_letters_failed_at
 ON job_dead_letters (failed_at DESC);
+
+-- ================================================================
+-- Scoring v0.3: pledged shares + score history (expert panel rework)
+-- ================================================================
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS pledged_promoter_pct DOUBLE PRECISION;
+
+CREATE TABLE IF NOT EXISTS discover_stock_score_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    symbol TEXT NOT NULL,
+    score DOUBLE PRECISION NOT NULL,
+    scored_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_stock_score_history_symbol_scored
+ON discover_stock_score_history (symbol, scored_at DESC);

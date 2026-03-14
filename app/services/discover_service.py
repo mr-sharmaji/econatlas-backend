@@ -340,7 +340,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     gross_margins, operating_margins, profit_margins,
                     revenue_growth, earnings_growth, forward_pe,
                     analyst_target_mean, analyst_count, analyst_recommendation, analyst_recommendation_mean,
-                    industry, payout_ratio
+                    industry, payout_ratio,
+                    pledged_promoter_pct
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -359,7 +360,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     $54, $55, $56,
                     $57, $58, $59,
                     $60, $61, $62, $63,
-                    $64, $65
+                    $64, $65,
+                    $66
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -427,7 +429,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     analyst_recommendation = EXCLUDED.analyst_recommendation,
                     analyst_recommendation_mean = EXCLUDED.analyst_recommendation_mean,
                     industry = EXCLUDED.industry,
-                    payout_ratio = EXCLUDED.payout_ratio
+                    payout_ratio = EXCLUDED.payout_ratio,
+                    pledged_promoter_pct = EXCLUDED.pledged_promoter_pct
                 """,
                 str(row.get("market") or "IN"),                                    # $1
                 str(row.get("symbol") or ""),                                      # $2
@@ -494,9 +497,57 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("analyst_recommendation_mean")),                 # $63
                 row.get("industry"),                                               # $64
                 _to_float(row.get("payout_ratio")),                                # $65
+                _to_float(row.get("pledged_promoter_pct")),                        # $66
             )
             count += 1
     return count
+
+
+# ── Score history (trend tracking) ─────────────────────────────
+
+
+async def insert_score_history(rows: list[dict]) -> int:
+    """Insert score snapshots for trend tracking."""
+    if not rows:
+        return 0
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        values = [
+            (str(r.get("symbol", "")), float(r.get("score", 0)))
+            for r in rows
+            if r.get("symbol") and r.get("score") is not None
+        ]
+        if values:
+            await conn.executemany(
+                "INSERT INTO discover_stock_score_history (symbol, score) VALUES ($1, $2)",
+                values,
+            )
+    return len(values)
+
+
+async def prune_score_history(days: int = 30) -> int:
+    """Delete score history rows older than N days."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM discover_stock_score_history WHERE scored_at < NOW() - $1::interval",
+            f"{days} days",
+        )
+    return int(result.split()[-1]) if result else 0
+
+
+async def get_previous_score(symbol: str, days_ago: int = 7) -> float | None:
+    """Fetch the most recent historical score at least `days_ago` days old."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT score FROM discover_stock_score_history "
+            "WHERE symbol = $1 AND scored_at < NOW() - $2::interval "
+            "ORDER BY scored_at DESC LIMIT 1",
+            symbol,
+            f"{days_ago} days",
+        )
+    return float(row["score"]) if row else None
 
 
 async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:

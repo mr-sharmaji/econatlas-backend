@@ -807,6 +807,13 @@ class DiscoverStockScraper(BaseScraper):
         if ns is not None:
             result["num_shareholders"] = int(ns)
 
+        # Pledged promoter shares (critical risk signal)
+        pledged, _ = _extract_row("Pledged")
+        if pledged is None:
+            pledged, _ = _extract_row("Pledge")
+        if pledged is not None:
+            result["pledged_promoter_pct"] = pledged
+
         return result
 
     def _fetch_screener_fundamentals(self, nse_symbol: str) -> tuple[dict, str]:
@@ -940,7 +947,7 @@ class DiscoverStockScraper(BaseScraper):
         score: float,
         coverage: float,
         *,
-        neutral: float = 50.0,
+        neutral: float = 42.0,
         min_factor: float = 0.35,
     ) -> float:
         c = max(0.0, min(1.0, coverage))
@@ -988,11 +995,22 @@ class DiscoverStockScraper(BaseScraper):
         row: dict,
         sector_medians: dict[str, dict[str, float]],
     ) -> tuple[float, int]:
-        """Weighted fundamentals score with sector-relative PE/PB/D/E."""
+        """Weighted fundamentals score with sector-relative PE/PB/D/E.
+
+        Uses sector-specific weight profiles:
+        - Financials: ROE-heavy, skip D/E (banks are naturally leveraged),
+          use operating_margins as NIM proxy.
+        - Cyclicals (Commodities, Energy): P/B over PE (high PE = buy signal
+          at cycle bottoms).
+        - Default: balanced ROE/ROCE/PE/D/E/P/B weights.
+        """
         sector = str(row.get("sector") or "Other")
         medians = sector_medians.get(sector, {})
         parts: dict[str, float] = {}
         metrics_used = 0
+
+        is_financial = sector == "Financials"
+        is_cyclical = sector in ("Commodities", "Energy")
 
         pe = row.get("pe_ratio")
         if pe is not None and pe > 0:
@@ -1002,17 +1020,22 @@ class DiscoverStockScraper(BaseScraper):
             metrics_used += 1
 
         roe = row.get("roe")
+        roce = row.get("roce")
         if roe is not None:
-            parts["roe"] = self._clamp(roe * 4.5)
+            roe_score = self._clamp(roe * 4.5)
+            # DuPont discount: if ROE is >1.5× ROCE, it's leverage-inflated
+            if roce is not None and roce > 0 and roe > roce * 1.5:
+                roe_score *= 0.85
+            parts["roe"] = roe_score
             metrics_used += 1
 
-        roce = row.get("roce")
         if roce is not None:
             parts["roce"] = self._clamp(roce * 4.0)
             metrics_used += 1
 
         dte = row.get("debt_to_equity")
-        if dte is not None:
+        # Skip D/E for financials — banks are naturally leveraged
+        if not is_financial and dte is not None:
             median_de = medians.get("de", 1.0)
             ratio = dte / max(median_de, 0.1)
             parts["dte"] = self._clamp(100 - (ratio * 40))
@@ -1025,14 +1048,40 @@ class DiscoverStockScraper(BaseScraper):
             parts["pb"] = self._clamp(100 - (ratio * 40))
             metrics_used += 1
 
+        # For financials: use operating_margins as NIM proxy
+        if is_financial:
+            op_margin = row.get("operating_margins")
+            if op_margin is not None:
+                parts["margins_proxy"] = self._clamp(op_margin * 200 + 30)
+                metrics_used += 1
+
         if not parts:
             return 50.0, metrics_used
 
-        weights = {"roe": 0.30, "roce": 0.25, "pe": 0.20, "dte": 0.15, "pb": 0.10}
+        # Sector-specific weight profiles
+        if is_financial:
+            weights = {
+                "roe": 0.35, "pb": 0.30, "margins_proxy": 0.20,
+                "pe": 0.15, "roce": 0.00, "dte": 0.00,
+            }
+        elif is_cyclical:
+            # P/B over PE for cyclicals (high PE = buy signal at trough)
+            weights = {
+                "roe": 0.30, "roce": 0.25, "pb": 0.20,
+                "dte": 0.15, "pe": 0.10,
+            }
+        else:
+            weights = {
+                "roe": 0.30, "roce": 0.25, "pe": 0.20,
+                "dte": 0.15, "pb": 0.10,
+            }
+
         total_w = 0.0
         weighted_sum = 0.0
         for key, score in parts.items():
             w = weights.get(key, 0.10)
+            if w <= 0:
+                continue
             weighted_sum += score * w
             total_w += w
         result = weighted_sum / total_w if total_w > 0 else 50.0
@@ -1186,6 +1235,19 @@ class DiscoverStockScraper(BaseScraper):
         total_w = sum(weights.get(k, 0.10) for k in parts)
         score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
 
+        # Pledged promoter shares penalty (#1 Indian small-cap risk factor)
+        pledged = row.get("pledged_promoter_pct")
+        if pledged is not None:
+            if pledged > 40:
+                score = max(0, score - 30)
+            elif pledged > 20:
+                score = max(0, score - 15)
+
+        # Low free-float penalty (manipulation risk)
+        public = row.get("public_holding")
+        if public is not None and public < 15:
+            score = max(0, score - 10)
+
         return round(score, 2), parts
 
     @staticmethod
@@ -1201,6 +1263,7 @@ class DiscoverStockScraper(BaseScraper):
         liquidity_score: float,
         pct_raw: float,
         source_status: str,
+        paper_profits: bool = False,
     ) -> list[str]:
         """Generate descriptive auto-tags (max 5)."""
         candidates: list[tuple[str, int]] = []  # (tag, priority) — lower priority = more important
@@ -1247,6 +1310,15 @@ class DiscoverStockScraper(BaseScraper):
         elif dte is not None and dte == 0 and eps is not None and eps > 0:
             candidates.append(("Debt Free", 3))
 
+        # --- Paper profits warning (OCF < 0 but EPS > 0) ---
+        if paper_profits:
+            candidates.append(("Paper Profits", 2))
+
+        # --- Pledged shares risk ---
+        pledged = row.get("pledged_promoter_pct")
+        if pledged is not None and pledged > 20:
+            candidates.append(("High Pledge Risk", 2))
+
         # --- Financial Health tags ---
         if fcf is not None and market_cap and market_cap > 0:
             fcf_yield = (fcf / (market_cap * 1e7)) * 100
@@ -1282,6 +1354,11 @@ class DiscoverStockScraper(BaseScraper):
               and ((analyst_target - last_price) / last_price) > 0.25
               and analyst_count is not None and analyst_count >= 5):
             candidates.append(("Analyst Undervalued", 4))
+
+        # --- Low free-float warning ---
+        public = row.get("public_holding")
+        if public is not None and public < 25:
+            candidates.append(("Low Free Float", 5))
 
         # --- Ownership tags ---
         if promoter is not None and promoter >= 55:
@@ -1321,6 +1398,80 @@ class DiscoverStockScraper(BaseScraper):
                 tags.append(tag)
                 seen_tags.add(tag)
         return tags
+
+    @staticmethod
+    def _generate_why_narrative(
+        score: float,
+        row: dict,
+        *,
+        momentum: float,
+        fundamentals: float,
+        growth_score: float | None,
+        volatility_score: float | None,
+        paper_profits: bool = False,
+    ) -> str:
+        """Generate a 1-2 sentence human-readable score explanation."""
+        tier = (
+            "Strong" if score >= 75 else
+            "Good" if score >= 50 else
+            "Average" if score >= 25 else
+            "Weak"
+        )
+        strengths: list[str] = []
+        concerns: list[str] = []
+
+        roe = row.get("roe")
+        roce = row.get("roce")
+        dte = row.get("debt_to_equity")
+        pe = row.get("pe_ratio")
+        eps = row.get("eps")
+        price = row.get("last_price")
+        high_52w = row.get("high_52w")
+        rg = row.get("revenue_growth")
+        promoter = row.get("promoter_holding")
+
+        # Strengths
+        if roe is not None and roe >= 15:
+            strengths.append(f"strong ROE of {roe:.0f}%")
+        if roce is not None and roce >= 18:
+            strengths.append(f"high ROCE of {roce:.0f}%")
+        if dte is not None and dte <= 0.3:
+            strengths.append("low debt" if dte > 0 else "debt-free")
+        elif dte is not None and dte == 0:
+            strengths.append("debt-free")
+        if rg is not None and rg >= 0.15:
+            strengths.append(f"revenue growing {rg*100:.0f}%")
+        if momentum >= 70:
+            strengths.append("strong price momentum")
+        if promoter is not None and promoter >= 55:
+            strengths.append("high promoter stake")
+        if volatility_score is not None and volatility_score >= 75:
+            strengths.append("low volatility")
+
+        # Concerns
+        if paper_profits:
+            concerns.append("negative cash flow despite positive earnings")
+        if pe is not None and pe > 50:
+            concerns.append(f"expensive at PE {pe:.0f}x")
+        if price and high_52w and high_52w > 0 and price > high_52w * 0.95:
+            concerns.append("trading near 52-week high")
+        if dte is not None and dte > 2.0:
+            concerns.append(f"high debt (D/E {dte:.1f})")
+        if rg is not None and rg < -0.05:
+            concerns.append("declining revenue")
+        if eps is not None and eps < 0:
+            concerns.append("loss-making")
+
+        pledged = row.get("pledged_promoter_pct")
+        if pledged is not None and pledged > 20:
+            concerns.append(f"{pledged:.0f}% shares pledged")
+
+        # Build narrative
+        strength_text = ", ".join(strengths[:2]) if strengths else "balanced metrics"
+        parts = [f"Scored {score:.0f} ({tier}): {strength_text.capitalize()}"]
+        if concerns:
+            parts.append(f"but {concerns[0]}")
+        return ", ".join(parts) + "."
 
     def _compute_scores(
         self,
@@ -1577,24 +1728,48 @@ class DiscoverStockScraper(BaseScraper):
             tv_log = math.log1p(max(0.0, float(row.get("traded_value") or 0.0)))
             vol_log = math.log1p(max(0.0, float(row.get("volume") or 0.0)))
 
-            # ── Momentum: blend price momentum + 52W position ──
+            # ── Momentum: blend short-term price + 52W + multi-period returns ──
             daily_momentum = self._clamp(self._percentile_rank(all_pcts, pct))
             has_m5 = symbol in momentum_5d_by_sym and all_momentum_5d
             has_m20 = symbol in momentum_20d_by_sym and all_momentum_20d
             if has_m5 and has_m20:
                 m5_pctile = self._percentile_rank(all_momentum_5d, momentum_5d_by_sym[symbol])
                 m20_pctile = self._percentile_rank(all_momentum_20d, momentum_20d_by_sym[symbol])
-                price_momentum = self._clamp(m5_pctile * 0.50 + m20_pctile * 0.30 + daily_momentum * 0.20)
+                short_term_momentum = self._clamp(m5_pctile * 0.50 + m20_pctile * 0.30 + daily_momentum * 0.20)
             elif has_m5:
                 m5_pctile = self._percentile_rank(all_momentum_5d, momentum_5d_by_sym[symbol])
-                price_momentum = self._clamp(m5_pctile * 0.65 + daily_momentum * 0.35)
+                short_term_momentum = self._clamp(m5_pctile * 0.65 + daily_momentum * 0.35)
             else:
-                price_momentum = daily_momentum
+                short_term_momentum = daily_momentum
 
-            if symbol in pos_52w_by_sym:
-                momentum = self._clamp(price_momentum * 0.60 + pos_52w_by_sym[symbol] * 0.40)
+            # Multi-period return percentiles (3M/1Y/3Y) — moved here from growth
+            has_3m = symbol in pct_3m_by_sym and all_pct_3m
+            has_1y = symbol in pct_1y_by_sym and all_pct_1y
+            has_3y = symbol in pct_3y_by_sym and all_pct_3y
+            multi_period_parts: list[tuple[float, float]] = []
+            if has_3m:
+                multi_period_parts.append((self._percentile_rank(all_pct_3m, pct_3m_by_sym[symbol]), 0.30))
+            if has_1y:
+                multi_period_parts.append((self._percentile_rank(all_pct_1y, pct_1y_by_sym[symbol]), 0.35))
+            if has_3y:
+                multi_period_parts.append((self._percentile_rank(all_pct_3y, pct_3y_by_sym[symbol]), 0.35))
+
+            # Blend: short-term 0.30 + 52w 0.20 + multi-period 0.50
+            if multi_period_parts:
+                mp_w = sum(w for _, w in multi_period_parts)
+                multi_period_score = self._clamp(sum(s * (w / mp_w) for s, w in multi_period_parts))
+                if symbol in pos_52w_by_sym:
+                    momentum = self._clamp(
+                        short_term_momentum * 0.30
+                        + pos_52w_by_sym[symbol] * 0.20
+                        + multi_period_score * 0.50
+                    )
+                else:
+                    momentum = self._clamp(short_term_momentum * 0.40 + multi_period_score * 0.60)
+            elif symbol in pos_52w_by_sym:
+                momentum = self._clamp(short_term_momentum * 0.60 + pos_52w_by_sym[symbol] * 0.40)
             else:
-                momentum = price_momentum
+                momentum = short_term_momentum
 
             # ── Liquidity ──
             has_v5 = symbol in avg_vol_5d_by_sym and all_avg_vol_5d
@@ -1619,6 +1794,16 @@ class DiscoverStockScraper(BaseScraper):
                     self._shrink_to_neutral(fundamentals, coverage),
                 )
 
+            # ── OCF earnings quality gate ──
+            # If operating cash flow is negative but EPS is positive,
+            # the company generates "paper profits" — cap fundamentals.
+            paper_profits = False
+            _ocf = row.get("operating_cash_flow")
+            _eps_val = row.get("eps")
+            if _ocf is not None and _eps_val is not None and _eps_val > 0 and _ocf < 0:
+                fundamentals = min(fundamentals, 45.0)
+                paper_profits = True
+
             # ── Volatility (lower std_dev → higher score = stability premium) ──
             vd = vol_data.get(symbol)
             has_volatility = False
@@ -1636,63 +1821,48 @@ class DiscoverStockScraper(BaseScraper):
                     vol_raw = self._clamp(100.0 - raw_pctile)
                     vol_raw = self._adjust_volatility_for_cap(vol_raw, row.get("market_cap"))
                     # Incorporate Yahoo beta if available
+                    # Lower beta = higher score (defensive premium)
                     beta = row.get("beta")
                     if beta is not None:
-                        beta_score = self._clamp(100 - abs(beta - 1.0) * 50)
+                        beta_score = self._clamp(100 - beta * 35)
                         volatility_score = self._clamp(vol_raw * 0.70 + beta_score * 0.30)
                     else:
                         volatility_score = vol_raw
                     has_volatility = True
 
-            # ── Growth (enhanced: blend price + fundamental growth) ──
+                    # Liquidity gate: illiquid stocks shouldn't get high
+                    # volatility scores just because they don't trade often
+                    traded_val = row.get("traded_value")
+                    if traded_val is not None and traded_val < 10_00_000:
+                        volatility_score = min(volatility_score, 50.0)
+
+            # ── Growth (fundamental-only; price returns live in momentum) ──
+            # Revenue growth is the primary signal (97% coverage).
+            # Earnings growth and forward PE dropped (poor coverage: 25%/47%).
+            # If no fundamental growth data, fall back to price-based growth
+            # at half weight to avoid zeroing out data-poor stocks.
             has_growth = False
             growth_score: float | None = None
 
-            has_3m = symbol in pct_3m_by_sym and all_pct_3m
-            has_1y = symbol in pct_1y_by_sym and all_pct_1y
-            has_3y = symbol in pct_3y_by_sym and all_pct_3y
-
-            price_growth_parts: list[tuple[float, float]] = []
-            if has_3m:
-                rank_3m = self._percentile_rank(all_pct_3m, pct_3m_by_sym[symbol])
-                price_growth_parts.append((rank_3m, 0.30))
-            if has_1y:
-                rank_1y = self._percentile_rank(all_pct_1y, pct_1y_by_sym[symbol])
-                price_growth_parts.append((rank_1y, 0.35))
-            if has_3y:
-                rank_3y = self._percentile_rank(all_pct_3y, pct_3y_by_sym[symbol])
-                price_growth_parts.append((rank_3y, 0.35))
-
-            # Fundamental growth from Yahoo
-            fundamental_growth_parts: list[tuple[float, float]] = []
             rg = row.get("revenue_growth")
-            if rg is not None and all_rev_growth:
-                rev_score = self._clamp(50 + rg * 200)  # 10% → 70, 25% → 100
-                fundamental_growth_parts.append((rev_score, 0.50))
-            eg = row.get("earnings_growth")
-            if eg is not None and all_earn_growth:
-                earn_score = self._clamp(50 + eg * 200)
-                fundamental_growth_parts.append((earn_score, 0.50))
-
-            if price_growth_parts or fundamental_growth_parts:
-                # Blend price growth (70%) with fundamental growth (30%) when both available
-                price_growth = None
+            if rg is not None:
+                growth_score = self._clamp(50 + rg * 200)  # 10% → 70, 25% → 100
+                has_growth = True
+            else:
+                # Fallback: use price-based growth at 0.5× weight
+                price_growth_parts: list[tuple[float, float]] = []
+                if has_3m:
+                    price_growth_parts.append((self._percentile_rank(all_pct_3m, pct_3m_by_sym[symbol]), 0.30))
+                if has_1y:
+                    price_growth_parts.append((self._percentile_rank(all_pct_1y, pct_1y_by_sym[symbol]), 0.35))
+                if has_3y:
+                    price_growth_parts.append((self._percentile_rank(all_pct_3y, pct_3y_by_sym[symbol]), 0.35))
                 if price_growth_parts:
                     pgw = sum(w for _, w in price_growth_parts)
-                    price_growth = self._clamp(sum(s * (w / pgw) for s, w in price_growth_parts))
-
-                fund_growth = None
-                if fundamental_growth_parts:
-                    fgw = sum(w for _, w in fundamental_growth_parts)
-                    fund_growth = self._clamp(sum(s * (w / fgw) for s, w in fundamental_growth_parts))
-
-                if price_growth is not None and fund_growth is not None:
-                    growth_score = self._clamp(price_growth * 0.65 + fund_growth * 0.35)
-                elif price_growth is not None:
-                    growth_score = price_growth
-                else:
-                    growth_score = fund_growth
-                has_growth = True
+                    raw_price_growth = self._clamp(sum(s * (w / pgw) for s, w in price_growth_parts))
+                    # Blend toward neutral (50) since this is a weak proxy
+                    growth_score = self._clamp(50 + (raw_price_growth - 50) * 0.50)
+                    has_growth = True
 
             # ── Financial Health (NEW) ──
             has_financial_health = False
@@ -1773,6 +1943,10 @@ class DiscoverStockScraper(BaseScraper):
 
             score = round(self._clamp(total - status_penalty), 2)
 
+            # ── Score range expansion ──
+            # Stretch the compressed middle band (was ~15 pts) to ~21 pts
+            score = round(self._clamp(50 + (score - 50) * 1.4), 2)
+
             # ── Confidence caps ──
             data_quality = "full"
             total_data_metrics = metrics_used
@@ -1805,12 +1979,23 @@ class DiscoverStockScraper(BaseScraper):
                 liquidity_score=liquidity,
                 pct_raw=pct_raw,
                 source_status=source_status,
+                paper_profits=paper_profits,
             )
 
             # Track sector leaders (top 3)
             sector_best.setdefault(sector, []).append((score, symbol))
 
             pct_change_1w = vd.get("pct_change_1w") if vd else None
+
+            # Generate human-readable narrative
+            why_narrative = self._generate_why_narrative(
+                score, row,
+                momentum=momentum,
+                fundamentals=fundamentals,
+                growth_score=growth_score,
+                volatility_score=volatility_score,
+                paper_profits=paper_profits,
+            )
 
             enriched = {
                 **row,
@@ -1839,6 +2024,7 @@ class DiscoverStockScraper(BaseScraper):
                     "combined_signal": round((momentum + liquidity) / 2.0, 2),
                     "fundamentals_coverage": f"{metrics_used}/5",
                     "data_quality": data_quality,
+                    "why_narrative": why_narrative,
                 },
                 "tags": tags,
                 "source_status": source_status,
@@ -2013,6 +2199,7 @@ class DiscoverStockScraper(BaseScraper):
             "fifty_day_avg": fundamentals.get("fifty_day_avg"),
             "two_hundred_day_avg": fundamentals.get("two_hundred_day_avg"),
             "payout_ratio": fundamentals.get("payout_ratio"),
+            "pledged_promoter_pct": fundamentals.get("pledged_promoter_pct"),
             # Metadata
             "source_status": source_status,
             "source_timestamp": quote.get("source_timestamp") or datetime.now(timezone.utc),
@@ -2450,6 +2637,14 @@ async def rescore_discover_stocks() -> dict:
         batch = scored_rows[batch_start: batch_start + _UPSERT_BATCH_SIZE]
         count = await discover_service.upsert_discover_stock_snapshots(batch)
         total_upserted += count
+
+    # Insert score history snapshot for trend tracking
+    try:
+        history_count = await discover_service.insert_score_history(scored_rows)
+        await discover_service.prune_score_history(days=30)
+        logger.info("Score history: inserted %d snapshots, pruned >30d", history_count)
+    except Exception:
+        logger.exception("Score history insert failed (non-fatal)")
 
     total_elapsed = time_mod.time() - t0
     logger.info(
