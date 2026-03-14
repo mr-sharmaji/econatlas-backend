@@ -523,10 +523,10 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("debt_to_equity")),                              # $13
                 _to_float(row.get("price_to_book")),                               # $14
                 _to_float(row.get("eps")),                                         # $15
-                _to_float(row.get("score")) or 0.0,                                # $16
-                _to_float(row.get("score_momentum")) or 0.0,                       # $17
-                _to_float(row.get("score_liquidity")) or 0.0,                      # $18
-                _to_float(row.get("score_fundamentals")) or 0.0,                   # $19
+                _to_float(row.get("score")),                                          # $16
+                _to_float(row.get("score_momentum")),                              # $17
+                _to_float(row.get("score_liquidity")),                             # $18
+                _to_float(row.get("score_fundamentals")),                          # $19
                 _to_float(row.get("score_volatility")),                            # $20
                 _to_float(row.get("score_growth")),                                # $21
                 _to_float(row.get("score_ownership")),                             # $22
@@ -536,8 +536,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("percent_change_1w")),                           # $26
                 _to_float(row.get("percent_change_1y")),                           # $27
                 _to_float(row.get("percent_change_3y")),                           # $28
-                _to_jsonb(row.get("score_breakdown"), _stock_breakdown_payload(row)),  # $29
-                _to_jsonb(row.get("tags"), []),                                    # $30
+                _to_jsonb(row.get("score_breakdown"), _stock_breakdown_payload(row)) if row.get("score") is not None else None,  # $29
+                _to_jsonb(row.get("tags"), []) if row.get("score") is not None else None,  # $30
                 _normalize_source_status(row.get("source_status")),                # $31
                 parse_ts(row.get("source_timestamp")) or datetime.now(timezone.utc),  # $32
                 row.get("primary_source"),                                         # $33
