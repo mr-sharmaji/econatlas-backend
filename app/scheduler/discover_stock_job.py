@@ -906,10 +906,11 @@ class DiscoverStockScraper(BaseScraper):
             if idx < 0:
                 return None
             # Search within a reasonable window after the label
-            window = html[idx: idx + 500]
-            # Look for "3 Years:" or "TTM:" followed by a number and %
+            window = html[idx: idx + 800]
+            # Screener HTML: <td>3 Years:</td>\n<td>7%</td>
+            # Match across the </td><td> boundary
             pat = re.compile(
-                period_label + r'\s*[:\s]*\s*([\-]?\d+)\s*%',
+                period_label + r'[:\s]*</td>\s*<td[^>]*>\s*([\-]?\d+)\s*%',
                 re.IGNORECASE,
             )
             m = pat.search(window)
