@@ -1661,26 +1661,17 @@ class DiscoverStockScraper(BaseScraper):
                 ownership_score = own_score
                 has_ownership = True
 
-            # ── Analyst Consensus (NEW) ──
-            has_analyst = False
-            analyst_score: float | None = None
-            an_score, _an_parts = self._score_analyst_consensus(row)
-            if an_score is not None:
-                analyst_score = an_score
-                has_analyst = True
-
-            # ── 8-component weighted total ──
-            # Momentum 12%, Liquidity 5%, Fundamentals 22%, Growth 16%,
-            # Financial Health 15%, Volatility 8%, Ownership 12%, Analyst 10%
+            # ── 7-component weighted total ──
+            # Momentum 13%, Liquidity 5%, Fundamentals 25%, Growth 18%,
+            # Financial Health 17%, Volatility 9%, Ownership 13%
             target_weights = {
-                "momentum": 0.12,
+                "momentum": 0.13,
                 "liquidity": 0.05,
-                "fundamentals": 0.22,
-                "growth": 0.16,
-                "financial_health": 0.15,
-                "volatility": 0.08,
-                "ownership": 0.12,
-                "analyst": 0.10,
+                "fundamentals": 0.25,
+                "growth": 0.18,
+                "financial_health": 0.17,
+                "volatility": 0.09,
+                "ownership": 0.13,
             }
             scores_map = {
                 "momentum": momentum,
@@ -1690,7 +1681,6 @@ class DiscoverStockScraper(BaseScraper):
                 "financial_health": financial_health_score if has_financial_health else 0.0,
                 "volatility": volatility_score if has_volatility else 0.0,
                 "ownership": ownership_score if has_ownership else 0.0,
-                "analyst": analyst_score if has_analyst else 0.0,
             }
 
             # Dynamic reweighting: exclude unavailable components
@@ -1705,8 +1695,6 @@ class DiscoverStockScraper(BaseScraper):
                 if k == "financial_health" and not has_financial_health:
                     continue
                 if k == "ownership" and not has_ownership:
-                    continue
-                if k == "analyst" and not has_analyst:
                     continue
                 available_weights[k] = w
 
@@ -1743,8 +1731,7 @@ class DiscoverStockScraper(BaseScraper):
                 total_data_metrics += 1
             if has_ownership:
                 total_data_metrics += 1
-            if has_analyst:
-                total_data_metrics += 1
+            # analyst data not used in scoring but kept for display
 
             if total_data_metrics == 0:
                 score = min(score, 65.0)
@@ -1786,7 +1773,7 @@ class DiscoverStockScraper(BaseScraper):
                 "score_growth": round(growth_score, 2) if growth_score is not None else None,
                 "score_financial_health": round(financial_health_score, 2) if financial_health_score is not None else None,
                 "score_ownership": round(ownership_score, 2) if ownership_score is not None else None,
-                "score_analyst": round(analyst_score, 2) if analyst_score is not None else None,
+                "score_analyst": None,
                 "percent_change_3m": pct_change_3m,
                 "percent_change_1w": pct_change_1w,
                 "percent_change_1y": pct_change_1y,
@@ -1799,7 +1786,6 @@ class DiscoverStockScraper(BaseScraper):
                     "growth": round(growth_score, 2) if growth_score is not None else None,
                     "financial_health": round(financial_health_score, 2) if financial_health_score is not None else None,
                     "ownership": round(ownership_score, 2) if ownership_score is not None else None,
-                    "analyst": round(analyst_score, 2) if analyst_score is not None else None,
                     "52w_position": pos_52w_by_sym.get(symbol),
                     "combined_signal": round((momentum + liquidity) / 2.0, 2),
                     "fundamentals_coverage": f"{metrics_used}/5",
@@ -2254,7 +2240,7 @@ async def run_discover_stock_job() -> None:
             sample = rows[0]
             logger.info(
                 "Discover stock: sample scored row %s → score=%.2f "
-                "mom=%.1f liq=%.1f fun=%.1f vol=%s gro=%s fh=%s own=%s ana=%s tags=%s",
+                "mom=%.1f liq=%.1f fun=%.1f vol=%s gro=%s fh=%s own=%s tags=%s",
                 sample.get("symbol"),
                 sample.get("score", 0),
                 sample.get("score_momentum", 0),
@@ -2264,7 +2250,6 @@ async def run_discover_stock_job() -> None:
                 sample.get("score_growth"),
                 sample.get("score_financial_health"),
                 sample.get("score_ownership"),
-                sample.get("score_analyst"),
                 sample.get("tags", [])[:5],
             )
 
