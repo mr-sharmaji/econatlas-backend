@@ -850,8 +850,11 @@ class DiscoverStockScraper(BaseScraper):
             start, end = values[0], values[-1]
             if start is None or end is None or start <= 0:
                 return None
+            ratio = end / start
+            if ratio <= 0:
+                return None  # negative ratio → complex power, skip
             try:
-                return (end / start) ** (1.0 / years) - 1.0
+                return ratio ** (1.0 / years) - 1.0
             except (ZeroDivisionError, ValueError, OverflowError):
                 return None
 
@@ -2544,7 +2547,7 @@ class DiscoverStockScraper(BaseScraper):
                 sales_score = self._clamp(50 + capped * 200)
                 growth_parts.append((sales_score, 0.35))
 
-            if profit_cagr is not None:
+            if profit_cagr is not None and isinstance(profit_cagr, (int, float)):
                 capped = min(profit_cagr, 0.50)
                 profit_score = self._clamp(50 + capped * 200)
                 growth_parts.append((profit_score, 0.35))
