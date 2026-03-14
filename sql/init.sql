@@ -507,3 +507,16 @@ ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_smart_money 
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS pl_annual JSONB;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS bs_annual JSONB;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS cf_annual JSONB;
+
+-- v0.5.1: Allow score columns to be NULL so incremental (unscored) upserts
+-- can use COALESCE to preserve existing scores without hitting NOT NULL.
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score DROP NOT NULL;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score DROP DEFAULT;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score_momentum DROP NOT NULL;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score_momentum DROP DEFAULT;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score_liquidity DROP NOT NULL;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score_liquidity DROP DEFAULT;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score_fundamentals DROP NOT NULL;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score_fundamentals DROP DEFAULT;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score_breakdown DROP NOT NULL;
+ALTER TABLE discover_stock_snapshots ALTER COLUMN score_breakdown DROP DEFAULT;
