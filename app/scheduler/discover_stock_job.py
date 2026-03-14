@@ -1356,6 +1356,7 @@ class DiscoverStockScraper(BaseScraper):
         # ── Derive missing fields from available data ──
         _derived_pe = 0
         _derived_pb = 0
+        _derived_roce = 0
         _defaulted_fii = 0
         _defaulted_dii = 0
         for r in rows:
@@ -1375,6 +1376,17 @@ class DiscoverStockScraper(BaseScraper):
                     if book_value > 0:
                         r["price_to_book"] = round(price / book_value, 2)
                         _derived_pb += 1
+            # ROCE ≈ ROE × (1 + D/E) — standard approximation
+            # When D/E is unavailable, ROCE ≈ ROE (assumes no debt)
+            if r.get("roce") is None:
+                roe = r.get("roe")
+                if roe is not None:
+                    dte = r.get("debt_to_equity")
+                    if dte is not None and dte >= 0:
+                        r["roce"] = round(roe * (1 + dte), 2)
+                    else:
+                        r["roce"] = round(roe, 2)  # no-debt fallback
+                    _derived_roce += 1
             # Default FII/DII to 0 when promoter data exists (no FII ≠ unknown)
             if r.get("promoter_holding") is not None:
                 if r.get("fii_holding") is None:
@@ -1384,10 +1396,10 @@ class DiscoverStockScraper(BaseScraper):
                     r["dii_holding"] = 0.0
                     _defaulted_dii += 1
 
-        if _derived_pe or _derived_pb or _defaulted_fii or _defaulted_dii:
+        if _derived_pe or _derived_pb or _derived_roce or _defaulted_fii or _defaulted_dii:
             logger.info(
-                "Derived fields: PE=%d, P/B=%d, FII→0=%d, DII→0=%d",
-                _derived_pe, _derived_pb, _defaulted_fii, _defaulted_dii,
+                "Derived fields: PE=%d, P/B=%d, ROCE=%d, FII→0=%d, DII→0=%d",
+                _derived_pe, _derived_pb, _derived_roce, _defaulted_fii, _defaulted_dii,
             )
 
         # ── Pre-compute sector medians for PE, PB, and D/E ──
