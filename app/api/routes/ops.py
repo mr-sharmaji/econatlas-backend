@@ -191,6 +191,63 @@ async def clear_stale_jobs(
     }
 
 
+@router.post("/jobs/abort/{job_name}")
+async def abort_job(
+    job_name: str = Path(..., description="Name of the job to abort"),
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Abort a running job by setting a Redis abort flag + clearing ARQ locks.
+
+    The running job checks this flag periodically and exits early.
+    ARQ locks are also cleared so a fresh job can start immediately.
+    """
+    _authorize(x_ops_token)
+    if job_name not in _VALID_JOBS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown job '{job_name}'. Valid: {sorted(_VALID_JOBS)}",
+        )
+    from arq.constants import default_queue_name, in_progress_key_prefix, job_key_prefix
+
+    from app.queue.redis_pool import get_redis_pool
+
+    pool = await get_redis_pool()
+
+    # 1. Set abort flag (TTL 10 minutes — long enough for job to see it)
+    abort_key = f"job:abort:{job_name}"
+    await pool.set(abort_key, "1", ex=600)
+
+    # 2. Clear ARQ in-progress locks for this job
+    cleared = []
+    in_progress_key = in_progress_key_prefix + default_queue_name
+    raw_members = await pool.smembers(in_progress_key)
+    for raw_id in raw_members or set():
+        job_id = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
+        if job_name in job_id:
+            await pool.srem(in_progress_key, raw_id)
+            cleared.append(job_id)
+
+    # 3. Clear per-job in-progress keys
+    async for key in pool.scan_iter(match=f"{in_progress_key_prefix}*{job_name}*"):
+        key_str = key.decode() if isinstance(key, bytes) else str(key)
+        await pool.delete(key)
+        cleared.append(key_str)
+
+    # 4. Clear job hash keys
+    async for key in pool.scan_iter(match=f"{job_key_prefix}*{job_name}*"):
+        key_str = key.decode() if isinstance(key, bytes) else str(key)
+        await pool.delete(key)
+        cleared.append(key_str)
+
+    logger.warning("Abort requested for job %s: flag set, cleared %d ARQ keys", job_name, len(cleared))
+    return {
+        "status": "abort_requested",
+        "job_name": job_name,
+        "abort_key": abort_key,
+        "cleared_keys": cleared,
+    }
+
+
 @router.get("/jobs")
 async def list_jobs(
     x_ops_token: str | None = Header(default=None),

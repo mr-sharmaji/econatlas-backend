@@ -1982,10 +1982,16 @@ class DiscoverStockScraper(BaseScraper):
         _screener_fail = 0
         _t_start = time_mod.time()
 
+        _aborted = False
+
         def _log_progress(force: bool = False) -> None:
-            nonlocal _processed
+            nonlocal _processed, _aborted
             if not force and _processed % 100 != 0:
                 return
+            # Check for abort every 100 stocks
+            if not _aborted and _processed % 100 == 0 and _check_abort():
+                logger.warning("ABORT requested — stopping stock fetch at %d/%d", _processed, _total)
+                _aborted = True
             elapsed = time_mod.time() - _t_start
             rate = _processed / elapsed if elapsed > 0 else 0
             eta = (_total - _processed) / rate if rate > 0 else 0
@@ -2007,6 +2013,8 @@ class DiscoverStockScraper(BaseScraper):
             )
             missing: list[DiscoverStockDef] = []
             for stock in universe:
+                if _aborted:
+                    break
                 quote = bulk_quotes.get(stock.nse_symbol)
                 if quote is None:
                     missing.append(stock)
@@ -2035,7 +2043,7 @@ class DiscoverStockScraper(BaseScraper):
                     if "screener" in src:
                         _screener_ok += 1
                 _log_progress()
-            if missing and self._missing_quote_retry_limit > 0:
+            if not _aborted and missing and self._missing_quote_retry_limit > 0:
                 retry_batch = missing[: self._missing_quote_retry_limit]
                 logger.warning(
                     "Bhavcopy missing %d/%d symbols; retrying fallback quotes for %d symbols",
@@ -2044,6 +2052,8 @@ class DiscoverStockScraper(BaseScraper):
                     len(retry_batch),
                 )
                 for stock in retry_batch:
+                    if _aborted:
+                        break
                     item = self._fetch_one(stock)
                     if item is not None:
                         raw_rows.append(item)
@@ -2054,6 +2064,8 @@ class DiscoverStockScraper(BaseScraper):
             fallback_universe = CORE_UNIVERSE if len(universe) > len(CORE_UNIVERSE) else universe
             _total = len(fallback_universe)
             for stock in fallback_universe:
+                if _aborted:
+                    break
                 item = self._fetch_one(stock)
                 if item is not None:
                     raw_rows.append(item)
@@ -2067,9 +2079,10 @@ class DiscoverStockScraper(BaseScraper):
                 )
         _log_progress(force=True)
         elapsed_total = time_mod.time() - _t_start
+        status_word = "ABORTED" if _aborted else "complete"
         logger.info(
-            "Stock fetch complete: %d rows in %.1fm | yahoo ok=%d fail=%d skip=%d | screener ok=%d fail=%d",
-            len(raw_rows), elapsed_total / 60,
+            "Stock fetch %s: %d rows in %.1fm | yahoo ok=%d fail=%d skip=%d | screener ok=%d fail=%d",
+            status_word, len(raw_rows), elapsed_total / 60,
             _yahoo_ok, _yahoo_fail, _yahoo_skip,
             _screener_ok, _screener_fail,
         )
@@ -2081,6 +2094,22 @@ class DiscoverStockScraper(BaseScraper):
 
 
 _scraper = DiscoverStockScraper()
+
+
+def _check_abort(job_name: str = "discover_stock") -> bool:
+    """Check Redis for an abort flag. Returns True if abort requested."""
+    try:
+        import redis as _redis
+
+        settings = get_settings()
+        r = _redis.from_url(settings.redis_url, decode_responses=True)
+        val = r.get(f"job:abort:{job_name}")
+        if val:
+            r.delete(f"job:abort:{job_name}")
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _fetch_discover_stock_raw_sync() -> list[dict]:
