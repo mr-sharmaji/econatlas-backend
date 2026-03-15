@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from app.schemas.discover_schema import (
     ComparisonDimension,
@@ -105,7 +105,8 @@ async def unified_search(
 
 
 @router.get("/home", response_model=DiscoverHomeResponse)
-async def get_discover_home() -> DiscoverHomeResponse:
+async def get_discover_home(response: Response) -> DiscoverHomeResponse:
+    response.headers["Cache-Control"] = "public, max-age=1800"
     try:
         payload = await discover_service.get_discover_home_data()
         # Fetch market mood in parallel
@@ -263,7 +264,8 @@ async def get_discover_mutual_funds(
 
 
 @router.get("/stocks/{symbol}/detail", response_model=DiscoverStockItemResponse)
-async def get_stock_detail(symbol: str) -> DiscoverStockItemResponse:
+async def get_stock_detail(symbol: str, response: Response) -> DiscoverStockItemResponse:
+    response.headers["Cache-Control"] = "public, max-age=900"
     try:
         data = await discover_service.get_stock_by_symbol(symbol=symbol)
         if data is None:
@@ -276,7 +278,8 @@ async def get_stock_detail(symbol: str) -> DiscoverStockItemResponse:
 
 
 @router.get("/mutual-funds/{scheme_code}/detail", response_model=DiscoverMutualFundItemResponse)
-async def get_mf_detail(scheme_code: str) -> DiscoverMutualFundItemResponse:
+async def get_mf_detail(scheme_code: str, response: Response) -> DiscoverMutualFundItemResponse:
+    response.headers["Cache-Control"] = "public, max-age=900"
     try:
         data = await discover_service.get_mf_by_scheme_code(scheme_code=scheme_code)
         if data is None:
@@ -437,8 +440,9 @@ async def compare_stocks(
 
 
 @router.get("/market-mood", response_model=MarketMood)
-async def get_market_mood() -> MarketMood:
+async def get_market_mood(response: Response) -> MarketMood:
     """Aggregate score distribution and sentiment across tracked stocks."""
+    response.headers["Cache-Control"] = "public, max-age=1800"
     try:
         data = await discover_service.get_market_mood()
         dist = data.get("score_distribution")
