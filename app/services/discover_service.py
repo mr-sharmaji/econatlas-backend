@@ -248,6 +248,18 @@ def _stock_breakdown_payload(row: dict) -> dict:
     if atr is not None:
         result["action_tag_reasoning"] = str(atr)
 
+    sc = stored_sb.get("score_confidence") or row.get("score_confidence")
+    if sc is not None:
+        result["score_confidence"] = str(sc)
+
+    ta = stored_sb.get("trend_alignment") or row.get("trend_alignment")
+    if ta is not None:
+        result["trend_alignment"] = str(ta)
+
+    bs = stored_sb.get("breakout_signal") or row.get("breakout_signal")
+    if bs is not None:
+        result["breakout_signal"] = str(bs)
+
     return result
 
 
@@ -393,7 +405,8 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
     item["score_breakdown"] = _stock_breakdown_payload(item)
     # Promote action_tag / technical_score from breakdown if top-level columns are NULL
     sb = item["score_breakdown"]
-    for _k in ("action_tag", "action_tag_reasoning", "technical_score", "rsi_14"):
+    for _k in ("action_tag", "action_tag_reasoning", "technical_score", "rsi_14",
+                "score_confidence", "trend_alignment", "breakout_signal"):
         if item.get(_k) is None and sb.get(_k) is not None:
             item[_k] = sb[_k]
     tags = item.get("tags")
@@ -486,7 +499,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     shareholding_quarterly,
                     score_quality, score_institutional, score_risk,
                     sector_percentile, lynch_classification, percent_change_5y,
-                    technical_score, rsi_14, action_tag, action_tag_reasoning
+                    technical_score, rsi_14, action_tag, action_tag_reasoning,
+                    score_confidence, trend_alignment, breakout_signal
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -518,7 +532,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     $82,
                     $83, $84, $85,
                     $86, $87, $88,
-                    $89, $90, $91, $92
+                    $89, $90, $91, $92,
+                    $93, $94, $95
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -621,7 +636,10 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     technical_score = COALESCE(EXCLUDED.technical_score, {STOCK_TABLE}.technical_score),
                     rsi_14 = COALESCE(EXCLUDED.rsi_14, {STOCK_TABLE}.rsi_14),
                     action_tag = COALESCE(EXCLUDED.action_tag, {STOCK_TABLE}.action_tag),
-                    action_tag_reasoning = COALESCE(EXCLUDED.action_tag_reasoning, {STOCK_TABLE}.action_tag_reasoning)
+                    action_tag_reasoning = COALESCE(EXCLUDED.action_tag_reasoning, {STOCK_TABLE}.action_tag_reasoning),
+                    score_confidence = COALESCE(EXCLUDED.score_confidence, {STOCK_TABLE}.score_confidence),
+                    trend_alignment = COALESCE(EXCLUDED.trend_alignment, {STOCK_TABLE}.trend_alignment),
+                    breakout_signal = COALESCE(EXCLUDED.breakout_signal, {STOCK_TABLE}.breakout_signal)
                 """,
                 str(row.get("market") or "IN"),                                    # $1
                 str(row.get("symbol") or ""),                                      # $2
@@ -715,6 +733,9 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("rsi_14")),                                     # $90
                 row.get("action_tag"),                                             # $91
                 row.get("action_tag_reasoning"),                                   # $92
+                row.get("score_confidence"),                                       # $93
+                row.get("trend_alignment"),                                        # $94
+                row.get("breakout_signal"),                                        # $95
             )
             count += 1
     return count

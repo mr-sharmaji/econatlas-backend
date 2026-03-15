@@ -2350,6 +2350,9 @@ class DiscoverStockScraper(BaseScraper):
 
         # ── Volume Trend ──
         vol_score = None
+        avg_vol_20 = 0.0
+        vol_up = False
+        vol_surge = False
         if len(volumes) >= 50 and len(closes) >= 20:
             recent_vol = volumes[-20:]
             medium_vol = volumes[-50:]
@@ -2359,6 +2362,10 @@ class DiscoverStockScraper(BaseScraper):
             price_trend_20d = (closes[-1] - closes[-20]) / closes[-20] if closes[-20] > 0 else 0
             price_up = price_trend_20d > 0.01
             vol_up = avg_vol_20 > avg_vol_50 * 1.05 if avg_vol_50 > 0 else False
+
+            # Volume surge: last day's volume vs 20-day average
+            last_vol = volumes[-1] if volumes[-1] else 0
+            vol_surge = (last_vol > avg_vol_20 * 1.5) if avg_vol_20 > 0 else False
 
             if price_up and vol_up:
                 vol_score = 80.0  # confirmed advance
@@ -2415,32 +2422,76 @@ class DiscoverStockScraper(BaseScraper):
                 else:
                     ma_score = 45.0
 
-        # ── Support/Resistance Proximity ──
+        # ── Support/Resistance & Breakout/Breakdown Detection ──
         sr_score = None
+        breakout_signal = "none"
         high_52w = row.get("high_52w")
         low_52w = row.get("low_52w")
+
+        # 20-day high/low for short-term breakout detection
+        high_20d = max(closes[-20:]) if len(closes) >= 20 else None
+        low_20d = min(closes[-20:]) if len(closes) >= 20 else None
+
         if high_52w and low_52w and current_price > 0 and high_52w > low_52w:
-            dist_to_high_pct = (high_52w - current_price) / current_price * 100
-            dist_to_low_pct = (current_price - low_52w) / current_price * 100
+            dist_high_pct = (high_52w - current_price) / current_price * 100
+            dist_low_pct = (current_price - low_52w) / current_price * 100
 
-            if dist_to_low_pct < 5:
-                # Near 52W low — potential support zone
-                sr_score = 65.0
-            elif dist_to_high_pct < 5:
-                # Near 52W high — breakout or resistance
-                if vol_up if vol_score is not None else False:
-                    sr_score = 75.0  # breakout with volume
+            # BREAKOUT: price at or above 52W high
+            if dist_high_pct <= 0:
+                if vol_up or vol_surge:
+                    breakout_signal = "breakout"
+                    sr_score = 85.0
                 else:
-                    sr_score = 35.0  # resistance without volume
-            elif dist_to_high_pct < 15:
-                sr_score = 60.0  # upper range
-            elif dist_to_low_pct < 15:
-                sr_score = 40.0  # lower range
+                    breakout_signal = "approaching_breakout"
+                    sr_score = 65.0
+            # APPROACHING BREAKOUT: within 3% of 52W high
+            elif dist_high_pct < 3:
+                if vol_up or vol_surge:
+                    breakout_signal = "approaching_breakout"
+                    sr_score = 75.0
+                else:
+                    breakout_signal = "resistance"
+                    sr_score = 40.0
+            # NEAR RESISTANCE: within 5% of 52W high
+            elif dist_high_pct < 5:
+                if vol_up:
+                    breakout_signal = "approaching_breakout"
+                    sr_score = 70.0
+                else:
+                    breakout_signal = "resistance"
+                    sr_score = 35.0
+            # BREAKDOWN: price at or below 52W low
+            elif dist_low_pct <= 0:
+                if vol_up or vol_surge:
+                    breakout_signal = "breakdown"
+                    sr_score = 10.0
+                else:
+                    breakout_signal = "approaching_breakdown"
+                    sr_score = 25.0
+            # APPROACHING BREAKDOWN: within 3% of 52W low
+            elif dist_low_pct < 3:
+                breakout_signal = "approaching_breakdown"
+                sr_score = 20.0 if vol_up else 30.0
+            # NEAR SUPPORT: within 5% of 52W low
+            elif dist_low_pct < 5:
+                breakout_signal = "support"
+                sr_score = 60.0
+            # MID-RANGE
+            elif dist_high_pct < 15:
+                sr_score = 60.0
+            elif dist_low_pct < 15:
+                sr_score = 40.0
             else:
-                sr_score = 50.0  # mid-range
+                sr_score = 50.0
 
-            details["dist_to_52w_high_pct"] = round(dist_to_high_pct, 2)
-            details["dist_to_52w_low_pct"] = round(dist_to_low_pct, 2)
+            details["dist_to_52w_high_pct"] = round(dist_high_pct, 2)
+            details["dist_to_52w_low_pct"] = round(dist_low_pct, 2)
+
+        # Short-term 20-day breakout (if no 52W signal detected)
+        if breakout_signal == "none" and high_20d and current_price >= high_20d and (vol_up or vol_surge):
+            breakout_signal = "approaching_breakout"
+
+        details["breakout_signal"] = breakout_signal
 
         # ── Weighted composite with sector adjustments ──
         base_weights = {
@@ -2498,6 +2549,7 @@ class DiscoverStockScraper(BaseScraper):
         institutional_sub: float | None = None,
         risk_sub: float | None = None,
         tech_details: dict | None = None,
+        breakout_signal: str = "none",
     ) -> tuple[str, str]:
         """Assign a user-facing action tag based on fundamentals + technicals.
 
@@ -2530,6 +2582,12 @@ class DiscoverStockScraper(BaseScraper):
             tech_summary_parts.append(f"{direction} MACD")
         tech_summary = ", ".join(tech_summary_parts) if tech_summary_parts else "limited technical data"
 
+        # Trend alignment for reasoning text
+        trend = DiscoverStockJob._compute_trend_alignment(score, tech_score)
+        tech_confirms = {"aligned": "confirm", "divergent": "partially diverge from"}.get(
+            trend or "", "conflict with"
+        )
+
         # 1. Quality gate triggered
         if quality_cap is not None and score <= quality_cap:
             if quality_cap <= 35:
@@ -2540,6 +2598,11 @@ class DiscoverStockScraper(BaseScraper):
                 return ("Deteriorating",
                         f"Deteriorating — Quality gates limit the score to {quality_cap:.0f}. "
                         f"Core fundamentals show persistent weakness.")
+            if quality_cap <= 55:
+                return ("Underperformer",
+                        f"Underperformer — Quality constraints cap the score at {quality_cap:.0f}. "
+                        f"Fundamentals show weakness in key areas but not structural failure. "
+                        f"{top_str}.")
 
         # 2. No technical data
         if tech_score is None:
@@ -2561,62 +2624,141 @@ class DiscoverStockScraper(BaseScraper):
 
         # 3. Data quality downgrade — limited data caps at Hold
         if data_quality == "limited":
-            tag = "Hold"
-            reason = (f"Hold — Limited data quality restricts confidence. "
-                      f"Score {score:.0f}, tech {tech_score:.0f}. "
-                      f"More data needed before a stronger signal.")
-            return tag, reason
+            return ("Hold — Low Data",
+                    f"Hold — Limited data quality restricts confidence. "
+                    f"Score {score:.0f}, tech {tech_score:.0f}. "
+                    f"More data needed before a stronger signal.")
 
         # 4. Full data — decision tree
-        # Check for fundamental-technical divergence first
-        aligned = abs(score - tech_score) < 25
-        tech_confirms = "confirm" if aligned else "diverge from"
+        tag: str
+        reason: str
 
         if score >= 75 and tech_score >= 60:
-            return ("Strong Outperformer",
-                    f"Strong Outperformer — {top_str} are the primary drivers. "
-                    f"{tech_summary} {tech_confirms} the fundamental strength. "
-                    f"Reflects both long-term quality and favorable short-term positioning.")
+            tag = "Strong Outperformer"
+            reason = (f"Strong Outperformer — {top_str} are the primary drivers. "
+                      f"{tech_summary} {tech_confirms} the fundamental strength. "
+                      f"Reflects both long-term quality and favorable short-term positioning.")
 
-        if score >= 60 and tech_score >= 45:
-            return ("Outperformer",
-                    f"Outperformer — Solid fundamentals (score {score:.0f}) led by {top_str}. "
-                    f"Technicals ({tech_summary}) are supportive at {tech_score:.0f}.")
+        elif score >= 60 and tech_score >= 45:
+            tag = "Outperformer"
+            reason = (f"Outperformer — Solid fundamentals (score {score:.0f}) led by {top_str}. "
+                      f"Technicals ({tech_summary}) {tech_confirms} at {tech_score:.0f}.")
 
-        if score >= 50 and tech_score >= 50:
-            return ("Accumulate",
-                    f"Accumulate — Fundamentals (score {score:.0f}) and technicals ({tech_score:.0f}) "
-                    f"are both moderately positive. {top_str} lead the score. "
-                    f"Suitable for gradual position building.")
+        elif score >= 50 and tech_score >= 50:
+            tag = "Accumulate"
+            reason = (f"Accumulate — Fundamentals (score {score:.0f}) and technicals ({tech_score:.0f}) "
+                      f"are both moderately positive. {top_str} lead the score. "
+                      f"Suitable for gradual position building.")
 
-        if score >= 55 and tech_score < 40:
-            return ("Watchlist",
-                    f"Watchlist — Fundamentals are solid (score {score:.0f}) led by {top_str}, "
-                    f"but technicals are weak ({tech_score:.0f}) with {tech_summary}. "
-                    f"Technical weakness may present a better entry point if fundamentals hold.")
+        elif 45 <= score < 55 and 40 <= tech_score < 50:
+            tag = "Neutral"
+            reason = (f"Neutral — Fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) "
+                      f"are both middling. {top_str} lead. {tech_summary}. No directional edge.")
 
-        if score < 45 and tech_score >= 65:
-            return ("Technically Strong, Fundamentally Weak",
-                    f"Technically Strong, Fundamentally Weak — "
-                    f"Price momentum (tech {tech_score:.0f}, {tech_summary}) "
-                    f"is not supported by fundamentals (score {score:.0f}). "
-                    f"High risk — momentum may not sustain without quality backing.")
+        elif score >= 55 and tech_score < 40:
+            tag = "Watchlist"
+            reason = (f"Watchlist — Fundamentals are solid (score {score:.0f}) led by {top_str}, "
+                      f"but technicals are weak ({tech_score:.0f}) with {tech_summary}. "
+                      f"Technical weakness may present a better entry point if fundamentals hold.")
 
-        if score < 35:
-            return ("Avoid",
-                    f"Avoid — Weak fundamentals (score {score:.0f}) with {top_str}. "
-                    f"Technical position ({tech_score:.0f}) does not offset structural weakness.")
+        elif score < 45 and tech_score >= 65:
+            tag = "Momentum Only"
+            reason = (f"Momentum Only — Price momentum (tech {tech_score:.0f}, {tech_summary}) "
+                      f"is not supported by fundamentals (score {score:.0f}). "
+                      f"High risk — momentum may not sustain without quality backing.")
 
-        if score < 50 and tech_score < 40:
-            return ("Deteriorating",
-                    f"Deteriorating — Both fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) "
-                    f"are weak. {tech_summary} confirms the downward pressure. {top_str}.")
+        elif score < 35:
+            tag = "Avoid"
+            reason = (f"Avoid — Weak fundamentals (score {score:.0f}) with {top_str}. "
+                      f"Technical position ({tech_score:.0f}) does not offset structural weakness.")
 
-        # Default: Hold
-        return ("Hold",
-                f"Hold — Mixed signals with score {score:.0f} and tech {tech_score:.0f}. "
-                f"{top_str} are the main drivers. {tech_summary}. "
-                f"No strong case for action in either direction.")
+        elif score < 50 and tech_score < 40:
+            tag = "Deteriorating"
+            reason = (f"Deteriorating — Both fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) "
+                      f"are weak. {tech_summary} confirms the downward pressure. {top_str}.")
+
+        else:
+            tag = "Hold"
+            reason = (f"Hold — Mixed signals with score {score:.0f} and tech {tech_score:.0f}. "
+                      f"{top_str} are the main drivers. {tech_summary}. "
+                      f"No strong case for action in either direction.")
+
+        # 5. Breakout/Breakdown modifier — upgrades or downgrades the tag
+        if breakout_signal == "breakout":
+            upgrades = {
+                "Outperformer": "Strong Outperformer",
+                "Accumulate": "Outperformer",
+                "Hold": "Accumulate",
+                "Neutral": "Accumulate",
+                "Watchlist": "Hold",
+            }
+            if tag in upgrades:
+                old_tag = tag
+                tag = upgrades[tag]
+                reason += f" Upgraded from {old_tag} due to confirmed 52W breakout with volume."
+
+        elif breakout_signal == "breakdown":
+            downgrades = {
+                "Strong Outperformer": "Outperformer",
+                "Outperformer": "Hold",
+                "Accumulate": "Watchlist",
+                "Hold": "Deteriorating",
+                "Neutral": "Deteriorating",
+            }
+            if tag in downgrades:
+                old_tag = tag
+                tag = downgrades[tag]
+                reason += f" Downgraded from {old_tag} due to 52W breakdown."
+
+        elif breakout_signal == "approaching_breakout":
+            reason += " Approaching 52W high — potential breakout if volume confirms."
+
+        elif breakout_signal == "approaching_breakdown":
+            reason += " Approaching 52W low — monitor for breakdown risk."
+
+        return tag, reason
+
+    @staticmethod
+    def _compute_trend_alignment(
+        score: float,
+        tech_score: float | None,
+    ) -> str | None:
+        """Determine if fundamentals and technicals are aligned, divergent, or conflicting."""
+        if tech_score is None:
+            return None
+        # Cross-zone conflict: one strong positive, other strong negative
+        if (score >= 70 and tech_score < 30) or (score < 35 and tech_score >= 70):
+            return "conflicting"
+        abs_diff = abs(score - tech_score)
+        if abs_diff >= 35:
+            return "conflicting"
+        if abs_diff >= 18:
+            return "divergent"
+        return "aligned"
+
+    @staticmethod
+    def _compute_score_confidence(
+        score: float,
+        tech_score: float | None,
+        data_quality: str,
+        metrics_used: int,
+    ) -> str:
+        """Determine confidence level based on data quality and fundamental-technical agreement."""
+        if data_quality == "limited":
+            return "low"
+        if tech_score is None:
+            if score >= 65 and metrics_used >= 4 and data_quality == "full":
+                return "medium"
+            return "low"
+        abs_diff = abs(score - tech_score)
+        if abs_diff < 15 and data_quality == "full" and metrics_used >= 3:
+            # Strong agreement with good data
+            if (score >= 65 and tech_score >= 55) or (score < 40 and tech_score < 40):
+                return "high"
+            return "medium"
+        if abs_diff < 25 and data_quality == "full" and metrics_used >= 3:
+            return "medium"
+        return "low"
 
     @staticmethod
     def _detect_market_regime(
@@ -3491,6 +3633,13 @@ class DiscoverStockScraper(BaseScraper):
             tech_score, tech_details = self._compute_technical_score(sym_history, sector, row)
 
             # ── Action tag ──
+            # ── Breakout signal, trend alignment, confidence ──
+            breakout_signal = tech_details.get("breakout_signal", "none")
+            trend_alignment = self._compute_trend_alignment(score, tech_score)
+            score_confidence = self._compute_score_confidence(
+                score, tech_score, data_quality, metrics_used,
+            )
+
             action_tag, action_tag_reasoning = self._compute_action_tag(
                 score, tech_score,
                 quality_score, momentum,
@@ -3501,6 +3650,7 @@ class DiscoverStockScraper(BaseScraper):
                 institutional_sub=institutional_score,
                 risk_sub=risk_score,
                 tech_details=tech_details,
+                breakout_signal=breakout_signal,
             )
 
             enriched = {
@@ -3523,6 +3673,9 @@ class DiscoverStockScraper(BaseScraper):
                 "rsi_14": tech_details.get("rsi_14"),
                 "action_tag": action_tag,
                 "action_tag_reasoning": action_tag_reasoning,
+                "score_confidence": score_confidence,
+                "trend_alignment": trend_alignment,
+                "breakout_signal": breakout_signal,
                 "score_breakdown": {
                     "quality": round(quality_score, 2),
                     "valuation": round(valuation_score, 2) if valuation_score is not None else None,
@@ -3534,6 +3687,9 @@ class DiscoverStockScraper(BaseScraper):
                     "rsi_14": tech_details.get("rsi_14"),
                     "action_tag": action_tag,
                     "action_tag_reasoning": action_tag_reasoning,
+                    "score_confidence": score_confidence,
+                    "trend_alignment": trend_alignment,
+                    "breakout_signal": breakout_signal,
                     "52w_position": pos_52w_by_sym.get(symbol),
                     "combined_signal": round((momentum + liquidity) / 2.0, 2),
                     "quality_coverage": f"{metrics_used}/5",

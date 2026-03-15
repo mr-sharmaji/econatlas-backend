@@ -564,3 +564,6 @@ ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS technical_score DO
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS rsi_14 DOUBLE PRECISION;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS action_tag TEXT;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS action_tag_reasoning TEXT;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_confidence TEXT;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS trend_alignment TEXT;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS breakout_signal TEXT;
