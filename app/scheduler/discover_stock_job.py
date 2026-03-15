@@ -2180,8 +2180,8 @@ class DiscoverStockScraper(BaseScraper):
             return None, {}
 
         weights = {
-            "liquidity": 0.25, "volatility": 0.25, "pledging": 0.20,
-            "free_float": 0.15, "eps_sign": 0.15,
+            "liquidity": 0.20, "volatility": 0.20, "pledging": 0.20,
+            "free_float": 0.15, "eps_sign": 0.25,
         }
         total_w = sum(weights.get(k, 0.10) for k in parts)
         score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
@@ -3578,7 +3578,8 @@ class DiscoverStockScraper(BaseScraper):
                     vol_raw = self._adjust_volatility_for_cap(vol_raw, row.get("market_cap"))
                     beta = row.get("beta")
                     if beta is not None:
-                        beta_score = self._clamp(100 - beta * 35)
+                        # Negative beta is unusual, not "stable" — cap at 50
+                        beta_score = self._clamp(100 - max(beta, 0) * 35) if beta >= 0 else 50.0
                         volatility_score = self._clamp(vol_raw * 0.70 + beta_score * 0.30)
                     else:
                         volatility_score = vol_raw
