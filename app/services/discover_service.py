@@ -2277,43 +2277,49 @@ async def get_stock_story(*, symbol: str) -> dict | None:
     if not isinstance(tags_v2, list):
         tags_v2 = []
 
-    # Compute 7-day score deltas from history
-    from datetime import timedelta
-    history_rows = await pool.fetch(
+    # Compute 7-day overall score delta from history
+    old_score_row = await pool.fetchrow(
         """
-        SELECT score, score_quality, score_valuation, score_growth,
-               score_momentum, score_institutional, score_risk, scored_at
+        SELECT score, scored_at
         FROM discover_stock_score_history
-        WHERE symbol = $1 AND scored_at > NOW() - interval '8 days'
-        ORDER BY scored_at ASC
+        WHERE symbol = $1 AND scored_at < NOW() - interval '6 days'
+        ORDER BY scored_at DESC
         LIMIT 1
         """,
         symbol,
     )
 
     score_changes: list[dict] = []
-    if history_rows:
-        old = record_to_dict(history_rows[0])
-        layers = [
-            ("quality", "score_quality"),
-            ("valuation", "score_valuation"),
-            ("growth", "score_growth"),
-            ("momentum", "score_momentum"),
-            ("institutional", "score_institutional"),
-            ("risk", "score_risk"),
-        ]
-        for layer_name, col in layers:
-            old_val = _to_float(old.get(col))
-            new_val = _to_float(d.get(col))
-            if old_val is not None and new_val is not None:
-                diff = new_val - old_val
-                direction = "up" if diff > 0.5 else ("down" if diff < -0.5 else "unchanged")
-            else:
-                direction = "unchanged"
+    # Show current layer scores
+    layers = [
+        ("quality", "score_quality"),
+        ("valuation", "score_valuation"),
+        ("growth", "score_growth"),
+        ("momentum", "score_momentum"),
+        ("institutional", "score_institutional"),
+        ("risk", "score_risk"),
+    ]
+    for layer_name, col in layers:
+        new_val = _to_float(d.get(col))
+        if new_val is not None:
             score_changes.append({
                 "layer": layer_name,
-                "old_value": old_val,
+                "old_value": None,
                 "new_value": new_val,
+                "direction": "unchanged",
+            })
+
+    # If we have a historical overall score, add overall change
+    if old_score_row is not None:
+        old_overall = _to_float(old_score_row["score"])
+        new_overall = _to_float(d.get("score"))
+        if old_overall is not None and new_overall is not None:
+            diff = new_overall - old_overall
+            direction = "up" if diff > 0.5 else ("down" if diff < -0.5 else "unchanged")
+            score_changes.insert(0, {
+                "layer": "overall",
+                "old_value": old_overall,
+                "new_value": new_overall,
                 "direction": direction,
             })
 
