@@ -2806,83 +2806,61 @@ class DiscoverStockScraper(BaseScraper):
                     f"Score {score:.0f}, tech {tech_score:.0f}. "
                     f"More data needed before a stronger signal.")
 
-        # 4. Full data — decision tree
+        # 4. Full data — flat decision tree
         tag: str
         reason: str
 
         if score >= 75 and tech_score >= 60:
             tag = "Strong Outperformer"
-            reason = f"{top_str} are the primary drivers. "
-            if tech_positive:
-                reason += f"{tech_positive} {tech_confirms} the fundamental strength. "
-            if tech_caution:
-                reason += f"However, {tech_caution} — monitor for short-term pullback risk. "
-            if not tech_positive and not tech_caution:
-                reason += "Reflects both long-term quality and favorable positioning. "
+            reason = (f"Score {score:.0f} with tech {tech_score:.0f}. "
+                      f"{top_str} lead the fundamentals. "
+                      f"Technical strength ({tech_summary}) confirms the quality.")
 
         elif score >= 60 and tech_score >= 45:
             tag = "Outperformer"
-            reason = f"Solid fundamentals (score {score:.0f}) led by {top_str}. "
-            if tech_positive:
-                reason += f"{tech_positive} {tech_confirms} at tech score {tech_score:.0f}. "
-            if tech_caution:
-                reason += f"Note: {tech_caution}. "
+            reason = (f"Solid fundamentals ({score:.0f}) led by {top_str}. "
+                      f"Technicals ({tech_score:.0f}) are supportive — {tech_summary}.")
 
         elif score >= 50 and tech_score >= 50:
             tag = "Accumulate"
-            reason = f"Fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) are both moderately positive. {top_str} lead the score. "
-            if tech_caution:
-                reason += f"Watch: {tech_caution}. "
-            else:
-                reason += "Suitable for gradual position building. "
+            reason = (f"Fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) "
+                      f"are both moderately positive. {top_str} lead the score. "
+                      f"Suitable for gradual position building.")
 
         elif 45 <= score < 55 and 40 <= tech_score < 50:
             tag = "Neutral"
-            reason = f"Fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) are both middling. {top_str} lead. "
-            if tech_caution:
-                reason += f"{tech_caution}. "
-            elif tech_positive:
-                reason += f"{tech_positive}. "
-            reason += "No directional edge."
+            reason = (f"Mixed signals — score {score:.0f}, tech {tech_score:.0f}. "
+                      f"{top_str} are the main drivers. "
+                      f"No strong case for action in either direction.")
 
         elif score >= 55 and tech_score < 40:
             tag = "Watchlist"
-            reason = f"Fundamentals are solid ({score:.0f}) led by {top_str}, but technicals are weak ({tech_score:.0f}). "
-            if tech_caution:
-                reason += f"{tech_caution}. "
-            reason += "Technical weakness may present a better entry point if fundamentals hold."
+            reason = (f"Good fundamentals ({score:.0f}) led by {top_str}, "
+                      f"but technicals are weak ({tech_score:.0f}). "
+                      f"Wait for technical confirmation before acting.")
 
         elif score < 45 and tech_score >= 65:
             tag = "Momentum Only"
-            reason = f"Price momentum (tech {tech_score:.0f}) is not supported by fundamentals ({score:.0f}). "
-            if tech_positive:
-                reason += f"{tech_positive} drive short-term strength. "
-            if tech_caution:
-                reason += f"However, {tech_caution}. "
-            reason += "High risk — momentum may not sustain without quality backing."
+            reason = (f"Price momentum (tech {tech_score:.0f}) not supported by "
+                      f"fundamentals ({score:.0f}). {tech_summary}. "
+                      f"High risk — momentum may not sustain without quality backing.")
 
         elif score < 35:
             tag = "Avoid"
-            reason = f"Weak fundamentals ({score:.0f}) with {top_str}. "
-            reason += f"Technical position ({tech_score:.0f}) does not offset structural weakness."
+            reason = (f"Weak fundamentals ({score:.0f}) with {top_str}. "
+                      f"Technical position ({tech_score:.0f}) does not offset "
+                      f"structural weakness.")
 
         elif score < 50 and tech_score < 40:
             tag = "Deteriorating"
-            reason = f"Both fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) are weak. "
-            if tech_caution:
-                reason += f"{tech_caution} confirms the downward pressure. "
-            elif tech_positive:
-                reason += f"{tech_positive} offer limited bright spots. "
-            reason += f"{top_str}."
+            reason = (f"Both fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) "
+                      f"are weak. {top_str}. {tech_summary}.")
 
         else:
             tag = "Hold"
-            reason = f"Mixed signals with score {score:.0f} and tech {tech_score:.0f}. {top_str} are the main drivers. "
-            if tech_positive:
-                reason += f"{tech_positive} provide some support. "
-            if tech_caution:
-                reason += f"However, {tech_caution}. "
-            reason += "No strong case for action in either direction."
+            reason = (f"Mixed signals with score {score:.0f} and tech {tech_score:.0f}. "
+                      f"{top_str} are the main drivers. "
+                      f"No strong case for action in either direction.")
 
         # 5. Breakout/Breakdown modifier — upgrades or downgrades the tag
         if breakout_signal == "breakout":
@@ -4090,13 +4068,14 @@ class DiscoverStockScraper(BaseScraper):
             if symbol in sector_leaders:
                 tv2 = enriched.get("tags_v2", [])
                 if not any(t.get("tag") == "Sector Leader" for t in tv2):
+                    _sec = str(enriched.get("sector") or "this sector")
                     tv2.insert(0, {
                         "tag": "Sector Leader",
                         "category": "classification",
                         "severity": "positive",
                         "priority": 0,
                         "confidence": 1.0,
-                        "explanation": "Top 3 scorer in sector",
+                        "explanation": f"Ranks among the top 3 stocks in {_sec} by overall score. Sector leaders combine strong fundamentals, reasonable valuations, and manageable risk — making them standout picks within their industry.",
                         "expires_at": None,
                     })
 
