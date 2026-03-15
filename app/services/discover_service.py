@@ -409,21 +409,15 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
                 "score_confidence", "trend_alignment", "breakout_signal"):
         if item.get(_k) is None and sb.get(_k) is not None:
             item[_k] = sb[_k]
-    tags = item.get("tags")
-    if isinstance(tags, str):
-        try:
-            tags = _json.loads(tags)
-        except (ValueError, TypeError):
-            tags = []
-    item["tags"] = tags if isinstance(tags, list) else []
-    # Parse tags_v2 structured tags
+    # Parse tags_v2 structured tags → expose as "tags" in API
     tags_v2 = item.get("tags_v2")
     if isinstance(tags_v2, str):
         try:
             tags_v2 = _json.loads(tags_v2)
         except (ValueError, TypeError):
             tags_v2 = []
-    item["tags_v2"] = tags_v2 if isinstance(tags_v2, list) else []
+    item["tags"] = tags_v2 if isinstance(tags_v2, list) else []
+    item.pop("tags_v2", None)
     # Parse JSONB columns that come back as strings from asyncpg
     for jkey in ("pl_annual", "bs_annual", "cf_annual", "shareholding_quarterly"):
         val = item.get(jkey)
@@ -442,21 +436,15 @@ def _decorate_mf_row(row: dict, category_stats: dict | None = None) -> dict:
     item["source_status"] = _normalize_source_status(item.get("source_status"))
     item["score_breakdown"] = _mf_breakdown_payload(item)
     item["display_name"] = _clean_mf_display_name(item.get("scheme_name", ""))
-    tags = item.get("tags")
-    if isinstance(tags, str):
-        try:
-            tags = _json.loads(tags)
-        except (ValueError, TypeError):
-            tags = []
-    item["tags"] = tags if isinstance(tags, list) else []
-    # Parse tags_v2 structured tags
+    # Parse tags_v2 structured tags → expose as "tags" in API
     tags_v2 = item.get("tags_v2")
     if isinstance(tags_v2, str):
         try:
             tags_v2 = _json.loads(tags_v2)
         except (ValueError, TypeError):
             tags_v2 = []
-    item["tags_v2"] = tags_v2 if isinstance(tags_v2, list) else []
+    item["tags"] = tags_v2 if isinstance(tags_v2, list) else []
+    item.pop("tags_v2", None)
     # Look up sub-category stats using fund_classification
     sub_cat = item.get("fund_classification") or item.get("sub_category") or ""
     sub_stats = None
@@ -493,7 +481,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     score_ownership, score_financial_health, score_analyst,
                     percent_change_3m, percent_change_1w,
                     percent_change_1y, percent_change_3y,
-                    score_breakdown, tags, source_status, source_timestamp, ingested_at,
+                    score_breakdown, source_status, source_timestamp, ingested_at,
                     primary_source, secondary_source,
                     high_52w, low_52w, market_cap, dividend_yield,
                     promoter_holding, fii_holding, dii_holding, government_holding, public_holding,
@@ -527,31 +515,31 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     NULL, NULL, NULL,
                     $19, $20,
                     $21, $22,
-                    $23, $24, $25, $26, NOW(),
-                    $27, $28,
-                    $29, $30, $31, $32,
-                    $33, $34, $35, $36, $37,
-                    $38, $39, $40, $41,
-                    $42, $43, $44, $45, $46, $47,
-                    $48, $49, $50,
-                    $51, $52, $53,
-                    $54, $55, $56, $57,
-                    $58, $59,
-                    $60,
-                    $61, $62, $63, $64,
-                    $65, $66,
-                    $67, $68, $69, $70, $71,
-                    $72, $73, $74,
-                    $75, $76,
-                    $77,
-                    $78, NULL, NULL,
-                    $79, $80, $81,
-                    $82,
-                    $83, $84, $85,
-                    $86, $87, $88,
-                    $89, $90, $91, $92,
-                    $93, $94, $95,
-                    $96
+                    $23, $24, $25, NOW(),
+                    $26, $27,
+                    $28, $29, $30, $31,
+                    $32, $33, $34, $35, $36,
+                    $37, $38, $39, $40,
+                    $41, $42, $43, $44, $45, $46,
+                    $47, $48, $49,
+                    $50, $51, $52,
+                    $53, $54, $55, $56,
+                    $57, $58,
+                    $59,
+                    $60, $61, $62, $63,
+                    $64, $65,
+                    $66, $67, $68, $69, $70,
+                    $71, $72, $73,
+                    $74, $75,
+                    $76,
+                    $77, NULL, NULL,
+                    $78, $79, $80,
+                    $81,
+                    $82, $83, $84,
+                    $85, $86, $87,
+                    $88, $89, $90, $91,
+                    $92, $93, $94,
+                    $95
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -583,7 +571,6 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     percent_change_1y = EXCLUDED.percent_change_1y,
                     percent_change_3y = EXCLUDED.percent_change_3y,
                     score_breakdown = COALESCE(EXCLUDED.score_breakdown, {STOCK_TABLE}.score_breakdown),
-                    tags = COALESCE(EXCLUDED.tags, {STOCK_TABLE}.tags),
                     source_status = EXCLUDED.source_status,
                     source_timestamp = EXCLUDED.source_timestamp,
                     ingested_at = NOW(),
@@ -683,79 +670,78 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("percent_change_1y")),                           # $21
                 _to_float(row.get("percent_change_3y")),                           # $22
                 _to_jsonb(row.get("score_breakdown"), _stock_breakdown_payload(row)) if row.get("score") is not None else None,  # $23
-                _to_jsonb(row.get("tags"), []) if row.get("score") is not None else None,  # $24
-                _normalize_source_status(row.get("source_status")),                # $25
-                parse_ts(row.get("source_timestamp")) or datetime.now(timezone.utc),  # $26
-                row.get("primary_source"),                                         # $27
-                row.get("secondary_source"),                                       # $28
-                _to_float(row.get("high_52w")),                                    # $29
-                _to_float(row.get("low_52w")),                                     # $30
-                _to_float(row.get("market_cap")),                                  # $31
-                _to_float(row.get("dividend_yield")),                              # $32
-                _to_float(row.get("promoter_holding")),                            # $33
-                _to_float(row.get("fii_holding")),                                 # $34
-                _to_float(row.get("dii_holding")),                                 # $35
-                _to_float(row.get("government_holding")),                          # $36
-                _to_float(row.get("public_holding")),                              # $37
-                _to_int(row.get("num_shareholders")),                              # $38
-                _to_float(row.get("promoter_holding_change")),                     # $39
-                _to_float(row.get("fii_holding_change")),                          # $40
-                _to_float(row.get("dii_holding_change")),                          # $41
-                _to_float(row.get("beta")),                                        # $42
-                _to_float(row.get("free_cash_flow")),                              # $43
-                _to_float(row.get("operating_cash_flow")),                         # $44
-                _to_float(row.get("total_cash")),                                  # $45
-                _to_float(row.get("total_debt")),                                  # $46
-                _to_float(row.get("total_revenue")),                               # $47
-                _to_float(row.get("gross_margins")),                               # $48
-                _to_float(row.get("operating_margins")),                           # $49
-                _to_float(row.get("profit_margins")),                              # $50
-                _to_float(row.get("revenue_growth")),                              # $51
-                _to_float(row.get("earnings_growth")),                             # $52
-                _to_float(row.get("forward_pe")),                                  # $53
-                _to_float(row.get("analyst_target_mean")),                         # $54
-                _to_int(row.get("analyst_count")),                                 # $55
-                row.get("analyst_recommendation"),                                 # $56
-                _to_float(row.get("analyst_recommendation_mean")),                 # $57
-                row.get("industry"),                                               # $58
-                _to_float(row.get("payout_ratio")),                                # $59
-                _to_float(row.get("pledged_promoter_pct")),                        # $60
-                _to_float(row.get("sales_growth_yoy")),                            # $61
-                _to_float(row.get("profit_growth_yoy")),                           # $62
-                _to_float(row.get("opm_change")),                                  # $63
-                _to_float(row.get("interest_coverage")),                           # $64
-                _to_float(row.get("compounded_sales_growth_3y")),                  # $65
-                _to_float(row.get("compounded_profit_growth_3y")),                 # $66
-                _to_float(row.get("total_assets")),                                # $67
-                _to_float(row.get("asset_growth_yoy")),                            # $68
-                _to_float(row.get("reserves_growth")),                             # $69
-                _to_float(row.get("debt_direction")),                              # $70
-                _to_float(row.get("cwip")),                                        # $71
-                _to_float(row.get("cash_from_operations")),                        # $72
-                _to_float(row.get("cash_from_investing")),                         # $73
-                _to_float(row.get("cash_from_financing")),                         # $74
-                _to_float(row.get("num_shareholders_change_qoq")),                 # $75
-                _to_float(row.get("num_shareholders_change_yoy")),                 # $76
-                _to_float(row.get("synthetic_forward_pe")),                        # $77
-                _to_float(row.get("score_valuation")),                             # $78
-                _to_jsonb_raw(row.get("pl_annual")),                               # $79
-                _to_jsonb_raw(row.get("bs_annual")),                               # $80
-                _to_jsonb_raw(row.get("cf_annual")),                               # $81
-                _to_jsonb_raw(row.get("shareholding_quarterly")),                   # $82
-                _to_float(row.get("score_quality")),                               # $83
-                _to_float(row.get("score_institutional")),                         # $84
-                _to_float(row.get("score_risk")),                                  # $85
-                _to_float(row.get("sector_percentile")),                           # $86
-                row.get("lynch_classification"),                                   # $87
-                _to_float(row.get("percent_change_5y")),                           # $88
-                _to_float(row.get("technical_score")),                             # $89
-                _to_float(row.get("rsi_14")),                                     # $90
-                row.get("action_tag"),                                             # $91
-                row.get("action_tag_reasoning"),                                   # $92
-                row.get("score_confidence"),                                       # $93
-                row.get("trend_alignment"),                                        # $94
-                row.get("breakout_signal"),                                        # $95
-                _to_jsonb(row.get("tags_v2"), []) if row.get("score") is not None else None,  # $96
+                _normalize_source_status(row.get("source_status")),                # $24
+                parse_ts(row.get("source_timestamp")) or datetime.now(timezone.utc),  # $25
+                row.get("primary_source"),                                         # $26
+                row.get("secondary_source"),                                       # $27
+                _to_float(row.get("high_52w")),                                    # $28
+                _to_float(row.get("low_52w")),                                     # $29
+                _to_float(row.get("market_cap")),                                  # $30
+                _to_float(row.get("dividend_yield")),                              # $31
+                _to_float(row.get("promoter_holding")),                            # $32
+                _to_float(row.get("fii_holding")),                                 # $33
+                _to_float(row.get("dii_holding")),                                 # $34
+                _to_float(row.get("government_holding")),                          # $35
+                _to_float(row.get("public_holding")),                              # $36
+                _to_int(row.get("num_shareholders")),                              # $37
+                _to_float(row.get("promoter_holding_change")),                     # $38
+                _to_float(row.get("fii_holding_change")),                          # $39
+                _to_float(row.get("dii_holding_change")),                          # $40
+                _to_float(row.get("beta")),                                        # $41
+                _to_float(row.get("free_cash_flow")),                              # $42
+                _to_float(row.get("operating_cash_flow")),                         # $43
+                _to_float(row.get("total_cash")),                                  # $44
+                _to_float(row.get("total_debt")),                                  # $45
+                _to_float(row.get("total_revenue")),                               # $46
+                _to_float(row.get("gross_margins")),                               # $47
+                _to_float(row.get("operating_margins")),                           # $48
+                _to_float(row.get("profit_margins")),                              # $49
+                _to_float(row.get("revenue_growth")),                              # $50
+                _to_float(row.get("earnings_growth")),                             # $51
+                _to_float(row.get("forward_pe")),                                  # $52
+                _to_float(row.get("analyst_target_mean")),                         # $53
+                _to_int(row.get("analyst_count")),                                 # $54
+                row.get("analyst_recommendation"),                                 # $55
+                _to_float(row.get("analyst_recommendation_mean")),                 # $56
+                row.get("industry"),                                               # $57
+                _to_float(row.get("payout_ratio")),                                # $58
+                _to_float(row.get("pledged_promoter_pct")),                        # $59
+                _to_float(row.get("sales_growth_yoy")),                            # $60
+                _to_float(row.get("profit_growth_yoy")),                           # $61
+                _to_float(row.get("opm_change")),                                  # $62
+                _to_float(row.get("interest_coverage")),                           # $63
+                _to_float(row.get("compounded_sales_growth_3y")),                  # $64
+                _to_float(row.get("compounded_profit_growth_3y")),                 # $65
+                _to_float(row.get("total_assets")),                                # $66
+                _to_float(row.get("asset_growth_yoy")),                            # $67
+                _to_float(row.get("reserves_growth")),                             # $68
+                _to_float(row.get("debt_direction")),                              # $69
+                _to_float(row.get("cwip")),                                        # $70
+                _to_float(row.get("cash_from_operations")),                        # $71
+                _to_float(row.get("cash_from_investing")),                         # $72
+                _to_float(row.get("cash_from_financing")),                         # $73
+                _to_float(row.get("num_shareholders_change_qoq")),                 # $74
+                _to_float(row.get("num_shareholders_change_yoy")),                 # $75
+                _to_float(row.get("synthetic_forward_pe")),                        # $76
+                _to_float(row.get("score_valuation")),                             # $77
+                _to_jsonb_raw(row.get("pl_annual")),                               # $78
+                _to_jsonb_raw(row.get("bs_annual")),                               # $79
+                _to_jsonb_raw(row.get("cf_annual")),                               # $80
+                _to_jsonb_raw(row.get("shareholding_quarterly")),                   # $81
+                _to_float(row.get("score_quality")),                               # $82
+                _to_float(row.get("score_institutional")),                         # $83
+                _to_float(row.get("score_risk")),                                  # $84
+                _to_float(row.get("sector_percentile")),                           # $85
+                row.get("lynch_classification"),                                   # $86
+                _to_float(row.get("percent_change_5y")),                           # $87
+                _to_float(row.get("technical_score")),                             # $88
+                _to_float(row.get("rsi_14")),                                     # $89
+                row.get("action_tag"),                                             # $90
+                row.get("action_tag_reasoning"),                                   # $91
+                row.get("score_confidence"),                                       # $92
+                row.get("trend_alignment"),                                        # $93
+                row.get("breakout_signal"),                                        # $94
+                _to_jsonb(row.get("tags_v2"), []) if row.get("score") is not None else None,  # $95
             )
             count += 1
     return count
@@ -840,7 +826,7 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     nav, nav_date, expense_ratio, aum_cr, risk_level,
                     returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
                     score, score_return, score_risk, score_cost, score_consistency,
-                    score_breakdown, tags, source_status, source_timestamp, ingested_at,
+                    score_breakdown, source_status, source_timestamp, ingested_at,
                     primary_source, secondary_source, fund_age_years,
                     max_drawdown, rolling_return_consistency,
                     alpha, beta, score_alpha, score_beta,
@@ -852,12 +838,12 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     $8, $9, $10, $11, $12,
                     $13, $14, $15, $16, $17, $18,
                     $19, $20, $21, $22, $23,
-                    $24, $25, $26, $27, NOW(),
-                    $28, $29, $30,
-                    $31, $32,
-                    $33, $34, $35, $36,
-                    $37, $38, $39, $40,
-                    $41
+                    $24, $25, $26, NOW(),
+                    $27, $28, $29,
+                    $30, $31,
+                    $32, $33, $34, $35,
+                    $36, $37, $38, $39,
+                    $40
                 )
                 ON CONFLICT (scheme_code)
                 DO UPDATE SET
@@ -884,7 +870,6 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     score_cost = EXCLUDED.score_cost,
                     score_consistency = EXCLUDED.score_consistency,
                     score_breakdown = EXCLUDED.score_breakdown,
-                    tags = EXCLUDED.tags,
                     source_status = EXCLUDED.source_status,
                     source_timestamp = EXCLUDED.source_timestamp,
                     ingested_at = NOW(),
@@ -927,7 +912,6 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("score_cost")),
                 _to_float(row.get("score_consistency")),
                 _to_jsonb(row.get("score_breakdown"), _mf_breakdown_payload(row)),
-                _to_jsonb(row.get("tags"), []),
                 _normalize_source_status(row.get("source_status")),
                 parse_ts(row.get("source_timestamp")) or datetime.now(timezone.utc),
                 row.get("primary_source"),
@@ -943,7 +927,7 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("score_category_fit")),
                 _to_float(row.get("sub_category_percentile")),
                 row.get("fund_classification"),
-                _to_jsonb(row.get("tags_v2"), []),                                    # $41
+                _to_jsonb(row.get("tags_v2"), []),                                    # $40
             )
             count += 1
     return count
@@ -1033,6 +1017,8 @@ async def list_discover_stocks(
     min_pb: float | None = None,
     max_pb: float | None = None,
     source_status: str | None = None,
+    tag: str | None = None,
+    tags_category: str | None = None,
     sort_by: str = "score",
     sort_order: str = "desc",
     limit: int = 25,
@@ -1049,6 +1035,9 @@ async def list_discover_stocks(
         "roe": "roe",
         "price": "last_price",
         "market_cap": "market_cap",
+        "quality": "score_quality",
+        "valuation": "score_valuation",
+        "growth": "score_growth",
     }
     order_col = allowed_sorts.get(str(sort_by or "").strip().lower(), "score")
     order_dir = _normalize_order(sort_order)
@@ -1119,6 +1108,11 @@ async def list_discover_stocks(
         _add("price_to_book <= ${idx}", float(max_pb))
     if source_status and source_status.strip().lower() != "all":
         _add("source_status = ${idx}", _normalize_source_status(source_status))
+    if tag and tag.strip():
+        import json as _json_mod
+        _add("tags_v2 @> ${idx}::jsonb", _json_mod.dumps([{"tag": tag.strip()}]))
+    if tags_category and tags_category.strip():
+        _add("EXISTS (SELECT 1 FROM jsonb_array_elements(tags_v2) t WHERE t->>'category' = ${idx})", tags_category.strip())
 
     where_clause = " AND ".join(conds)
     filter_args = list(args)
@@ -1147,7 +1141,7 @@ async def list_discover_stocks(
             pl_annual, bs_annual, cf_annual, shareholding_quarterly,
             percent_change_3m, percent_change_1w,
             percent_change_1y, percent_change_3y,
-            score_breakdown, tags, tags_v2, source_status, source_timestamp, ingested_at,
+            score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
             high_52w, low_52w, market_cap, dividend_yield,
             promoter_holding, fii_holding, dii_holding, government_holding, public_holding,
@@ -1203,6 +1197,8 @@ async def list_discover_mutual_funds(
     min_return_5y: float | None = None,
     min_fund_age: float | None = None,
     source_status: str | None = None,
+    tag: str | None = None,
+    tags_category: str | None = None,
     sort_by: str = "score",
     sort_order: str = "desc",
     limit: int = 25,
@@ -1336,6 +1332,11 @@ async def list_discover_mutual_funds(
         _add("(fund_age_years >= ${idx} OR fund_age_years IS NULL)", float(min_fund_age))
     if source_status and source_status.strip().lower() != "all":
         _add("source_status = ${idx}", _normalize_source_status(source_status))
+    if tag and tag.strip():
+        import json as _json_mod
+        _add("tags_v2 @> ${idx}::jsonb", _json_mod.dumps([{"tag": tag.strip()}]))
+    if tags_category and tags_category.strip():
+        _add("EXISTS (SELECT 1 FROM jsonb_array_elements(tags_v2) t WHERE t->>'category' = ${idx})", tags_category.strip())
 
     where_sql = f"WHERE {' AND '.join(conds)}" if conds else ""
     filter_args = list(args)
@@ -1354,7 +1355,7 @@ async def list_discover_mutual_funds(
             returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
             score, score_return, score_risk, score_cost, score_consistency,
             score_performance, score_category_fit,
-            score_breakdown, tags, tags_v2, source_status, source_timestamp, ingested_at,
+            score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
             category_rank, category_total, fund_age_years,
             max_drawdown, rolling_return_consistency,
@@ -2080,7 +2081,7 @@ async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
             pl_annual, bs_annual, cf_annual, shareholding_quarterly,
             percent_change_3m, percent_change_1w,
             percent_change_1y, percent_change_3y,
-            score_breakdown, tags, tags_v2, source_status, source_timestamp, ingested_at,
+            score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
             high_52w, low_52w, market_cap, dividend_yield,
             promoter_holding, fii_holding, dii_holding, government_holding, public_holding,
@@ -2134,7 +2135,7 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
             returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
             score, score_return, score_risk, score_cost, score_consistency,
             score_performance, score_category_fit,
-            score_breakdown, tags, tags_v2, source_status, source_timestamp, ingested_at,
+            score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
             category_rank, category_total, fund_age_years,
             max_drawdown, rolling_return_consistency,
@@ -2162,7 +2163,7 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
                 expense_ratio, aum_cr, risk_level,
                 returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
                 score, score_return, score_risk, score_cost, score_consistency,
-                score_breakdown, tags, tags_v2, source_status, source_timestamp, ingested_at,
+                score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
                 primary_source, secondary_source,
                 category_rank, category_total, fund_age_years
             FROM {MF_TABLE}
@@ -2235,3 +2236,212 @@ async def get_mf_sparklines(*, scheme_codes: list[str], days: int = 7) -> dict[s
         if sc in result:
             result[sc].append({"date": str(r["nav_date"]), "value": float(r["nav"])})
     return result
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Stock Story
+# ---------------------------------------------------------------------------
+
+async def get_stock_story(*, symbol: str) -> dict | None:
+    """Build a narrative story for a stock: verdict, tags, score changes."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        f"""
+        SELECT symbol, display_name, sector, score,
+               score_quality, score_valuation, score_growth,
+               score_momentum, score_institutional, score_risk,
+               score_breakdown, tags_v2
+        FROM {STOCK_TABLE}
+        WHERE symbol = $1
+        """,
+        symbol,
+    )
+    if row is None:
+        return None
+
+    import json as _json
+    d = record_to_dict(row)
+    sb = d.get("score_breakdown") or {}
+    if isinstance(sb, str):
+        try:
+            sb = _json.loads(sb)
+        except (ValueError, TypeError):
+            sb = {}
+
+    tags_v2 = d.get("tags_v2")
+    if isinstance(tags_v2, str):
+        try:
+            tags_v2 = _json.loads(tags_v2)
+        except (ValueError, TypeError):
+            tags_v2 = []
+    if not isinstance(tags_v2, list):
+        tags_v2 = []
+
+    # Compute 7-day score deltas from history
+    from datetime import timedelta
+    history_rows = await pool.fetch(
+        """
+        SELECT score, score_quality, score_valuation, score_growth,
+               score_momentum, score_institutional, score_risk, scored_at
+        FROM discover_stock_score_history
+        WHERE symbol = $1 AND scored_at > NOW() - interval '8 days'
+        ORDER BY scored_at ASC
+        LIMIT 1
+        """,
+        symbol,
+    )
+
+    score_changes: list[dict] = []
+    if history_rows:
+        old = record_to_dict(history_rows[0])
+        layers = [
+            ("quality", "score_quality"),
+            ("valuation", "score_valuation"),
+            ("growth", "score_growth"),
+            ("momentum", "score_momentum"),
+            ("institutional", "score_institutional"),
+            ("risk", "score_risk"),
+        ]
+        for layer_name, col in layers:
+            old_val = _to_float(old.get(col))
+            new_val = _to_float(d.get(col))
+            if old_val is not None and new_val is not None:
+                diff = new_val - old_val
+                direction = "up" if diff > 0.5 else ("down" if diff < -0.5 else "unchanged")
+            else:
+                direction = "unchanged"
+            score_changes.append({
+                "layer": layer_name,
+                "old_value": old_val,
+                "new_value": new_val,
+                "direction": direction,
+            })
+
+    # Build verdict from score tier
+    score = _to_float(d.get("score"))
+    if score is not None:
+        if score >= 75:
+            verdict = "Strong Buy — fundamentals and momentum align well"
+        elif score >= 60:
+            verdict = "Positive — above-average on most dimensions"
+        elif score >= 45:
+            verdict = "Neutral — mixed signals across score layers"
+        elif score >= 30:
+            verdict = "Cautious — below average with some concerns"
+        else:
+            verdict = "Weak — significant fundamental or technical concerns"
+    else:
+        verdict = None
+
+    return {
+        "symbol": symbol,
+        "verdict": verdict,
+        "action_tag": sb.get("action_tag"),
+        "action_tag_reasoning": sb.get("action_tag_reasoning"),
+        "trend_alignment": sb.get("trend_alignment"),
+        "breakout_signal": sb.get("breakout_signal"),
+        "lynch_classification": sb.get("lynch_classification") or d.get("lynch_classification"),
+        "why_narrative": sb.get("why_narrative"),
+        "score_confidence": sb.get("score_confidence"),
+        "score_changes": score_changes,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Stock Compare
+# ---------------------------------------------------------------------------
+
+async def compare_stocks(*, symbols: list[str]) -> dict:
+    """Side-by-side comparison of multiple stocks."""
+    pool = await get_pool()
+    sector_stats = await _get_stock_sector_stats(pool)
+
+    rows = await pool.fetch(
+        f"SELECT * FROM {STOCK_TABLE} WHERE symbol = ANY($1::text[])",
+        symbols,
+    )
+
+    items = []
+    for r in rows:
+        d = record_to_dict(r)
+        s = str(d.get("sector") or "Other")
+        items.append(_decorate_stock_row(d, sector_stats.get(s)))
+
+    # Sort items to match the requested symbol order
+    sym_order = {s: i for i, s in enumerate(symbols)}
+    items.sort(key=lambda x: sym_order.get(x.get("symbol", ""), 999))
+
+    # Build comparison dimensions
+    metrics = [
+        ("score", "Overall Score", True),       # higher is better
+        ("pe_ratio", "P/E Ratio", False),        # lower is better
+        ("roe", "ROE (%)", True),
+        ("roce", "ROCE (%)", True),
+        ("debt_to_equity", "Debt/Equity", False),
+        ("market_cap", "Market Cap (Cr)", True),
+        ("profit_margins", "Net Margin (%)", True),
+        ("revenue_growth", "Revenue Growth (%)", True),
+        ("dividend_yield", "Dividend Yield (%)", True),
+        ("score_quality", "Quality Score", True),
+    ]
+
+    dimensions: list[dict] = []
+    for metric_key, label, higher_better in metrics:
+        values = [_to_float(item.get(metric_key)) for item in items]
+        # Determine winner
+        non_null = [(i, v) for i, v in enumerate(values) if v is not None]
+        winner_index = None
+        if len(non_null) >= 2:
+            if higher_better:
+                winner_index = max(non_null, key=lambda x: x[1])[0]
+            else:
+                winner_index = min(non_null, key=lambda x: x[1])[0]
+        dimensions.append({
+            "metric": metric_key,
+            "label": label,
+            "values": values,
+            "winner_index": winner_index,
+        })
+
+    return {"items": items, "comparison_dimensions": dimensions}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Market Mood
+# ---------------------------------------------------------------------------
+
+async def get_market_mood() -> dict:
+    """Aggregate score distribution across all tracked stocks."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        f"""
+        SELECT
+            COUNT(*) AS total,
+            AVG(score) AS avg_score,
+            COUNT(*) FILTER (WHERE score >= 75) AS excellent,
+            COUNT(*) FILTER (WHERE score >= 60 AND score < 75) AS good,
+            COUNT(*) FILTER (WHERE score >= 40 AND score < 60) AS average,
+            COUNT(*) FILTER (WHERE score < 40) AS poor
+        FROM {STOCK_TABLE}
+        WHERE market = 'IN' AND score IS NOT NULL
+        """
+    )
+    if row is None or row["total"] == 0:
+        return {"avg_score": None, "score_distribution": None, "summary": None}
+
+    total = int(row["total"])
+    excellent = int(row["excellent"])
+    good = int(row["good"])
+    avg_score = round(float(row["avg_score"]), 1)
+    above_good_pct = round((excellent + good) / total * 100) if total > 0 else 0
+
+    return {
+        "avg_score": avg_score,
+        "score_distribution": {
+            "excellent": excellent,
+            "good": good,
+            "average": int(row["average"]),
+            "poor": int(row["poor"]),
+        },
+        "summary": f"{above_good_pct}% of tracked stocks are rated Good or above",
+    }

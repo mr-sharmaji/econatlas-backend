@@ -5,6 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.discover_schema import (
+    ComparisonDimension,
     DiscoverHomeMutualFundItem,
     DiscoverHomeResponse,
     DiscoverHomeStockItem,
@@ -13,14 +14,18 @@ from app.schemas.discover_schema import (
     DiscoverOverviewResponse,
     DiscoverStockItemResponse,
     DiscoverStockListResponse,
+    MarketMood,
     PriceHistoryPoint,
     PriceHistoryResponse,
     QuickCategory,
+    ScoreChange,
     ScoreDistribution,
     ScoreHistoryPoint,
     ScoreHistoryResponse,
     SearchMutualFundItem,
     SearchStockItem,
+    StockCompareResponse,
+    StockStoryResponse,
     TopSegmentEntry,
     UnifiedSearchResponse,
 )
@@ -103,6 +108,14 @@ async def unified_search(
 async def get_discover_home() -> DiscoverHomeResponse:
     try:
         payload = await discover_service.get_discover_home_data()
+        # Fetch market mood in parallel
+        mood_data = await discover_service.get_market_mood()
+        mood_dist = mood_data.get("score_distribution")
+        market_mood = MarketMood(
+            avg_score=mood_data.get("avg_score"),
+            score_distribution=ScoreDistribution(**mood_dist) if mood_dist else None,
+            summary=mood_data.get("summary"),
+        ) if mood_data.get("avg_score") is not None else None
         return DiscoverHomeResponse(
             top_stocks=[DiscoverHomeStockItem(**s) for s in payload.get("top_stocks", [])],
             top_equity_funds=[DiscoverHomeMutualFundItem(**m) for m in payload.get("top_equity_funds", [])],
@@ -114,6 +127,7 @@ async def get_discover_home() -> DiscoverHomeResponse:
             losers=[DiscoverHomeStockItem(**s) for s in payload.get("losers", [])],
             losers_3m=[DiscoverHomeStockItem(**s) for s in payload.get("losers_3m", [])],
             quick_categories=[QuickCategory(**c) for c in payload.get("quick_categories", [])],
+            market_mood=market_mood,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -141,7 +155,9 @@ async def get_discover_stocks(
     min_pb: float | None = Query(default=None, ge=0.0, description="Min P/B ratio"),
     max_pb: float | None = Query(default=None, ge=0.0, description="Max P/B ratio"),
     source_status: str | None = Query(default=None, description="primary|fallback|limited"),
-    sort_by: str = Query(default="score", description="score|change|change_3m|change_1y|volume|traded_value|pe|roe|price|market_cap"),
+    tag: str | None = Query(default=None, description="Filter by tag name (e.g. 'High Quality', 'Debt Free')"),
+    tags_category: str | None = Query(default=None, description="Filter by tag category (strength|risk|valuation|trend|ownership|style|classification)"),
+    sort_by: str = Query(default="score", description="score|change|change_3m|change_1y|volume|traded_value|pe|roe|price|market_cap|quality|valuation|growth"),
     sort_order: str = Query(default="desc", description="asc|desc"),
     limit: int = Query(default=25, ge=1, le=250),
     offset: int = Query(default=0, ge=0),
@@ -168,6 +184,8 @@ async def get_discover_stocks(
             min_pb=min_pb,
             max_pb=max_pb,
             source_status=source_status,
+            tag=tag,
+            tags_category=tags_category,
             sort_by=sort_by,
             sort_order=sort_order,
             limit=limit,
@@ -202,6 +220,8 @@ async def get_discover_mutual_funds(
     min_returns_3y: float | None = Query(default=None, description="Deprecated alias for min_return_3y"),
     min_fund_age: float | None = Query(default=None, ge=0.0, description="Min fund age in years"),
     source_status: str | None = Query(default=None, description="primary|fallback|limited"),
+    tag: str | None = Query(default=None, description="Filter by tag name"),
+    tags_category: str | None = Query(default=None, description="Filter by tag category"),
     sort_by: str = Query(default="score", description="score|returns_3y|returns_1y|returns_5y|aum|expense|nav|risk"),
     sort_order: str = Query(default="desc", description="asc|desc"),
     limit: int = Query(default=25, ge=1, le=250),
@@ -223,6 +243,8 @@ async def get_discover_mutual_funds(
             min_return_5y=min_return_5y,
             min_fund_age=min_fund_age,
             source_status=source_status,
+            tag=tag,
+            tags_category=tags_category,
             sort_by=sort_by,
             sort_order=sort_order,
             limit=limit,
@@ -363,6 +385,68 @@ async def get_mf_peers(
     try:
         peers = await discover_service.get_mf_peers(scheme_code=scheme_code, limit=limit)
         return [DiscoverMutualFundItemResponse(**p) for p in peers]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/stocks/{symbol}/story", response_model=StockStoryResponse)
+async def get_stock_story(symbol: str) -> StockStoryResponse:
+    """Get narrative story with verdict, action signals, and score changes."""
+    try:
+        data = await discover_service.get_stock_story(symbol=symbol)
+        if data is None:
+            raise HTTPException(status_code=404, detail=f"Stock {symbol} not found")
+        return StockStoryResponse(
+            symbol=data["symbol"],
+            verdict=data.get("verdict"),
+            action_tag=data.get("action_tag"),
+            action_tag_reasoning=data.get("action_tag_reasoning"),
+            trend_alignment=data.get("trend_alignment"),
+            breakout_signal=data.get("breakout_signal"),
+            lynch_classification=data.get("lynch_classification"),
+            why_narrative=data.get("why_narrative"),
+            score_confidence=data.get("score_confidence"),
+            score_changes=[ScoreChange(**sc) for sc in data.get("score_changes", [])],
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/stocks/compare", response_model=StockCompareResponse)
+async def compare_stocks(
+    symbols: str = Query(..., description="Comma-separated symbols (2-5)"),
+) -> StockCompareResponse:
+    """Side-by-side comparison of multiple stocks."""
+    try:
+        symbol_list = [s.strip() for s in symbols.split(",") if s.strip()][:5]
+        if len(symbol_list) < 2:
+            raise HTTPException(status_code=400, detail="At least 2 symbols required")
+        data = await discover_service.compare_stocks(symbols=symbol_list)
+        return StockCompareResponse(
+            items=[DiscoverStockItemResponse(**item) for item in data["items"]],
+            comparison_dimensions=[
+                ComparisonDimension(**dim) for dim in data["comparison_dimensions"]
+            ],
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/market-mood", response_model=MarketMood)
+async def get_market_mood() -> MarketMood:
+    """Aggregate score distribution and sentiment across tracked stocks."""
+    try:
+        data = await discover_service.get_market_mood()
+        dist = data.get("score_distribution")
+        return MarketMood(
+            avg_score=data.get("avg_score"),
+            score_distribution=ScoreDistribution(**dist) if dist else None,
+            summary=data.get("summary"),
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

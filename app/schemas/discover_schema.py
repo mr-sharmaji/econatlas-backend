@@ -147,8 +147,7 @@ class DiscoverStockItemResponse(BaseModel):
     trend_alignment: Literal["aligned", "divergent", "conflicting"] | None = None
     breakout_signal: Literal["breakout", "approaching_breakout", "breakdown", "approaching_breakdown", "resistance", "support", "none"] | None = None
     score_breakdown: DiscoverStockScoreBreakdown
-    tags: list[str] = Field(default_factory=list)
-    tags_v2: list[TagV2Response] = Field(default_factory=list)
+    tags: list[TagV2Response] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)
     source_status: SourceStatus
     source_timestamp: datetime
@@ -223,8 +222,7 @@ class DiscoverMutualFundItemResponse(BaseModel):
     sub_category_percentile: float | None = None
     fund_classification: str | None = None
     score_breakdown: DiscoverMutualFundScoreBreakdown | None = None
-    tags: list[str] = Field(default_factory=list)
-    tags_v2: list[TagV2Response] = Field(default_factory=list)
+    tags: list[TagV2Response] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)
     source_status: SourceStatus
     source_timestamp: datetime
@@ -341,6 +339,7 @@ class DiscoverHomeResponse(BaseModel):
     losers: list[DiscoverHomeStockItem] = Field(default_factory=list)
     losers_3m: list[DiscoverHomeStockItem] = Field(default_factory=list)
     quick_categories: list[QuickCategory] = Field(default_factory=list)
+    market_mood: MarketMood | None = None
 
 
 # --- Chart History ---
@@ -368,3 +367,47 @@ class ScoreHistoryResponse(BaseModel):
     symbol: str
     points: list[ScoreHistoryPoint] = Field(default_factory=list)
     count: int = 0
+
+
+# --- Story ---
+
+class ScoreChange(BaseModel):
+    layer: str
+    old_value: float | None = None
+    new_value: float | None = None
+    direction: str  # "up" | "down" | "unchanged"
+
+
+class StockStoryResponse(BaseModel):
+    symbol: str
+    verdict: str | None = None
+    action_tag: str | None = None
+    action_tag_reasoning: str | None = None
+    trend_alignment: str | None = None
+    breakout_signal: str | None = None
+    lynch_classification: str | None = None
+    why_narrative: str | None = None
+    score_confidence: str | None = None
+    score_changes: list[ScoreChange] = Field(default_factory=list)
+
+
+# --- Compare ---
+
+class ComparisonDimension(BaseModel):
+    metric: str
+    label: str
+    values: list[float | None]
+    winner_index: int | None = None  # index of better value, None if equal/incomparable
+
+
+class StockCompareResponse(BaseModel):
+    items: list[DiscoverStockItemResponse] = Field(default_factory=list)
+    comparison_dimensions: list[ComparisonDimension] = Field(default_factory=list)
+
+
+# --- Market Mood ---
+
+class MarketMood(BaseModel):
+    avg_score: float | None = None
+    score_distribution: ScoreDistribution | None = None
+    summary: str | None = None  # "71% of tracked stocks are rated Good or above"

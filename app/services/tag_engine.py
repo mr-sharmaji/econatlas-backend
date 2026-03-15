@@ -675,8 +675,3 @@ def _percentile_rank(values: list[float], target: float) -> float:
         return 50.0
     below = sum(1 for v in values if v < target)
     return (below / len(values)) * 100
-
-
-def tags_v2_to_flat(tags_v2: list[TagV2]) -> list[str]:
-    """Convert structured tags to flat string list for backward compat."""
-    return [t["tag"] for t in tags_v2]

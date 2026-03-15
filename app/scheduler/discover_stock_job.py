@@ -3586,9 +3586,9 @@ class DiscoverStockScraper(BaseScraper):
             if quality_cap is not None:
                 score = min(score, quality_cap)
 
-            # ── Auto-tags (structured v2 + flat v1 for compat) ──
+            # ── Auto-tags (structured v2) ──
             med_pe = sector_medians.get(sector, {}).get("pe", 25.0)
-            from app.services.tag_engine import generate_stock_tags, tags_v2_to_flat
+            from app.services.tag_engine import generate_stock_tags
             tags_v2 = generate_stock_tags(
                 row,
                 quality_score=quality_score,
@@ -3605,7 +3605,6 @@ class DiscoverStockScraper(BaseScraper):
                 paper_profits=paper_profits,
                 sector_pe_median=med_pe,
             )
-            tags = tags_v2_to_flat(tags_v2)
 
             # Track sector leaders (top 3)
             sector_best.setdefault(sector, []).append((score, symbol))
@@ -3701,7 +3700,6 @@ class DiscoverStockScraper(BaseScraper):
                     "market_regime": market_regime,
                     "why_narrative": why_narrative,
                 },
-                "tags": tags,
                 "tags_v2": tags_v2,
                 "source_status": source_status,
             }
@@ -3731,9 +3729,17 @@ class DiscoverStockScraper(BaseScraper):
         for enriched in out:
             symbol = str(enriched.get("symbol") or "")
             if symbol in sector_leaders:
-                tags = enriched["tags"]
-                if "Sector Leader" not in tags:
-                    tags.insert(0, "Sector Leader")
+                tv2 = enriched.get("tags_v2", [])
+                if not any(t.get("tag") == "Sector Leader" for t in tv2):
+                    tv2.insert(0, {
+                        "tag": "Sector Leader",
+                        "category": "classification",
+                        "severity": "positive",
+                        "priority": 0,
+                        "confidence": 1.0,
+                        "explanation": "Top 3 scorer in sector",
+                        "expires_at": None,
+                    })
 
         out.sort(
             key=lambda item: (
@@ -4128,7 +4134,7 @@ async def run_discover_stock_job() -> None:
         _SCORE_KEYS = {
             "score", "score_quality", "score_valuation", "score_growth",
             "score_momentum", "score_institutional", "score_risk",
-            "score_breakdown", "tags", "why_ranked",
+            "score_breakdown", "tags_v2", "why_ranked",
             "sector_percentile", "lynch_classification",
             "technical_score", "rsi_14", "action_tag", "action_tag_reasoning",
         }
@@ -4245,7 +4251,7 @@ async def run_discover_stock_job() -> None:
             sample = rows[0]
             logger.info(
                 "Discover stock: sample scored row %s → score=%.2f "
-                "qual=%.1f val=%s gro=%s mom=%.1f inst=%s risk=%s lynch=%s tags=%s",
+                "qual=%.1f val=%s gro=%s mom=%.1f inst=%s risk=%s lynch=%s tags_v2=%s",
                 sample.get("symbol"),
                 sample.get("score", 0),
                 sample.get("score_quality", 0),
@@ -4255,7 +4261,7 @@ async def run_discover_stock_job() -> None:
                 sample.get("score_institutional"),
                 sample.get("score_risk"),
                 sample.get("lynch_classification"),
-                sample.get("tags", [])[:5],
+                [t.get("tag") for t in sample.get("tags_v2", [])][:5],
             )
 
         # 4. Upsert in batches for incremental visibility + fault tolerance.

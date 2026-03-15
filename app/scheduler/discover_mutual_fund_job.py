@@ -1294,7 +1294,7 @@ class DiscoverMutualFundScraper(BaseScraper):
                     "sub_category_percentile": None,
                     "score_breakdown": {},
                     "source_status": "limited",
-                    "tags": ["unrated"],
+                    "tags_v2": [{"tag": "Unrated", "category": "classification", "severity": "neutral", "priority": 99, "confidence": None, "explanation": "Insufficient data for scoring", "expires_at": None}],
                 })
                 continue
 
@@ -1411,7 +1411,7 @@ class DiscoverMutualFundScraper(BaseScraper):
                     "return_score": round(performance, 2) if performance is not None else None,
                 },
                 "source_status": status,
-                "tags": [],  # populated below after percentile computation
+                "tags_v2": [],  # populated below after percentile computation
             })
 
         # ── Post-scoring: sub-category percentile + tags ──
@@ -1426,11 +1426,10 @@ class DiscoverMutualFundScraper(BaseScraper):
             for out_idx, final_score in entries:
                 pctl = self._percentile_rank(scores_in_sub, final_score)
                 out[out_idx]["sub_category_percentile"] = round(pctl, 1)
-                from app.services.tag_engine import generate_mf_tags, tags_v2_to_flat
+                from app.services.tag_engine import generate_mf_tags
                 mf_tags_v2 = generate_mf_tags(
                     out[out_idx], sub_cat, scores_in_sub, sub_exps, sub_avg
                 )
-                out[out_idx]["tags"] = tags_v2_to_flat(mf_tags_v2)
                 out[out_idx]["tags_v2"] = mf_tags_v2
                 # Clean up internal field
                 out[out_idx].pop("_final_score", None)
