@@ -2629,8 +2629,8 @@ class DiscoverStockScraper(BaseScraper):
 
         # Trend alignment for reasoning text
         trend = DiscoverStockScraper._compute_trend_alignment(score, tech_score)
-        tech_confirms = {"aligned": "confirm", "divergent": "partially diverge from"}.get(
-            trend or "", "conflict with"
+        tech_confirms = {"aligned": "confirms", "divergent": "shows divergence at"}.get(
+            trend or "", "conflicts with"
         )
 
         # 1. Quality gate triggered
