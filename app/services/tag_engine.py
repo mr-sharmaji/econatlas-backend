@@ -198,6 +198,7 @@ def generate_stock_tags(
         "cyclical": "Cyclical Play",
         "asset_play": "Asset Play",
         "slow_grower": "Slow Grower",
+        "speculative": "Speculative",
     }
     lynch_explanations = {
         "turnaround": "This company is recovering from a difficult period. Turnaround stocks can deliver big returns if the recovery succeeds, but carry higher risk if the business doesn't improve as expected.",
@@ -206,6 +207,7 @@ def generate_stock_tags(
         "cyclical": "This company's profits rise and fall with economic cycles. Timing matters \u2014 buying near the bottom of a cycle and selling near the top can be very profitable.",
         "asset_play": "The company may be undervalued because the market isn't fully recognizing the value of its assets (land, cash, subsidiaries, or patents).",
         "slow_grower": "A mature company growing slowly (under 10% per year), often paying good dividends. Best suited for income-oriented investors rather than capital appreciation.",
+        "speculative": "This company is currently loss-making (negative EPS). Speculative stocks can deliver big returns if the business becomes profitable, but carry significant risk of further losses. Only for risk-tolerant investors.",
     }
     if lynch_classification in lynch_tag_map:
         tagged.append(_tag(

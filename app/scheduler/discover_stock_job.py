@@ -2258,7 +2258,11 @@ class DiscoverStockScraper(BaseScraper):
         if rev_cagr is not None and rev_cagr < 0.05 and mcap >= 20000:
             return "slow_grower"
 
-        # Stalwart (default)
+        # Loss-making companies should not default to stalwart
+        if eps is not None and eps < 0:
+            return "speculative"
+
+        # Stalwart (default for profitable companies with moderate growth)
         return "stalwart"
 
     # ── Technical Score & Action Tag ──
@@ -3617,6 +3621,7 @@ class DiscoverStockScraper(BaseScraper):
                     available_weights[k] = w
                 elif k == "growth":
                     scores_map[k] = 25.0
+                    growth_score = 25.0
                     available_weights[k] = w
                 elif k == "quality" and metrics_used > 0:
                     available_weights[k] = w
