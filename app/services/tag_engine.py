@@ -178,15 +178,15 @@ def generate_stock_tags(
 
     # \u2500\u2500 Priority 1: Market Cap \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     if mcap is not None:
-        if mcap >= 20000:
+        if mcap >= 80000:
             tagged.append(_tag(
                 "Large Cap", _CAT_CLASSIFICATION, _SEV_NEUTRAL, 1,
-                explanation=f"Market cap \u20B9{mcap:,.0f} Cr. Large-cap companies are well-established industry leaders. They tend to be more stable with lower volatility, making them suitable for conservative investors seeking steady returns.",
+                explanation=f"Market cap \u20B9{mcap:,.0f} Cr. Large-cap companies are well-established industry leaders (SEBI top 100). They tend to be more stable with lower volatility, making them suitable for conservative investors seeking steady returns.",
             ))
-        elif mcap >= 5000:
+        elif mcap >= 20000:
             tagged.append(_tag(
                 "Mid Cap", _CAT_CLASSIFICATION, _SEV_NEUTRAL, 1,
-                explanation=f"Market cap \u20B9{mcap:,.0f} Cr. Mid-cap companies offer a balance between stability and growth. They are growing businesses that can deliver higher returns than large-caps, but with more price swings.",
+                explanation=f"Market cap \u20B9{mcap:,.0f} Cr. Mid-cap companies (SEBI 101-250) offer a balance between stability and growth. They are growing businesses that can deliver higher returns than large-caps, but with more price swings.",
             ))
         else:
             tagged.append(_tag(

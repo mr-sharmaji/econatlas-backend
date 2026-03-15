@@ -2287,7 +2287,7 @@ class DiscoverStockScraper(BaseScraper):
             return "cyclical"
 
         # Slow grower
-        if rev_cagr is not None and rev_cagr < 0.05 and mcap >= 20000:
+        if rev_cagr is not None and rev_cagr < 0.05 and mcap >= 80000:
             return "slow_grower"
 
         # Loss-making companies should not default to stalwart
@@ -2957,11 +2957,11 @@ class DiscoverStockScraper(BaseScraper):
         ma_200 = row.get("two_hundred_day_avg")
         beta_val = row.get("beta")
 
-        # Priority 1: Market Cap
+        # Priority 1: Market Cap (SEBI-aligned)
         if mcap is not None:
-            if mcap >= 20000:
+            if mcap >= 80000:
                 tagged.append((1, "Large Cap"))
-            elif mcap >= 5000:
+            elif mcap >= 20000:
                 tagged.append((1, "Mid Cap"))
             else:
                 tagged.append((1, "Small Cap"))
