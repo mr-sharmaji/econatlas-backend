@@ -3492,6 +3492,12 @@ class DiscoverStockScraper(BaseScraper):
             symbol = str(row.get("symbol") or "")
             sector = str(row.get("sector") or "Other")
 
+            # Normalise market_cap: some sources report in crores, others
+            # in raw rupees.  Values > 1e7 are almost certainly raw rupees.
+            _raw_mcap = row.get("market_cap")
+            if _raw_mcap is not None and isinstance(_raw_mcap, (int, float)) and _raw_mcap > 1e7:
+                row["market_cap"] = _raw_mcap / 1e7
+
             # Mine JSONB annual tables for multi-year trend signals
             historical_metrics = self._compute_historical_metrics(row)
             for _hk, _hv in historical_metrics.items():

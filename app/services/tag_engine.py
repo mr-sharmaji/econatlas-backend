@@ -130,6 +130,10 @@ def generate_stock_tags(
     tagged: list[tuple[int, TagV2]] = []
 
     mcap = _safe_float(row.get("market_cap"))
+    # Normalise mixed units: some sources report in crores, others in raw rupees.
+    # Values above 1e7 are almost certainly raw rupees — convert to crores.
+    if mcap is not None and mcap > 1e7:
+        mcap = mcap / 1e7
     pe = _safe_float(row.get("pe_ratio"))
     roe = _safe_float(row.get("roe"))
     roce = _safe_float(row.get("roce"))
