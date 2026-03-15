@@ -2164,18 +2164,19 @@ class DiscoverStockScraper(BaseScraper):
             parts["pledging"] = 50.0
 
         # Free-float (inverted-U: penalise both extremes)
+        # SEBI mandates >=25% public. Sweet spot 25-35% (promoter 65-75%).
         public = row.get("public_holding")
         if public is not None:
             if public < 15:
-                parts["free_float"] = 40.0   # too illiquid
+                parts["free_float"] = 35.0   # severely illiquid
             elif public < 25:
-                parts["free_float"] = 60.0   # low float
-            elif public <= 40:
+                parts["free_float"] = 55.0   # below SEBI norm
+            elif public <= 35:
                 parts["free_float"] = 80.0   # sweet spot
-            elif public <= 55:
-                parts["free_float"] = 60.0   # high retail, sentiment-driven
+            elif public <= 50:
+                parts["free_float"] = 60.0   # retail-heavy, sentiment-driven
             else:
-                parts["free_float"] = 45.0   # promoter minority, volatile
+                parts["free_float"] = 40.0   # promoter minority, volatile
 
         # Negative EPS
         eps = row.get("eps")
