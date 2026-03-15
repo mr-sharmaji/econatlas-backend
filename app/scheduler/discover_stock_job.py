@@ -2151,7 +2151,7 @@ class DiscoverStockScraper(BaseScraper):
         if volatility_score is not None:
             parts["volatility"] = volatility_score
 
-        # Pledging risk
+        # Pledging risk (default 50 = neutral when data unavailable)
         pledged = row.get("pledged_promoter_pct")
         if pledged is not None:
             if pledged > 40:
@@ -2160,6 +2160,8 @@ class DiscoverStockScraper(BaseScraper):
                 parts["pledging"] = 50.0
             else:
                 parts["pledging"] = 80.0
+        else:
+            parts["pledging"] = 50.0
 
         # Free-float
         public = row.get("public_holding")
