@@ -260,23 +260,32 @@ async def init_pool() -> asyncpg.Pool:
         await conn.execute(
             "ALTER TABLE market_prices_intraday ADD COLUMN IF NOT EXISTS session_source TEXT"
         )
-        await conn.execute(
-            """
-            UPDATE market_prices_intraday
-            SET source_timestamp = COALESCE(source_timestamp, "timestamp"),
-                ingested_at = COALESCE(ingested_at, NOW()),
-                provider = COALESCE(provider, 'unknown'),
-                provider_priority = COALESCE(provider_priority, 99),
-                is_fallback = COALESCE(is_fallback, FALSE),
-                is_predictive = COALESCE(is_predictive, FALSE)
-            WHERE source_timestamp IS NULL
-               OR ingested_at IS NULL
-               OR provider IS NULL
-               OR provider_priority IS NULL
-               OR is_fallback IS NULL
-               OR is_predictive IS NULL
-            """
-        )
+        # Backfill NULLs in batches to avoid startup timeout on large tables
+        try:
+            await conn.execute(
+                """
+                UPDATE market_prices_intraday
+                SET source_timestamp = COALESCE(source_timestamp, "timestamp"),
+                    ingested_at = COALESCE(ingested_at, NOW()),
+                    provider = COALESCE(provider, 'unknown'),
+                    provider_priority = COALESCE(provider_priority, 99),
+                    is_fallback = COALESCE(is_fallback, FALSE),
+                    is_predictive = COALESCE(is_predictive, FALSE)
+                WHERE ctid = ANY(ARRAY(
+                    SELECT ctid FROM market_prices_intraday
+                    WHERE source_timestamp IS NULL
+                       OR ingested_at IS NULL
+                       OR provider IS NULL
+                       OR provider_priority IS NULL
+                       OR is_fallback IS NULL
+                       OR is_predictive IS NULL
+                    LIMIT 50000
+                ))
+                """,
+                timeout=30,
+            )
+        except Exception:
+            logger.warning("Intraday backfill skipped (timeout or no rows) — will retry next startup")
         await conn.execute('ALTER TABLE market_prices_intraday ALTER COLUMN source_timestamp SET NOT NULL')
         await conn.execute('ALTER TABLE market_prices_intraday ALTER COLUMN ingested_at SET NOT NULL')
         await conn.execute("ALTER TABLE market_prices_intraday ALTER COLUMN provider SET DEFAULT 'unknown'")
