@@ -2769,15 +2769,15 @@ class DiscoverStockScraper(BaseScraper):
         if quality_cap is not None and score <= quality_cap:
             if quality_cap <= 35:
                 return ("Avoid",
-                        f"Avoid — Structural red flags cap the score at {quality_cap:.0f}. "
+                        f"Structural red flags cap the score at {quality_cap:.0f}. "
                         f"Fundamental weakness is confirmed regardless of technical position.")
             if quality_cap <= 45:
                 return ("Deteriorating",
-                        f"Deteriorating — Quality gates limit the score to {quality_cap:.0f}. "
+                        f"Quality gates limit the score to {quality_cap:.0f}. "
                         f"Core fundamentals show persistent weakness.")
             if quality_cap <= 55:
                 return ("Underperformer",
-                        f"Underperformer — Quality constraints cap the score at {quality_cap:.0f}. "
+                        f"Quality constraints cap the score at {quality_cap:.0f}. "
                         f"Fundamentals show weakness in key areas but not structural failure. "
                         f"{top_str}.")
 
@@ -2785,24 +2785,24 @@ class DiscoverStockScraper(BaseScraper):
         if tech_score is None:
             if score >= 70:
                 return ("Outperformer",
-                        f"Outperformer — Strong fundamentals (score {score:.0f}) driven by {top_str}. "
+                        f"Strong fundamentals (score {score:.0f}) driven by {top_str}. "
                         f"Technical data unavailable for confirmation.")
             if score >= 50:
                 return ("Hold",
-                        f"Hold — Decent fundamentals (score {score:.0f}) but technical data unavailable. "
+                        f"Decent fundamentals (score {score:.0f}) but technical data unavailable. "
                         f"Primary drivers: {top_str}.")
             if quality_score < 40:
                 return ("Deteriorating",
-                        f"Deteriorating — Weak fundamentals (score {score:.0f}, quality {quality_score:.0f}). "
+                        f"Weak fundamentals (score {score:.0f}, quality {quality_score:.0f}). "
                         f"No technical data to suggest otherwise.")
             return ("Watchlist",
-                    f"Watchlist — Score {score:.0f} with {top_str} as drivers. "
+                    f"Score {score:.0f} with {top_str} as drivers. "
                     f"Technical data unavailable; monitor for clarity.")
 
         # 3. Data quality downgrade — limited data caps at Hold
         if data_quality == "limited":
             return ("Hold — Low Data",
-                    f"Hold — Limited data quality restricts confidence. "
+                    f"Limited data quality restricts confidence. "
                     f"Score {score:.0f}, tech {tech_score:.0f}. "
                     f"More data needed before a stronger signal.")
 
@@ -2812,7 +2812,7 @@ class DiscoverStockScraper(BaseScraper):
 
         if score >= 75 and tech_score >= 60:
             tag = "Strong Outperformer"
-            reason = f"Strong Outperformer — {top_str} are the primary drivers. "
+            reason = f"{top_str} are the primary drivers. "
             if tech_positive:
                 reason += f"{tech_positive} {tech_confirms} the fundamental strength. "
             if tech_caution:
@@ -2822,7 +2822,7 @@ class DiscoverStockScraper(BaseScraper):
 
         elif score >= 60 and tech_score >= 45:
             tag = "Outperformer"
-            reason = f"Outperformer — Solid fundamentals (score {score:.0f}) led by {top_str}. "
+            reason = f"Solid fundamentals (score {score:.0f}) led by {top_str}. "
             if tech_positive:
                 reason += f"{tech_positive} {tech_confirms} at tech score {tech_score:.0f}. "
             if tech_caution:
@@ -2830,7 +2830,7 @@ class DiscoverStockScraper(BaseScraper):
 
         elif score >= 50 and tech_score >= 50:
             tag = "Accumulate"
-            reason = f"Accumulate — Fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) are both moderately positive. {top_str} lead the score. "
+            reason = f"Fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) are both moderately positive. {top_str} lead the score. "
             if tech_caution:
                 reason += f"Watch: {tech_caution}. "
             else:
@@ -2838,7 +2838,7 @@ class DiscoverStockScraper(BaseScraper):
 
         elif 45 <= score < 55 and 40 <= tech_score < 50:
             tag = "Neutral"
-            reason = f"Neutral — Fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) are both middling. {top_str} lead. "
+            reason = f"Fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) are both middling. {top_str} lead. "
             if tech_caution:
                 reason += f"{tech_caution}. "
             elif tech_positive:
@@ -2847,14 +2847,14 @@ class DiscoverStockScraper(BaseScraper):
 
         elif score >= 55 and tech_score < 40:
             tag = "Watchlist"
-            reason = f"Watchlist — Fundamentals are solid ({score:.0f}) led by {top_str}, but technicals are weak ({tech_score:.0f}). "
+            reason = f"Fundamentals are solid ({score:.0f}) led by {top_str}, but technicals are weak ({tech_score:.0f}). "
             if tech_caution:
                 reason += f"{tech_caution}. "
             reason += "Technical weakness may present a better entry point if fundamentals hold."
 
         elif score < 45 and tech_score >= 65:
             tag = "Momentum Only"
-            reason = f"Momentum Only — Price momentum (tech {tech_score:.0f}) is not supported by fundamentals ({score:.0f}). "
+            reason = f"Price momentum (tech {tech_score:.0f}) is not supported by fundamentals ({score:.0f}). "
             if tech_positive:
                 reason += f"{tech_positive} drive short-term strength. "
             if tech_caution:
@@ -2863,12 +2863,12 @@ class DiscoverStockScraper(BaseScraper):
 
         elif score < 35:
             tag = "Avoid"
-            reason = f"Avoid — Weak fundamentals ({score:.0f}) with {top_str}. "
+            reason = f"Weak fundamentals ({score:.0f}) with {top_str}. "
             reason += f"Technical position ({tech_score:.0f}) does not offset structural weakness."
 
         elif score < 50 and tech_score < 40:
             tag = "Deteriorating"
-            reason = f"Deteriorating — Both fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) are weak. "
+            reason = f"Both fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) are weak. "
             if tech_caution:
                 reason += f"{tech_caution} confirms the downward pressure. "
             elif tech_positive:
@@ -2877,7 +2877,7 @@ class DiscoverStockScraper(BaseScraper):
 
         else:
             tag = "Hold"
-            reason = f"Hold — Mixed signals with score {score:.0f} and tech {tech_score:.0f}. {top_str} are the main drivers. "
+            reason = f"Mixed signals with score {score:.0f} and tech {tech_score:.0f}. {top_str} are the main drivers. "
             if tech_positive:
                 reason += f"{tech_positive} provide some support. "
             if tech_caution:
@@ -3174,6 +3174,9 @@ class DiscoverStockScraper(BaseScraper):
         if public is not None and public < 25:
             tagged.append((5, "Low Free Float"))
 
+        if promoter is not None and promoter < 30:
+            tagged.append((5, "Low Promoter"))
+
         # Priority 6
         if eps is not None and eps < 0:
             tagged.append((6, "Negative EPS"))
@@ -3209,20 +3212,8 @@ class DiscoverStockScraper(BaseScraper):
         paper_profits: bool = False,
     ) -> str:
         """Generate rich, insightful 2-3 sentence narrative."""
-        # Lynch type opener
-        lynch_labels = {
-            "fast_grower": "A fast-growing",
-            "stalwart": "A steady",
-            "slow_grower": "A mature",
-            "cyclical": "A cyclical",
-            "turnaround": "A turnaround",
-            "asset_play": "An asset-rich",
-        }
-        opener = lynch_labels.get(lynch_classification, "A")
-        sector_label = sector if sector != "Other" else "company"
-
-        strengths: list[str] = []
-        risks: list[str] = []
+        industry = str(row.get("industry") or "").strip()
+        ind_label = industry if industry else (sector if sector != "Other" else "company")
 
         # Key metrics
         roe = row.get("roe")
@@ -3236,85 +3227,121 @@ class DiscoverStockScraper(BaseScraper):
         pledged = row.get("pledged_promoter_pct")
         eps = row.get("eps")
         rg = row.get("revenue_growth")
-        cfo = row.get("cash_from_operations")
+        promoter = row.get("promoter_holding")
+        public_h = row.get("public_holding")
+        pe = row.get("pe_ratio")
 
-        # Strengths
-        if prof_cagr_5y is not None and prof_cagr_5y > 0.15:
-            strengths.append(f"5Y profit CAGR of {prof_cagr_5y*100:.0f}%")
-        elif roe is not None and roe >= 18:
-            strengths.append(f"ROE of {roe:.0f}%")
-        if opm_std is not None and opm_std < 3:
-            strengths.append("stable margins")
-        elif roce is not None and roce >= 20:
-            strengths.append(f"ROCE of {roce:.0f}%")
-        if dte is not None and dte == 0:
-            strengths.append("debt-free")
-        elif dte is not None and dte <= 0.3 and dte > 0:
-            strengths.append("low debt")
-        prom = row.get("promoter_holding")
-        if prom is not None and 55 <= prom <= 75:
-            strengths.append(f"strong promoter holding ({prom:.0f}%)")
-        if rg is not None and rg >= 0.15:
-            strengths.append(f"revenue growing {rg*100:.0f}%")
+        # ── Sentence 1: Identity + standout metric ──
+        # Lynch-aware descriptor woven into the sentence
+        s1_parts: list[str] = []
 
-        # Valuation context
-        val_text = ""
+        if lynch_classification == "fast_grower":
+            if prof_cagr_5y is not None and prof_cagr_5y > 0.15:
+                s1_parts.append(f"A high-growth {ind_label} company compounding profits at {prof_cagr_5y*100:.0f}% over 5 years")
+            elif rg is not None and rg > 0.20:
+                s1_parts.append(f"A fast-growing {ind_label} company with revenue up {rg*100:.0f}% YoY")
+            else:
+                s1_parts.append(f"A fast-growing {ind_label} company with strong earnings momentum")
+        elif lynch_classification == "stalwart":
+            if roe is not None and roe >= 15:
+                s1_parts.append(f"A steady, profitable {ind_label} company earning {roe:.0f}% return on equity")
+            elif prof_cagr_5y is not None and prof_cagr_5y > 0.10:
+                s1_parts.append(f"A steady {ind_label} company with {prof_cagr_5y*100:.0f}% profit CAGR over 5 years")
+            else:
+                s1_parts.append(f"A steady, reliable {ind_label} company with consistent profitability")
+        elif lynch_classification == "slow_grower":
+            if roe is not None and roe >= 12:
+                s1_parts.append(f"A mature {ind_label} company with {roe:.0f}% ROE but slowing growth")
+            else:
+                s1_parts.append(f"A mature {ind_label} company growing slowly — better suited for income investors")
+        elif lynch_classification == "turnaround":
+            s1_parts.append(f"A {ind_label} company in recovery — profits improving after a difficult period")
+        elif lynch_classification == "cyclical":
+            if opm_std is not None:
+                s1_parts.append(f"A cyclical {ind_label} company with margins that swing with the business cycle")
+            else:
+                s1_parts.append(f"A cyclical {ind_label} company whose fortunes track the economic cycle")
+        elif lynch_classification == "asset_play":
+            pb = row.get("price_to_book")
+            if pb is not None and pb < 1:
+                s1_parts.append(f"A {ind_label} company trading below book value (P/B {pb:.1f}x) — assets may be worth more than the stock price")
+            else:
+                s1_parts.append(f"An asset-rich {ind_label} company where underlying assets may be underappreciated")
+        elif lynch_classification == "speculative":
+            if eps is not None and eps < 0:
+                s1_parts.append(f"A loss-making {ind_label} company — high risk, suitable only for investors with strong conviction")
+            else:
+                s1_parts.append(f"A {ind_label} company with weak fundamentals — speculative at current levels")
+        else:
+            s1_parts.append(f"A {ind_label} company")
+
+        sentence1 = s1_parts[0] + "."
+
+        # ── Sentence 2: Valuation + key strength/context ──
+        s2_parts: list[str] = []
         if peg_ratio is not None:
             if peg_ratio < 1.0:
-                val_text = f"PEG {peg_ratio:.1f} — undervalued for its growth"
+                s2_parts.append(f"At a PEG of {peg_ratio:.1f}, the stock looks undervalued relative to its growth")
             elif peg_ratio <= 1.5:
-                val_text = f"PEG {peg_ratio:.1f} — fairly valued"
+                s2_parts.append(f"Trading at a PEG of {peg_ratio:.1f}, valuations appear fair for the growth delivered")
             elif peg_ratio <= 2.5:
-                val_text = f"PEG {peg_ratio:.1f} — growth priced in"
+                s2_parts.append(f"With a PEG of {peg_ratio:.1f}, much of the growth is already priced in")
             else:
-                val_text = f"PEG {peg_ratio:.1f} — premium valuation"
+                s2_parts.append(f"At a PEG of {peg_ratio:.1f}, the stock carries a significant premium over its growth rate")
+        elif pe is not None:
+            if pe < 10:
+                s2_parts.append(f"Trading at just {pe:.0f}x earnings")
+            elif pe > 50:
+                s2_parts.append(f"Trading at a rich {pe:.0f}x earnings")
 
-        # Smart money
-        smart_text = ""
+        # Add differentiating details
+        if dte is not None and dte == 0:
+            s2_parts.append("debt-free balance sheet")
+        elif dte is not None and dte > 2.0:
+            s2_parts.append(f"carries significant debt (D/E {dte:.1f})")
+        if opm_std is not None and opm_std < 3 and lynch_classification != "cyclical":
+            s2_parts.append("margins are remarkably stable")
+        if rg is not None and rg >= 0.20 and lynch_classification != "fast_grower":
+            s2_parts.append(f"revenue growing {rg*100:.0f}%")
         if fii_dir == "increasing":
-            smart_text = "FII accumulating"
+            s2_parts.append("FIIs have been steadily accumulating")
         elif fii_dir == "decreasing":
-            smart_text = "FII reducing exposure"
+            s2_parts.append("FIIs have been reducing their stake")
 
-        # Risks
+        sentence2 = ""
+        if s2_parts:
+            sentence2 = ". ".join(s2_parts[:2]) + "."
+
+        # ── Sentence 3: Risk callout (only if material) ──
+        risks: list[str] = []
         if paper_profits:
-            risks.append("negative cash flow despite reported profits")
+            risks.append("Cash flows are negative despite reported profits — earnings quality is a concern")
         if pledged is not None and pledged > 20:
-            risks.append(f"{pledged:.0f}% promoter shares pledged")
+            risks.append(f"{pledged:.0f}% of promoter shares are pledged, adding financial stress risk")
         if opm_chg is not None and opm_chg < -3:
-            risks.append(f"margins contracting (OPM {opm_chg:+.1f}% YoY)")
-        if eps is not None and eps < 0:
-            risks.append("loss-making")
-        if dte is not None and dte > 2.0:
-            risks.append(f"high leverage (D/E {dte:.1f})")
-        promoter = row.get("promoter_holding")
-        if promoter is not None and promoter < 30:
-            risks.append(f"low promoter holding ({promoter:.0f}%)")
-        public_h = row.get("public_holding")
-        if public_h is not None and public_h > 40:
-            risks.append(f"high public/retail holding ({public_h:.0f}%)")
+            risks.append(f"Operating margins have contracted {abs(opm_chg):.1f}% YoY")
+        if eps is not None and eps < 0 and lynch_classification != "speculative":
+            risks.append("Currently loss-making")
+        if promoter is not None and promoter < 30 and promoter > 0:
+            risks.append(f"Promoter stake is low at {promoter:.0f}%, raising governance questions")
+        if public_h is not None and public_h > 50:
+            risks.append(f"With {public_h:.0f}% public holding, the stock can be highly sentiment-driven")
 
-        # Build narrative
-        strength_str = " with " + " and ".join(strengths[:2]) if strengths else ""
-        parts = [f"{opener} {sector_label} play{strength_str}."]
-
-        if val_text:
-            parts.append(f"{val_text}.")
-        if smart_text:
-            parts.append(f"{smart_text}.")
+        sentence3 = ""
         if risks:
-            parts.append(f"Key risk: {risks[0]}.")
+            sentence3 = risks[0] + "."
 
-        # Sector percentile context
+        # ── Sector percentile ──
+        pctile_text = ""
         if sector_percentile is not None:
             if sector_percentile >= 80:
-                parts.append(f"Top {100-sector_percentile:.0f}% in {sector}.")
+                pctile_text = f"Ranks in the top {100-sector_percentile:.0f}% of {sector} stocks."
             elif sector_percentile <= 20:
-                parts.append(f"Bottom {sector_percentile:.0f}% in {sector}.")
+                pctile_text = f"Ranks in the bottom {sector_percentile:.0f}% of {sector} stocks."
 
-        # Cap at 3 sentences total
-        narrative = " ".join(parts[:4])
-        return narrative
+        # Assemble — pick best 3 sentences
+        parts = [p for p in [sentence1, sentence2, sentence3, pctile_text] if p]
+        return " ".join(parts[:3])
 
     def _compute_scores(
         self,
