@@ -2686,42 +2686,59 @@ class DiscoverStockScraper(BaseScraper):
 
         elif score >= 50 and tech_score >= 50:
             tag = "Accumulate"
-            reason = (f"Accumulate — Fundamentals (score {score:.0f}) and technicals ({tech_score:.0f}) "
-                      f"are both moderately positive. {top_str} lead the score. "
-                      f"Suitable for gradual position building.")
+            reason = f"Accumulate — Fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) are both moderately positive. {top_str} lead the score. "
+            if tech_caution:
+                reason += f"Watch: {tech_caution}. "
+            else:
+                reason += "Suitable for gradual position building. "
 
         elif 45 <= score < 55 and 40 <= tech_score < 50:
             tag = "Neutral"
-            reason = (f"Neutral — Fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) "
-                      f"are both middling. {top_str} lead. {tech_summary}. No directional edge.")
+            reason = f"Neutral — Fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) are both middling. {top_str} lead. "
+            if tech_caution:
+                reason += f"{tech_caution}. "
+            elif tech_positive:
+                reason += f"{tech_positive}. "
+            reason += "No directional edge."
 
         elif score >= 55 and tech_score < 40:
             tag = "Watchlist"
-            reason = (f"Watchlist — Fundamentals are solid (score {score:.0f}) led by {top_str}, "
-                      f"but technicals are weak ({tech_score:.0f}) with {tech_summary}. "
-                      f"Technical weakness may present a better entry point if fundamentals hold.")
+            reason = f"Watchlist — Fundamentals are solid ({score:.0f}) led by {top_str}, but technicals are weak ({tech_score:.0f}). "
+            if tech_caution:
+                reason += f"{tech_caution}. "
+            reason += "Technical weakness may present a better entry point if fundamentals hold."
 
         elif score < 45 and tech_score >= 65:
             tag = "Momentum Only"
-            reason = (f"Momentum Only — Price momentum (tech {tech_score:.0f}, {tech_summary}) "
-                      f"is not supported by fundamentals (score {score:.0f}). "
-                      f"High risk — momentum may not sustain without quality backing.")
+            reason = f"Momentum Only — Price momentum (tech {tech_score:.0f}) is not supported by fundamentals ({score:.0f}). "
+            if tech_positive:
+                reason += f"{tech_positive} drive short-term strength. "
+            if tech_caution:
+                reason += f"However, {tech_caution}. "
+            reason += "High risk — momentum may not sustain without quality backing."
 
         elif score < 35:
             tag = "Avoid"
-            reason = (f"Avoid — Weak fundamentals (score {score:.0f}) with {top_str}. "
-                      f"Technical position ({tech_score:.0f}) does not offset structural weakness.")
+            reason = f"Avoid — Weak fundamentals ({score:.0f}) with {top_str}. "
+            reason += f"Technical position ({tech_score:.0f}) does not offset structural weakness."
 
         elif score < 50 and tech_score < 40:
             tag = "Deteriorating"
-            reason = (f"Deteriorating — Both fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) "
-                      f"are weak. {tech_summary} confirms the downward pressure. {top_str}.")
+            reason = f"Deteriorating — Both fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) are weak. "
+            if tech_caution:
+                reason += f"{tech_caution} confirms the downward pressure. "
+            elif tech_positive:
+                reason += f"{tech_positive} offer limited bright spots. "
+            reason += f"{top_str}."
 
         else:
             tag = "Hold"
-            reason = (f"Hold — Mixed signals with score {score:.0f} and tech {tech_score:.0f}. "
-                      f"{top_str} are the main drivers. {tech_summary}. "
-                      f"No strong case for action in either direction.")
+            reason = f"Hold — Mixed signals with score {score:.0f} and tech {tech_score:.0f}. {top_str} are the main drivers. "
+            if tech_positive:
+                reason += f"{tech_positive} provide some support. "
+            if tech_caution:
+                reason += f"However, {tech_caution}. "
+            reason += "No strong case for action in either direction."
 
         # 5. Breakout/Breakdown modifier — upgrades or downgrades the tag
         if breakout_signal == "breakout":
