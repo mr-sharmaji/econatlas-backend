@@ -207,11 +207,11 @@ def generate_stock_tags(
     lynch_explanations = {
         "turnaround": "This company is recovering from a difficult period. Turnaround stocks can deliver big returns if the recovery succeeds, but carry higher risk if the business doesn't improve as expected.",
         "fast_grower": "This company is growing revenue and profits rapidly (15%+ per year). Fast growers can deliver outstanding returns, but watch for signs of slowing growth or overvaluation.",
-        "stalwart": "A large, steady company growing at a moderate pace (10-15% annually). Stalwarts offer reliable returns with lower risk \u2014 ideal as core portfolio holdings.",
+        "stalwart": "A steady, profitable company growing at a moderate pace. Stalwarts have reasonable ROE, positive earnings, and offer reliable returns with lower risk \u2014 ideal as core portfolio holdings.",
         "cyclical": "This company's profits rise and fall with economic cycles. Timing matters \u2014 buying near the bottom of a cycle and selling near the top can be very profitable.",
         "asset_play": "The company may be undervalued because the market isn't fully recognizing the value of its assets (land, cash, subsidiaries, or patents).",
-        "slow_grower": "A mature company growing slowly (under 10% per year), often paying good dividends. Best suited for income-oriented investors rather than capital appreciation.",
-        "speculative": "This company is currently loss-making (negative EPS). Speculative stocks can deliver big returns if the business becomes profitable, but carry significant risk of further losses. Only for risk-tolerant investors.",
+        "slow_grower": "A profitable company growing slowly (under 5% revenue growth), or with declining revenue. May pay good dividends. Best suited for income-oriented investors rather than capital appreciation.",
+        "speculative": "This company has weak fundamentals \u2014 loss-making, barely profitable (very high P/E or very low ROE), or showing significant deterioration. Speculative stocks can deliver big returns if the business improves, but carry significant risk. Only for risk-tolerant investors.",
     }
     if lynch_classification in lynch_tag_map:
         tagged.append(_tag(

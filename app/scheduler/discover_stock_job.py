@@ -2286,8 +2286,14 @@ class DiscoverStockScraper(BaseScraper):
         if sector in _CYCLICAL_SECTORS and opm_std is not None and opm_std > 5:
             return "cyclical"
 
-        # Slow grower
-        if rev_cagr is not None and rev_cagr < 0.05 and mcap >= 80000:
+        # Slow grower: low growth, any profitable company (not just large caps)
+        yoy_rev_sl = row.get("revenue_growth")
+        yoy_earn_sl = row.get("earnings_growth")
+        has_slow_rev = (rev_cagr is not None and rev_cagr < 0.05) or \
+                       (yoy_rev_sl is not None and yoy_rev_sl < 0.05)
+        has_neg_growth = (yoy_rev_sl is not None and yoy_rev_sl < 0) and \
+                         (yoy_earn_sl is not None and yoy_earn_sl < 0)
+        if has_slow_rev and eps is not None and eps > 0:
             return "slow_grower"
 
         # Loss-making companies should not default to stalwart
@@ -2298,13 +2304,12 @@ class DiscoverStockScraper(BaseScraper):
         roe_val = row.get("roe")
         pe_val = row.get("pe_ratio")
         if eps is not None and eps > 0:
-            # Near-zero earnings: P/E > 200 or ROE < 3%
             if (pe_val is not None and pe_val > 200) or (roe_val is not None and roe_val < 3):
-                yoy_rev_chk = row.get("revenue_growth")
-                if yoy_rev_chk is None or yoy_rev_chk < 0.10:
-                    return "speculative"
+                return "speculative"
 
-        # Stalwart (default for profitable companies with moderate growth)
+        # Stalwart: profitable, moderate growth (5-15%), reasonable quality
+        # Anything reaching here has: positive EPS, ROE >= 3%, P/E <= 200,
+        # and didn't qualify as fast_grower/turnaround/asset_play/cyclical
         return "stalwart"
 
     # ── Technical Score & Action Tag ──
