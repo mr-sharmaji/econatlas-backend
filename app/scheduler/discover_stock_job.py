@@ -2603,7 +2603,19 @@ class DiscoverStockScraper(BaseScraper):
             else:
                 positive_parts.append(f"RSI at {rsi_val:.0f}")
 
-        if macd_hist is not None:
+        macd_val = tech_details.get("macd")
+        macd_signal = tech_details.get("macd_signal")
+        if macd_val is not None and macd_signal is not None:
+            if macd_val > macd_signal and macd_val > 0:
+                positive_parts.append("strong bullish MACD")
+            elif macd_val > macd_signal and macd_val <= 0:
+                positive_parts.append("MACD crossover (recovery starting)")
+            elif macd_val <= macd_signal and macd_val > 0:
+                caution_parts.append("MACD weakening from bullish territory")
+            else:
+                caution_parts.append("bearish MACD")
+        elif macd_hist is not None:
+            # Fallback if only histogram is available
             if macd_hist > 0:
                 positive_parts.append("bullish MACD")
             else:
@@ -4273,7 +4285,7 @@ async def run_discover_stock_job() -> None:
             ph_rows = await _pool.fetch(
                 """SELECT symbol, trade_date, close, volume
                    FROM discover_stock_price_history
-                   WHERE trade_date >= CURRENT_DATE - INTERVAL '260 days'
+                   WHERE trade_date >= CURRENT_DATE - INTERVAL '450 days'
                    ORDER BY symbol, trade_date"""
             )
             for ph_row in ph_rows:
@@ -4460,7 +4472,7 @@ async def rescore_discover_stocks() -> dict:
         ph_rows = await pool.fetch(
             """SELECT symbol, trade_date, close, volume
                FROM discover_stock_price_history
-               WHERE trade_date >= CURRENT_DATE - INTERVAL '260 days'
+               WHERE trade_date >= CURRENT_DATE - INTERVAL '450 days'
                ORDER BY symbol, trade_date"""
         )
         for ph_row in ph_rows:
