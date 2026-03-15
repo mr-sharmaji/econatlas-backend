@@ -2290,13 +2290,16 @@ class DiscoverStockScraper(BaseScraper):
         pb = row.get("price_to_book")
         net_profit_cons = row.get("_hist_profit_growth_consistency", 0)
 
-        # Turnaround: was unprofitable, now profitable
+        # Turnaround: was unprofitable, now profitable AND still improving
         np_latest = row.get("_net_profit_latest")
         profit_cagr_3y = row.get("_hist_profit_growth_3y_cagr")
         eps = row.get("eps")
         if profit_cagr_3y is not None and profit_cagr_3y > 0.3 and net_profit_cons <= 2:
             if eps is not None and eps > 0:
-                return "turnaround"
+                # Don't classify as turnaround if earnings are now declining
+                _eg = row.get("earnings_growth")
+                if _eg is None or _eg > -0.10:
+                    return "turnaround"
 
         # Asset play: P/B < 0.7 or net cash heavy
         cash = row.get("total_cash")
