@@ -14,6 +14,8 @@ jobs:
 
     env:
       DEPLOY_DIR: C:\PersonalProjects\econatlas-backend
+      DOCKER_BUILDKIT: 1
+      COMPOSE_DOCKER_CLI_BUILD: 1
 
     steps:
       - name: Checkout code
@@ -35,6 +37,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           Set-Location $env:DEPLOY_DIR
-          docker compose build --no-cache
+          docker compose build
           docker compose up -d
           docker compose ps
