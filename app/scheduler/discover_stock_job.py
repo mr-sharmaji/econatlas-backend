@@ -1613,6 +1613,17 @@ class DiscoverStockScraper(BaseScraper):
                     sh_full = self._extract_full_table(html, "shareholding")
                     if sh_full:
                         fundamentals["shareholding_quarterly"] = sh_full
+                        logger.debug(
+                            "Shareholding JSONB OK for %s: %d keys, years=%s",
+                            nse_symbol, len(sh_full), sh_full.get("years", [])[:3],
+                        )
+                    else:
+                        # Debug: why did _extract_full_table return None?
+                        _sh_match = re.search(r'id="shareholding"', html)
+                        logger.warning(
+                            "Shareholding JSONB MISSING for %s: html_len=%d, section_found=%s",
+                            nse_symbol, len(html), _sh_match is not None,
+                        )
 
                     return fundamentals, "screener_in"
                 except requests.exceptions.HTTPError as e:
