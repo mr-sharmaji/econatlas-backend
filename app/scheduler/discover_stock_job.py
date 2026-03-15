@@ -2322,13 +2322,24 @@ class DiscoverStockScraper(BaseScraper):
             (yoy_rev is not None and yoy_rev < -0.10) or
             (yoy_earn is not None and yoy_earn < -0.10)
         )
+        # Large caps need higher thresholds — their high CAGR often comes
+        # from M&A (e.g. HDFC merger), not organic growth.
+        is_large_cap = mcap >= 80_000
+        cagr_threshold = 0.25 if is_large_cap else 0.15
+        yoy_threshold = 0.25 if is_large_cap else 0.20
+        # Large caps also need BOTH CAGR and current YoY to confirm growth
         if not current_shrinking:
             if rev_cagr is not None and profit_cagr is not None:
-                if rev_cagr > 0.15 and profit_cagr > 0.15:
-                    return "fast_grower"
+                if rev_cagr > cagr_threshold and profit_cagr > cagr_threshold:
+                    # Large caps: also verify current YoY earnings supports it
+                    if is_large_cap:
+                        if yoy_earn is not None and yoy_earn > 0.15:
+                            return "fast_grower"
+                    else:
+                        return "fast_grower"
             # Fallback: use YoY revenue/earnings growth from Yahoo
-            if yoy_rev is not None and yoy_rev > 0.20:
-                if yoy_earn is not None and yoy_earn > 0.20:
+            if yoy_rev is not None and yoy_rev > yoy_threshold:
+                if yoy_earn is not None and yoy_earn > yoy_threshold:
                     return "fast_grower"
                 # Revenue-only: require stronger threshold when earnings data missing
                 if yoy_earn is None and yoy_rev > 0.40:
