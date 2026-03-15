@@ -2268,8 +2268,12 @@ class DiscoverStockScraper(BaseScraper):
         # Fallback: use YoY revenue/earnings growth from Yahoo
         yoy_rev = row.get("revenue_growth")
         yoy_earn = row.get("earnings_growth")
-        if yoy_rev is not None and yoy_rev > 0.20 and yoy_earn is not None and yoy_earn > 0.20:
-            return "fast_grower"
+        if yoy_rev is not None and yoy_rev > 0.20:
+            if yoy_earn is not None and yoy_earn > 0.20:
+                return "fast_grower"
+            # Revenue-only: require stronger threshold when earnings data missing
+            if yoy_earn is None and yoy_rev > 0.40:
+                return "fast_grower"
 
         # Cyclical
         if sector in _CYCLICAL_SECTORS and opm_std is not None and opm_std > 5:
