@@ -2583,7 +2583,7 @@ class DiscoverStockScraper(BaseScraper):
         tech_summary = ", ".join(tech_summary_parts) if tech_summary_parts else "limited technical data"
 
         # Trend alignment for reasoning text
-        trend = DiscoverStockJob._compute_trend_alignment(score, tech_score)
+        trend = DiscoverStockScraper._compute_trend_alignment(score, tech_score)
         tech_confirms = {"aligned": "confirm", "divergent": "partially diverge from"}.get(
             trend or "", "conflict with"
         )
