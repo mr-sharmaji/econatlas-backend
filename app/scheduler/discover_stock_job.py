@@ -3227,90 +3227,142 @@ class DiscoverStockScraper(BaseScraper):
         pledged = row.get("pledged_promoter_pct")
         eps = row.get("eps")
         rg = row.get("revenue_growth")
+        eg = row.get("earnings_growth")
         promoter = row.get("promoter_holding")
         public_h = row.get("public_holding")
         pe = row.get("pe_ratio")
+        dy = row.get("dividend_yield")
+        pb = row.get("price_to_book")
+        mcap = row.get("market_cap") or 0
 
         # ── Sentence 1: Identity + standout metric ──
-        # Lynch-aware descriptor woven into the sentence
-        s1_parts: list[str] = []
+        s1 = ""
 
         if lynch_classification == "fast_grower":
             if prof_cagr_5y is not None and prof_cagr_5y > 0.15:
-                s1_parts.append(f"A high-growth {ind_label} company compounding profits at {prof_cagr_5y*100:.0f}% over 5 years")
+                s1 = f"A high-growth {ind_label} company compounding profits at {prof_cagr_5y*100:.0f}% over 5 years."
             elif rg is not None and rg > 0.20:
-                s1_parts.append(f"A fast-growing {ind_label} company with revenue up {rg*100:.0f}% YoY")
+                s1 = f"A fast-growing {ind_label} company with revenue up {rg*100:.0f}% YoY."
             else:
-                s1_parts.append(f"A fast-growing {ind_label} company with strong earnings momentum")
+                s1 = f"A fast-growing {ind_label} company with strong earnings momentum."
         elif lynch_classification == "stalwart":
             if roe is not None and roe >= 15:
-                s1_parts.append(f"A steady, profitable {ind_label} company earning {roe:.0f}% return on equity")
+                s1 = f"A steady, profitable {ind_label} company earning {roe:.0f}% return on equity."
+            elif roce is not None and roce >= 15:
+                s1 = f"A steady {ind_label} company generating {roce:.0f}% return on capital."
             elif prof_cagr_5y is not None and prof_cagr_5y > 0.10:
-                s1_parts.append(f"A steady {ind_label} company with {prof_cagr_5y*100:.0f}% profit CAGR over 5 years")
+                s1 = f"A steady {ind_label} company with {prof_cagr_5y*100:.0f}% profit CAGR over 5 years."
             else:
-                s1_parts.append(f"A steady, reliable {ind_label} company with consistent profitability")
+                s1 = f"A steady, reliable {ind_label} company with consistent profitability."
         elif lynch_classification == "slow_grower":
-            if roe is not None and roe >= 12:
-                s1_parts.append(f"A mature {ind_label} company with {roe:.0f}% ROE but slowing growth")
+            if dy is not None and dy > 2:
+                s1 = f"A mature {ind_label} company offering {dy:.1f}% dividend yield — better suited for income investors."
+            elif roe is not None and roe >= 12:
+                s1 = f"A mature {ind_label} company with {roe:.0f}% ROE but slowing growth."
             else:
-                s1_parts.append(f"A mature {ind_label} company growing slowly — better suited for income investors")
+                s1 = f"A mature {ind_label} company growing slowly — better suited for income investors."
         elif lynch_classification == "turnaround":
-            s1_parts.append(f"A {ind_label} company in recovery — profits improving after a difficult period")
+            if prof_cagr_5y is not None and prof_cagr_5y > 0.30:
+                s1 = f"A {ind_label} company in recovery — profits surging {prof_cagr_5y*100:.0f}% after a difficult period."
+            elif eg is not None and eg > 0.20:
+                s1 = f"A {ind_label} company in recovery — earnings up {eg*100:.0f}% as the turnaround takes hold."
+            else:
+                s1 = f"A {ind_label} company in recovery — profits improving after a difficult period."
         elif lynch_classification == "cyclical":
-            if opm_std is not None:
-                s1_parts.append(f"A cyclical {ind_label} company with margins that swing with the business cycle")
+            if opm_std is not None and opm_std > 5:
+                s1 = f"A cyclical {ind_label} company — margins swing {opm_std:.0f}% with the business cycle."
+            elif rev_cagr_5y is not None:
+                s1 = f"A cyclical {ind_label} company whose fortunes track the economic cycle."
             else:
-                s1_parts.append(f"A cyclical {ind_label} company whose fortunes track the economic cycle")
+                s1 = f"A cyclical {ind_label} company — performance is tied to the broader economic cycle."
         elif lynch_classification == "asset_play":
-            pb = row.get("price_to_book")
             if pb is not None and pb < 1:
-                s1_parts.append(f"A {ind_label} company trading below book value (P/B {pb:.1f}x) — assets may be worth more than the stock price")
+                s1 = f"A {ind_label} company trading below book value (P/B {pb:.1f}x) — assets may be worth more than the stock price."
+            elif mcap > 0 and dte is not None and dte < 0.5:
+                s1 = f"An asset-rich {ind_label} company with low debt — underlying value may be underappreciated."
             else:
-                s1_parts.append(f"An asset-rich {ind_label} company where underlying assets may be underappreciated")
+                s1 = f"An asset-rich {ind_label} company where underlying assets may be underappreciated."
         elif lynch_classification == "speculative":
             if eps is not None and eps < 0:
-                s1_parts.append(f"A loss-making {ind_label} company — high risk, suitable only for investors with strong conviction")
+                s1 = f"A loss-making {ind_label} company — high risk, suitable only for investors with strong conviction."
+            elif roe is not None and roe < 2:
+                s1 = f"A {ind_label} company with near-zero returns — speculative at current levels."
             else:
-                s1_parts.append(f"A {ind_label} company with weak fundamentals — speculative at current levels")
+                s1 = f"A {ind_label} company with weak fundamentals — speculative at current levels."
         else:
-            s1_parts.append(f"A {ind_label} company")
-
-        sentence1 = s1_parts[0] + "."
+            if roe is not None and roe >= 15:
+                s1 = f"A {ind_label} company earning {roe:.0f}% return on equity."
+            elif mcap >= 80_000:
+                s1 = f"A large-cap {ind_label} company."
+            else:
+                s1 = f"A {ind_label} company."
 
         # ── Sentence 2: Valuation + key strength/context ──
-        s2_parts: list[str] = []
+        # Build valuation anchor (first full sentence) + qualifier phrases
+        val_anchor = ""
+        qualifiers: list[str] = []
+
         if peg_ratio is not None:
             if peg_ratio < 1.0:
-                s2_parts.append(f"At a PEG of {peg_ratio:.1f}, the stock looks undervalued relative to its growth")
+                val_anchor = f"At a PEG of {peg_ratio:.1f}, the stock looks undervalued relative to its growth"
             elif peg_ratio <= 1.5:
-                s2_parts.append(f"Trading at a PEG of {peg_ratio:.1f}, valuations appear fair for the growth delivered")
+                val_anchor = f"Trading at a PEG of {peg_ratio:.1f}, valuations appear fair for the growth delivered"
             elif peg_ratio <= 2.5:
-                s2_parts.append(f"With a PEG of {peg_ratio:.1f}, much of the growth is already priced in")
+                val_anchor = f"With a PEG of {peg_ratio:.1f}, much of the growth is already priced in"
             else:
-                s2_parts.append(f"At a PEG of {peg_ratio:.1f}, the stock carries a significant premium over its growth rate")
+                val_anchor = f"At a PEG of {peg_ratio:.1f}, the stock carries a significant premium over its growth rate"
         elif pe is not None:
-            if pe < 10:
-                s2_parts.append(f"Trading at just {pe:.0f}x earnings")
-            elif pe > 50:
-                s2_parts.append(f"Trading at a rich {pe:.0f}x earnings")
+            if pe < 0:
+                val_anchor = "Currently loss-making, so traditional PE valuation doesn't apply"
+            elif pe < 10:
+                val_anchor = f"Trading at just {pe:.0f}x earnings, valuations are undemanding"
+            elif pe <= 20:
+                val_anchor = f"At {pe:.0f}x earnings, the stock is reasonably valued"
+            elif pe <= 50:
+                val_anchor = f"At {pe:.0f}x earnings, the market is pricing in meaningful growth"
+            else:
+                val_anchor = f"Trading at a rich {pe:.0f}x earnings, expectations are very high"
+        elif pb is not None:
+            if pb < 1:
+                val_anchor = f"At {pb:.1f}x book value, the stock trades below its net asset value"
+            elif pb > 5:
+                val_anchor = f"At {pb:.1f}x book value, the premium reflects intangible strengths"
 
-        # Add differentiating details
+        # Differentiating qualifiers (appended with ", with ..." or ", and ...")
         if dte is not None and dte == 0:
-            s2_parts.append("debt-free balance sheet")
+            qualifiers.append("a debt-free balance sheet")
         elif dte is not None and dte > 2.0:
-            s2_parts.append(f"carries significant debt (D/E {dte:.1f})")
+            qualifiers.append(f"significant debt (D/E {dte:.1f})")
         if opm_std is not None and opm_std < 3 and lynch_classification != "cyclical":
-            s2_parts.append("margins are remarkably stable")
+            qualifiers.append("remarkably stable margins")
         if rg is not None and rg >= 0.20 and lynch_classification != "fast_grower":
-            s2_parts.append(f"revenue growing {rg*100:.0f}%")
+            qualifiers.append(f"revenue growing {rg*100:.0f}% YoY")
+        if dy is not None and dy > 2.0 and lynch_classification != "slow_grower":
+            qualifiers.append(f"a {dy:.1f}% dividend yield")
+        if roce is not None and roce >= 20 and (roe is None or roe < 15):
+            qualifiers.append(f"{roce:.0f}% return on capital")
         if fii_dir == "increasing":
-            s2_parts.append("FIIs have been steadily accumulating")
+            qualifiers.append("FIIs steadily accumulating")
         elif fii_dir == "decreasing":
-            s2_parts.append("FIIs have been reducing their stake")
+            qualifiers.append("FIIs reducing their stake")
+        if pct_change_5y is not None:
+            if pct_change_5y > 300:
+                qualifiers.append(f"stock up {pct_change_5y:.0f}% over 5 years")
+            elif pct_change_5y < -50:
+                qualifiers.append(f"stock down {abs(pct_change_5y):.0f}% over 5 years")
 
         sentence2 = ""
-        if s2_parts:
-            sentence2 = ". ".join(s2_parts[:2]) + "."
+        if val_anchor and qualifiers:
+            sentence2 = val_anchor + ", with " + qualifiers[0] + "."
+        elif val_anchor:
+            sentence2 = val_anchor + "."
+        elif qualifiers:
+            # No valuation anchor — promote qualifiers to a sentence
+            cap_q = qualifiers[0][0].upper() + qualifiers[0][1:]
+            if len(qualifiers) >= 2:
+                sentence2 = f"{cap_q} and {qualifiers[1]}."
+            else:
+                sentence2 = f"{cap_q}."
 
         # ── Sentence 3: Risk callout (only if material) ──
         risks: list[str] = []
@@ -3318,14 +3370,20 @@ class DiscoverStockScraper(BaseScraper):
             risks.append("Cash flows are negative despite reported profits — earnings quality is a concern")
         if pledged is not None and pledged > 20:
             risks.append(f"{pledged:.0f}% of promoter shares are pledged, adding financial stress risk")
+        if dte is not None and dte > 4.0:
+            risks.append(f"Leverage is very high at {dte:.1f}x D/E — financial risk is elevated")
         if opm_chg is not None and opm_chg < -3:
             risks.append(f"Operating margins have contracted {abs(opm_chg):.1f}% YoY")
-        if eps is not None and eps < 0 and lynch_classification != "speculative":
+        if rg is not None and rg < -0.15:
+            risks.append(f"Revenue has declined {abs(rg)*100:.0f}% YoY — business is shrinking")
+        if eps is not None and eps < 0 and lynch_classification not in ("speculative", "turnaround"):
             risks.append("Currently loss-making")
         if promoter is not None and promoter < 30 and promoter > 0:
             risks.append(f"Promoter stake is low at {promoter:.0f}%, raising governance questions")
         if public_h is not None and public_h > 50:
             risks.append(f"With {public_h:.0f}% public holding, the stock can be highly sentiment-driven")
+        if score < 30:
+            risks.append("Overall fundamentals are weak across most dimensions")
 
         sentence3 = ""
         if risks:
@@ -3340,7 +3398,7 @@ class DiscoverStockScraper(BaseScraper):
                 pctile_text = f"Ranks in the bottom {sector_percentile:.0f}% of {sector} stocks."
 
         # Assemble — pick best 3 sentences
-        parts = [p for p in [sentence1, sentence2, sentence3, pctile_text] if p]
+        parts = [p for p in [s1, sentence2, sentence3, pctile_text] if p]
         return " ".join(parts[:3])
 
     def _compute_scores(
