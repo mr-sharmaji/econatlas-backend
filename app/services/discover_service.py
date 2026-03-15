@@ -2052,21 +2052,21 @@ async def get_mf_nav_history(*, scheme_code: str, days: int = 365) -> list[dict]
 
 
 async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
-    """Get peer stocks in the same sector, sorted by score descending."""
+    """Get peer stocks in the same industry (fallback to sector), sorted by score descending."""
     pool = await get_pool()
     sector_stats = await _get_stock_sector_stats(pool)
 
     target = await pool.fetchrow(
-        f"SELECT sector FROM {STOCK_TABLE} WHERE symbol = $1",
+        f"SELECT sector, industry FROM {STOCK_TABLE} WHERE symbol = $1",
         symbol,
     )
     if target is None:
         return []
 
+    industry = target["industry"]
     sector = target["sector"]
-    rows = await pool.fetch(
-        f"""
-        SELECT
+
+    _PEER_COLS = f"""
             symbol, display_name, market, sector, industry,
             last_price, point_change, percent_change, volume, traded_value,
             pe_ratio, roe, roce, debt_to_equity, price_to_book, eps,
@@ -2093,15 +2093,38 @@ async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
             revenue_growth, earnings_growth, forward_pe,
             analyst_target_mean, analyst_count, analyst_recommendation, analyst_recommendation_mean,
             payout_ratio
-        FROM {STOCK_TABLE}
-        WHERE sector = $1 AND symbol != $2
-        ORDER BY score DESC NULLS LAST
-        LIMIT $3
-        """,
-        sector,
-        symbol,
-        limit,
-    )
+    """
+
+    # Try industry first, fall back to sector if too few peers
+    rows = []
+    if industry:
+        rows = await pool.fetch(
+            f"""
+            SELECT {_PEER_COLS}
+            FROM {STOCK_TABLE}
+            WHERE industry = $1 AND symbol != $2
+            ORDER BY score DESC NULLS LAST
+            LIMIT $3
+            """,
+            industry,
+            symbol,
+            limit,
+        )
+
+    if len(rows) < 3 and sector:
+        # Fall back to sector peers
+        rows = await pool.fetch(
+            f"""
+            SELECT {_PEER_COLS}
+            FROM {STOCK_TABLE}
+            WHERE sector = $1 AND symbol != $2
+            ORDER BY score DESC NULLS LAST
+            LIMIT $3
+            """,
+            sector,
+            symbol,
+            limit,
+        )
 
     items = []
     for r in rows:
