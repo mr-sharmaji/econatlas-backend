@@ -3973,6 +3973,33 @@ class DiscoverStockScraper(BaseScraper):
                 score, tech_score, data_quality, metrics_used,
             )
 
+            # ── Append trend & breakout tags to tags_v2 ──
+            _trend_explanations = {
+                "aligned": "Fundamental and technical signals agree — both point in the same direction, increasing conviction in the current trend.",
+                "divergent": "Mixed signals between fundamentals and technicals — no clear directional edge from either side. Proceed with caution.",
+                "conflicting": "Fundamental and technical signals disagree — the stock looks different depending on whether you focus on financials or price action. One side may be leading.",
+            }
+            _breakout_explanations = {
+                "breakout": "The stock has broken above its 52-week high with strong volume — a bullish signal that often leads to further upside as new buyers enter.",
+                "approaching_breakout": "The stock is within 3% of its 52-week high. A close above this level with volume confirmation could trigger a breakout into new highs.",
+                "breakdown": "The stock has broken below its 52-week low with elevated volume — a bearish signal indicating selling pressure and potential for further downside.",
+                "approaching_breakdown": "The stock is within 3% of its 52-week low. A break below this level could trigger panic selling and further price decline.",
+                "resistance": "The stock is near its 52-week high but lacking volume to push through. The previous high is acting as a ceiling — watch for either a breakout or rejection.",
+                "support": "The stock is near its 52-week low but holding above it. This level is acting as a floor — a bounce here could signal a reversal, while a break below is bearish.",
+            }
+            _breakout_severity = {
+                "breakout": "positive", "approaching_breakout": "positive",
+                "breakdown": "negative", "approaching_breakdown": "negative",
+                "resistance": "neutral", "support": "neutral",
+            }
+            if trend_alignment and trend_alignment in _trend_explanations:
+                _ta_label = f"Trend: {trend_alignment.capitalize()}"
+                _ta_sev = "positive" if trend_alignment == "aligned" else ("negative" if trend_alignment == "conflicting" else "neutral")
+                tags_v2.append({"tag": _ta_label, "category": "trend", "severity": _ta_sev, "priority": 5, "explanation": _trend_explanations[trend_alignment]})
+            if breakout_signal != "none" and breakout_signal in _breakout_explanations:
+                _bs_label = breakout_signal.replace("_", " ").title()
+                tags_v2.append({"tag": _bs_label, "category": "trend", "severity": _breakout_severity.get(breakout_signal, "neutral"), "priority": 5, "explanation": _breakout_explanations[breakout_signal]})
+
             action_tag, action_tag_reasoning = self._compute_action_tag(
                 score, tech_score,
                 quality_score, momentum,
