@@ -1510,35 +1510,18 @@ async def get_discover_home_data() -> dict:
             out.append(d)
         return out
 
-    # Top stocks by 3M change (sector-diversified), fallback to score when 3M data unavailable
-    has_3m = await pool.fetchval(
-        f"SELECT EXISTS(SELECT 1 FROM {STOCK_TABLE} WHERE percent_change_3m IS NOT NULL LIMIT 1)"
+    # Top stocks by score (sector-diversified) — highest quality stocks
+    top_stock_rows = await pool.fetch(
+        f"""
+        SELECT * FROM (
+            SELECT {_stock_cols},
+                   ROW_NUMBER() OVER (PARTITION BY COALESCE(sector, 'Other') ORDER BY score DESC) AS rn
+            FROM {STOCK_TABLE}
+            WHERE market = 'IN' AND source_status IN ('primary', 'fallback') AND score >= 50
+        ) sub WHERE rn <= 2
+        ORDER BY score DESC LIMIT 8
+        """
     )
-    if has_3m:
-        top_stock_rows = await pool.fetch(
-            f"""
-            SELECT * FROM (
-                SELECT {_stock_cols},
-                       ROW_NUMBER() OVER (PARTITION BY COALESCE(sector, 'Other') ORDER BY percent_change_3m DESC) AS rn
-                FROM {STOCK_TABLE}
-                WHERE market = 'IN' AND source_status IN ('primary', 'fallback')
-                      AND percent_change_3m IS NOT NULL AND percent_change_3m > 0
-            ) sub WHERE rn <= 2
-            ORDER BY percent_change_3m DESC LIMIT 8
-            """
-        )
-    else:
-        top_stock_rows = await pool.fetch(
-            f"""
-            SELECT * FROM (
-                SELECT {_stock_cols},
-                       ROW_NUMBER() OVER (PARTITION BY COALESCE(sector, 'Other') ORDER BY score DESC) AS rn
-                FROM {STOCK_TABLE}
-                WHERE market = 'IN' AND source_status IN ('primary', 'fallback') AND score >= 50
-            ) sub WHERE rn <= 2
-            ORDER BY score DESC LIMIT 8
-            """
-        )
     top_stocks = _decorate_stock_list(top_stock_rows)
 
     # Top equity mutual funds by score
@@ -1673,7 +1656,6 @@ async def get_discover_home_data() -> dict:
               AND score >= 30
         ) sub WHERE rn = 1
         ORDER BY (score * 0.70 + COALESCE(percent_change_3m, 0) * 0.30) DESC
-        LIMIT 10
         """
     )
     sector_champions = _decorate_stock_list(champion_rows)
@@ -2125,3 +2107,55 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
         c = str(d.get("category") or "Other")
         items.append(_decorate_mf_row(d, category_stats.get(c)))
     return items
+
+
+# ---------------------------------------------------------------------------
+# Batch sparklines
+# ---------------------------------------------------------------------------
+
+async def get_stock_sparklines(*, symbols: list[str], days: int = 7) -> dict[str, list[dict]]:
+    """Fetch price history for multiple symbols in a single query."""
+    if not symbols:
+        return {}
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT symbol, trade_date, close
+        FROM discover_stock_price_history
+        WHERE symbol = ANY($1::text[])
+          AND trade_date >= CURRENT_DATE - make_interval(days => $2)
+        ORDER BY symbol, trade_date ASC
+        """,
+        symbols,
+        days,
+    )
+    result: dict[str, list[dict]] = {s: [] for s in symbols}
+    for r in rows:
+        sym = r["symbol"]
+        if sym in result:
+            result[sym].append({"date": str(r["trade_date"]), "value": float(r["close"])})
+    return result
+
+
+async def get_mf_sparklines(*, scheme_codes: list[str], days: int = 7) -> dict[str, list[dict]]:
+    """Fetch NAV history for multiple scheme codes in a single query."""
+    if not scheme_codes:
+        return {}
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT scheme_code, nav_date, nav
+        FROM discover_mf_nav_history
+        WHERE scheme_code = ANY($1::text[])
+          AND nav_date >= CURRENT_DATE - make_interval(days => $2)
+        ORDER BY scheme_code, nav_date ASC
+        """,
+        scheme_codes,
+        days,
+    )
+    result: dict[str, list[dict]] = {s: [] for s in scheme_codes}
+    for r in rows:
+        sc = r["scheme_code"]
+        if sc in result:
+            result[sc].append({"date": str(r["nav_date"]), "value": float(r["nav"])})
+    return result
