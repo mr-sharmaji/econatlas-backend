@@ -2296,9 +2296,12 @@ class DiscoverStockScraper(BaseScraper):
         eps = row.get("eps")
         if profit_cagr_3y is not None and profit_cagr_3y > 0.3 and net_profit_cons <= 2:
             if eps is not None and eps > 0:
-                # Don't classify as turnaround if earnings are now declining
+                # Block if revenue or earnings are declining — turnaround thesis broken
                 _eg = row.get("earnings_growth")
-                if _eg is None or _eg > -0.10:
+                _rg = row.get("revenue_growth")
+                earnings_ok = _eg is None or _eg > -0.05
+                revenue_ok = _rg is None or _rg > -0.15
+                if earnings_ok and revenue_ok:
                     return "turnaround"
 
         # Asset play: P/B < 0.7 or net cash heavy
