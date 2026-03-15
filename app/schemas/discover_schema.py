@@ -275,7 +275,7 @@ class SearchStockItem(BaseModel):
     sector: str | None = None
     last_price: float
     percent_change: float | None = None
-    score: float
+    score: float = 0
 
 
 class SearchMutualFundItem(BaseModel):
@@ -284,7 +284,7 @@ class SearchMutualFundItem(BaseModel):
     category: str | None = None
     nav: float
     returns_3y: float | None = None
-    score: float
+    score: float = 0
 
 
 class UnifiedSearchResponse(BaseModel):
