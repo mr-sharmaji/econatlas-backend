@@ -1867,17 +1867,19 @@ class DiscoverStockScraper(BaseScraper):
         """Merged ownership + smart money: static levels + flows + sustained trends."""
         parts: dict[str, float] = {}
 
-        # Promoter level (static)
+        # Promoter level (static) — SEBI sweet spot: promoter 50-75%
         promoter = row.get("promoter_holding")
         if promoter is not None:
             if 50 <= promoter <= 75:
-                parts["promoter_level"] = 80.0
+                parts["promoter_level"] = 80.0   # ideal range
             elif promoter > 75:
-                parts["promoter_level"] = 60.0
+                parts["promoter_level"] = 55.0   # too concentrated, low free-float
+            elif promoter >= 40:
+                parts["promoter_level"] = 70.0   # acceptable
             elif promoter >= 30:
-                parts["promoter_level"] = 65.0
+                parts["promoter_level"] = 55.0   # borderline low
             else:
-                parts["promoter_level"] = 40.0
+                parts["promoter_level"] = 35.0   # very low, speculative risk
 
         # FII level + flow + sustained
         fii = row.get("fii_holding")
@@ -3164,6 +3166,9 @@ class DiscoverStockScraper(BaseScraper):
             strengths.append("debt-free")
         elif dte is not None and dte <= 0.3 and dte > 0:
             strengths.append("low debt")
+        prom = row.get("promoter_holding")
+        if prom is not None and 55 <= prom <= 75:
+            strengths.append(f"strong promoter holding ({prom:.0f}%)")
         if rg is not None and rg >= 0.15:
             strengths.append(f"revenue growing {rg*100:.0f}%")
 
@@ -3197,6 +3202,9 @@ class DiscoverStockScraper(BaseScraper):
             risks.append("loss-making")
         if dte is not None and dte > 2.0:
             risks.append(f"high leverage (D/E {dte:.1f})")
+        promoter = row.get("promoter_holding")
+        if promoter is not None and promoter < 30:
+            risks.append(f"low promoter holding ({promoter:.0f}%)")
 
         # Build narrative
         strength_str = " with " + " and ".join(strengths[:2]) if strengths else ""
