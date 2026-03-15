@@ -477,6 +477,12 @@ def generate_stock_tags(
             explanation=f"Promoters hold only {promoter:.1f}% of the company. Low promoter stake means less insider commitment \u2014 the stock may be more vulnerable to speculative swings and lack strong management alignment.",
         ))
 
+    if public is not None and public > 40:
+        tagged.append(_tag(
+            "High Public", _CAT_RISK, _SEV_NEGATIVE, 5,
+            explanation=f"Public/retail investors hold {public:.1f}% of the company. High retail participation makes the stock more sentiment-driven and volatile, as retail investors tend to react emotionally to market noise. Ideally, a significant portion of public holding should be with institutional investors (FIIs/DIIs) rather than retail.",
+        ))
+
     # \u2500\u2500 Priority 6 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     if eps is not None and eps < 0:
         tagged.append(_tag(

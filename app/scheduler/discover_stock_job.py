@@ -3205,6 +3205,9 @@ class DiscoverStockScraper(BaseScraper):
         promoter = row.get("promoter_holding")
         if promoter is not None and promoter < 30:
             risks.append(f"low promoter holding ({promoter:.0f}%)")
+        public_h = row.get("public_holding")
+        if public_h is not None and public_h > 40:
+            risks.append(f"high public/retail holding ({public_h:.0f}%)")
 
         # Build narrative
         strength_str = " with " + " and ".join(strengths[:2]) if strengths else ""
