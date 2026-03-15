@@ -2178,12 +2178,26 @@ class DiscoverStockScraper(BaseScraper):
         if eps is not None:
             parts["eps_sign"] = 80.0 if eps > 0 else 30.0
 
+        # Leverage (D/E)
+        dte = row.get("debt_to_equity")
+        if dte is not None:
+            if dte > 3:
+                parts["leverage"] = 20.0
+            elif dte > 2:
+                parts["leverage"] = 35.0
+            elif dte > 1:
+                parts["leverage"] = 55.0
+            else:
+                parts["leverage"] = 80.0
+        else:
+            parts["leverage"] = 50.0  # neutral when data unavailable
+
         if not parts:
             return None, {}
 
         weights = {
-            "liquidity": 0.20, "volatility": 0.20, "pledging": 0.20,
-            "free_float": 0.15, "eps_sign": 0.25,
+            "liquidity": 0.15, "volatility": 0.15, "pledging": 0.15,
+            "leverage": 0.15, "free_float": 0.15, "eps_sign": 0.25,
         }
         total_w = sum(weights.get(k, 0.10) for k in parts)
         score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
@@ -2247,10 +2261,15 @@ class DiscoverStockScraper(BaseScraper):
             if net_cash_pct > 30:
                 return "asset_play"
 
-        # Fast grower
+        # Fast grower (historical CAGR, then YoY fallback)
         if rev_cagr is not None and profit_cagr is not None:
             if rev_cagr > 0.15 and profit_cagr > 0.15:
                 return "fast_grower"
+        # Fallback: use YoY revenue/earnings growth from Yahoo
+        yoy_rev = row.get("revenue_growth")
+        yoy_earn = row.get("earnings_growth")
+        if yoy_rev is not None and yoy_rev > 0.20 and yoy_earn is not None and yoy_earn > 0.20:
+            return "fast_grower"
 
         # Cyclical
         if sector in _CYCLICAL_SECTORS and opm_std is not None and opm_std > 5:
