@@ -1868,45 +1868,47 @@ class DiscoverStockScraper(BaseScraper):
         parts: dict[str, float] = {}
 
         # Promoter level (static) — SEBI sweet spot: promoter 50-75%
+        # Wider spread for better differentiation (was 35-80, now 20-90)
         promoter = row.get("promoter_holding")
         if promoter is not None:
             if 50 <= promoter <= 75:
-                parts["promoter_level"] = 80.0   # ideal range
+                parts["promoter_level"] = 90.0   # ideal range
             elif promoter > 75:
-                parts["promoter_level"] = 55.0   # too concentrated, low free-float
+                parts["promoter_level"] = 50.0   # too concentrated, low free-float
             elif promoter >= 40:
-                parts["promoter_level"] = 70.0   # acceptable
+                parts["promoter_level"] = 75.0   # acceptable
             elif promoter >= 30:
-                parts["promoter_level"] = 55.0   # borderline low
+                parts["promoter_level"] = 45.0   # borderline low
             else:
-                parts["promoter_level"] = 35.0   # very low, speculative risk
+                parts["promoter_level"] = 20.0   # very low, speculative risk
 
-        # FII level + flow + sustained
+        # FII level + flow + sustained (wider spread for differentiation)
         fii = row.get("fii_holding")
         if fii is not None:
-            parts["fii_level"] = self._clamp(fii * 3 + 20)
+            # FII 0% → 15, 5% → 40, 10% → 55, 20% → 75, 30%+ → 90+
+            parts["fii_level"] = self._clamp(fii * 4 + 15)
 
         fii_chg = row.get("fii_holding_change")
         if fii_chg is not None:
-            parts["fii_flow"] = self._clamp(50 + fii_chg * 20)
+            parts["fii_flow"] = self._clamp(50 + fii_chg * 35)
 
         fii_4q = row.get("_hist_fii_trend_4q")
         if fii_4q is not None:
-            parts["fii_sustained"] = self._clamp(50 + fii_4q * 10)
+            parts["fii_sustained"] = self._clamp(50 + fii_4q * 18)
 
         # DII level + flow
         dii = row.get("dii_holding")
         if dii is not None:
-            parts["dii_level"] = self._clamp(dii * 3 + 15)
+            parts["dii_level"] = self._clamp(dii * 4 + 10)
 
         dii_chg = row.get("dii_holding_change")
         if dii_chg is not None:
-            parts["dii_flow"] = self._clamp(50 + dii_chg * 20)
+            parts["dii_flow"] = self._clamp(50 + dii_chg * 35)
 
         # Promoter flow + sustained
         prom_chg = row.get("promoter_holding_change")
         if prom_chg is not None:
-            parts["promoter_flow"] = self._clamp(50 + prom_chg * 25)
+            parts["promoter_flow"] = self._clamp(50 + prom_chg * 40)
 
         promoter_4q = row.get("_hist_promoter_trend_4q")
         if promoter_4q is not None:
@@ -2019,6 +2021,11 @@ class DiscoverStockScraper(BaseScraper):
         if eps is not None and eps < 0 and pe_val is None:
             parts["loss_penalty"] = 20.0
 
+        # Marginal EPS penalty: when EPS is barely positive (< 0.5),
+        # P/E becomes meaninglessly high. Penalise to prevent inflated valuation.
+        if eps is not None and 0 < eps < 0.5 and pe_val is not None and pe_val > 100:
+            parts["marginal_eps_penalty"] = 25.0
+
         if not parts:
             return None, {}, None
 
@@ -2087,10 +2094,24 @@ class DiscoverStockScraper(BaseScraper):
             elif rev_cagr_5y > 0.10 and profit_cagr_5y > 0.10:
                 parts["compounding_bonus"] = 70.0
 
+        # Current-period deterioration penalty: if YoY revenue AND earnings
+        # are both negative, cap growth score — historical CAGR shouldn't mask
+        # a company that's currently shrinking.
+        yoy_rev_cur = row.get("revenue_growth")
+        yoy_earn_cur = row.get("earnings_growth")
+        current_decline_cap: float | None = None
+        if yoy_rev_cur is not None and yoy_earn_cur is not None:
+            if yoy_rev_cur < -0.20 and yoy_earn_cur < -0.20:
+                current_decline_cap = 35.0   # severe decline
+            elif yoy_rev_cur < 0 and yoy_earn_cur < 0:
+                current_decline_cap = 55.0   # both negative
+
         if parts:
             w = _SECTOR_GROWTH_WEIGHTS.get(sector, _SECTOR_GROWTH_WEIGHTS["DEFAULT"])
             tw = sum(w.get(k, 0.10) for k in parts)
             score = sum(parts[k] * w.get(k, 0.10) for k in parts) / tw
+            if current_decline_cap is not None:
+                score = min(score, current_decline_cap)
             return round(score, 2), parts
 
         # No fundamental growth data available — return None instead of
@@ -2153,49 +2174,64 @@ class DiscoverStockScraper(BaseScraper):
         if volatility_score is not None:
             parts["volatility"] = volatility_score
 
-        # Pledging risk (default 50 = neutral when data unavailable)
+        # Pledging risk (wider spread for differentiation)
         pledged = row.get("pledged_promoter_pct")
         if pledged is not None:
-            if pledged > 40:
-                parts["pledging"] = 20.0
+            if pledged > 50:
+                parts["pledging"] = 10.0
+            elif pledged > 40:
+                parts["pledging"] = 25.0
             elif pledged > 20:
-                parts["pledging"] = 50.0
+                parts["pledging"] = 45.0
+            elif pledged > 5:
+                parts["pledging"] = 70.0
             else:
-                parts["pledging"] = 80.0
+                parts["pledging"] = 90.0  # minimal/zero pledging
         else:
             parts["pledging"] = 50.0
 
-        # Free-float (inverted-U: penalise both extremes)
+        # Free-float (inverted-U: penalise both extremes, wider spread)
         # SEBI mandates >=25% public. Sweet spot 25-35% (promoter 65-75%).
         public = row.get("public_holding")
         if public is not None:
-            if public < 15:
+            if public < 10:
+                parts["free_float"] = 20.0   # extremely illiquid
+            elif public < 15:
                 parts["free_float"] = 35.0   # severely illiquid
             elif public < 25:
                 parts["free_float"] = 55.0   # below SEBI norm
             elif public <= 35:
-                parts["free_float"] = 80.0   # sweet spot
+                parts["free_float"] = 85.0   # sweet spot
             elif public <= 50:
-                parts["free_float"] = 60.0   # retail-heavy, sentiment-driven
+                parts["free_float"] = 55.0   # retail-heavy, sentiment-driven
             else:
-                parts["free_float"] = 40.0   # promoter minority, volatile
+                parts["free_float"] = 30.0   # promoter minority, volatile
 
-        # Negative EPS
+        # EPS quality (wider spread: marginal EPS also penalised)
         eps = row.get("eps")
         if eps is not None:
-            parts["eps_sign"] = 80.0 if eps > 0 else 30.0
+            if eps > 1:
+                parts["eps_sign"] = 85.0
+            elif eps > 0:
+                parts["eps_sign"] = 60.0  # marginally profitable
+            else:
+                parts["eps_sign"] = 20.0  # loss-making
 
-        # Leverage (D/E)
+        # Leverage (D/E) — wider spread
         dte = row.get("debt_to_equity")
         if dte is not None:
-            if dte > 3:
+            if dte > 4:
+                parts["leverage"] = 10.0
+            elif dte > 3:
                 parts["leverage"] = 20.0
             elif dte > 2:
                 parts["leverage"] = 35.0
             elif dte > 1:
                 parts["leverage"] = 55.0
+            elif dte > 0.3:
+                parts["leverage"] = 75.0
             else:
-                parts["leverage"] = 80.0
+                parts["leverage"] = 90.0  # near debt-free
         else:
             parts["leverage"] = 50.0  # neutral when data unavailable
 
@@ -2244,7 +2280,11 @@ class DiscoverStockScraper(BaseScraper):
     def _classify_lynch(self, row: dict, sector: str) -> str:
         """Peter Lynch stock classification."""
         mcap = row.get("market_cap") or 0
-        rev_cagr = row.get("_hist_5y_revenue_cagr") or row.get("_hist_profit_growth_3y_cagr")
+        rev_cagr = row.get("_hist_5y_revenue_cagr")
+        if rev_cagr is None:
+            _csg3y = row.get("compounded_sales_growth_3y")
+            if _csg3y is not None:
+                rev_cagr = _csg3y / 100.0
         profit_cagr = row.get("_hist_5y_profit_cagr") or row.get("_hist_profit_growth_3y_cagr")
         opm_std = row.get("_hist_opm_std_5y")
         pb = row.get("price_to_book")
@@ -2269,30 +2309,38 @@ class DiscoverStockScraper(BaseScraper):
                 return "asset_play"
 
         # Fast grower (historical CAGR, then YoY fallback)
-        if rev_cagr is not None and profit_cagr is not None:
-            if rev_cagr > 0.15 and profit_cagr > 0.15:
-                return "fast_grower"
-        # Fallback: use YoY revenue/earnings growth from Yahoo
+        # Guard: current-period growth must not be deeply negative
         yoy_rev = row.get("revenue_growth")
         yoy_earn = row.get("earnings_growth")
-        if yoy_rev is not None and yoy_rev > 0.20:
-            if yoy_earn is not None and yoy_earn > 0.20:
-                return "fast_grower"
-            # Revenue-only: require stronger threshold when earnings data missing
-            if yoy_earn is None and yoy_rev > 0.40:
-                return "fast_grower"
+        current_shrinking = (
+            (yoy_rev is not None and yoy_rev < -0.10) or
+            (yoy_earn is not None and yoy_earn < -0.10)
+        )
+        if not current_shrinking:
+            if rev_cagr is not None and profit_cagr is not None:
+                if rev_cagr > 0.15 and profit_cagr > 0.15:
+                    return "fast_grower"
+            # Fallback: use YoY revenue/earnings growth from Yahoo
+            if yoy_rev is not None and yoy_rev > 0.20:
+                if yoy_earn is not None and yoy_earn > 0.20:
+                    return "fast_grower"
+                # Revenue-only: require stronger threshold when earnings data missing
+                if yoy_earn is None and yoy_rev > 0.40:
+                    return "fast_grower"
 
         # Cyclical
         if sector in _CYCLICAL_SECTORS and opm_std is not None and opm_std > 5:
             return "cyclical"
 
         # Slow grower: low growth, any profitable company (not just large caps)
+        # Both CAGR and current YoY must agree on slow growth
         yoy_rev_sl = row.get("revenue_growth")
         yoy_earn_sl = row.get("earnings_growth")
-        has_slow_rev = (rev_cagr is not None and rev_cagr < 0.05) or \
-                       (yoy_rev_sl is not None and yoy_rev_sl < 0.05)
-        has_neg_growth = (yoy_rev_sl is not None and yoy_rev_sl < 0) and \
-                         (yoy_earn_sl is not None and yoy_earn_sl < 0)
+        cagr_slow = rev_cagr is not None and rev_cagr < 0.05
+        yoy_slow = yoy_rev_sl is not None and yoy_rev_sl < 0.05
+        # Don't classify as slow_grower if current YoY is strongly positive
+        yoy_fast = yoy_rev_sl is not None and yoy_rev_sl > 0.15
+        has_slow_rev = (cagr_slow or yoy_slow) and not yoy_fast
         if has_slow_rev and eps is not None and eps > 0:
             return "slow_grower"
 
@@ -2307,9 +2355,14 @@ class DiscoverStockScraper(BaseScraper):
             if (pe_val is not None and pe_val > 200) or (roe_val is not None and roe_val < 3):
                 return "speculative"
 
-        # Stalwart: profitable, moderate growth (5-15%), reasonable quality
-        # Anything reaching here has: positive EPS, ROE >= 3%, P/E <= 200,
-        # and didn't qualify as fast_grower/turnaround/asset_play/cyclical
+        # Stalwart: profitable, moderate growth, reasonable quality
+        # Require minimum ROE >= 5% and revenue not collapsing
+        roe_stw = row.get("roe")
+        yoy_rev_stw = row.get("revenue_growth")
+        if roe_stw is not None and roe_stw < 5:
+            return "speculative"
+        if yoy_rev_stw is not None and yoy_rev_stw < -0.30:
+            return "speculative"
         return "stalwart"
 
     # ── Technical Score & Action Tag ──
@@ -2882,7 +2935,7 @@ class DiscoverStockScraper(BaseScraper):
                 return "medium"
             return "low"
         abs_diff = abs(score - tech_score)
-        if abs_diff < 15 and data_quality == "full" and metrics_used >= 3:
+        if abs_diff < 15 and data_quality == "full" and metrics_used >= 4:
             # Strong agreement with good data
             if (score >= 65 and tech_score >= 55) or (score < 40 and tech_score < 40):
                 return "high"
@@ -3554,6 +3607,28 @@ class DiscoverStockScraper(BaseScraper):
             if _raw_mcap is not None and isinstance(_raw_mcap, (int, float)) and _raw_mcap > 1e7:
                 row["market_cap"] = _raw_mcap / 1e7
 
+            # ── Sanitize extreme values ──
+            # ROE: cap when equity near-zero inflates ratio
+            _roe_raw = row.get("roe")
+            if _roe_raw is not None and isinstance(_roe_raw, (int, float)):
+                if _roe_raw > 150:
+                    row["roe"] = None  # near-zero equity, meaningless
+                elif _roe_raw < -100:
+                    row["roe"] = -100.0
+            # Revenue growth: winsorize extreme values
+            _rg_raw = row.get("revenue_growth")
+            if _rg_raw is not None and isinstance(_rg_raw, (int, float)):
+                row["revenue_growth"] = max(-1.0, min(_rg_raw, 5.0))  # cap at 500%
+            # Earnings growth: winsorize
+            _eg_raw = row.get("earnings_growth")
+            if _eg_raw is not None and isinstance(_eg_raw, (int, float)):
+                row["earnings_growth"] = max(-1.0, min(_eg_raw, 5.0))
+            # Beta: clamp to reasonable range
+            _beta_raw = row.get("beta")
+            if _beta_raw is not None and isinstance(_beta_raw, (int, float)):
+                if _beta_raw < -3 or _beta_raw > 5:
+                    row["beta"] = None  # meaningless
+
             # Mine JSONB annual tables for multi-year trend signals
             historical_metrics = self._compute_historical_metrics(row)
             for _hk, _hv in historical_metrics.items():
@@ -3701,11 +3776,13 @@ class DiscoverStockScraper(BaseScraper):
                     for k, w in available_weights.items()
                 )
 
-            # Shrink quality influence when coverage is low
+            # Shrink quality influence when coverage is low.
+            # Only dampen the quality component, not the entire weighted score.
+            # Previous approach blended entire total toward momentum/liquidity,
+            # which destroyed stocks with strong non-quality components.
             if metrics_used > 0 and metrics_used < 4:
-                signal_only = (momentum * 0.6 + liquidity * 0.4)
-                blend_factor = metrics_used / 5.0
-                total = (total * blend_factor) + (signal_only * (1.0 - blend_factor))
+                quality_penalty = (4 - metrics_used) * 3.0  # 3-9 points off
+                total = total - quality_penalty
 
             source_status = str(row.get("source_status") or "limited").strip().lower()
             if metrics_used == 0 and source_status == "primary":
