@@ -2302,10 +2302,11 @@ class DiscoverStockScraper(BaseScraper):
 
             period = 14
             if len(gains) >= period:
-                avg_gain = sum(gains[-period:]) / period
-                avg_loss = sum(losses[-period:]) / period
-                # Use Wilder's smoothing for remaining periods
-                for i in range(len(gains) - period, len(gains)):
+                # Seed from first 14 periods (SMA)
+                avg_gain = sum(gains[:period]) / period
+                avg_loss = sum(losses[:period]) / period
+                # Wilder's smoothing through all remaining periods
+                for i in range(period, len(gains)):
                     avg_gain = (avg_gain * (period - 1) + gains[i]) / period
                     avg_loss = (avg_loss * (period - 1) + losses[i]) / period
 
@@ -2582,16 +2583,37 @@ class DiscoverStockScraper(BaseScraper):
         top_layers = valid_layers[:2]
         top_str = " and ".join(f"{n} ({s:.0f})" for n, s in top_layers) if top_layers else "limited data"
 
-        # Build tech summary string
+        # Build tech summary components
         rsi_val = tech_details.get("rsi_14")
         macd_hist = tech_details.get("macd_histogram")
-        tech_summary_parts: list[str] = []
+
+        rsi_overbought = rsi_val is not None and rsi_val > 70
+        rsi_oversold = rsi_val is not None and rsi_val < 30
+
+        # Positive tech signals (for "confirm" sentence)
+        positive_parts: list[str] = []
+        # Caution signals (for separate caveat)
+        caution_parts: list[str] = []
+
         if rsi_val is not None:
-            tech_summary_parts.append(f"RSI at {rsi_val:.0f}")
+            if rsi_overbought:
+                caution_parts.append(f"RSI at {rsi_val:.0f} indicates overbought conditions")
+            elif rsi_oversold:
+                caution_parts.append(f"RSI at {rsi_val:.0f} indicates oversold conditions")
+            else:
+                positive_parts.append(f"RSI at {rsi_val:.0f}")
+
         if macd_hist is not None:
-            direction = "bullish" if macd_hist > 0 else "bearish"
-            tech_summary_parts.append(f"{direction} MACD")
-        tech_summary = ", ".join(tech_summary_parts) if tech_summary_parts else "limited technical data"
+            if macd_hist > 0:
+                positive_parts.append("bullish MACD")
+            else:
+                caution_parts.append("bearish MACD")
+
+        tech_positive = ", ".join(positive_parts) if positive_parts else None
+        tech_caution = ", ".join(caution_parts) if caution_parts else None
+        # Fallback flat summary for simpler reason strings
+        all_parts = positive_parts + caution_parts
+        tech_summary = ", ".join(all_parts) if all_parts else "limited technical data"
 
         # Trend alignment for reasoning text
         trend = DiscoverStockScraper._compute_trend_alignment(score, tech_score)
@@ -2646,14 +2668,21 @@ class DiscoverStockScraper(BaseScraper):
 
         if score >= 75 and tech_score >= 60:
             tag = "Strong Outperformer"
-            reason = (f"Strong Outperformer — {top_str} are the primary drivers. "
-                      f"{tech_summary} {tech_confirms} the fundamental strength. "
-                      f"Reflects both long-term quality and favorable short-term positioning.")
+            reason = f"Strong Outperformer — {top_str} are the primary drivers. "
+            if tech_positive:
+                reason += f"{tech_positive} {tech_confirms} the fundamental strength. "
+            if tech_caution:
+                reason += f"However, {tech_caution} — monitor for short-term pullback risk. "
+            if not tech_positive and not tech_caution:
+                reason += "Reflects both long-term quality and favorable positioning. "
 
         elif score >= 60 and tech_score >= 45:
             tag = "Outperformer"
-            reason = (f"Outperformer — Solid fundamentals (score {score:.0f}) led by {top_str}. "
-                      f"Technicals ({tech_summary}) {tech_confirms} at {tech_score:.0f}.")
+            reason = f"Outperformer — Solid fundamentals (score {score:.0f}) led by {top_str}. "
+            if tech_positive:
+                reason += f"{tech_positive} {tech_confirms} at tech score {tech_score:.0f}. "
+            if tech_caution:
+                reason += f"Note: {tech_caution}. "
 
         elif score >= 50 and tech_score >= 50:
             tag = "Accumulate"

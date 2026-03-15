@@ -2329,15 +2329,15 @@ async def get_stock_story(*, symbol: str) -> dict | None:
     score = _to_float(d.get("score"))
     if score is not None:
         if score >= 75:
-            verdict = "Strong Buy — fundamentals and momentum align well"
+            verdict = "Strong fundamentals and momentum align well"
         elif score >= 60:
-            verdict = "Positive — above-average on most dimensions"
+            verdict = "Above-average on most dimensions"
         elif score >= 45:
-            verdict = "Neutral — mixed signals across score layers"
+            verdict = "Mixed signals across score layers"
         elif score >= 30:
-            verdict = "Cautious — below average with some concerns"
+            verdict = "Below average with some concerns"
         else:
-            verdict = "Weak — significant fundamental or technical concerns"
+            verdict = "Significant fundamental or technical concerns"
     else:
         verdict = None
 
