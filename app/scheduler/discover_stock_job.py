@@ -2294,6 +2294,16 @@ class DiscoverStockScraper(BaseScraper):
         if eps is not None and eps < 0:
             return "speculative"
 
+        # Barely profitable with weak fundamentals — not a stalwart
+        roe_val = row.get("roe")
+        pe_val = row.get("pe_ratio")
+        if eps is not None and eps > 0:
+            # Near-zero earnings: P/E > 200 or ROE < 3%
+            if (pe_val is not None and pe_val > 200) or (roe_val is not None and roe_val < 3):
+                yoy_rev_chk = row.get("revenue_growth")
+                if yoy_rev_chk is None or yoy_rev_chk < 0.10:
+                    return "speculative"
+
         # Stalwart (default for profitable companies with moderate growth)
         return "stalwart"
 
