@@ -2010,6 +2010,13 @@ class DiscoverStockScraper(BaseScraper):
         if dy_val is not None and dy_val > 0 and all_div_yields:
             parts["div_yield"] = self._percentile_rank(all_div_yields, dy_val)
 
+        # Penalise loss-making companies: if EPS is negative and P/E is
+        # unavailable, the score relies only on P/B / dividend yield which
+        # can be misleadingly high.  Apply a penalty so "cheap" ≠ "good".
+        eps = row.get("eps")
+        if eps is not None and eps < 0 and pe_val is None:
+            parts["loss_penalty"] = 20.0
+
         if not parts:
             return None, {}, None
 
@@ -2199,11 +2206,15 @@ class DiscoverStockScraper(BaseScraper):
         if pledged is not None and pledged > 40:
             caps.append(30.0)
 
-        # Negative EPS + negative OCF
+        # Negative EPS + negative OCF → hard cap at 35
         eps = row.get("eps")
         ocf = row.get("cash_from_operations") or row.get("operating_cash_flow")
         if eps is not None and eps < 0 and ocf is not None and ocf < 0:
             caps.append(35.0)
+
+        # Negative EPS alone (loss-making) → cap at 55
+        if eps is not None and eps < 0:
+            caps.append(55.0)
 
         return min(caps) if caps else None
 
@@ -3598,9 +3609,14 @@ class DiscoverStockScraper(BaseScraper):
             }
 
             # Dynamic reweighting: exclude unavailable components
+            # For growth, use a penalty default (25) instead of skipping —
+            # missing growth data should not be rewarded via weight redistribution
             available_weights: dict[str, float] = {}
             for k, w in layer_weights.items():
                 if scores_map.get(k) is not None:
+                    available_weights[k] = w
+                elif k == "growth":
+                    scores_map[k] = 25.0
                     available_weights[k] = w
                 elif k == "quality" and metrics_used > 0:
                     available_weights[k] = w
