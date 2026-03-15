@@ -163,6 +163,7 @@ CREATE TABLE IF NOT EXISTS discover_stock_snapshots (
     score_fundamentals DOUBLE PRECISION NOT NULL DEFAULT 0,
     score_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb,
     tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+    tags_v2 JSONB NOT NULL DEFAULT '[]'::jsonb,   -- structured tags: [{tag, category, severity, priority, confidence, explanation, expires_at}]
     source_status TEXT NOT NULL DEFAULT 'limited', -- primary | fallback | limited
     source_timestamp TIMESTAMPTZ NOT NULL,
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -209,6 +210,7 @@ CREATE TABLE IF NOT EXISTS discover_mutual_fund_snapshots (
     score_consistency DOUBLE PRECISION NOT NULL DEFAULT 0,
     score_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb,
     tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+    tags_v2 JSONB NOT NULL DEFAULT '[]'::jsonb,   -- structured tags: [{tag, category, severity, priority, confidence, explanation, expires_at}]
     source_status TEXT NOT NULL DEFAULT 'limited', -- primary | fallback | limited
     source_timestamp TIMESTAMPTZ NOT NULL,
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

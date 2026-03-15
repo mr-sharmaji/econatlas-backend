@@ -416,6 +416,14 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
         except (ValueError, TypeError):
             tags = []
     item["tags"] = tags if isinstance(tags, list) else []
+    # Parse tags_v2 structured tags
+    tags_v2 = item.get("tags_v2")
+    if isinstance(tags_v2, str):
+        try:
+            tags_v2 = _json.loads(tags_v2)
+        except (ValueError, TypeError):
+            tags_v2 = []
+    item["tags_v2"] = tags_v2 if isinstance(tags_v2, list) else []
     # Parse JSONB columns that come back as strings from asyncpg
     for jkey in ("pl_annual", "bs_annual", "cf_annual", "shareholding_quarterly"):
         val = item.get(jkey)
@@ -441,6 +449,14 @@ def _decorate_mf_row(row: dict, category_stats: dict | None = None) -> dict:
         except (ValueError, TypeError):
             tags = []
     item["tags"] = tags if isinstance(tags, list) else []
+    # Parse tags_v2 structured tags
+    tags_v2 = item.get("tags_v2")
+    if isinstance(tags_v2, str):
+        try:
+            tags_v2 = _json.loads(tags_v2)
+        except (ValueError, TypeError):
+            tags_v2 = []
+    item["tags_v2"] = tags_v2 if isinstance(tags_v2, list) else []
     # Look up sub-category stats using fund_classification
     sub_cat = item.get("fund_classification") or item.get("sub_category") or ""
     sub_stats = None
@@ -500,7 +516,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     score_quality, score_institutional, score_risk,
                     sector_percentile, lynch_classification, percent_change_5y,
                     technical_score, rsi_14, action_tag, action_tag_reasoning,
-                    score_confidence, trend_alignment, breakout_signal
+                    score_confidence, trend_alignment, breakout_signal,
+                    tags_v2
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -533,7 +550,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     $83, $84, $85,
                     $86, $87, $88,
                     $89, $90, $91, $92,
-                    $93, $94, $95
+                    $93, $94, $95,
+                    $96
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -639,7 +657,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     action_tag_reasoning = COALESCE(EXCLUDED.action_tag_reasoning, {STOCK_TABLE}.action_tag_reasoning),
                     score_confidence = COALESCE(EXCLUDED.score_confidence, {STOCK_TABLE}.score_confidence),
                     trend_alignment = COALESCE(EXCLUDED.trend_alignment, {STOCK_TABLE}.trend_alignment),
-                    breakout_signal = COALESCE(EXCLUDED.breakout_signal, {STOCK_TABLE}.breakout_signal)
+                    breakout_signal = COALESCE(EXCLUDED.breakout_signal, {STOCK_TABLE}.breakout_signal),
+                    tags_v2 = COALESCE(EXCLUDED.tags_v2, {STOCK_TABLE}.tags_v2)
                 """,
                 str(row.get("market") or "IN"),                                    # $1
                 str(row.get("symbol") or ""),                                      # $2
@@ -736,6 +755,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 row.get("score_confidence"),                                       # $93
                 row.get("trend_alignment"),                                        # $94
                 row.get("breakout_signal"),                                        # $95
+                _to_jsonb(row.get("tags_v2"), []) if row.get("score") is not None else None,  # $96
             )
             count += 1
     return count
@@ -790,6 +810,21 @@ async def get_previous_score(symbol: str, days_ago: int = 7) -> float | None:
     return float(row["score"]) if row else None
 
 
+async def get_score_history(symbol: str, days: int = 30) -> list[dict]:
+    """Fetch score history points for a stock over the last N days."""
+    from datetime import timedelta
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT score, scored_at FROM discover_stock_score_history "
+            "WHERE symbol = $1 AND scored_at > NOW() - $2::interval "
+            "ORDER BY scored_at ASC",
+            symbol,
+            timedelta(days=days),
+        )
+    return [{"score": float(r["score"]), "scored_at": r["scored_at"]} for r in rows]
+
+
 async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
     if not rows:
         return 0
@@ -809,7 +844,8 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     primary_source, secondary_source, fund_age_years,
                     max_drawdown, rolling_return_consistency,
                     alpha, beta, score_alpha, score_beta,
-                    score_performance, score_category_fit, sub_category_percentile, fund_classification
+                    score_performance, score_category_fit, sub_category_percentile, fund_classification,
+                    tags_v2
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -820,7 +856,8 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     $28, $29, $30,
                     $31, $32,
                     $33, $34, $35, $36,
-                    $37, $38, $39, $40
+                    $37, $38, $39, $40,
+                    $41
                 )
                 ON CONFLICT (scheme_code)
                 DO UPDATE SET
@@ -863,7 +900,8 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     score_performance = EXCLUDED.score_performance,
                     score_category_fit = EXCLUDED.score_category_fit,
                     sub_category_percentile = EXCLUDED.sub_category_percentile,
-                    fund_classification = EXCLUDED.fund_classification
+                    fund_classification = EXCLUDED.fund_classification,
+                    tags_v2 = EXCLUDED.tags_v2
                 """,
                 str(row.get("scheme_code") or ""),
                 str(row.get("scheme_name") or ""),
@@ -905,6 +943,7 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("score_category_fit")),
                 _to_float(row.get("sub_category_percentile")),
                 row.get("fund_classification"),
+                _to_jsonb(row.get("tags_v2"), []),                                    # $41
             )
             count += 1
     return count
@@ -1108,7 +1147,7 @@ async def list_discover_stocks(
             pl_annual, bs_annual, cf_annual, shareholding_quarterly,
             percent_change_3m, percent_change_1w,
             percent_change_1y, percent_change_3y,
-            score_breakdown, tags, source_status, source_timestamp, ingested_at,
+            score_breakdown, tags, tags_v2, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
             high_52w, low_52w, market_cap, dividend_yield,
             promoter_holding, fii_holding, dii_holding, government_holding, public_holding,
@@ -1315,7 +1354,7 @@ async def list_discover_mutual_funds(
             returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
             score, score_return, score_risk, score_cost, score_consistency,
             score_performance, score_category_fit,
-            score_breakdown, tags, source_status, source_timestamp, ingested_at,
+            score_breakdown, tags, tags_v2, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
             category_rank, category_total, fund_age_years,
             max_drawdown, rolling_return_consistency,
@@ -1515,7 +1554,19 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
     }
 
 
+_home_cache: dict | None = None
+_home_cache_until: float = 0.0
+_HOME_CACHE_TTL_SECONDS: int = 30 * 60  # 30 minutes
+
+
 async def get_discover_home_data() -> dict:
+    import time as _time
+
+    global _home_cache, _home_cache_until
+    now = _time.monotonic()
+    if _home_cache is not None and now < _home_cache_until:
+        return _home_cache
+
     pool = await get_pool()
 
     _stock_cols = (
@@ -1692,7 +1743,7 @@ async def get_discover_home_data() -> dict:
         {"name": "Debt Funds", "segment": "mutual_funds", "preset": "debt"},
     ]
 
-    return {
+    result = {
         "top_stocks": top_stocks,
         "top_equity_funds": top_equity_funds,
         "top_debt_funds": top_debt_funds,
@@ -1704,6 +1755,10 @@ async def get_discover_home_data() -> dict:
         "sector_champions": sector_champions,
         "quick_categories": quick_categories,
     }
+
+    _home_cache_until = _time.monotonic() + _HOME_CACHE_TTL_SECONDS
+    _home_cache = result
+    return result
 
 
 async def get_stock_by_symbol(*, symbol: str) -> dict | None:
@@ -2025,7 +2080,7 @@ async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
             pl_annual, bs_annual, cf_annual, shareholding_quarterly,
             percent_change_3m, percent_change_1w,
             percent_change_1y, percent_change_3y,
-            score_breakdown, tags, source_status, source_timestamp, ingested_at,
+            score_breakdown, tags, tags_v2, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
             high_52w, low_52w, market_cap, dividend_yield,
             promoter_holding, fii_holding, dii_holding, government_holding, public_holding,
@@ -2079,7 +2134,7 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
             returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
             score, score_return, score_risk, score_cost, score_consistency,
             score_performance, score_category_fit,
-            score_breakdown, tags, source_status, source_timestamp, ingested_at,
+            score_breakdown, tags, tags_v2, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
             category_rank, category_total, fund_age_years,
             max_drawdown, rolling_return_consistency,
@@ -2107,7 +2162,7 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
                 expense_ratio, aum_cr, risk_level,
                 returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
                 score, score_return, score_risk, score_cost, score_consistency,
-                score_breakdown, tags, source_status, source_timestamp, ingested_at,
+                score_breakdown, tags, tags_v2, source_status, source_timestamp, ingested_at,
                 primary_source, secondary_source,
                 category_rank, category_total, fund_age_years
             FROM {MF_TABLE}

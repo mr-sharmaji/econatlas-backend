@@ -9,6 +9,17 @@ from pydantic import BaseModel, Field
 SourceStatus = Literal["primary", "fallback", "limited"]
 
 
+class TagV2Response(BaseModel):
+    """Structured tag with category, severity, and explanation."""
+    tag: str
+    category: str   # classification | style | strength | valuation | risk | trend | ownership
+    severity: str   # positive | negative | neutral
+    priority: int
+    confidence: float | None = None
+    explanation: str | None = None
+    expires_at: datetime | None = None
+
+
 class DiscoverStockScoreBreakdown(BaseModel):
     quality: float | None = None
     valuation: float | None = None
@@ -137,6 +148,7 @@ class DiscoverStockItemResponse(BaseModel):
     breakout_signal: Literal["breakout", "approaching_breakout", "breakdown", "approaching_breakdown", "resistance", "support", "none"] | None = None
     score_breakdown: DiscoverStockScoreBreakdown
     tags: list[str] = Field(default_factory=list)
+    tags_v2: list[TagV2Response] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)
     source_status: SourceStatus
     source_timestamp: datetime
@@ -212,6 +224,7 @@ class DiscoverMutualFundItemResponse(BaseModel):
     fund_classification: str | None = None
     score_breakdown: DiscoverMutualFundScoreBreakdown | None = None
     tags: list[str] = Field(default_factory=list)
+    tags_v2: list[TagV2Response] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)
     source_status: SourceStatus
     source_timestamp: datetime
@@ -341,4 +354,17 @@ class PriceHistoryResponse(BaseModel):
     symbol: str | None = None
     scheme_code: str | None = None
     points: list[PriceHistoryPoint] = Field(default_factory=list)
+    count: int = 0
+
+
+# --- Score History ---
+
+class ScoreHistoryPoint(BaseModel):
+    scored_at: datetime
+    score: float
+
+
+class ScoreHistoryResponse(BaseModel):
+    symbol: str
+    points: list[ScoreHistoryPoint] = Field(default_factory=list)
     count: int = 0

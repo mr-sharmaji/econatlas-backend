@@ -17,6 +17,8 @@ from app.schemas.discover_schema import (
     PriceHistoryResponse,
     QuickCategory,
     ScoreDistribution,
+    ScoreHistoryPoint,
+    ScoreHistoryResponse,
     SearchMutualFundItem,
     SearchStockItem,
     TopSegmentEntry,
@@ -318,6 +320,23 @@ async def get_mf_sparklines(
     try:
         code_list = [s.strip() for s in scheme_codes.split(",") if s.strip()][:20]
         return await discover_service.get_mf_sparklines(scheme_codes=code_list, days=days)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/stocks/{symbol}/score-history", response_model=ScoreHistoryResponse)
+async def get_stock_score_history(
+    symbol: str,
+    days: int = Query(default=30, ge=7, le=90),
+) -> ScoreHistoryResponse:
+    """Get historical score data points for a stock."""
+    try:
+        points = await discover_service.get_score_history(symbol=symbol, days=days)
+        return ScoreHistoryResponse(
+            symbol=symbol,
+            points=[ScoreHistoryPoint(scored_at=p["scored_at"], score=p["score"]) for p in points],
+            count=len(points),
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

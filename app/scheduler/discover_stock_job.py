@@ -3586,9 +3586,10 @@ class DiscoverStockScraper(BaseScraper):
             if quality_cap is not None:
                 score = min(score, quality_cap)
 
-            # ── Auto-tags ──
+            # ── Auto-tags (structured v2 + flat v1 for compat) ──
             med_pe = sector_medians.get(sector, {}).get("pe", 25.0)
-            tags = self._generate_tags(
+            from app.services.tag_engine import generate_stock_tags, tags_v2_to_flat
+            tags_v2 = generate_stock_tags(
                 row,
                 quality_score=quality_score,
                 valuation_score=valuation_score,
@@ -3604,6 +3605,7 @@ class DiscoverStockScraper(BaseScraper):
                 paper_profits=paper_profits,
                 sector_pe_median=med_pe,
             )
+            tags = tags_v2_to_flat(tags_v2)
 
             # Track sector leaders (top 3)
             sector_best.setdefault(sector, []).append((score, symbol))
@@ -3700,6 +3702,7 @@ class DiscoverStockScraper(BaseScraper):
                     "why_narrative": why_narrative,
                 },
                 "tags": tags,
+                "tags_v2": tags_v2,
                 "source_status": source_status,
             }
             out.append(enriched)

@@ -1426,9 +1426,12 @@ class DiscoverMutualFundScraper(BaseScraper):
             for out_idx, final_score in entries:
                 pctl = self._percentile_rank(scores_in_sub, final_score)
                 out[out_idx]["sub_category_percentile"] = round(pctl, 1)
-                out[out_idx]["tags"] = self._generate_mf_tags(
+                from app.services.tag_engine import generate_mf_tags, tags_v2_to_flat
+                mf_tags_v2 = generate_mf_tags(
                     out[out_idx], sub_cat, scores_in_sub, sub_exps, sub_avg
                 )
+                out[out_idx]["tags"] = tags_v2_to_flat(mf_tags_v2)
+                out[out_idx]["tags_v2"] = mf_tags_v2
                 # Clean up internal field
                 out[out_idx].pop("_final_score", None)
 
