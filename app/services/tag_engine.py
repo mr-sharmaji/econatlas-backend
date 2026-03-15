@@ -471,6 +471,12 @@ def generate_stock_tags(
             explanation=f"Only {public:.1f}% of shares are available for public trading. Low free float means fewer shares in circulation, which can cause exaggerated price movements and make it harder to buy or sell at desired prices.",
         ))
 
+    if promoter is not None and promoter < 30:
+        tagged.append(_tag(
+            "Low Promoter", _CAT_RISK, _SEV_NEGATIVE, 5,
+            explanation=f"Promoters hold only {promoter:.1f}% of the company. Low promoter stake means less insider commitment \u2014 the stock may be more vulnerable to speculative swings and lack strong management alignment.",
+        ))
+
     # \u2500\u2500 Priority 6 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     if eps is not None and eps < 0:
         tagged.append(_tag(

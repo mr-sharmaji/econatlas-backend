@@ -2163,15 +2163,19 @@ class DiscoverStockScraper(BaseScraper):
         else:
             parts["pledging"] = 50.0
 
-        # Free-float
+        # Free-float (inverted-U: penalise both extremes)
         public = row.get("public_holding")
         if public is not None:
             if public < 15:
-                parts["free_float"] = 40.0
+                parts["free_float"] = 40.0   # too illiquid
             elif public < 25:
-                parts["free_float"] = 60.0
+                parts["free_float"] = 60.0   # low float
+            elif public <= 40:
+                parts["free_float"] = 80.0   # sweet spot
+            elif public <= 55:
+                parts["free_float"] = 60.0   # high retail, sentiment-driven
             else:
-                parts["free_float"] = 80.0
+                parts["free_float"] = 45.0   # promoter minority, volatile
 
         # Negative EPS
         eps = row.get("eps")
