@@ -2843,8 +2843,8 @@ class DiscoverStockScraper(BaseScraper):
 
         # R3: Regime-adjusted thresholds
         _regime_offset = {
-            "crisis": -10, "bear": -8, "correction": -5,
-            "recovery": -3, "neutral": 0, "bull": 3,
+            "crisis": 10, "bear": 8, "correction": 5,
+            "recovery": -3, "neutral": 0, "bull": -3,
         }
         r_off = _regime_offset.get(market_regime, 0)
 
