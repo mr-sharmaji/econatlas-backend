@@ -3079,7 +3079,7 @@ class DiscoverStockScraper(BaseScraper):
             tags.append({"tag": "Strong Conviction", "category": "conviction", "severity": "positive", "priority": 4,
                          "explanation": " ".join(lines)})
 
-        elif score >= 50 and ts >= 45 and ts > score * 0.7:
+        elif score >= 55 and ts >= 45 and ts > score * 0.7:
             lines = [f"Technicals ({ts:.0f}) are catching up with decent fundamentals ({score:.0f}){fund_str}."]
             if dma_str:
                 lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
@@ -3092,7 +3092,7 @@ class DiscoverStockScraper(BaseScraper):
             tags.append({"tag": "Improving Setup", "category": "conviction", "severity": "positive", "priority": 4,
                          "explanation": " ".join(lines)})
 
-        elif score >= 50 and ts < 45 and ts < score * 0.85:
+        elif score >= 58 and ts < 38:
             lines = [f"Fundamentals are solid ({score:.0f}){fund_str}, but technicals are weak ({ts:.0f})."]
             if price and dma_str:
                 lines.append(f"Price ₹{price:,.0f} is {dma_str} — still in a downtrend.")
@@ -3108,7 +3108,7 @@ class DiscoverStockScraper(BaseScraper):
             tags.append({"tag": "Technicals Lagging", "category": "conviction", "severity": "cautionary", "priority": 4,
                          "explanation": " ".join(lines)})
 
-        elif score < 45 and ts >= 50:
+        elif score < 42 and ts >= 55:
             lines = [f"Technical momentum is strong ({ts:.0f}) but fundamentals are weak ({score:.0f}){fund_str}."]
             if dma_str:
                 lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
@@ -3119,7 +3119,7 @@ class DiscoverStockScraper(BaseScraper):
             tags.append({"tag": "Momentum Without Fundamentals", "category": "conviction", "severity": "negative", "priority": 4,
                          "explanation": " ".join(lines)})
 
-        elif score < 50:
+        elif score < 45 and ts < 40:
             lines = [f"Fundamental score ({score:.0f}) is below average{fund_str}, with technicals at {ts:.0f}."]
             if dma_str:
                 lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
