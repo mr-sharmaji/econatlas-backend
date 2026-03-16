@@ -2259,12 +2259,39 @@ class DiscoverStockScraper(BaseScraper):
         else:
             parts["leverage"] = 50.0  # neutral when data unavailable
 
+        # Price drawdown — worst decline across 52W high, 1Y, 3Y, 5Y.
+        # Uses the maximum drop to capture both recent crashes and
+        # sustained multi-year destruction (value traps).
+        high_52w = row.get("high_52w")
+        last_price = row.get("last_price")
+        drawdown_pct: float | None = None
+        if high_52w and high_52w > 0 and last_price and last_price > 0:
+            drawdown_pct = (high_52w - last_price) / high_52w * 100
+        for _pct_key in ("percent_change_1y", "percent_change_3y", "percent_change_5y"):
+            _pct_val = row.get(_pct_key)
+            if _pct_val is not None and _pct_val < 0:
+                _decline = abs(_pct_val)
+                if drawdown_pct is None or _decline > drawdown_pct:
+                    drawdown_pct = _decline
+        if drawdown_pct is not None:
+            if drawdown_pct > 60:
+                parts["drawdown"] = 10.0    # severe destruction
+            elif drawdown_pct > 40:
+                parts["drawdown"] = 25.0    # deep drawdown
+            elif drawdown_pct > 25:
+                parts["drawdown"] = 45.0    # significant
+            elif drawdown_pct > 10:
+                parts["drawdown"] = 70.0    # moderate
+            else:
+                parts["drawdown"] = 90.0    # near highs, healthy
+
         if not parts:
             return None, {}
 
         weights = {
-            "liquidity": 0.15, "volatility": 0.15, "pledging": 0.15,
-            "leverage": 0.15, "free_float": 0.15, "eps_sign": 0.25,
+            "liquidity": 0.15, "volatility": 0.12, "pledging": 0.12,
+            "leverage": 0.15, "free_float": 0.12, "eps_sign": 0.19,
+            "drawdown": 0.15,
         }
         total_w = sum(weights.get(k, 0.10) for k in parts)
         score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
