@@ -4185,6 +4185,12 @@ class DiscoverStockScraper(BaseScraper):
                 # For inventory-heavy sectors, use OCF/Net Profit ratio vs sector norm
                 # instead of binary positive/negative check
                 _net_profit = row.get("_net_profit_latest")
+                # Fallback: estimate net profit from margin × revenue
+                if not _net_profit:
+                    _pm = row.get("profit_margins")
+                    _rev = row.get("total_revenue")
+                    if _pm and _rev and _pm > 0 and _rev > 0:
+                        _net_profit = _pm * _rev / 1e7  # normalize to crores
                 if _net_profit and _net_profit > 0:
                     ocf_ratio = _ocf / _net_profit
                     sector_ocf_threshold = -0.5 if sector in ("Consumer Discretionary", "Auto", "Industrials", "Commodities") else -0.2
