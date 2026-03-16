@@ -1722,12 +1722,52 @@ async def get_discover_home_data() -> dict:
             return None  # skip sections with too few results
         return {"key": key, "title": title, "subtitle": subtitle, "items": items}
 
+    # Detect current market regime from latest score_breakdown
+    _regime_row = await pool.fetchval(
+        f"SELECT score_breakdown->>'market_regime' FROM {STOCK_TABLE}"
+        " WHERE score_breakdown IS NOT NULL LIMIT 1"
+    )
+    _regime = _regime_row or "neutral"
+
     stock_section_results = await asyncio.gather(
         *[_fetch_section(*s) for s in all_section_defs]
     )
-    stock_sections = [s for s in stock_section_results if s is not None]
-    # Cap at 8 sections
-    stock_sections = stock_sections[:8]
+    # Build key→section map, then reorder by regime priority
+    _section_map = {}
+    for s in stock_section_results:
+        if s is not None:
+            _section_map[s["key"]] = s
+
+    _regime_order: dict[str, list[str]] = {
+        "bull": [
+            "momentum_building", "rising_stars", "high_growth_smallcap",
+            "consistent_growers", "fii_favorites", "sector_leaders",
+            "undervalued_quality", "debt_free_compounders",
+            "dividend_aristocrats", "cash_rich", "low_volatility",
+            "bluechip_bargains", "turnaround_candidates", "oversold_quality",
+        ],
+        "correction": [
+            "undervalued_quality", "turnaround_candidates", "oversold_quality",
+            "bluechip_bargains", "consistent_growers", "debt_free_compounders",
+            "low_volatility", "fii_favorites", "sector_leaders", "cash_rich",
+            "dividend_aristocrats", "momentum_building", "rising_stars",
+            "high_growth_smallcap",
+        ],
+        "bear": [
+            "oversold_quality", "bluechip_bargains", "low_volatility",
+            "debt_free_compounders", "dividend_aristocrats", "cash_rich",
+            "turnaround_candidates", "undervalued_quality", "consistent_growers",
+            "sector_leaders", "fii_favorites", "momentum_building",
+            "rising_stars", "high_growth_smallcap",
+        ],
+    }
+    # Aliases
+    _regime_order["neutral"] = _regime_order["bull"]
+    _regime_order["recovery"] = _regime_order["correction"]
+    _regime_order["crisis"] = _regime_order["bear"]
+
+    _order = _regime_order.get(_regime, _regime_order["neutral"])
+    stock_sections = [_section_map[k] for k in _order if k in _section_map]
 
     # ── Mutual Fund sections ──
     _mf_cols = "scheme_code, scheme_name, category, sub_category, score, returns_1y, rolling_return_consistency"
