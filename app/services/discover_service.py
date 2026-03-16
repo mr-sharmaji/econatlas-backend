@@ -1989,7 +1989,8 @@ async def get_bulk_stock_volatility_data() -> dict[str, dict]:
         LEFT JOIN stats_1y y ON s.symbol = y.symbol
         LEFT JOIN stats_3y y3 ON s.symbol = y3.symbol
         LEFT JOIN stats_5y y5 ON s.symbol = y5.symbol
-        """
+        """,
+        timeout=120,
     )
     _SQRT_252 = _math.sqrt(252)
     result: dict[str, dict] = {}

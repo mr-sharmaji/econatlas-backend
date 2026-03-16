@@ -5080,7 +5080,8 @@ async def rescore_discover_stocks() -> dict:
             """SELECT symbol, trade_date, close, volume
                FROM discover_stock_price_history
                WHERE trade_date >= CURRENT_DATE - INTERVAL '450 days'
-               ORDER BY symbol, trade_date"""
+               ORDER BY symbol, trade_date""",
+            timeout=120,
         )
         for ph_row in ph_rows:
             sym = ph_row["symbol"]
