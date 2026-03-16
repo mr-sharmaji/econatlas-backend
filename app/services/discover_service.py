@@ -398,6 +398,588 @@ def _compute_quality_badges(row: dict) -> list[str]:
     return badges
 
 
+def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> dict:
+    """Generate contextual metric explanations + sentiment for a stock.
+
+    Returns {metric_key: {"explanation": str, "sentiment": str}} where
+    sentiment is one of "positive", "negative", "neutral", "warning".
+    Only metrics with non-null values get an entry.
+    """
+    ss = sector_stats or {}
+    insights: dict[str, dict] = {}
+
+    def _f(key: str) -> float | None:
+        return _to_float(row.get(key))
+
+    def _sf(key: str) -> float | None:
+        return _to_float(ss.get(key))
+
+    def _add(key: str, explanation: str, sentiment: str) -> None:
+        insights[key] = {"explanation": explanation, "sentiment": sentiment}
+
+    sector = row.get("sector") or "the sector"
+
+    # ── Valuation ───────────────────────────────────────────────────
+    pe = _f("pe_ratio")
+    if pe is not None:
+        avg_pe = _sf("avg_pe")
+        if avg_pe and avg_pe > 0:
+            ratio = pe / avg_pe
+            if ratio < 0.8:
+                _add("pe_ratio",
+                     f"PE of {pe:.1f} is below the {sector} average of {avg_pe:.1f} — "
+                     f"the stock looks undervalued relative to peers.",
+                     "positive")
+            elif ratio > 1.5:
+                _add("pe_ratio",
+                     f"PE of {pe:.1f} is significantly above the {sector} average of {avg_pe:.1f}. "
+                     f"You're paying a premium — justified only if growth is strong.",
+                     "negative")
+            else:
+                _add("pe_ratio",
+                     f"PE of {pe:.1f} is in line with the {sector} average of {avg_pe:.1f}.",
+                     "neutral")
+        else:
+            if pe < 15:
+                _add("pe_ratio", f"PE of {pe:.1f} is low, suggesting the stock may be undervalued.", "positive")
+            elif pe > 40:
+                _add("pe_ratio", f"PE of {pe:.1f} is high — growth expectations are priced in.", "negative")
+            else:
+                _add("pe_ratio", f"PE of {pe:.1f} is in a moderate range.", "neutral")
+
+    pb = _f("price_to_book")
+    if pb is not None:
+        avg_pb = _sf("avg_pb")
+        if avg_pb and avg_pb > 0:
+            if pb < avg_pb * 0.7:
+                _add("price_to_book",
+                     f"P/B of {pb:.2f} is below the {sector} average of {avg_pb:.2f} — "
+                     f"trading below what peers pay per rupee of book value.",
+                     "positive")
+            elif pb > avg_pb * 1.5:
+                _add("price_to_book",
+                     f"P/B of {pb:.2f} is above the {sector} average of {avg_pb:.2f}.",
+                     "negative")
+            else:
+                _add("price_to_book", f"P/B of {pb:.2f} is in line with sector peers ({avg_pb:.2f}).", "neutral")
+        else:
+            sent = "positive" if pb < 2 else ("negative" if pb > 5 else "neutral")
+            _add("price_to_book", f"Price-to-book ratio of {pb:.2f}.", sent)
+
+    eps = _f("eps")
+    if eps is not None:
+        if eps > 0:
+            _add("eps", f"EPS of ₹{eps:.1f} — the company is profitable on a per-share basis.", "positive")
+        else:
+            _add("eps", f"EPS of ₹{eps:.1f} — the company is currently loss-making per share.", "negative")
+
+    fwd_pe = _f("forward_pe")
+    if fwd_pe is not None and pe is not None and pe > 0:
+        if fwd_pe < pe * 0.85:
+            _add("forward_pe",
+                 f"Forward PE of {fwd_pe:.1f} vs trailing PE of {pe:.1f} — "
+                 f"analysts expect earnings to grow, making the stock cheaper on future profits.",
+                 "positive")
+        elif fwd_pe > pe * 1.1:
+            _add("forward_pe",
+                 f"Forward PE of {fwd_pe:.1f} vs trailing PE of {pe:.1f} — "
+                 f"analysts expect earnings to decline.",
+                 "negative")
+        else:
+            _add("forward_pe", f"Forward PE of {fwd_pe:.1f} is close to trailing PE of {pe:.1f}.", "neutral")
+    elif fwd_pe is not None:
+        _add("forward_pe", f"Forward PE of {fwd_pe:.1f} based on analyst earnings estimates.", "neutral")
+
+    # PEG from score_breakdown
+    sb = row.get("score_breakdown") or {}
+    if isinstance(sb, str):
+        import json as _j
+        try:
+            sb = _j.loads(sb)
+        except (ValueError, TypeError):
+            sb = {}
+    peg = _to_float(sb.get("peg_ratio"))
+    if peg is not None and peg > 0:
+        if peg < 1:
+            _add("peg_ratio",
+                 f"PEG of {peg:.2f} (below 1) suggests the stock is undervalued relative to its growth rate.",
+                 "positive")
+        elif peg > 2:
+            _add("peg_ratio",
+                 f"PEG of {peg:.2f} (above 2) — you may be overpaying relative to growth.",
+                 "negative")
+        else:
+            _add("peg_ratio", f"PEG of {peg:.2f} is in a reasonable range for the growth rate.", "neutral")
+
+    div_yield = _f("dividend_yield")
+    if div_yield is not None:
+        avg_dy = _sf("avg_div_yield")
+        payout = _f("payout_ratio")
+        if div_yield > 2 and (payout is None or payout < 80):
+            text = f"Dividend yield of {div_yield:.2f}% is attractive"
+            if avg_dy and avg_dy > 0:
+                text += f" (sector avg {avg_dy:.2f}%)"
+            text += "."
+            if payout is not None:
+                text += f" Payout ratio of {payout:.0f}% looks sustainable."
+            _add("dividend_yield", text, "positive")
+        elif div_yield > 0:
+            _add("dividend_yield", f"Dividend yield of {div_yield:.2f}%.", "neutral")
+        else:
+            _add("dividend_yield", "No dividend currently paid.", "neutral")
+
+    beta = _f("beta")
+    if beta is not None:
+        if beta < 0.7:
+            _add("beta",
+                 f"Beta of {beta:.2f} — moves significantly less than the market. "
+                 f"A defensive stock that may lag in rallies but hold up in downturns.",
+                 "neutral")
+        elif beta > 1.3:
+            _add("beta",
+                 f"Beta of {beta:.2f} — more volatile than the market. "
+                 f"Amplifies both gains and losses.",
+                 "warning")
+        else:
+            _add("beta", f"Beta of {beta:.2f} — moves roughly in line with the market.", "neutral")
+
+    mcap = _f("market_cap")
+    if mcap is not None:
+        if mcap > 100_000:
+            band = "Large Cap"
+        elif mcap > 20_000:
+            band = "Mid Cap"
+        elif mcap > 5_000:
+            band = "Small Cap"
+        else:
+            band = "Micro Cap"
+        _add("market_cap", f"Market cap of ₹{mcap:,.0f} Cr classifies this as a {band} stock.", "neutral")
+
+    # ── Profitability ──────────────────────────────────────────────
+    roe = _f("roe")
+    if roe is not None:
+        avg_roe = _sf("avg_roe")
+        if avg_roe and avg_roe > 0:
+            if roe > avg_roe * 1.2:
+                _add("roe",
+                     f"ROE of {roe:.1f}% is above the {sector} average of {avg_roe:.1f}% — "
+                     f"generating strong returns on shareholder equity.",
+                     "positive")
+            elif roe < avg_roe * 0.6:
+                _add("roe",
+                     f"ROE of {roe:.1f}% is below the {sector} average of {avg_roe:.1f}%.",
+                     "negative")
+            else:
+                _add("roe", f"ROE of {roe:.1f}% is in line with {sector} peers ({avg_roe:.1f}%).", "neutral")
+        else:
+            sent = "positive" if roe > 15 else ("negative" if roe < 8 else "neutral")
+            _add("roe", f"ROE of {roe:.1f}%.", sent)
+
+    roce = _f("roce")
+    if roce is not None:
+        avg_roce = _sf("avg_roce")
+        if avg_roce and avg_roce > 0:
+            if roce > avg_roce * 1.2:
+                _add("roce",
+                     f"ROCE of {roce:.1f}% vs sector average {avg_roce:.1f}% — efficient capital deployment.",
+                     "positive")
+            elif roce < avg_roce * 0.6:
+                _add("roce", f"ROCE of {roce:.1f}% is below the {sector} average of {avg_roce:.1f}%.", "negative")
+            else:
+                _add("roce", f"ROCE of {roce:.1f}% is in line with sector peers ({avg_roce:.1f}%).", "neutral")
+        else:
+            sent = "positive" if roce > 15 else ("negative" if roce < 8 else "neutral")
+            _add("roce", f"ROCE of {roce:.1f}%.", sent)
+
+    opm = _f("operating_margins")
+    if opm is not None:
+        avg_opm = _sf("avg_opm")
+        opm_pct = opm * 100 if abs(opm) < 1 else opm  # normalize if decimal
+        avg_opm_pct = (avg_opm * 100 if avg_opm and abs(avg_opm) < 1 else avg_opm) if avg_opm else None
+        if avg_opm_pct and avg_opm_pct > 0:
+            if opm_pct > avg_opm_pct * 1.2:
+                _add("operating_margins",
+                     f"Operating margin of {opm_pct:.1f}% exceeds the {sector} average of {avg_opm_pct:.1f}%.",
+                     "positive")
+            elif opm_pct < avg_opm_pct * 0.6:
+                _add("operating_margins",
+                     f"Operating margin of {opm_pct:.1f}% is below the {sector} average of {avg_opm_pct:.1f}%.",
+                     "negative")
+            else:
+                _add("operating_margins",
+                     f"Operating margin of {opm_pct:.1f}% is near the {sector} average ({avg_opm_pct:.1f}%).",
+                     "neutral")
+        else:
+            sent = "positive" if opm_pct > 15 else ("negative" if opm_pct < 5 else "neutral")
+            _add("operating_margins", f"Operating margin of {opm_pct:.1f}%.", sent)
+
+    npm = _f("profit_margins")
+    if npm is not None:
+        npm_pct = npm * 100 if abs(npm) < 1 else npm
+        avg_npm = _sf("avg_npm")
+        avg_npm_pct = (avg_npm * 100 if avg_npm and abs(avg_npm) < 1 else avg_npm) if avg_npm else None
+        if avg_npm_pct and avg_npm_pct > 0 and npm_pct > avg_npm_pct * 1.2:
+            _add("profit_margins",
+                 f"Net margin of {npm_pct:.1f}% beats sector average of {avg_npm_pct:.1f}%.",
+                 "positive")
+        elif avg_npm_pct and avg_npm_pct > 0 and npm_pct < avg_npm_pct * 0.6:
+            _add("profit_margins",
+                 f"Net margin of {npm_pct:.1f}% is below {sector} average of {avg_npm_pct:.1f}%.",
+                 "negative")
+        else:
+            sent = "positive" if npm_pct > 10 else ("negative" if npm_pct < 3 else "neutral")
+            _add("profit_margins", f"Net profit margin of {npm_pct:.1f}%.", sent)
+
+    # ── Growth ─────────────────────────────────────────────────────
+    for gkey, glabel in [
+        ("revenue_growth", "Revenue growth"),
+        ("earnings_growth", "Earnings growth"),
+    ]:
+        gv = _f(gkey)
+        if gv is not None:
+            gv_pct = gv * 100 if abs(gv) < 2 else gv  # normalize decimal
+            if gv_pct > 20:
+                _add(gkey, f"{glabel} of {gv_pct:.1f}% — strong expansion.", "positive")
+            elif gv_pct > 0:
+                _add(gkey, f"{glabel} of {gv_pct:.1f}%.", "neutral" if gv_pct > 5 else "neutral")
+            else:
+                _add(gkey, f"{glabel} of {gv_pct:.1f}% — declining.", "negative")
+
+    for ckey, clabel in [
+        ("compounded_sales_growth_3y", "3-year revenue CAGR"),
+        ("compounded_profit_growth_3y", "3-year profit CAGR"),
+    ]:
+        cv = _f(ckey)
+        if cv is not None:
+            if cv > 15:
+                _add(ckey, f"{clabel} of {cv:.1f}% — consistently strong growth trajectory.", "positive")
+            elif cv > 5:
+                _add(ckey, f"{clabel} of {cv:.1f}% — moderate growth.", "neutral")
+            elif cv > 0:
+                _add(ckey, f"{clabel} of {cv:.1f}% — slow growth.", "neutral")
+            else:
+                _add(ckey, f"{clabel} of {cv:.1f}% — revenue/profit has been shrinking.", "negative")
+
+    # ── Debt & Leverage ────────────────────────────────────────────
+    de = _f("debt_to_equity")
+    if de is not None:
+        avg_de = _sf("avg_de")
+        if de == 0 or de < 0.01:
+            _add("debt_to_equity", "Debt-free — the company has virtually no borrowings.", "positive")
+        elif de < 0.5:
+            _add("debt_to_equity",
+                 f"D/E of {de:.2f} — conservative leverage. The company uses minimal debt.",
+                 "positive")
+        elif de > 1.5:
+            text = f"D/E of {de:.2f} — highly leveraged."
+            if avg_de and avg_de > 0:
+                text += f" {sector} average is {avg_de:.2f}."
+            _add("debt_to_equity", text, "negative")
+        else:
+            text = f"D/E of {de:.2f} — moderate leverage."
+            if avg_de and avg_de > 0:
+                text += f" {sector} average is {avg_de:.2f}."
+            _add("debt_to_equity", text, "neutral")
+
+    ic = _f("interest_coverage")
+    if ic is not None:
+        if ic > 5:
+            _add("interest_coverage",
+                 f"Interest coverage of {ic:.1f}x — comfortably covers debt obligations.",
+                 "positive")
+        elif ic > 2:
+            _add("interest_coverage", f"Interest coverage of {ic:.1f}x — adequate but watch if it drops.", "neutral")
+        elif ic > 0:
+            _add("interest_coverage",
+                 f"Interest coverage of {ic:.1f}x — barely covering interest payments.",
+                 "negative")
+
+    td = _f("total_debt")
+    if td is not None and mcap and mcap > 0:
+        ratio = td / mcap
+        td_cr = td / 10_000_000 if td > 10_000_000 else td
+        if ratio < 0.1:
+            _add("total_debt", f"Total debt is minimal relative to market cap.", "positive")
+        elif ratio > 0.5:
+            _add("total_debt", f"Total debt is significant relative to market cap.", "warning")
+        else:
+            _add("total_debt", f"Total debt is at moderate levels.", "neutral")
+
+    tc = _f("total_cash")
+    if tc is not None and mcap and mcap > 0:
+        ratio = tc / mcap
+        if ratio > 0.15:
+            _add("total_cash", f"Cash-rich — significant cash reserves relative to market cap.", "positive")
+        else:
+            _add("total_cash", f"Cash position is at normal levels.", "neutral")
+
+    payout = _f("payout_ratio")
+    if payout is not None:
+        if 20 <= payout <= 60:
+            _add("payout_ratio",
+                 f"Payout ratio of {payout:.0f}% — balanced between dividends and reinvestment.",
+                 "positive")
+        elif payout > 80:
+            _add("payout_ratio",
+                 f"Payout ratio of {payout:.0f}% — very high, may not be sustainable.",
+                 "warning")
+        elif payout > 0:
+            _add("payout_ratio", f"Payout ratio of {payout:.0f}%.", "neutral")
+
+    # ── Cash Flow ──────────────────────────────────────────────────
+    fcf = _f("free_cash_flow")
+    if fcf is not None:
+        if fcf > 0:
+            _add("free_cash_flow",
+                 "Positive free cash flow — the company generates surplus cash after investments.",
+                 "positive")
+        else:
+            _add("free_cash_flow",
+                 "Negative free cash flow — the company is spending more than it earns from operations.",
+                 "negative")
+
+    cfo = _f("cash_from_operations")
+    if cfo is not None:
+        if cfo > 0:
+            _add("cash_from_operations",
+                 "Positive operating cash flow — core business generates real cash.",
+                 "positive")
+        else:
+            _add("cash_from_operations",
+                 "Negative operating cash flow — the core business is consuming cash.",
+                 "negative")
+
+    cfi = _f("cash_from_investing")
+    if cfi is not None:
+        if cfi < 0:
+            _add("cash_from_investing",
+                 "Negative investing cash flow — the company is investing in assets/growth (typical and healthy).",
+                 "neutral")
+        else:
+            _add("cash_from_investing",
+                 "Positive investing cash flow — the company is selling assets or reducing investments.",
+                 "warning")
+
+    cff = _f("cash_from_financing")
+    if cff is not None:
+        if cff < 0:
+            _add("cash_from_financing",
+                 "Negative financing cash flow — repaying debt or returning capital to shareholders.",
+                 "neutral")
+        else:
+            _add("cash_from_financing",
+                 "Positive financing cash flow — raising capital through debt or equity issuance.",
+                 "neutral")
+
+    # ── Technical ──────────────────────────────────────────────────
+    rsi = _f("rsi_14")
+    if rsi is not None:
+        if rsi < 30:
+            _add("rsi_14",
+                 f"RSI of {rsi:.0f} — technically oversold. May bounce, but can stay low in downtrends.",
+                 "warning")
+        elif rsi > 70:
+            _add("rsi_14",
+                 f"RSI of {rsi:.0f} — technically overbought. Momentum is strong but a pullback is possible.",
+                 "warning")
+        elif rsi > 55:
+            _add("rsi_14", f"RSI of {rsi:.0f} — positive momentum range.", "positive")
+        elif rsi < 40:
+            _add("rsi_14", f"RSI of {rsi:.0f} — weak momentum, approaching oversold.", "negative")
+        else:
+            _add("rsi_14", f"RSI of {rsi:.0f} — in neutral territory.", "neutral")
+
+    # ── Ownership ──────────────────────────────────────────────────
+    promo = _f("promoter_holding")
+    if promo is not None:
+        promo_chg = _f("promoter_holding_change")
+        text = f"Promoters hold {promo:.1f}%"
+        if promo > 60:
+            text += " — strong skin in the game."
+            sent = "positive"
+        elif promo < 25:
+            text += " — low promoter stake."
+            sent = "warning"
+        else:
+            text += "."
+            sent = "neutral"
+        if promo_chg is not None and abs(promo_chg) > 0.5:
+            text += f" Changed by {promo_chg:+.1f}% recently."
+            if promo_chg < -2:
+                sent = "warning"
+        _add("promoter_holding", text, sent)
+
+    fii = _f("fii_holding")
+    if fii is not None:
+        fii_chg = _f("fii_holding_change")
+        text = f"FII holding of {fii:.1f}%"
+        if fii > 20:
+            text += " — strong foreign institutional interest."
+            sent = "positive"
+        elif fii < 5:
+            text += " — limited foreign interest."
+            sent = "neutral"
+        else:
+            text += "."
+            sent = "neutral"
+        if fii_chg is not None and abs(fii_chg) > 0.5:
+            direction = "increasing" if fii_chg > 0 else "decreasing"
+            text += f" {direction.capitalize()} ({fii_chg:+.1f}%)."
+            if fii_chg > 1:
+                sent = "positive"
+            elif fii_chg < -1:
+                sent = "warning"
+        _add("fii_holding", text, sent)
+
+    dii = _f("dii_holding")
+    if dii is not None:
+        dii_chg = _f("dii_holding_change")
+        text = f"DII holding of {dii:.1f}%"
+        if dii > 20:
+            text += " — strong domestic institutional support."
+            sent = "positive"
+        else:
+            text += "."
+            sent = "neutral"
+        if dii_chg is not None and abs(dii_chg) > 0.5:
+            direction = "increasing" if dii_chg > 0 else "decreasing"
+            text += f" {direction.capitalize()} ({dii_chg:+.1f}%)."
+        _add("dii_holding", text, sent)
+
+    # ── Score Layer Explanations ───────────────────────────────────
+    sq = _f("score_quality")
+    if sq is not None:
+        parts = []
+        if roe is not None:
+            parts.append(f"ROE {roe:.1f}%")
+        if roce is not None:
+            parts.append(f"ROCE {roce:.1f}%")
+        if de is not None:
+            parts.append(f"D/E {de:.2f}")
+        detail = ", ".join(parts) if parts else "financial fundamentals"
+        if sq >= 70:
+            _add("score_financial_health",
+                 f"Strong financial health ({sq:.0f}/100) driven by {detail}.",
+                 "positive")
+        elif sq >= 45:
+            _add("score_financial_health",
+                 f"Average financial health ({sq:.0f}/100) based on {detail}.",
+                 "neutral")
+        else:
+            _add("score_financial_health",
+                 f"Weak financial health ({sq:.0f}/100). Key metrics: {detail}.",
+                 "negative")
+
+    sv = _f("score_valuation")
+    if sv is not None:
+        parts = []
+        if pe is not None:
+            parts.append(f"PE {pe:.1f}")
+        if pb is not None:
+            parts.append(f"P/B {pb:.2f}")
+        if peg is not None:
+            parts.append(f"PEG {peg:.2f}")
+        detail = ", ".join(parts) if parts else "valuation multiples"
+        if sv >= 70:
+            _add("score_valuation",
+                 f"Attractively valued ({sv:.0f}/100) based on {detail}.",
+                 "positive")
+        elif sv >= 45:
+            _add("score_valuation",
+                 f"Fairly valued ({sv:.0f}/100) based on {detail}.",
+                 "neutral")
+        else:
+            _add("score_valuation",
+                 f"Appears expensive ({sv:.0f}/100). Key multiples: {detail}.",
+                 "negative")
+
+    sg = _f("score_growth")
+    if sg is not None:
+        parts = []
+        rg = _f("revenue_growth")
+        eg = _f("earnings_growth")
+        csg = _f("compounded_sales_growth_3y")
+        if rg is not None:
+            rg_pct = rg * 100 if abs(rg) < 2 else rg
+            parts.append(f"revenue growth {rg_pct:.1f}%")
+        if eg is not None:
+            eg_pct = eg * 100 if abs(eg) < 2 else eg
+            parts.append(f"earnings growth {eg_pct:.1f}%")
+        if csg is not None:
+            parts.append(f"3Y sales CAGR {csg:.1f}%")
+        detail = ", ".join(parts) if parts else "growth indicators"
+        if sg >= 70:
+            _add("score_growth",
+                 f"Strong growth ({sg:.0f}/100) with {detail}.",
+                 "positive")
+        elif sg >= 45:
+            _add("score_growth", f"Moderate growth ({sg:.0f}/100). {detail}.", "neutral")
+        else:
+            _add("score_growth", f"Weak growth ({sg:.0f}/100). {detail}.", "negative")
+
+    sm = _f("score_momentum")
+    if sm is not None:
+        parts = []
+        if rsi is not None:
+            parts.append(f"RSI {rsi:.0f}")
+        pct3m = _f("percent_change_3m")
+        if pct3m is not None:
+            parts.append(f"3M return {pct3m:+.1f}%")
+        ta = row.get("trend_alignment")
+        if ta:
+            parts.append(f"trend {ta}")
+        detail = ", ".join(parts) if parts else "technical indicators"
+        if sm >= 70:
+            _add("score_momentum",
+                 f"Strong momentum ({sm:.0f}/100) — {detail}.",
+                 "positive")
+        elif sm >= 45:
+            _add("score_momentum", f"Moderate momentum ({sm:.0f}/100). {detail}.", "neutral")
+        else:
+            _add("score_momentum", f"Weak momentum ({sm:.0f}/100). {detail}.", "negative")
+
+    si = _f("score_institutional")
+    if si is not None:
+        parts = []
+        if fii is not None:
+            parts.append(f"FII {fii:.1f}%")
+        if dii is not None:
+            parts.append(f"DII {dii:.1f}%")
+        if promo is not None:
+            parts.append(f"Promoters {promo:.1f}%")
+        detail = ", ".join(parts) if parts else "ownership data"
+        if si >= 70:
+            _add("score_smart_money",
+                 f"Strong institutional backing ({si:.0f}/100) — {detail}.",
+                 "positive")
+        elif si >= 45:
+            _add("score_smart_money", f"Average institutional interest ({si:.0f}/100). {detail}.", "neutral")
+        else:
+            _add("score_smart_money", f"Low institutional interest ({si:.0f}/100). {detail}.", "negative")
+
+    sr = _f("score_risk")
+    if sr is not None:
+        parts = []
+        if beta is not None:
+            parts.append(f"beta {beta:.2f}")
+        pledged = _f("pledged_promoter_pct")
+        if pledged is not None and pledged > 0:
+            parts.append(f"pledged {pledged:.1f}%")
+        if de is not None:
+            parts.append(f"D/E {de:.2f}")
+        detail = ", ".join(parts) if parts else "risk factors"
+        if sr >= 70:
+            _add("score_risk_shield",
+                 f"Low risk profile ({sr:.0f}/100) — {detail}.",
+                 "positive")
+        elif sr >= 45:
+            _add("score_risk_shield", f"Moderate risk ({sr:.0f}/100). {detail}.", "neutral")
+        else:
+            _add("score_risk_shield", f"High risk ({sr:.0f}/100). {detail}.", "negative")
+
+    return insights
+
+
 def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
     import json as _json
     item = dict(row)
@@ -427,6 +1009,7 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
             except (ValueError, TypeError):
                 item[jkey] = None
     item["why_ranked"] = _stock_why_ranked(item, sector_stats)
+    item["metric_insights"] = _generate_metric_insights(item, sector_stats)
     return item
 
 
@@ -1875,9 +2458,19 @@ async def get_stock_by_symbol(*, symbol: str) -> dict | None:
     sector = str(d.get("sector") or "Other")
     sector_stats_rows = await pool.fetch(
         f"""
-        SELECT AVG(pe_ratio) AS avg_pe, AVG(roe) AS avg_roe
+        SELECT
+            AVG(pe_ratio) AS avg_pe,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY pe_ratio) AS median_pe,
+            AVG(roe) AS avg_roe,
+            AVG(roce) AS avg_roce,
+            AVG(price_to_book) AS avg_pb,
+            AVG(operating_margins) AS avg_opm,
+            AVG(profit_margins) AS avg_npm,
+            AVG(dividend_yield) AS avg_div_yield,
+            AVG(debt_to_equity) AS avg_de,
+            AVG(beta) AS avg_beta
         FROM {STOCK_TABLE}
-        WHERE sector = $1 AND pe_ratio IS NOT NULL
+        WHERE sector = $1 AND source_status IN ('primary', 'fallback')
         """,
         sector,
     )

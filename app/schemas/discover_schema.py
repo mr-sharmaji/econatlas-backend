@@ -46,6 +46,12 @@ class DiscoverStockScoreBreakdown(BaseModel):
     why_narrative: str | None = None
 
 
+class MetricInsight(BaseModel):
+    """Contextual explanation + sentiment for a single metric."""
+    explanation: str
+    sentiment: Literal["positive", "negative", "neutral", "warning"]
+
+
 class DiscoverStockItemResponse(BaseModel):
     symbol: str
     display_name: str
@@ -149,6 +155,7 @@ class DiscoverStockItemResponse(BaseModel):
     score_breakdown: DiscoverStockScoreBreakdown
     tags: list[TagV2Response] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)
+    metric_insights: dict[str, MetricInsight] = Field(default_factory=dict)
     source_status: SourceStatus
     source_timestamp: datetime
     ingested_at: datetime
