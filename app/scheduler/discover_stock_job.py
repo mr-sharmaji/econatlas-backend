@@ -2996,60 +2996,239 @@ class DiscoverStockScraper(BaseScraper):
         tech_details: dict,
         data_quality: str,
         market_regime: str,
+        row: dict | None = None,
     ) -> list[dict]:
         """Generate up to 3 contextual tags (conviction + risk + context).
 
-        Each category picks the first matching tag. Returns list of tag dicts.
+        Each category picks the first matching tag. Returns list of tag dicts
+        with rich narrative explanations including actual price levels and data.
         """
         tags: list[dict] = []
+        row = row or {}
         rsi = tech_details.get("rsi_14")
         pos_52w = tech_details.get("52w_position")
         ts = tech_score or 0.0
 
+        # Extract price data for rich explanations
+        price = row.get("last_price")
+        ma_50 = row.get("fifty_day_avg")
+        ma_200 = row.get("two_hundred_day_avg")
+        high_52w = row.get("high_52w")
+        low_52w = row.get("low_52w")
+        pe = row.get("pe_ratio")
+        rg = row.get("revenue_growth")
+        eg = row.get("earnings_growth")
+        macd_val = tech_details.get("macd")
+        macd_sig = tech_details.get("macd_signal")
+        macd_hist = tech_details.get("macd_histogram")
+
+        def _price_vs_dma() -> str:
+            """Build price vs DMA context string."""
+            parts = []
+            if price and ma_50:
+                pct_50 = ((price - ma_50) / ma_50) * 100
+                parts.append(f"{'above' if pct_50 > 0 else 'below'} 50DMA (₹{ma_50:,.0f}) by {abs(pct_50):.1f}%")
+            if price and ma_200:
+                pct_200 = ((price - ma_200) / ma_200) * 100
+                parts.append(f"{'above' if pct_200 > 0 else 'below'} 200DMA (₹{ma_200:,.0f}) by {abs(pct_200):.1f}%")
+            return ", ".join(parts)
+
+        def _52w_context() -> str:
+            """Build 52W range context."""
+            if high_52w and low_52w and price:
+                return f"52W range ₹{low_52w:,.0f}–₹{high_52w:,.0f} (currently at ₹{price:,.0f})."
+            return ""
+
+        def _fundamentals_brief() -> str:
+            """One-line fundamental snapshot."""
+            parts = []
+            if pe and pe > 0:
+                parts.append(f"PE {pe:.1f}")
+            if rg is not None:
+                parts.append(f"revenue growth {rg * 100:.0f}%")
+            elif eg is not None:
+                parts.append(f"earnings growth {eg * 100:.0f}%")
+            return f" ({', '.join(parts)})" if parts else ""
+
+        rsi_str = f"RSI {rsi:.0f}" if rsi is not None else ""
+        dma_str = _price_vs_dma()
+        range_str = _52w_context()
+        fund_str = _fundamentals_brief()
+
+        def _macd_str() -> str:
+            """MACD context string."""
+            if macd_val is None or macd_sig is None:
+                return ""
+            if macd_hist is not None and macd_hist > 0:
+                return f"MACD ({macd_val:.2f}) is above signal line ({macd_sig:.2f}) — bullish crossover."
+            elif macd_hist is not None and macd_hist < 0:
+                return f"MACD ({macd_val:.2f}) is below signal line ({macd_sig:.2f}) — bearish divergence."
+            return f"MACD ({macd_val:.2f}) near signal line ({macd_sig:.2f}) — no clear momentum direction."
+
         # ── Conviction (max 1) ──
         if score >= 65 and ts >= 55:
+            lines = [f"Fundamental score {score:.0f} and technical score {ts:.0f} are both strong{fund_str}."]
+            if dma_str:
+                lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
+            if rsi_str:
+                lines.append(f"{rsi_str} — momentum is healthy.")
+            macd_ctx = _macd_str()
+            if macd_ctx:
+                lines.append(macd_ctx)
+            lines.append("Both price action and business fundamentals are aligned, supporting high conviction in the current assessment.")
             tags.append({"tag": "Strong Conviction", "category": "conviction", "severity": "positive", "priority": 4,
-                         "explanation": f"Both fundamental score ({score:.0f}) and technical score ({ts:.0f}) are strong — high confidence in the current assessment."})
+                         "explanation": " ".join(lines)})
+
         elif score >= 55 and ts >= 45 and ts > score * 0.7:
+            lines = [f"Technicals ({ts:.0f}) are catching up with decent fundamentals ({score:.0f}){fund_str}."]
+            if dma_str:
+                lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
+            if rsi_str:
+                lines.append(f"{rsi_str} shows building momentum.")
+            macd_ctx = _macd_str()
+            if macd_ctx:
+                lines.append(macd_ctx)
+            lines.append("The technical picture is improving — a move above key moving averages would confirm the setup.")
             tags.append({"tag": "Improving Setup", "category": "conviction", "severity": "positive", "priority": 4,
-                         "explanation": f"Technicals ({ts:.0f}) are catching up with decent fundamentals ({score:.0f}) — the setup is improving."})
+                         "explanation": " ".join(lines)})
+
         elif score >= 58 and ts < 38:
+            lines = [f"Fundamentals are solid ({score:.0f}){fund_str}, but technicals are weak ({ts:.0f})."]
+            if price and dma_str:
+                lines.append(f"Price ₹{price:,.0f} is {dma_str} — still in a downtrend.")
+            if rsi_str:
+                lines.append(f"{rsi_str}.")
+            macd_ctx = _macd_str()
+            if macd_ctx:
+                lines.append(macd_ctx)
+            if ma_50 and price:
+                lines.append(f"Watch for price to reclaim the 50DMA (₹{ma_50:,.0f}) as a sign of technical recovery.")
+            else:
+                lines.append("Wait for technical confirmation before acting — the market hasn't recognized the fundamental strength yet.")
             tags.append({"tag": "Technicals Lagging", "category": "conviction", "severity": "neutral", "priority": 4,
-                         "explanation": f"Good fundamentals ({score:.0f}) but weak technicals ({ts:.0f}). Price hasn't caught up — wait for technical confirmation."})
+                         "explanation": " ".join(lines)})
+
         elif score < 42 and ts >= 55:
+            lines = [f"Technical momentum is strong ({ts:.0f}) but fundamentals are weak ({score:.0f}){fund_str}."]
+            if dma_str:
+                lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
+            macd_ctx = _macd_str()
+            if macd_ctx:
+                lines.append(macd_ctx)
+            lines.append("This rally may be speculative — without fundamental support, such moves often reverse sharply. High risk of mean reversion.")
             tags.append({"tag": "Momentum Without Fundamentals", "category": "conviction", "severity": "negative", "priority": 4,
-                         "explanation": f"Technical momentum ({ts:.0f}) isn't backed by fundamentals ({score:.0f}). Risk of mean reversion."})
+                         "explanation": " ".join(lines)})
+
         elif score < 45 and ts < 40:
+            lines = [f"Both fundamental ({score:.0f}) and technical ({ts:.0f}) scores are weak{fund_str}."]
+            if dma_str:
+                lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
+            if rsi_str:
+                lines.append(f"{rsi_str}.")
+            macd_ctx = _macd_str()
+            if macd_ctx:
+                lines.append(macd_ctx)
+            lines.append("No clear edge from either side — limited conviction in any direction. Avoid new positions until a clear catalyst emerges.")
             tags.append({"tag": "Weak Conviction", "category": "conviction", "severity": "negative", "priority": 4,
-                         "explanation": f"Both fundamental ({score:.0f}) and technical ({ts:.0f}) scores are weak — limited conviction in any direction."})
+                         "explanation": " ".join(lines)})
 
         # ── Risk-adjusted (max 1) ──
         if rsi is not None and rsi < 30 and score >= 60:
+            lines = [f"RSI at {rsi:.0f} signals oversold conditions for a quality stock (fundamental score {score:.0f}, quality {quality_score:.0f}){fund_str}."]
+            if dma_str:
+                lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
+            if range_str:
+                lines.append(range_str)
+            macd_ctx = _macd_str()
+            if macd_ctx:
+                lines.append(macd_ctx)
+            lines.append("Historically, quality names with RSI below 30 tend to bounce. Watch for RSI crossing back above 30 and MACD bullish crossover as reversal signals.")
             tags.append({"tag": "Oversold Quality", "category": "risk", "severity": "positive", "priority": 5,
-                         "explanation": f"RSI at {rsi:.0f} indicates oversold conditions for a quality stock (score {score:.0f}). Historically, quality names recover from oversold levels."})
+                         "explanation": " ".join(lines)})
+
         elif risk_score is not None and risk_score >= 70 and quality_score >= 60:
+            lines = [f"Risk score {risk_score:.0f} (low risk) combined with quality score {quality_score:.0f}{fund_str}."]
+            if dma_str:
+                lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
+            if rsi_str:
+                lines.append(f"{rsi_str}.")
+            lines.append("This is a defensive setup — the stock has strong fundamentals with limited downside risk. Suitable for conservative allocations or as a portfolio anchor.")
             tags.append({"tag": "Low Risk Setup", "category": "risk", "severity": "positive", "priority": 5,
-                         "explanation": f"Low risk profile (risk score {risk_score:.0f}) combined with high quality ({quality_score:.0f}) — defensive characteristics."})
+                         "explanation": " ".join(lines)})
+
         elif risk_score is not None and risk_score < 40 and ts >= 55:
+            lines = [f"Technical momentum is strong ({ts:.0f}) but risk score is elevated at {risk_score:.0f}{fund_str}."]
+            if dma_str:
+                lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
+            if rsi_str:
+                lines.append(f"{rsi_str}.")
+            macd_ctx = _macd_str()
+            if macd_ctx:
+                lines.append(macd_ctx)
+            lines.append("The rally carries higher risk — consider smaller position sizes and tighter stop-losses. Momentum can reverse quickly in high-risk setups.")
             tags.append({"tag": "High Risk Momentum", "category": "risk", "severity": "negative", "priority": 5,
-                         "explanation": f"Technical momentum exists but risk score is elevated ({risk_score:.0f}). Size positions accordingly."})
+                         "explanation": " ".join(lines)})
+
         elif rsi is not None and rsi > 75 and score < 55:
+            lines = [f"RSI at {rsi:.0f} signals overbought conditions with below-average fundamentals ({score:.0f}){fund_str}."]
+            if dma_str:
+                lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
+            if range_str:
+                lines.append(range_str)
+            macd_ctx = _macd_str()
+            if macd_ctx:
+                lines.append(macd_ctx)
+            lines.append("Overbought stocks with weak fundamentals are vulnerable to sharp pullbacks. Consider reducing exposure or waiting for RSI to cool below 70.")
             tags.append({"tag": "Overbought Warning", "category": "risk", "severity": "negative", "priority": 5,
-                         "explanation": f"RSI at {rsi:.0f} indicates overbought conditions with below-average fundamentals ({score:.0f}). Risk of pullback."})
+                         "explanation": " ".join(lines)})
+
         elif pos_52w is not None and pos_52w < 0.10 and score >= 50:
+            lines = [f"Trading within 10% of 52-week low with decent fundamentals ({score:.0f}){fund_str}."]
+            if range_str:
+                lines.append(range_str)
+            if dma_str:
+                lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
+            if rsi_str:
+                lines.append(f"{rsi_str}.")
+            lines.append(f"Near 52W lows can signal opportunity or trap — watch for support holding near ₹{low_52w:,.0f} and volume pickup as confirmation." if low_52w else "Near 52W lows can signal opportunity or trap. Watch for support and volume pickup as confirmation.")
             tags.append({"tag": "Near 52W Low", "category": "risk", "severity": "neutral", "priority": 5,
-                         "explanation": f"Trading near 52-week low but fundamentals are decent ({score:.0f}). Could be a value opportunity or value trap."})
+                         "explanation": " ".join(lines)})
+
         elif pos_52w is not None and pos_52w > 0.90 and score >= 60:
+            lines = [f"Trading near 52-week high backed by strong fundamentals ({score:.0f}){fund_str}."]
+            if range_str:
+                lines.append(range_str)
+            if dma_str:
+                lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
+            if rsi_str:
+                lines.append(f"{rsi_str}.")
+            lines.append("Stocks near 52W highs with strong fundamentals tend to break out further. Strength begets strength in quality names.")
             tags.append({"tag": "Near 52W High", "category": "risk", "severity": "positive", "priority": 5,
-                         "explanation": f"Near 52-week high backed by strong fundamentals ({score:.0f}). Strength tends to persist in quality stocks."})
+                         "explanation": " ".join(lines)})
 
         # ── Context (max 1) ──
         if score >= 55 and ts < 35 and market_regime in ("correction", "bear"):
+            regime_label = "correction" if market_regime == "correction" else "bear market"
+            lines = [f"Fundamentals are decent ({score:.0f}){fund_str} despite the broader {regime_label}, while technicals ({ts:.0f}) remain depressed."]
+            if dma_str:
+                lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
+            if rsi_str:
+                lines.append(f"{rsi_str}.")
+            macd_ctx = _macd_str()
+            if macd_ctx:
+                lines.append(macd_ctx)
+            if range_str:
+                lines.append(range_str)
+            if ma_50:
+                lines.append(f"Stocks like this often lead the recovery when market sentiment shifts. Watch for price to reclaim 50DMA (₹{ma_50:,.0f}) and MACD bullish crossover as early turnaround signals.")
+            else:
+                lines.append("Could lead recovery when market turns — fundamentally sound companies in beaten-down markets often rebound first.")
             tags.append({"tag": "Recovery Candidate", "category": "context", "severity": "neutral", "priority": 6,
-                         "explanation": f"Decent fundamentals ({score:.0f}) in a weak market with depressed technicals ({ts:.0f}). Could lead recovery when market turns."})
+                         "explanation": " ".join(lines)})
+
         elif data_quality in ("limited", "partial"):
             tags.append({"tag": "Data Limited", "category": "context", "severity": "neutral", "priority": 6,
-                         "explanation": f"Scoring based on {data_quality} data — some metrics unavailable. Confidence in assessment is lower."})
+                         "explanation": f"Scoring based on {data_quality} data — some financial metrics are unavailable or outdated. This reduces confidence in the overall assessment. Treat the score and tags as directional guidance rather than precise signals."})
 
         return tags
 
@@ -4186,6 +4365,7 @@ class DiscoverStockScraper(BaseScraper):
                 tech_details=tech_details,
                 data_quality=data_quality,
                 market_regime=market_regime,
+                row=row,
             )
             tags_v2.extend(context_tags)
 
@@ -4272,16 +4452,45 @@ class DiscoverStockScraper(BaseScraper):
                 # Sector context tags
                 tv2 = enriched.get("tags_v2", [])
                 if pctile >= 90:
+                    e_score = enriched.get("score", 0)
+                    e_sb = enriched.get("score_breakdown", {})
+                    e_quality = e_sb.get("quality", 0)
+                    e_growth = e_sb.get("growth")
+                    e_pe = enriched.get("pe_ratio")
+                    parts = [f"Ranks in the top 10% of {sec} by overall score ({e_score:.0f}, percentile {pctile:.0f}%)."]
+                    detail_parts = []
+                    if e_quality:
+                        detail_parts.append(f"quality {e_quality:.0f}")
+                    if e_growth:
+                        detail_parts.append(f"growth {e_growth:.0f}")
+                    if e_pe and e_pe > 0:
+                        detail_parts.append(f"PE {e_pe:.1f}")
+                    if detail_parts:
+                        parts.append(f"Key metrics: {', '.join(detail_parts)}.")
+                    parts.append(f"Outperforming {len(sec_scores)} peers in {sec} across fundamentals and technicals — one of the strongest names in the sector.")
                     tv2.append({
                         "tag": "Sector Outperformer", "category": "context",
                         "severity": "positive", "priority": 4,
-                        "explanation": f"Ranks in the top 10% of {sec} by overall score. Consistently outperforming sector peers across fundamentals and technicals.",
+                        "explanation": " ".join(parts),
                     })
                 elif pctile <= 10:
+                    e_score = enriched.get("score", 0)
+                    e_sb = enriched.get("score_breakdown", {})
+                    e_quality = e_sb.get("quality", 0)
+                    e_pe = enriched.get("pe_ratio")
+                    parts = [f"Ranks in the bottom 10% of {sec} by overall score ({e_score:.0f}, percentile {pctile:.0f}%)."]
+                    detail_parts = []
+                    if e_quality:
+                        detail_parts.append(f"quality {e_quality:.0f}")
+                    if e_pe and e_pe > 0:
+                        detail_parts.append(f"PE {e_pe:.1f}")
+                    if detail_parts:
+                        parts.append(f"Key metrics: {', '.join(detail_parts)}.")
+                    parts.append(f"Underperforming most of the {len(sec_scores)} peers in {sec} — review fundamentals carefully before considering a position.")
                     tv2.append({
                         "tag": "Sector Laggard", "category": "context",
                         "severity": "negative", "priority": 4,
-                        "explanation": f"Ranks in the bottom 10% of {sec} by overall score. Underperforming most sector peers — review fundamentals before considering.",
+                        "explanation": " ".join(parts),
                     })
 
         out.sort(
