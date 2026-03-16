@@ -3820,9 +3820,6 @@ class DiscoverStockScraper(BaseScraper):
                 pct_5y_by_sym[sym] = p5y
                 all_pct_5y.append(p5y)
 
-        # Track sector scores for sector_leader tag and sector percentile
-        sector_best: dict[str, list[tuple[float, str]]] = {}
-
         # ── Pre-compute RSI breadth for market regime detection ──
         _pre_rsi_values: list[float] = []
         for _sym, _hist in ph_data.items():
@@ -4115,9 +4112,6 @@ class DiscoverStockScraper(BaseScraper):
                 sector_pe_median=med_pe,
             )
 
-            # Track sector leaders (top 3)
-            sector_best.setdefault(sector, []).append((score, symbol))
-
             pct_change_1w = vd.get("pct_change_1w") if vd else None
 
             # Generate human-readable narrative (sector_percentile filled in post-pass)
@@ -4288,29 +4282,6 @@ class DiscoverStockScraper(BaseScraper):
                         "tag": "Sector Laggard", "category": "context",
                         "severity": "negative", "priority": 4,
                         "explanation": f"Ranks in the bottom 10% of {sec} by overall score. Underperforming most sector peers — review fundamentals before considering.",
-                    })
-
-        # Add sector_leader tag to top 3 scorers in each sector
-        sector_leaders: set[str] = set()
-        for sector, scores_list in sector_best.items():
-            scores_list.sort(key=lambda x: -x[0])
-            for rank_score, sym in scores_list[:3]:
-                sector_leaders.add(sym)
-
-        for enriched in out:
-            symbol = str(enriched.get("symbol") or "")
-            if symbol in sector_leaders:
-                tv2 = enriched.get("tags_v2", [])
-                if not any(t.get("tag") == "Sector Leader" for t in tv2):
-                    _sec = str(enriched.get("sector") or "this sector")
-                    tv2.insert(0, {
-                        "tag": "Sector Leader",
-                        "category": "classification",
-                        "severity": "positive",
-                        "priority": 0,
-                        "confidence": 1.0,
-                        "explanation": f"Ranks among the top 3 stocks in {_sec} by overall score. Sector leaders combine strong fundamentals, reasonable valuations, and manageable risk — making them standout picks within their industry.",
-                        "expires_at": None,
                     })
 
         out.sort(
