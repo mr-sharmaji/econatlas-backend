@@ -335,6 +335,18 @@ async def clear_abort(
     return {"status": "cleared", "job_name": job_name, "deleted": bool(deleted)}
 
 
+_RESCORE_JOBS: dict[str, tuple[str, str]] = {
+    "discover_stock": (
+        "app.scheduler.discover_stock_job",
+        "rescore_discover_stocks",
+    ),
+    "discover_mf": (
+        "app.scheduler.discover_mutual_fund_job",
+        "rescore_discover_mutual_funds",
+    ),
+}
+
+
 @router.post("/jobs/rescore/{job_name}")
 async def rescore_job(
     job_name: str,
@@ -342,25 +354,31 @@ async def rescore_job(
 ) -> dict:
     """Re-score existing data without fetching. Reads rows from DB, scores, writes back."""
     _authorize(x_ops_token)
-    if job_name == "discover_stock":
-        from app.scheduler.discover_stock_job import rescore_discover_stocks
+    if job_name not in _RESCORE_JOBS:
+        raise HTTPException(status_code=400, detail=f"Rescore not supported for '{job_name}'")
 
-        try:
-            result = await rescore_discover_stocks()
-            return result
-        except Exception:
-            logger.exception("Rescore failed for %s", job_name)
-            raise HTTPException(status_code=500, detail="Rescore failed — check logs")
-    if job_name == "discover_mf":
-        from app.scheduler.discover_mutual_fund_job import rescore_discover_mutual_funds
+    task_key = f"rescore_{job_name}"
+    existing = _running_direct_jobs.get(task_key)
+    if existing is not None and not existing.done():
+        return {
+            "status": "already_running",
+            "job_name": job_name,
+            "message": "Rescore is already running.",
+        }
 
-        try:
-            result = await rescore_discover_mutual_funds()
-            return result
-        except Exception:
-            logger.exception("Rescore failed for %s", job_name)
-            raise HTTPException(status_code=500, detail="Rescore failed — check logs")
-    raise HTTPException(status_code=400, detail=f"Rescore not supported for '{job_name}'")
+    module_path, func_name = _RESCORE_JOBS[job_name]
+    task = asyncio.create_task(
+        _direct_run_wrapper(task_key, module_path, func_name),
+        name=f"direct-run-rescore-{job_name}",
+    )
+    _running_direct_jobs[task_key] = task
+    logger.info("Rescore triggered: %s (background task)", job_name)
+    return {
+        "status": "started",
+        "job_name": job_name,
+        "mode": "rescore",
+        "message": "Rescore started in background — check logs for progress.",
+    }
 
 
 @router.get("/jobs")
