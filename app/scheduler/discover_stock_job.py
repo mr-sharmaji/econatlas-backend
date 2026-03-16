@@ -194,26 +194,28 @@ def _map_screener_sector(raw: str) -> str:
 
 
 # ── 6-Layer Scoring Model: Sector Weight Profiles ──
+# R5: Momentum weight removed (overlaps with technical score).
+# Former momentum weight redistributed to quality, valuation, and risk.
 _SECTOR_LAYER_WEIGHTS: dict[str, dict[str, float]] = {
-    "DEFAULT":                {"quality": 0.30, "valuation": 0.25, "growth": 0.20, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
-    "Financials":             {"quality": 0.35, "valuation": 0.20, "growth": 0.15, "momentum": 0.10, "institutional": 0.15, "risk": 0.05},
-    "IT":                     {"quality": 0.35, "valuation": 0.20, "growth": 0.25, "momentum": 0.10, "institutional": 0.05, "risk": 0.05},
-    "Healthcare":             {"quality": 0.25, "valuation": 0.20, "growth": 0.25, "momentum": 0.10, "institutional": 0.10, "risk": 0.10},
-    "Real Estate":            {"quality": 0.20, "valuation": 0.35, "growth": 0.15, "momentum": 0.15, "institutional": 0.10, "risk": 0.05},
-    "Industrials":            {"quality": 0.25, "valuation": 0.20, "growth": 0.30, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
-    "FMCG":                   {"quality": 0.35, "valuation": 0.25, "growth": 0.15, "momentum": 0.05, "institutional": 0.10, "risk": 0.10},
-    "Auto":                   {"quality": 0.25, "valuation": 0.25, "growth": 0.20, "momentum": 0.15, "institutional": 0.10, "risk": 0.05},
-    "Utilities":              {"quality": 0.30, "valuation": 0.30, "growth": 0.10, "momentum": 0.05, "institutional": 0.15, "risk": 0.10},
-    "Energy":                 {"quality": 0.20, "valuation": 0.30, "growth": 0.15, "momentum": 0.20, "institutional": 0.10, "risk": 0.05},
-    "Materials":              {"quality": 0.20, "valuation": 0.30, "growth": 0.15, "momentum": 0.20, "institutional": 0.10, "risk": 0.05},
-    "Chemicals":              {"quality": 0.25, "valuation": 0.25, "growth": 0.25, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
-    "Telecom":                {"quality": 0.25, "valuation": 0.20, "growth": 0.25, "momentum": 0.10, "institutional": 0.10, "risk": 0.10},
-    "Consumer Discretionary": {"quality": 0.30, "valuation": 0.25, "growth": 0.20, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
-    "Textiles":               {"quality": 0.25, "valuation": 0.25, "growth": 0.20, "momentum": 0.15, "institutional": 0.10, "risk": 0.05},
-    "Services":               {"quality": 0.30, "valuation": 0.25, "growth": 0.20, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
-    "Media & Entertainment":  {"quality": 0.25, "valuation": 0.25, "growth": 0.25, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
-    "Diversified":            {"quality": 0.30, "valuation": 0.25, "growth": 0.20, "momentum": 0.10, "institutional": 0.10, "risk": 0.05},
-    "Commodities":            {"quality": 0.20, "valuation": 0.25, "growth": 0.15, "momentum": 0.25, "institutional": 0.10, "risk": 0.05},
+    "DEFAULT":                {"quality": 0.33, "valuation": 0.28, "growth": 0.20, "momentum": 0.00, "institutional": 0.10, "risk": 0.09},
+    "Financials":             {"quality": 0.38, "valuation": 0.22, "growth": 0.15, "momentum": 0.00, "institutional": 0.15, "risk": 0.10},
+    "IT":                     {"quality": 0.38, "valuation": 0.23, "growth": 0.25, "momentum": 0.00, "institutional": 0.05, "risk": 0.09},
+    "Healthcare":             {"quality": 0.28, "valuation": 0.22, "growth": 0.25, "momentum": 0.00, "institutional": 0.10, "risk": 0.15},
+    "Real Estate":            {"quality": 0.22, "valuation": 0.38, "growth": 0.15, "momentum": 0.00, "institutional": 0.10, "risk": 0.15},
+    "Industrials":            {"quality": 0.28, "valuation": 0.22, "growth": 0.30, "momentum": 0.00, "institutional": 0.10, "risk": 0.10},
+    "FMCG":                   {"quality": 0.37, "valuation": 0.27, "growth": 0.15, "momentum": 0.00, "institutional": 0.10, "risk": 0.11},
+    "Auto":                   {"quality": 0.28, "valuation": 0.28, "growth": 0.20, "momentum": 0.00, "institutional": 0.10, "risk": 0.14},
+    "Utilities":              {"quality": 0.32, "valuation": 0.32, "growth": 0.10, "momentum": 0.00, "institutional": 0.15, "risk": 0.11},
+    "Energy":                 {"quality": 0.25, "valuation": 0.35, "growth": 0.15, "momentum": 0.00, "institutional": 0.10, "risk": 0.15},
+    "Materials":              {"quality": 0.25, "valuation": 0.35, "growth": 0.15, "momentum": 0.00, "institutional": 0.10, "risk": 0.15},
+    "Chemicals":              {"quality": 0.28, "valuation": 0.28, "growth": 0.25, "momentum": 0.00, "institutional": 0.10, "risk": 0.09},
+    "Telecom":                {"quality": 0.28, "valuation": 0.22, "growth": 0.25, "momentum": 0.00, "institutional": 0.10, "risk": 0.15},
+    "Consumer Discretionary": {"quality": 0.33, "valuation": 0.28, "growth": 0.20, "momentum": 0.00, "institutional": 0.10, "risk": 0.09},
+    "Textiles":               {"quality": 0.28, "valuation": 0.28, "growth": 0.20, "momentum": 0.00, "institutional": 0.10, "risk": 0.14},
+    "Services":               {"quality": 0.33, "valuation": 0.28, "growth": 0.20, "momentum": 0.00, "institutional": 0.10, "risk": 0.09},
+    "Media & Entertainment":  {"quality": 0.28, "valuation": 0.28, "growth": 0.25, "momentum": 0.00, "institutional": 0.10, "risk": 0.09},
+    "Diversified":            {"quality": 0.33, "valuation": 0.28, "growth": 0.20, "momentum": 0.00, "institutional": 0.10, "risk": 0.09},
+    "Commodities":            {"quality": 0.25, "valuation": 0.30, "growth": 0.15, "momentum": 0.00, "institutional": 0.10, "risk": 0.20},
 }
 
 # Sub-metric weights within Quality layer, per sector
@@ -2422,6 +2424,10 @@ class DiscoverStockScraper(BaseScraper):
 
         details: dict[str, float] = {}
 
+        # ── Compute SMA-50 early for RSI trend context ──
+        _sma_50_val = self._compute_sma(closes, 50)
+        _in_uptrend = current_price > _sma_50_val if _sma_50_val else False
+
         # ── RSI-14 ──
         rsi_score = None
         rsi_value = None
@@ -2450,13 +2456,23 @@ class DiscoverStockScraper(BaseScraper):
 
                 details["rsi_14"] = round(rsi_value, 2)
 
-                # Score RSI: oversold is bullish, overbought is bearish
-                if rsi_value < 30:
-                    rsi_score = self._clamp(70 + (30 - rsi_value) * 1.0)
-                elif rsi_value > 70:
-                    rsi_score = self._clamp(30 - (rsi_value - 70) * 1.0)
+                # R1A: Dual-mode RSI scoring based on trend context
+                if _in_uptrend:
+                    # Trend-following: high RSI = strength, not overbought
+                    if rsi_value > 70:
+                        rsi_score = self._clamp(65 + (rsi_value - 70) * 0.5)
+                    elif rsi_value < 30:
+                        rsi_score = self._clamp(35 + rsi_value * 0.5)
+                    else:
+                        rsi_score = self._clamp(40 + rsi_value * 0.6)
                 else:
-                    rsi_score = self._clamp(50 + (rsi_value - 50) * 1.5)
+                    # Mean-reversion: oversold = opportunity
+                    if rsi_value < 30:
+                        rsi_score = self._clamp(65 + (30 - rsi_value) * 1.2)
+                    elif rsi_value > 70:
+                        rsi_score = self._clamp(25 - (rsi_value - 70) * 0.8)
+                    else:
+                        rsi_score = self._clamp(45 + (50 - rsi_value) * 0.5)
 
         # ── MACD ──
         macd_score = None
@@ -2475,16 +2491,17 @@ class DiscoverStockScraper(BaseScraper):
                 details["macd_signal"] = round(signal_val, 4)
                 details["macd_histogram"] = round(histogram, 4)
 
-                if macd_val > signal_val and macd_val > 0:
-                    macd_score = 82.0  # strong bullish
-                elif macd_val > signal_val and macd_val <= 0:
-                    macd_score = 62.0  # bullish crossover from weakness
-                elif macd_val <= signal_val and macd_val > 0:
-                    macd_score = 38.0  # bearish crossover from strength
-                else:
-                    macd_score = 18.0  # strong bearish
+                # R1B: Continuous MACD scoring (replaces 4-bucket)
+                macd_pct = (macd_val / max(current_price, 0.01)) * 100
+                signal_gap_pct = ((macd_val - signal_val) / max(current_price, 0.01)) * 100
 
-                # Histogram acceleration bonus
+                base = 50.0
+                gap_contrib = max(min(signal_gap_pct * 150, 30.0), -30.0)
+                base += gap_contrib
+                base += 12.0 if macd_val > 0 else -12.0
+                macd_score = self._clamp(base)
+
+                # Histogram acceleration bonus (keep ±8)
                 if len(macd_line) >= 2 and len(signal_line) >= 2:
                     prev_hist = macd_line[-2] - signal_line[-2]
                     if abs(histogram) > abs(prev_hist) and histogram > 0:
@@ -2492,7 +2509,7 @@ class DiscoverStockScraper(BaseScraper):
                     elif abs(histogram) > abs(prev_hist) and histogram < 0:
                         macd_score = max(macd_score - 8.0, 5.0)
 
-        # ── Volume Trend ──
+        # ── Volume Trend (R1C: with accumulation/distribution) ──
         vol_score = None
         avg_vol_20 = 0.0
         vol_up = False
@@ -2505,22 +2522,37 @@ class DiscoverStockScraper(BaseScraper):
 
             price_trend_20d = (closes[-1] - closes[-20]) / closes[-20] if closes[-20] > 0 else 0
             price_up = price_trend_20d > 0.01
-            vol_up = avg_vol_20 > avg_vol_50 * 1.05 if avg_vol_50 > 0 else False
 
-            # Volume surge: last day's volume vs 20-day average
             last_vol = volumes[-1] if volumes[-1] else 0
-            vol_surge = (last_vol > avg_vol_20 * 1.5) if avg_vol_20 > 0 else False
+            rel_vol = last_vol / max(avg_vol_20, 1)
+            vol_up = avg_vol_20 > avg_vol_50 * 1.05 if avg_vol_50 > 0 else False
+            vol_surge = rel_vol > 1.5
 
-            if price_up and vol_up:
-                vol_score = 80.0  # confirmed advance
-            elif price_up and not vol_up:
-                vol_score = 45.0  # weak advance
+            # Accumulation/Distribution proxy from close-to-close
+            ad_sum = 0.0
+            for _i in range(-20, 0):
+                if _i - 1 >= -len(closes) and len(volumes) + _i >= 0 and volumes[_i] > 0:
+                    _ad_sign = 1.0 if closes[_i] >= closes[_i - 1] else -1.0
+                    ad_sum += _ad_sign * volumes[_i]
+
+            if price_up and rel_vol > 1.3 and ad_sum > 0:
+                vol_score = 85.0   # strong accumulation
+            elif price_up and vol_up:
+                vol_score = 72.0   # confirmed advance
+            elif price_up and rel_vol < 0.7:
+                vol_score = 40.0   # hollow rally
+            elif not price_up and rel_vol > 1.5 and ad_sum < 0:
+                vol_score = 12.0   # distribution selling
             elif not price_up and vol_up:
-                vol_score = 25.0  # confirmed decline
+                vol_score = 28.0   # confirmed decline
+            elif not price_up and rel_vol < 0.7:
+                vol_score = 52.0   # low-conviction dip
             else:
-                vol_score = 55.0  # declining on low interest
+                vol_score = 50.0   # neutral
 
             details["vol_ratio_20_50"] = round(avg_vol_20 / max(avg_vol_50, 1), 2)
+            details["rel_vol"] = round(rel_vol, 2)
+            details["ad_sum_20d"] = round(ad_sum, 0)
 
         # ── Moving Average Trend ──
         ma_score = None
@@ -2566,7 +2598,7 @@ class DiscoverStockScraper(BaseScraper):
                 else:
                     ma_score = 45.0
 
-        # ── Support/Resistance & Breakout/Breakdown Detection ──
+        # ── Support/Resistance & Breakout/Breakdown Detection (R7: ATR-based) ──
         sr_score = None
         breakout_signal = "none"
         high_52w = row.get("high_52w")
@@ -2575,6 +2607,22 @@ class DiscoverStockScraper(BaseScraper):
         # 20-day high/low for short-term breakout detection
         high_20d = max(closes[-20:]) if len(closes) >= 20 else None
         low_20d = min(closes[-20:]) if len(closes) >= 20 else None
+
+        # R7: Compute ATR-14 proxy from close-to-close ranges
+        atr_14 = None
+        if len(closes) >= 15:
+            _daily_ranges = [abs(closes[i] - closes[i - 1]) for i in range(-14, 0)]
+            atr_14 = sum(_daily_ranges) / 14
+            details["atr_14"] = round(atr_14, 4)
+
+        # Volatility-adjusted thresholds (adapts to stock's normal range)
+        if atr_14 and current_price > 0:
+            _atr_pct = (atr_14 / current_price) * 100
+            near_thresh = max(_atr_pct * 3, 2.0)    # 3 ATRs or 2%, whichever larger
+            mid_thresh = max(_atr_pct * 5, 4.0)     # 5 ATRs or 4%
+            far_thresh = max(_atr_pct * 10, 12.0)   # 10 ATRs or 12%
+        else:
+            near_thresh, mid_thresh, far_thresh = 3.0, 5.0, 15.0
 
         if high_52w and low_52w and current_price > 0 and high_52w > low_52w:
             dist_high_pct = (high_52w - current_price) / current_price * 100
@@ -2588,16 +2636,16 @@ class DiscoverStockScraper(BaseScraper):
                 else:
                     breakout_signal = "approaching_breakout"
                     sr_score = 65.0
-            # APPROACHING BREAKOUT: within 3% of 52W high
-            elif dist_high_pct < 3:
+            # APPROACHING BREAKOUT: within near_thresh of 52W high
+            elif dist_high_pct < near_thresh:
                 if vol_up or vol_surge:
                     breakout_signal = "approaching_breakout"
                     sr_score = 75.0
                 else:
                     breakout_signal = "resistance"
                     sr_score = 40.0
-            # NEAR RESISTANCE: within 5% of 52W high
-            elif dist_high_pct < 5:
+            # NEAR RESISTANCE: within mid_thresh of 52W high
+            elif dist_high_pct < mid_thresh:
                 if vol_up:
                     breakout_signal = "approaching_breakout"
                     sr_score = 70.0
@@ -2612,18 +2660,18 @@ class DiscoverStockScraper(BaseScraper):
                 else:
                     breakout_signal = "approaching_breakdown"
                     sr_score = 25.0
-            # APPROACHING BREAKDOWN: within 3% of 52W low
-            elif dist_low_pct < 3:
+            # APPROACHING BREAKDOWN: within near_thresh of 52W low
+            elif dist_low_pct < near_thresh:
                 breakout_signal = "approaching_breakdown"
                 sr_score = 20.0 if vol_up else 30.0
-            # NEAR SUPPORT: within 5% of 52W low
-            elif dist_low_pct < 5:
+            # NEAR SUPPORT: within mid_thresh of 52W low
+            elif dist_low_pct < mid_thresh:
                 breakout_signal = "support"
                 sr_score = 60.0
             # MID-RANGE
-            elif dist_high_pct < 15:
+            elif dist_high_pct < far_thresh:
                 sr_score = 60.0
-            elif dist_low_pct < 15:
+            elif dist_low_pct < far_thresh:
                 sr_score = 40.0
             else:
                 sr_score = 50.0
@@ -2694,8 +2742,10 @@ class DiscoverStockScraper(BaseScraper):
         risk_sub: float | None = None,
         tech_details: dict | None = None,
         breakout_signal: str = "none",
+        market_regime: str = "neutral",
+        risk_reward_tag: str = "neutral",
     ) -> tuple[str, str]:
-        """Assign a user-facing action tag based on fundamentals + technicals.
+        """R3: Regime-adaptive action tag with risk-reward modifier.
 
         Returns (tag, reasoning).
         """
@@ -2719,18 +2769,13 @@ class DiscoverStockScraper(BaseScraper):
         rsi_val = tech_details.get("rsi_14")
         macd_hist = tech_details.get("macd_histogram")
 
-        rsi_overbought = rsi_val is not None and rsi_val > 70
-        rsi_oversold = rsi_val is not None and rsi_val < 30
-
-        # Positive tech signals (for "confirm" sentence)
         positive_parts: list[str] = []
-        # Caution signals (for separate caveat)
         caution_parts: list[str] = []
 
         if rsi_val is not None:
-            if rsi_overbought:
+            if rsi_val > 70:
                 caution_parts.append(f"RSI at {rsi_val:.0f} indicates overbought conditions")
-            elif rsi_oversold:
+            elif rsi_val < 30:
                 caution_parts.append(f"RSI at {rsi_val:.0f} indicates oversold conditions")
             else:
                 positive_parts.append(f"RSI at {rsi_val:.0f}")
@@ -2747,23 +2792,13 @@ class DiscoverStockScraper(BaseScraper):
             else:
                 caution_parts.append("bearish MACD")
         elif macd_hist is not None:
-            # Fallback if only histogram is available
             if macd_hist > 0:
                 positive_parts.append("bullish MACD")
             else:
                 caution_parts.append("bearish MACD")
 
-        tech_positive = ", ".join(positive_parts) if positive_parts else None
-        tech_caution = ", ".join(caution_parts) if caution_parts else None
-        # Fallback flat summary for simpler reason strings
         all_parts = positive_parts + caution_parts
         tech_summary = ", ".join(all_parts) if all_parts else "limited technical data"
-
-        # Trend alignment for reasoning text
-        trend = DiscoverStockScraper._compute_trend_alignment(score, tech_score)
-        tech_confirms = {"aligned": "confirms", "divergent": "shows divergence at"}.get(
-            trend or "", "conflicts with"
-        )
 
         # 1. Quality gate triggered
         if quality_cap is not None and score <= quality_cap:
@@ -2799,59 +2834,67 @@ class DiscoverStockScraper(BaseScraper):
                     f"Score {score:.0f} with {top_str} as drivers. "
                     f"Technical data unavailable; monitor for clarity.")
 
-        # 3. Data quality downgrade — limited data caps at Hold
+        # 3. Data quality downgrade
         if data_quality == "limited":
             return ("Hold — Low Data",
                     f"Limited data quality restricts confidence. "
                     f"Score {score:.0f}, tech {tech_score:.0f}. "
                     f"More data needed before a stronger signal.")
 
-        # 4. Full data — flat decision tree
+        # R3: Regime-adjusted thresholds
+        _regime_offset = {
+            "crisis": -10, "bear": -8, "correction": -5,
+            "recovery": -3, "neutral": 0, "bull": 3,
+        }
+        r_off = _regime_offset.get(market_regime, 0)
+
+        # 4. Full data — regime-adaptive decision tree
+        conviction = score * 0.55 + tech_score * 0.45
         tag: str
         reason: str
 
-        if score >= 75 and tech_score >= 60:
+        if conviction >= (62 + r_off) and score >= (62 + r_off) and tech_score >= (52 + r_off):
             tag = "Strong Outperformer"
-            reason = (f"Score {score:.0f} with tech {tech_score:.0f}. "
+            reason = (f"Score {score:.0f} with tech {tech_score:.0f} (conviction {conviction:.0f}). "
                       f"{top_str} lead the fundamentals. "
                       f"Technical strength ({tech_summary}) confirms the quality.")
 
-        elif score >= 60 and tech_score >= 45:
+        elif score >= (58 + r_off) and tech_score >= (45 + r_off):
             tag = "Outperformer"
             reason = (f"Solid fundamentals ({score:.0f}) led by {top_str}. "
                       f"Technicals ({tech_score:.0f}) are supportive — {tech_summary}.")
 
-        elif score >= 50 and tech_score >= 50:
+        elif score >= (50 + r_off) and tech_score >= (42 + r_off):
             tag = "Accumulate"
             reason = (f"Fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) "
                       f"are both moderately positive. {top_str} lead the score. "
                       f"Suitable for gradual position building.")
 
-        elif 45 <= score < 55 and 40 <= tech_score < 50:
+        elif 42 <= score < 55 and 38 <= tech_score < 48:
             tag = "Neutral"
             reason = (f"Mixed signals — score {score:.0f}, tech {tech_score:.0f}. "
                       f"{top_str} are the main drivers. "
                       f"No strong case for action in either direction.")
 
-        elif score >= 55 and tech_score < 40:
+        elif score >= 55 and tech_score < 38:
             tag = "Watchlist"
             reason = (f"Good fundamentals ({score:.0f}) led by {top_str}, "
                       f"but technicals are weak ({tech_score:.0f}). "
                       f"Wait for technical confirmation before acting.")
 
-        elif score < 45 and tech_score >= 65:
+        elif score < 42 and tech_score >= 60:
             tag = "Momentum Only"
             reason = (f"Price momentum (tech {tech_score:.0f}) not supported by "
                       f"fundamentals ({score:.0f}). {tech_summary}. "
                       f"High risk — momentum may not sustain without quality backing.")
 
-        elif score < 35:
+        elif score < 33:
             tag = "Avoid"
             reason = (f"Weak fundamentals ({score:.0f}) with {top_str}. "
                       f"Technical position ({tech_score:.0f}) does not offset "
                       f"structural weakness.")
 
-        elif score < 50 and tech_score < 40:
+        elif score < 48 and tech_score < 38:
             tag = "Deteriorating"
             reason = (f"Both fundamentals ({score:.0f}) and technicals ({tech_score:.0f}) "
                       f"are weak. {top_str}. {tech_summary}.")
@@ -2862,7 +2905,7 @@ class DiscoverStockScraper(BaseScraper):
                       f"{top_str} are the main drivers. "
                       f"No strong case for action in either direction.")
 
-        # 5. Breakout/Breakdown modifier — upgrades or downgrades the tag
+        # 5. Breakout/Breakdown modifier
         if breakout_signal == "breakout":
             upgrades = {
                 "Outperformer": "Strong Outperformer",
@@ -2895,6 +2938,19 @@ class DiscoverStockScraper(BaseScraper):
         elif breakout_signal == "approaching_breakdown":
             reason += " Approaching 52W low — monitor for breakdown risk."
 
+        # 6. Risk-Reward modifier (R9)
+        if risk_reward_tag == "poor" and tag in ("Strong Outperformer", "Outperformer", "Accumulate"):
+            _rr_downgrades = {
+                "Strong Outperformer": "Outperformer",
+                "Outperformer": "Accumulate",
+                "Accumulate": "Hold",
+            }
+            old_tag = tag
+            tag = _rr_downgrades[tag]
+            reason += f" Downgraded from {old_tag} due to poor risk-reward positioning."
+        elif risk_reward_tag == "favorable" and tag in ("Neutral", "Hold", "Watchlist"):
+            reason += " Risk-reward positioning is favorable — potential entry opportunity."
+
         return tag, reason
 
     @staticmethod
@@ -2902,18 +2958,22 @@ class DiscoverStockScraper(BaseScraper):
         score: float,
         tech_score: float | None,
     ) -> str | None:
-        """Determine if fundamentals and technicals are aligned, divergent, or conflicting."""
+        """R10: Directional trend alignment — aligned_bullish/aligned_bearish/aligned/divergent/conflicting."""
         if tech_score is None:
             return None
-        # Cross-zone conflict: one strong positive, other strong negative
-        if (score >= 70 and tech_score < 30) or (score < 35 and tech_score >= 70):
-            return "conflicting"
         abs_diff = abs(score - tech_score)
-        if abs_diff >= 35:
+
+        if abs_diff > 30:
             return "conflicting"
-        if abs_diff >= 18:
-            return "divergent"
-        return "aligned"
+
+        if abs_diff <= 15:
+            if score >= 55 and tech_score >= 48:
+                return "aligned_bullish"
+            elif score < 42 and tech_score < 42:
+                return "aligned_bearish"
+            return "aligned"
+
+        return "divergent"
 
     @staticmethod
     def _compute_score_confidence(
@@ -2922,42 +2982,155 @@ class DiscoverStockScraper(BaseScraper):
         data_quality: str,
         metrics_used: int,
     ) -> str:
-        """Determine confidence level based on data quality and fundamental-technical agreement."""
+        """R8: Relaxed confidence thresholds for better distribution (~15-20% high, ~60% medium, ~20% low)."""
         if data_quality == "limited":
             return "low"
         if tech_score is None:
-            if score >= 65 and metrics_used >= 4 and data_quality == "full":
-                return "medium"
-            return "low"
+            return "medium" if score >= 55 and metrics_used >= 3 else "low"
         abs_diff = abs(score - tech_score)
-        if abs_diff < 15 and data_quality == "full" and metrics_used >= 4:
-            # Strong agreement with good data
-            if (score >= 65 and tech_score >= 55) or (score < 40 and tech_score < 40):
+        agreement = abs_diff < 18
+
+        # High: good agreement + decent data
+        if agreement and metrics_used >= 3 and data_quality in ("full", "partial"):
+            if (score >= 55 and tech_score >= 45) or (score < 38 and tech_score < 38):
                 return "high"
+
+        # Medium: partial agreement or partial data
+        if abs_diff < 28 and metrics_used >= 2:
             return "medium"
-        if abs_diff < 25 and data_quality == "full" and metrics_used >= 3:
-            return "medium"
+
         return "low"
+
+    @staticmethod
+    def _compute_entry_exit_signal(
+        tech_details: dict,
+        score: float,
+        tech_score: float | None,
+        market_regime: str = "neutral",
+    ) -> dict:
+        """R9: Compute entry/exit signal with risk-reward assessment.
+
+        Returns dict with entry_exit_signal, entry_signals, exit_signals,
+        risk_reward_ratio, risk_reward_tag.
+        """
+        rsi = tech_details.get("rsi_14")
+        macd_hist = tech_details.get("macd_histogram")
+        breakout = tech_details.get("breakout_signal", "none")
+        dist_high = tech_details.get("dist_to_52w_high_pct")
+        dist_low = tech_details.get("dist_to_52w_low_pct")
+
+        entry_signals = 0
+        exit_signals = 0
+
+        if rsi is not None:
+            if rsi < 35:
+                entry_signals += 1
+            if rsi > 75:
+                exit_signals += 1
+
+        if macd_hist is not None:
+            if macd_hist > 0:
+                entry_signals += 1
+            else:
+                exit_signals += 1
+
+        if breakout in ("breakout", "approaching_breakout"):
+            entry_signals += 1
+        if breakout in ("breakdown", "approaching_breakdown"):
+            exit_signals += 1
+
+        # Risk-reward from 52W positioning
+        rr_ratio: float | None = None
+        rr_tag = "neutral"
+        if dist_high is not None and dist_low is not None:
+            reward = max(dist_high, 0.01)
+            risk = max(dist_low, 0.01)
+            rr_ratio = round(reward / risk, 2)
+
+            if rr_ratio >= 2.5:
+                rr_tag = "favorable"
+            elif rr_ratio >= 1.2:
+                rr_tag = "balanced"
+            elif rr_ratio >= 0.5:
+                rr_tag = "unfavorable"
+            else:
+                rr_tag = "poor"
+
+        # Regime adjustment — bias toward caution in bear/crisis
+        if market_regime in ("bear", "crisis"):
+            exit_signals += 1
+
+        net = entry_signals - exit_signals
+        if net >= 2:
+            signal = "entry"
+        elif net == 1 and score >= 50:
+            signal = "entry"
+        elif net <= -2:
+            signal = "exit"
+        elif net == -1 and score < 45:
+            signal = "exit"
+        else:
+            signal = "hold"
+
+        return {
+            "entry_exit_signal": signal,
+            "entry_signals": entry_signals,
+            "exit_signals": exit_signals,
+            "risk_reward_ratio": rr_ratio,
+            "risk_reward_tag": rr_tag,
+        }
 
     @staticmethod
     def _detect_market_regime(
         nifty_price: float | None = None,
         nifty_200dma: float | None = None,
+        *,
+        avg_market_rsi: float | None = None,
+        pct_stocks_oversold: float | None = None,
     ) -> str:
-        """Regime detection based on Nifty 50 vs its 200-DMA.
+        """6-regime detection: bull, neutral, correction, bear, crisis, recovery.
 
-        Returns 'bull' if Nifty is >3% above 200-DMA, 'bear' if >3% below,
-        'neutral' otherwise. Falls back to 'neutral' if data unavailable.
+        Uses Nifty 50 vs 200-DMA deviation, average market RSI, and breadth
+        (% of stocks with RSI < 30) to determine the current market regime.
 
-        nifty_price and nifty_200dma are pre-fetched async and passed in.
+        Returns one of: 'bull', 'neutral', 'correction', 'bear', 'crisis', 'recovery'.
         """
         if nifty_price is None or nifty_200dma is None or nifty_200dma <= 0:
             return "neutral"
         deviation = (nifty_price - nifty_200dma) / nifty_200dma
+
+        # Count bear/bull signals
+        bear_signals = 0
+        if deviation < -0.03:
+            bear_signals += 1
+        if deviation < -0.08:
+            bear_signals += 1  # deep bear
+        if avg_market_rsi is not None and avg_market_rsi < 40:
+            bear_signals += 1
+        if pct_stocks_oversold is not None and pct_stocks_oversold > 0.15:
+            bear_signals += 1
+
+        bull_signals = 0
         if deviation > 0.03:
-            return "bull"
-        elif deviation < -0.03:
+            bull_signals += 1
+        if deviation > 0.08:
+            bull_signals += 1
+        if avg_market_rsi is not None and avg_market_rsi > 55:
+            bull_signals += 1
+
+        # Recovery: below 200DMA but RSI improving (> 45 despite negative deviation)
+        if deviation < -0.03 and avg_market_rsi is not None and avg_market_rsi > 45:
+            if pct_stocks_oversold is not None and pct_stocks_oversold < 0.10:
+                return "recovery"
+
+        if bear_signals >= 3:
+            return "crisis"
+        if bear_signals >= 2:
             return "bear"
+        if deviation < -0.03:
+            return "correction"
+        if bull_signals >= 2:
+            return "bull"
         return "neutral"
 
     @staticmethod
@@ -3394,8 +3567,9 @@ class DiscoverStockScraper(BaseScraper):
         vol_data = volatility_data or {}
         ph_data = price_history or {}
 
-        # ── Market regime detection ──
-        market_regime = self._detect_market_regime(nifty_price, nifty_200dma)
+        # ── Market regime detection (deferred until RSI pre-computation below) ──
+        # Placeholder — will be set after pre-computing RSI breadth from price history.
+        market_regime = "neutral"
 
         # ── Sanitize numeric fields (Screener.in can return strings) ──
         _NUMERIC_FIELDS = {
@@ -3676,6 +3850,37 @@ class DiscoverStockScraper(BaseScraper):
         # Track sector scores for sector_leader tag and sector percentile
         sector_best: dict[str, list[tuple[float, str]]] = {}
 
+        # ── Pre-compute RSI breadth for market regime detection ──
+        _pre_rsi_values: list[float] = []
+        for _sym, _hist in ph_data.items():
+            if len(_hist) < 30:
+                continue
+            _closes = [h["close"] for h in _hist]
+            if len(_closes) >= 15:
+                _gains, _losses = [], []
+                for _i in range(1, len(_closes)):
+                    _d = _closes[_i] - _closes[_i - 1]
+                    _gains.append(max(_d, 0))
+                    _losses.append(max(-_d, 0))
+                _period = 14
+                if len(_gains) >= _period:
+                    _ag = sum(_gains[:_period]) / _period
+                    _al = sum(_losses[:_period]) / _period
+                    for _i in range(_period, len(_gains)):
+                        _ag = (_ag * (_period - 1) + _gains[_i]) / _period
+                        _al = (_al * (_period - 1) + _losses[_i]) / _period
+                    _rsi = 100.0 if _al == 0 else 100.0 - (100.0 / (1.0 + _ag / _al))
+                    _pre_rsi_values.append(_rsi)
+
+        _avg_market_rsi = sum(_pre_rsi_values) / len(_pre_rsi_values) if _pre_rsi_values else None
+        _pct_oversold = sum(1 for r in _pre_rsi_values if r < 30) / len(_pre_rsi_values) if _pre_rsi_values else None
+
+        market_regime = self._detect_market_regime(
+            nifty_price, nifty_200dma,
+            avg_market_rsi=_avg_market_rsi,
+            pct_stocks_oversold=_pct_oversold,
+        )
+
         out: list[dict] = []
         for row in rows:
             symbol = str(row.get("symbol") or "")
@@ -3819,7 +4024,24 @@ class DiscoverStockScraper(BaseScraper):
             quality_cap = self._apply_quality_gates(row)
 
             # ── 6-Layer weighted total ──
-            layer_weights = _SECTOR_LAYER_WEIGHTS.get(sector, _SECTOR_LAYER_WEIGHTS["DEFAULT"])
+            layer_weights = dict(_SECTOR_LAYER_WEIGHTS.get(sector, _SECTOR_LAYER_WEIGHTS["DEFAULT"]))
+
+            # R4: Regime-adaptive weight adjustments
+            if market_regime == "crisis":
+                layer_weights["risk"] = layer_weights.get("risk", 0.05) + 0.10
+                layer_weights["momentum"] = max(layer_weights.get("momentum", 0.0) - 0.05, 0.0)
+                layer_weights["growth"] = max(layer_weights.get("growth", 0.20) - 0.05, 0.05)
+            elif market_regime == "bear":
+                layer_weights["risk"] = layer_weights.get("risk", 0.05) + 0.07
+                layer_weights["momentum"] = max(layer_weights.get("momentum", 0.0) - 0.03, 0.0)
+            elif market_regime == "correction":
+                layer_weights["risk"] = layer_weights.get("risk", 0.05) + 0.04
+                layer_weights["quality"] = layer_weights.get("quality", 0.30) + 0.02
+            elif market_regime == "recovery":
+                layer_weights["valuation"] = layer_weights.get("valuation", 0.25) + 0.03
+                layer_weights["quality"] = layer_weights.get("quality", 0.30) + 0.02
+            elif market_regime == "bull":
+                layer_weights["risk"] = max(layer_weights.get("risk", 0.05) - 0.03, 0.02)
 
             scores_map: dict[str, float | None] = {
                 "quality": quality_score,
@@ -3838,8 +4060,8 @@ class DiscoverStockScraper(BaseScraper):
                 if scores_map.get(k) is not None:
                     available_weights[k] = w
                 elif k == "growth":
-                    scores_map[k] = 25.0
-                    growth_score = 25.0
+                    scores_map[k] = 40.0   # R2D: neutral default (was 25)
+                    growth_score = 40.0
                     available_weights[k] = w
                 elif k == "quality" and metrics_used > 0:
                     available_weights[k] = w
@@ -3860,9 +4082,10 @@ class DiscoverStockScraper(BaseScraper):
             # Only dampen the quality component, not the entire weighted score.
             # Previous approach blended entire total toward momentum/liquidity,
             # which destroyed stocks with strong non-quality components.
+            # R2A: Reduced penalty multiplier (was 3.0)
+            quality_penalty = 0.0
             if metrics_used > 0 and metrics_used < 4:
-                quality_penalty = (4 - metrics_used) * 3.0  # 3-9 points off
-                total = total - quality_penalty
+                quality_penalty = (4 - metrics_used) * 2.0  # 2-6 points off
 
             source_status = str(row.get("source_status") or "limited").strip().lower()
             if metrics_used == 0 and source_status == "primary":
@@ -3873,7 +4096,9 @@ class DiscoverStockScraper(BaseScraper):
             elif source_status == "limited":
                 status_penalty = 12.0
 
-            score = round(self._clamp(total - status_penalty), 2)
+            # R2B: Take max of penalties, not sum
+            total_penalty = max(quality_penalty, status_penalty)
+            score = round(self._clamp(total - total_penalty), 2)
 
             # ── Confidence caps ──
             data_quality = "full"
@@ -3883,11 +4108,12 @@ class DiscoverStockScraper(BaseScraper):
             if valuation_score is not None:
                 total_data_metrics += 1
 
+            # R2C: Raised data quality caps (was 65/75)
             if total_data_metrics == 0:
-                score = min(score, 65.0)
+                score = min(score, 70.0)
                 data_quality = "limited"
             elif total_data_metrics <= 2:
-                score = min(score, 75.0)
+                score = min(score, 82.0)   # R2C: was 75
                 data_quality = "partial"
             elif total_data_metrics <= 4:
                 data_quality = "partial"
@@ -3954,14 +4180,16 @@ class DiscoverStockScraper(BaseScraper):
             # ── Append trend & breakout tags to tags_v2 ──
             _trend_explanations = {
                 "aligned": "Fundamental and technical signals agree — both point in the same direction, increasing conviction in the current trend.",
+                "aligned_bullish": "Fundamental and technical signals are aligned bullish — both score and technicals are positive, providing strong conviction for upside.",
+                "aligned_bearish": "Fundamental and technical signals are aligned bearish — both are weak, confirming downside risk from multiple angles.",
                 "divergent": "Mixed signals between fundamentals and technicals — no clear directional edge from either side. Proceed with caution.",
                 "conflicting": "Fundamental and technical signals disagree — the stock looks different depending on whether you focus on financials or price action. One side may be leading.",
             }
             _breakout_explanations = {
                 "breakout": "The stock has broken above its 52-week high with strong volume — a bullish signal that often leads to further upside as new buyers enter.",
-                "approaching_breakout": "The stock is within 3% of its 52-week high. A close above this level with volume confirmation could trigger a breakout into new highs.",
+                "approaching_breakout": "The stock is within striking distance of its 52-week high. A close above this level with volume confirmation could trigger a breakout into new highs.",
                 "breakdown": "The stock has broken below its 52-week low with elevated volume — a bearish signal indicating selling pressure and potential for further downside.",
-                "approaching_breakdown": "The stock is within 3% of its 52-week low. A break below this level could trigger panic selling and further price decline.",
+                "approaching_breakdown": "The stock is nearing its 52-week low. A break below this level could trigger panic selling and further price decline.",
                 "resistance": "The stock is near its 52-week high but lacking volume to push through. The previous high is acting as a ceiling — watch for either a breakout or rejection.",
                 "support": "The stock is near its 52-week low but holding above it. This level is acting as a floor — a bounce here could signal a reversal, while a break below is bearish.",
             }
@@ -3970,14 +4198,116 @@ class DiscoverStockScraper(BaseScraper):
                 "breakdown": "negative", "approaching_breakdown": "negative",
                 "resistance": "neutral", "support": "neutral",
             }
+            _trend_severity = {
+                "aligned": "positive", "aligned_bullish": "positive",
+                "aligned_bearish": "negative", "divergent": "neutral",
+                "conflicting": "negative",
+            }
             if trend_alignment and trend_alignment in _trend_explanations:
-                _ta_label = f"Trend: {trend_alignment.capitalize()}"
-                _ta_sev = "positive" if trend_alignment == "aligned" else ("negative" if trend_alignment == "conflicting" else "neutral")
-                tags_v2.append({"tag": _ta_label, "category": "trend", "severity": _ta_sev, "priority": 5, "explanation": _trend_explanations[trend_alignment]})
+                _ta_label = f"Trend: {trend_alignment.replace('_', ' ').title()}"
+                tags_v2.append({"tag": _ta_label, "category": "trend", "severity": _trend_severity.get(trend_alignment, "neutral"), "priority": 5, "explanation": _trend_explanations[trend_alignment]})
             if breakout_signal != "none" and breakout_signal in _breakout_explanations:
                 _bs_label = breakout_signal.replace("_", " ").title()
                 tags_v2.append({"tag": _bs_label, "category": "trend", "severity": _breakout_severity.get(breakout_signal, "neutral"), "priority": 5, "explanation": _breakout_explanations[breakout_signal]})
 
+            # ── R9: Entry/exit signal + risk-reward ──
+            ee_signal = self._compute_entry_exit_signal(
+                tech_details, score, tech_score, market_regime,
+            )
+
+            # ── R9: 3 Core Tags (Signal, Risk-Reward, Regime) ──
+            # Tag 1: Signal (merges RSI + MACD + breakout into one)
+            _ee_sig = ee_signal.get("entry_exit_signal", "hold")
+            _signal_parts: list[str] = []
+            _rsi_v = tech_details.get("rsi_14")
+            if _rsi_v is not None:
+                if _rsi_v < 30:
+                    _signal_parts.append(f"RSI at {_rsi_v:.0f} (oversold)")
+                elif _rsi_v > 70:
+                    _signal_parts.append(f"RSI at {_rsi_v:.0f} (overbought)")
+                elif _rsi_v > 55:
+                    _signal_parts.append(f"RSI at {_rsi_v:.0f} (bullish)")
+                elif _rsi_v < 40:
+                    _signal_parts.append(f"RSI at {_rsi_v:.0f} (weak)")
+                else:
+                    _signal_parts.append(f"RSI at {_rsi_v:.0f} (neutral)")
+            _macd_v = tech_details.get("macd")
+            _macd_s = tech_details.get("macd_signal")
+            if _macd_v is not None and _macd_s is not None:
+                if _macd_v > _macd_s and _macd_v > 0:
+                    _signal_parts.append("strong bullish MACD")
+                elif _macd_v > _macd_s:
+                    _signal_parts.append("bullish MACD crossover (recovery starting)")
+                elif _macd_v > 0:
+                    _signal_parts.append("MACD weakening from positive territory")
+                else:
+                    _signal_parts.append("bearish MACD")
+            _bs = tech_details.get("breakout_signal", "none")
+            if _bs == "breakout":
+                _signal_parts.append("confirmed 52W breakout with volume")
+            elif _bs == "approaching_breakout":
+                _signal_parts.append("approaching 52W high")
+            elif _bs == "breakdown":
+                _signal_parts.append("52W breakdown with selling pressure")
+            elif _bs == "approaching_breakdown":
+                _signal_parts.append("approaching 52W low — breakdown risk")
+            elif _bs == "support":
+                _signal_parts.append("near 52W support zone")
+            _entry_ct = ee_signal.get("entry_signals", 0)
+            _exit_ct = ee_signal.get("exit_signals", 0)
+            _indicator_total = _entry_ct + _exit_ct
+            _indicator_summary = (
+                f"{_entry_ct} of {_indicator_total} indicators aligned {'bullish' if _entry_ct > _exit_ct else 'bearish'}"
+                if _indicator_total > 0 else ""
+            )
+            _sig_action = {"entry": "entry", "exit": "exit"}.get(_ee_sig, "hold — no clear directional edge")
+            _signal_explanation_parts = [
+                " and ".join(_signal_parts) if _signal_parts else "Limited technical data",
+                f"suggest a potential {_sig_action}",
+            ]
+            if _indicator_summary:
+                _signal_explanation_parts.append(_indicator_summary)
+            _ee_severities = {"entry": "positive", "exit": "negative", "hold": "neutral"}
+            tags_v2.append({
+                "tag": f"Signal: {_ee_sig.title()}", "category": "trend",
+                "severity": _ee_severities.get(_ee_sig, "neutral"), "priority": 2,
+                "explanation": ". ".join(_signal_explanation_parts) + ".",
+            })
+
+            # Tag 2: Risk-Reward
+            _rr_tag = ee_signal.get("risk_reward_tag", "neutral")
+            _rr_ratio = ee_signal.get("risk_reward_ratio")
+            _rr_severities = {"favorable": "positive", "balanced": "neutral", "unfavorable": "negative", "poor": "negative"}
+            if _rr_tag != "neutral" and _rr_ratio is not None:
+                _rr_explanations = {
+                    "favorable": f"Risk-reward ratio of {_rr_ratio:.1f}:1 is favorable — potential upside significantly exceeds downside based on 52-week positioning. Good entry zone if fundamentals confirm.",
+                    "balanced": f"Risk-reward ratio of {_rr_ratio:.1f}:1 is balanced — upside and downside roughly proportional. Position sizing should reflect moderate conviction.",
+                    "unfavorable": f"Risk-reward ratio of {_rr_ratio:.1f}:1 is unfavorable — downside exceeds upside from current levels. Consider waiting for a better entry point.",
+                    "poor": f"Risk-reward ratio of {_rr_ratio:.1f}:1 is poor — stock is closer to 52W high than low, limited upside with significant downside risk.",
+                }
+                tags_v2.append({
+                    "tag": f"Risk-Reward: {_rr_tag.title()}", "category": "risk",
+                    "severity": _rr_severities.get(_rr_tag, "neutral"), "priority": 3,
+                    "explanation": _rr_explanations.get(_rr_tag, ""),
+                })
+
+            # Tag 3: Market Regime
+            _regime_explanations = {
+                "bull": "Broad market is in a bullish regime (Nifty above 200-DMA with healthy breadth). Risk appetite is high — momentum strategies and growth stocks tend to outperform.",
+                "neutral": "Market regime is neutral — no strong directional bias. Stock-picking and quality factors matter more than broad market direction.",
+                "correction": "Market is in a correction phase (3-8% below 200-DMA). Volatility is elevated but a full bear hasn't materialized. Focus on quality names near support levels.",
+                "bear": "Market is in a bear regime (significantly below 200-DMA with weak breadth). Defensive positioning, cash preservation, and quality-over-momentum are critical.",
+                "crisis": "Market is in crisis mode (deep below 200-DMA with widespread selling). Extreme caution warranted — only highest-quality names with strong balance sheets merit fresh entry.",
+                "recovery": "Market shows early recovery signs (below 200-DMA but momentum improving). Early-stage opportunities may emerge in quality names that were oversold during the downturn.",
+            }
+            _regime_severities = {"bull": "positive", "neutral": "neutral", "correction": "negative", "bear": "negative", "crisis": "negative", "recovery": "positive"}
+            tags_v2.append({
+                "tag": f"Regime: {market_regime.title()}", "category": "trend",
+                "severity": _regime_severities.get(market_regime, "neutral"), "priority": 1,
+                "explanation": _regime_explanations.get(market_regime, ""),
+            })
+
+            # ── Action tag (R3: with regime + risk-reward) ──
             action_tag, action_tag_reasoning = self._compute_action_tag(
                 score, tech_score,
                 quality_score, momentum,
@@ -3989,6 +4319,8 @@ class DiscoverStockScraper(BaseScraper):
                 risk_sub=risk_score,
                 tech_details=tech_details,
                 breakout_signal=breakout_signal,
+                market_regime=market_regime,
+                risk_reward_tag=ee_signal.get("risk_reward_tag", "neutral"),
             )
 
             enriched = {
@@ -4014,6 +4346,9 @@ class DiscoverStockScraper(BaseScraper):
                 "score_confidence": score_confidence,
                 "trend_alignment": trend_alignment,
                 "breakout_signal": breakout_signal,
+                "entry_exit_signal": ee_signal.get("entry_exit_signal"),
+                "risk_reward_ratio": ee_signal.get("risk_reward_ratio"),
+                "risk_reward_tag": ee_signal.get("risk_reward_tag"),
                 "score_breakdown": {
                     "quality": round(quality_score, 2),
                     "valuation": round(valuation_score, 2) if valuation_score is not None else None,
@@ -4028,6 +4363,9 @@ class DiscoverStockScraper(BaseScraper):
                     "score_confidence": score_confidence,
                     "trend_alignment": trend_alignment,
                     "breakout_signal": breakout_signal,
+                    "entry_exit_signal": ee_signal.get("entry_exit_signal"),
+                    "risk_reward_ratio": ee_signal.get("risk_reward_ratio"),
+                    "risk_reward_tag": ee_signal.get("risk_reward_tag"),
                     "52w_position": pos_52w_by_sym.get(symbol),
                     "combined_signal": round((momentum + liquidity) / 2.0, 2),
                     "quality_coverage": f"{metrics_used}/5",

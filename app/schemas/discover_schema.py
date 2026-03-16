@@ -32,15 +32,18 @@ class DiscoverStockScoreBreakdown(BaseModel):
     action_tag: str | None = None
     action_tag_reasoning: str | None = None
     score_confidence: Literal["high", "medium", "low"] | None = None
-    trend_alignment: Literal["aligned", "divergent", "conflicting"] | None = None
+    trend_alignment: Literal["aligned", "aligned_bullish", "aligned_bearish", "divergent", "conflicting"] | None = None
     breakout_signal: Literal["breakout", "approaching_breakout", "breakdown", "approaching_breakdown", "resistance", "support", "none"] | None = None
+    entry_exit_signal: Literal["entry", "hold", "exit"] | None = None
+    risk_reward_ratio: float | None = None
+    risk_reward_tag: Literal["favorable", "balanced", "unfavorable", "poor", "neutral"] | None = None
     combined_signal: float
     position_52w: float | None = Field(None, alias="52w_position")
     quality_coverage: str | None = None
     data_quality: str | None = None
     sector_percentile: float | None = None
     lynch_classification: str | None = None
-    market_regime: str | None = None
+    market_regime: Literal["bull", "neutral", "correction", "bear", "crisis", "recovery"] | None = None
     peg_ratio: float | None = None
     sector_data_coverage_pct: float | None = None
     why_narrative: str | None = None
@@ -144,8 +147,11 @@ class DiscoverStockItemResponse(BaseModel):
     action_tag: str | None = None
     action_tag_reasoning: str | None = None
     score_confidence: Literal["high", "medium", "low"] | None = None
-    trend_alignment: Literal["aligned", "divergent", "conflicting"] | None = None
+    trend_alignment: Literal["aligned", "aligned_bullish", "aligned_bearish", "divergent", "conflicting"] | None = None
     breakout_signal: Literal["breakout", "approaching_breakout", "breakdown", "approaching_breakdown", "resistance", "support", "none"] | None = None
+    entry_exit_signal: Literal["entry", "hold", "exit"] | None = None
+    risk_reward_ratio: float | None = None
+    risk_reward_tag: Literal["favorable", "balanced", "unfavorable", "poor", "neutral"] | None = None
     score_breakdown: DiscoverStockScoreBreakdown
     tags: list[TagV2Response] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)

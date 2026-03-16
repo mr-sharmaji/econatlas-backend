@@ -569,3 +569,10 @@ ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS action_tag_reasoni
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS score_confidence TEXT;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS trend_alignment TEXT;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS breakout_signal TEXT;
+
+-- ================================================================
+-- v1.0: Enhanced technical signals & risk-reward
+-- ================================================================
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS entry_exit_signal TEXT;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS risk_reward_ratio DOUBLE PRECISION;
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS risk_reward_tag TEXT;
