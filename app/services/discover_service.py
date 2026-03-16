@@ -1425,10 +1425,10 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
                 item[jkey] = _json.loads(val)
             except (ValueError, TypeError):
                 item[jkey] = None
-    # Fall back to Screener P&L-derived growth when Yahoo growth is missing
-    if item.get("revenue_growth") is None and item.get("sales_growth_yoy") is not None:
+    # Prefer Screener P&L-derived growth (from actual Indian filings) over Yahoo
+    if item.get("sales_growth_yoy") is not None:
         item["revenue_growth"] = item["sales_growth_yoy"]
-    if item.get("earnings_growth") is None and item.get("profit_growth_yoy") is not None:
+    if item.get("profit_growth_yoy") is not None:
         item["earnings_growth"] = item["profit_growth_yoy"]
     item["why_ranked"] = _stock_why_ranked(item, sector_stats)
     item["metric_insights"] = _generate_metric_insights(item, sector_stats)
