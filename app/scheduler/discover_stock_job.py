@@ -266,25 +266,27 @@ _SECTOR_VALUATION_WEIGHTS: dict[str, dict[str, float]] = {
 
 # Sub-metric weights within Growth layer, per sector
 _SECTOR_GROWTH_WEIGHTS: dict[str, dict[str, float]] = {
-    "DEFAULT":      {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.25, "compounding_bonus": 0.15},
-    "Financials":   {"revenue_cagr": 0.20, "profit_cagr": 0.35, "consistency": 0.30, "compounding_bonus": 0.15},
-    "IT":           {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.20, "compounding_bonus": 0.20},
-    "Healthcare":   {"revenue_cagr": 0.30, "profit_cagr": 0.25, "consistency": 0.25, "compounding_bonus": 0.20},
-    "Real Estate":  {"revenue_cagr": 0.25, "profit_cagr": 0.30, "consistency": 0.35, "compounding_bonus": 0.10},
-    "Industrials":  {"revenue_cagr": 0.25, "profit_cagr": 0.25, "consistency": 0.35, "compounding_bonus": 0.15},
-    "FMCG":         {"revenue_cagr": 0.35, "profit_cagr": 0.25, "consistency": 0.30, "compounding_bonus": 0.10},
-    "Auto":         {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.20, "compounding_bonus": 0.20},
-    "Utilities":    {"revenue_cagr": 0.20, "profit_cagr": 0.25, "consistency": 0.40, "compounding_bonus": 0.15},
-    "Energy":       {"revenue_cagr": 0.25, "profit_cagr": 0.30, "consistency": 0.30, "compounding_bonus": 0.15},
-    "Materials":    {"revenue_cagr": 0.25, "profit_cagr": 0.30, "consistency": 0.30, "compounding_bonus": 0.15},
-    "Chemicals":    {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.20, "compounding_bonus": 0.20},
-    "Telecom":      {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.25, "compounding_bonus": 0.15},
-    "Consumer Discretionary": {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.25, "compounding_bonus": 0.15},
-    "Textiles":     {"revenue_cagr": 0.30, "profit_cagr": 0.25, "consistency": 0.30, "compounding_bonus": 0.15},
-    "Services":     {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.25, "compounding_bonus": 0.15},
-    "Media & Entertainment": {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.20, "compounding_bonus": 0.20},
-    "Diversified":  {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.25, "compounding_bonus": 0.15},
-    "Commodities":  {"revenue_cagr": 0.25, "profit_cagr": 0.25, "consistency": 0.30, "compounding_bonus": 0.20},
+    # R9: Reduced consistency weight (was 25-40%) to prevent slow growers
+    # from scoring 75+ on growth. Revenue/profit CAGR carry most of the signal.
+    "DEFAULT":      {"revenue_cagr": 0.35, "profit_cagr": 0.35, "consistency": 0.15, "compounding_bonus": 0.15},
+    "Financials":   {"revenue_cagr": 0.25, "profit_cagr": 0.40, "consistency": 0.20, "compounding_bonus": 0.15},
+    "IT":           {"revenue_cagr": 0.35, "profit_cagr": 0.30, "consistency": 0.15, "compounding_bonus": 0.20},
+    "Healthcare":   {"revenue_cagr": 0.35, "profit_cagr": 0.30, "consistency": 0.15, "compounding_bonus": 0.20},
+    "Real Estate":  {"revenue_cagr": 0.30, "profit_cagr": 0.35, "consistency": 0.20, "compounding_bonus": 0.15},
+    "Industrials":  {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.20, "compounding_bonus": 0.20},
+    "FMCG":         {"revenue_cagr": 0.40, "profit_cagr": 0.30, "consistency": 0.15, "compounding_bonus": 0.15},
+    "Auto":         {"revenue_cagr": 0.35, "profit_cagr": 0.30, "consistency": 0.15, "compounding_bonus": 0.20},
+    "Utilities":    {"revenue_cagr": 0.25, "profit_cagr": 0.30, "consistency": 0.25, "compounding_bonus": 0.20},
+    "Energy":       {"revenue_cagr": 0.30, "profit_cagr": 0.35, "consistency": 0.15, "compounding_bonus": 0.20},
+    "Materials":    {"revenue_cagr": 0.30, "profit_cagr": 0.35, "consistency": 0.15, "compounding_bonus": 0.20},
+    "Chemicals":    {"revenue_cagr": 0.35, "profit_cagr": 0.30, "consistency": 0.15, "compounding_bonus": 0.20},
+    "Telecom":      {"revenue_cagr": 0.35, "profit_cagr": 0.30, "consistency": 0.15, "compounding_bonus": 0.20},
+    "Consumer Discretionary": {"revenue_cagr": 0.35, "profit_cagr": 0.30, "consistency": 0.15, "compounding_bonus": 0.20},
+    "Textiles":     {"revenue_cagr": 0.35, "profit_cagr": 0.30, "consistency": 0.15, "compounding_bonus": 0.20},
+    "Services":     {"revenue_cagr": 0.35, "profit_cagr": 0.30, "consistency": 0.15, "compounding_bonus": 0.20},
+    "Media & Entertainment": {"revenue_cagr": 0.35, "profit_cagr": 0.30, "consistency": 0.15, "compounding_bonus": 0.20},
+    "Diversified":  {"revenue_cagr": 0.35, "profit_cagr": 0.30, "consistency": 0.15, "compounding_bonus": 0.20},
+    "Commodities":  {"revenue_cagr": 0.30, "profit_cagr": 0.30, "consistency": 0.15, "compounding_bonus": 0.25},
 }
 
 # Cyclical sectors (for Lynch classification and scoring adjustments)
@@ -1975,14 +1977,21 @@ class DiscoverStockScraper(BaseScraper):
         ind = str(row.get("industry") or "").strip()
         medians = sector_medians.get(sector, {})
 
-        # PEG ratio
+        # PEG ratio — blend recent + historical growth to avoid penalizing
+        # stocks in temporary earnings troughs (cyclical dips, one-off quarters).
+        # Lynch intended PEG to reflect normalized growth expectations.
         earnings_growth = row.get("earnings_growth")
         eg_cagr = row.get("_hist_profit_growth_3y_cagr")
         growth_rate = None
-        if earnings_growth is not None and earnings_growth > 0:
-            growth_rate = earnings_growth * 100
-        elif eg_cagr is not None and eg_cagr > 0:
-            growth_rate = eg_cagr * 100
+        yoy_rate = earnings_growth * 100 if earnings_growth is not None and earnings_growth > 0 else None
+        cagr_rate = eg_cagr * 100 if eg_cagr is not None and eg_cagr > 0 else None
+        if yoy_rate is not None and cagr_rate is not None:
+            # Blend: weight CAGR more heavily since PEG measures normalized growth
+            growth_rate = 0.4 * yoy_rate + 0.6 * cagr_rate
+        elif cagr_rate is not None:
+            growth_rate = cagr_rate
+        elif yoy_rate is not None:
+            growth_rate = yoy_rate
 
         if pe_val is not None and pe_val > 0 and growth_rate is not None:
             peg_ratio = pe_val / max(growth_rate, 5.0)
@@ -2096,17 +2105,28 @@ class DiscoverStockScraper(BaseScraper):
             elif rev_cagr_5y > 0.10 and profit_cagr_5y > 0.10:
                 parts["compounding_bonus"] = 70.0
 
-        # Current-period deterioration penalty: if YoY revenue AND earnings
-        # are both negative, cap growth score — historical CAGR shouldn't mask
-        # a company that's currently shrinking.
+        # R9: Growth deceleration penalty — if current growth is significantly
+        # below historical CAGR, the company is decelerating. Historical CAGR
+        # shouldn't mask a company that's losing momentum.
         yoy_rev_cur = row.get("revenue_growth")
         yoy_earn_cur = row.get("earnings_growth")
         current_decline_cap: float | None = None
+        decel_penalty = 0.0
         if yoy_rev_cur is not None and yoy_earn_cur is not None:
             if yoy_rev_cur < -0.20 and yoy_earn_cur < -0.20:
                 current_decline_cap = 35.0   # severe decline
             elif yoy_rev_cur < 0 and yoy_earn_cur < 0:
                 current_decline_cap = 55.0   # both negative
+            else:
+                # Deceleration: current growth < half of 3Y CAGR
+                rev_cagr_3y = csg_3y / 100.0 if csg_3y is not None else None
+                prof_cagr_3y = row.get("_hist_profit_growth_3y_cagr")
+                if rev_cagr_3y is not None and rev_cagr_3y > 0.10:
+                    if yoy_rev_cur < rev_cagr_3y * 0.5:
+                        decel_penalty += 8.0
+                if prof_cagr_3y is not None and prof_cagr_3y > 0.10:
+                    if yoy_earn_cur is not None and yoy_earn_cur < prof_cagr_3y * 0.5:
+                        decel_penalty += 7.0
 
         if parts:
             w = _SECTOR_GROWTH_WEIGHTS.get(sector, _SECTOR_GROWTH_WEIGHTS["DEFAULT"])
@@ -2114,6 +2134,8 @@ class DiscoverStockScraper(BaseScraper):
             score = sum(parts[k] * w.get(k, 0.10) for k in parts) / tw
             if current_decline_cap is not None:
                 score = min(score, current_decline_cap)
+            if decel_penalty > 0:
+                score = max(score - decel_penalty, 20.0)
             return round(score, 2), parts
 
         # No fundamental growth data available — return None instead of
@@ -2248,13 +2270,28 @@ class DiscoverStockScraper(BaseScraper):
         score = sum(parts[k] * weights.get(k, 0.10) for k in parts) / total_w
         return round(score, 2), parts
 
+    # Industries where negative OCF/FCF is structural (lending model)
+    _LENDING_INDUSTRIES = frozenset({
+        "Non Banking Financial Company (NBFC)",
+        "Private Sector Bank",
+        "Public Sector Bank",
+        "Other Bank",
+        "Housing Finance Company",
+        "Microfinance Institutions",
+        "Financial Institution",
+    })
+
     def _apply_quality_gates(self, row: dict) -> float | None:
         """Hard score caps for structural red flags. Returns max cap or None."""
         caps: list[float] = []
+        industry = str(row.get("industry") or "").strip()
+        is_lending = industry in self._LENDING_INDUSTRIES
 
         # Negative FCF for 3+ consecutive years
+        # Skip for lending businesses — their FCF is structurally negative
+        # when growing their loan book.
         fcf_streak = row.get("_hist_negative_fcf_streak", 0)
-        if fcf_streak >= 3:
+        if fcf_streak >= 3 and not is_lending:
             caps.append(40.0)
 
         # ROE < 5% for 3+ years
@@ -2268,14 +2305,22 @@ class DiscoverStockScraper(BaseScraper):
             caps.append(30.0)
 
         # Negative EPS + negative OCF → hard cap at 35
+        # Skip OCF check for lending businesses
         eps = row.get("eps")
         ocf = row.get("cash_from_operations") or row.get("operating_cash_flow")
-        if eps is not None and eps < 0 and ocf is not None and ocf < 0:
-            caps.append(35.0)
+        if eps is not None and eps < 0:
+            if not is_lending and ocf is not None and ocf < 0:
+                caps.append(35.0)
 
         # Negative EPS alone (loss-making) → cap at 55
         if eps is not None and eps < 0:
             caps.append(55.0)
+
+        # Marginal profitability gate: ROE < 5% with tiny EPS
+        # Prevents micro-cap turnarounds with revenue spikes from scoring high
+        roe = row.get("roe")
+        if roe is not None and roe < 5 and eps is not None and 0 < eps < 1.0:
+            caps.append(50.0)
 
         return min(caps) if caps else None
 
@@ -2962,13 +3007,18 @@ class DiscoverStockScraper(BaseScraper):
         return "divergent"
 
     @staticmethod
-    def _compute_score_confidence(
+    def _compute_signal_alignment(
         score: float,
         tech_score: float | None,
         data_quality: str,
         metrics_used: int,
     ) -> str:
-        """R8: Relaxed confidence thresholds for better distribution (~15-20% high, ~60% medium, ~20% low)."""
+        """Measure fundamental-technical agreement (not data quality).
+
+        'high' = fundamentals and technicals agree (both strong or both weak)
+        'medium' = partial agreement
+        'low' = significant divergence between fundamental score and chart
+        """
         if data_quality == "limited":
             return "low"
         if tech_score is None:
@@ -4125,12 +4175,25 @@ class DiscoverStockScraper(BaseScraper):
                 )
 
             # ── OCF earnings quality gate ──
+            # Skip for lending businesses where negative OCF is structural
             paper_profits = False
             _ocf = row.get("cash_from_operations") or row.get("operating_cash_flow")
             _eps_val = row.get("eps")
-            if _ocf is not None and _eps_val is not None and _eps_val > 0 and _ocf < 0:
-                quality_score = min(quality_score, 45.0)
-                paper_profits = True
+            _industry = str(row.get("industry") or "").strip()
+            _is_lending = _industry in self._LENDING_INDUSTRIES
+            if _ocf is not None and _eps_val is not None and _eps_val > 0 and _ocf < 0 and not _is_lending:
+                # For inventory-heavy sectors, use OCF/Net Profit ratio vs sector norm
+                # instead of binary positive/negative check
+                _net_profit = row.get("_net_profit_latest")
+                if _net_profit and _net_profit > 0:
+                    ocf_ratio = _ocf / _net_profit
+                    sector_ocf_threshold = -0.5 if sector in ("Consumer Discretionary", "Auto", "Industrials", "Commodities") else -0.2
+                    if ocf_ratio < sector_ocf_threshold:
+                        quality_score = min(quality_score, 45.0)
+                        paper_profits = True
+                else:
+                    quality_score = min(quality_score, 45.0)
+                    paper_profits = True
 
             # ── Volatility (lower std_dev -> higher score = stability premium) ──
             vd = vol_data.get(symbol)
@@ -4319,7 +4382,7 @@ class DiscoverStockScraper(BaseScraper):
             # ── Breakout signal, trend alignment, confidence ──
             breakout_signal = tech_details.get("breakout_signal", "none")
             trend_alignment = self._compute_trend_alignment(score, tech_score)
-            score_confidence = self._compute_score_confidence(
+            score_confidence = self._compute_signal_alignment(
                 score, tech_score, data_quality, metrics_used,
             )
 
