@@ -580,15 +580,16 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
     div_yield = _f("dividend_yield")
     if div_yield is not None:
         avg_dy = _sf("avg_div_yield")
-        payout = _f("payout_ratio")
-        if div_yield > 2 and (payout is None or payout < 80):
+        payout_raw = _f("payout_ratio")
+        payout_pct = (payout_raw * 100 if payout_raw is not None and abs(payout_raw) < 1 else payout_raw) if payout_raw is not None else None
+        if div_yield > 2 and (payout_pct is None or payout_pct < 80):
             ctx = f"At {div_yield:.2f}%"
             if avg_dy and avg_dy > 0:
                 ctx += f" vs the {sector} average of {avg_dy:.2f}%"
             ctx += ", this stock offers above-average income."
             sust = ""
-            if payout is not None:
-                sust = f" With a payout ratio of {payout:.0f}%, the dividend looks sustainable."
+            if payout_pct is not None:
+                sust = f" With a payout ratio of {payout_pct:.1f}%, the dividend looks sustainable."
             _add("dividend_yield",
                  f"Dividend yield tells you how much annual income you earn per rupee invested. "
                  f"{ctx}{sust}",
@@ -1004,24 +1005,25 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
                  f"Adequate for operations but not a standout war chest.",
                  "neutral")
 
-    payout = _f("payout_ratio")
-    if payout is not None:
-        if 20 <= payout <= 60:
+    payout_val = _f("payout_ratio")
+    if payout_val is not None:
+        po_pct = payout_val * 100 if abs(payout_val) < 1 else payout_val
+        if 20 <= po_pct <= 60:
             _add("payout_ratio",
                  f"Payout ratio is the percentage of profits distributed as dividends to shareholders. "
-                 f"At {payout:.0f}%, the company strikes a good balance — returning cash to shareholders while retaining enough for reinvestment. "
+                 f"At {po_pct:.1f}%, the company strikes a good balance — returning cash to shareholders while retaining enough for reinvestment. "
                  f"A sustainable level that signals confidence in future earnings.",
                  "positive")
-        elif payout > 80:
+        elif po_pct > 80:
             _add("payout_ratio",
                  f"Payout ratio is the percentage of profits distributed as dividends to shareholders. "
-                 f"At {payout:.0f}%, the company is distributing most of its earnings. "
+                 f"At {po_pct:.1f}%, the company is distributing most of its earnings. "
                  f"This may not be sustainable if profits dip — leaves very little room for reinvestment or debt reduction.",
                  "warning")
-        elif payout > 0:
+        elif po_pct > 0:
             _add("payout_ratio",
                  f"Payout ratio is the percentage of profits distributed as dividends to shareholders. "
-                 f"At {payout:.0f}%, the company distributes a modest share of profits. "
+                 f"At {po_pct:.1f}%, the company distributes a modest share of profits. "
                  f"Most earnings are being retained for growth and operations.",
                  "neutral")
 
@@ -2686,7 +2688,7 @@ async def get_discover_home_data() -> dict:
             "dividend_aristocrats",
             "Dividend Aristocrats",
             "Reliable dividend payers with sustainable payouts",
-            f"{_base_where} AND COALESCE(dividend_yield, 0) > 1.5 AND score >= 40 AND (payout_ratio IS NULL OR payout_ratio < 80)",
+            f"{_base_where} AND COALESCE(dividend_yield, 0) > 1.5 AND score >= 40 AND (payout_ratio IS NULL OR payout_ratio < 0.80)",
             "COALESCE(dividend_yield, 0) DESC",
             8,
         ),
