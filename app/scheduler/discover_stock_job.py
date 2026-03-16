@@ -3099,27 +3099,27 @@ class DiscoverStockScraper(BaseScraper):
             return "neutral"
         deviation = (nifty_price - nifty_200dma) / nifty_200dma
 
-        # Count bear/bull signals
+        # Count bear/bull signals (calibrated to Nifty 200DMA history since 2007)
         bear_signals = 0
-        if deviation < -0.03:
+        if deviation < -0.05:
             bear_signals += 1
-        if deviation < -0.08:
-            bear_signals += 1  # deep bear
-        if avg_market_rsi is not None and avg_market_rsi < 40:
+        if deviation < -0.15:
+            bear_signals += 1  # deep bear (p5 = -13.8%)
+        if avg_market_rsi is not None and avg_market_rsi < 35:
             bear_signals += 1
-        if pct_stocks_oversold is not None and pct_stocks_oversold > 0.15:
+        if pct_stocks_oversold is not None and pct_stocks_oversold > 0.25:
             bear_signals += 1
 
         bull_signals = 0
-        if deviation > 0.03:
+        if deviation > 0.05:
             bull_signals += 1
-        if deviation > 0.08:
+        if deviation > 0.12:
             bull_signals += 1
-        if avg_market_rsi is not None and avg_market_rsi > 55:
+        if avg_market_rsi is not None and avg_market_rsi > 60:
             bull_signals += 1
 
-        # Recovery: below 200DMA but RSI improving (> 45 despite negative deviation)
-        if deviation < -0.03 and avg_market_rsi is not None and avg_market_rsi > 45:
+        # Recovery: below 200DMA but RSI improving (> 48 despite negative deviation)
+        if deviation < -0.05 and avg_market_rsi is not None and avg_market_rsi > 48:
             if pct_stocks_oversold is not None and pct_stocks_oversold < 0.10:
                 return "recovery"
 
@@ -3127,7 +3127,7 @@ class DiscoverStockScraper(BaseScraper):
             return "crisis"
         if bear_signals >= 2:
             return "bear"
-        if deviation < -0.03:
+        if deviation < -0.05:
             return "correction"
         if bull_signals >= 2:
             return "bull"
