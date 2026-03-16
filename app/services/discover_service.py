@@ -1597,7 +1597,7 @@ async def get_discover_home_data() -> dict:
             "undervalued_quality",
             "Undervalued Quality",
             "High-scoring stocks trading below fair value",
-            f"{_base_where} AND score >= 60 AND score_valuation >= 60",
+            f"{_base_where} AND score >= 50 AND COALESCE(score_valuation, 0) >= 50",
             "score DESC",
             8,
         ),
@@ -1605,15 +1605,15 @@ async def get_discover_home_data() -> dict:
             "momentum_building",
             "Momentum Building",
             "Gaining strength with solid fundamentals",
-            f"{_base_where} AND technical_score >= 55 AND score >= 50 AND percent_change_3m > 0",
-            "technical_score DESC",
+            f"{_base_where} AND COALESCE(technical_score, 0) >= 45 AND score >= 45 AND COALESCE(percent_change_3m, 0) > 0",
+            "COALESCE(technical_score, 0) DESC",
             8,
         ),
         (
             "turnaround_candidates",
             "Turnaround Candidates",
             "Quality stocks beaten down in the correction",
-            f"{_base_where} AND score >= 50 AND percent_change_3m < -15 AND score_quality >= 55",
+            f"{_base_where} AND score >= 45 AND COALESCE(percent_change_3m, 0) < -10 AND COALESCE(score_quality, 0) >= 45",
             "score DESC",
             8,
         ),
@@ -1621,7 +1621,7 @@ async def get_discover_home_data() -> dict:
             "oversold_quality",
             "Oversold Quality",
             "Strong companies at technically oversold levels",
-            f"{_base_where} AND rsi_14 < 35 AND score >= 55",
+            f"{_base_where} AND COALESCE(rsi_14, 50) < 40 AND score >= 45",
             "score DESC",
             8,
         ),
@@ -1629,42 +1629,74 @@ async def get_discover_home_data() -> dict:
             "high_growth_smallcap",
             "High Growth Small Caps",
             "Small companies growing revenue rapidly",
-            f"{_base_where} AND market_cap < 5000 AND compounded_sales_growth_3y > 20 AND score >= 50",
-            "compounded_sales_growth_3y DESC",
+            f"{_base_where} AND market_cap < 10000 AND COALESCE(compounded_sales_growth_3y, 0) > 15 AND score >= 40",
+            "COALESCE(compounded_sales_growth_3y, 0) DESC",
             8,
         ),
         (
             "fii_favorites",
             "FII Favorites",
             "Stocks where foreign institutions are increasing stakes",
-            f"{_base_where} AND fii_holding > 15 AND fii_holding_change > 0 AND score >= 50",
-            "fii_holding_change DESC",
+            f"{_base_where} AND COALESCE(fii_holding, 0) > 10 AND COALESCE(fii_holding_change, 0) > 0 AND score >= 40",
+            "COALESCE(fii_holding_change, 0) DESC",
             8,
         ),
     ]
 
     _theme_sections = [
         (
+            "consistent_growers",
+            "Consistent Growers",
+            "Steady revenue and profit growth over multiple years",
+            f"{_base_where} AND COALESCE(compounded_sales_growth_3y, 0) > 10 AND COALESCE(compounded_profit_growth_3y, 0) > 10 AND score >= 45",
+            "score DESC",
+            8,
+        ),
+        (
+            "rising_stars",
+            "Rising Stars",
+            "Mid & small caps breaking out with strong momentum",
+            f"{_base_where} AND market_cap < 20000 AND COALESCE(percent_change_3m, 0) > 10 AND score >= 45",
+            "COALESCE(percent_change_3m, 0) DESC",
+            8,
+        ),
+        (
+            "bluechip_bargains",
+            "Blue Chip Bargains",
+            "Large caps dipping — potential buying opportunities",
+            f"{_base_where} AND market_cap > 50000 AND COALESCE(percent_change_3m, 0) < -5 AND score >= 45",
+            "score DESC",
+            8,
+        ),
+        (
+            "low_volatility",
+            "Low Volatility",
+            "Stable stocks with low beta — defensive picks",
+            f"{_base_where} AND COALESCE(beta, 1) < 0.8 AND COALESCE(beta, 1) > 0 AND score >= 45",
+            "score DESC",
+            8,
+        ),
+        (
             "debt_free_compounders",
             "Debt-Free Compounders",
             "Zero-debt companies with strong returns on equity",
-            f"{_base_where} AND (debt_to_equity IS NULL OR debt_to_equity = 0) AND roe > 15 AND score >= 55",
-            "roe DESC",
+            f"{_base_where} AND (debt_to_equity IS NULL OR debt_to_equity = 0) AND COALESCE(roe, 0) > 12 AND score >= 45",
+            "COALESCE(roe, 0) DESC",
             8,
         ),
         (
             "dividend_aristocrats",
             "Dividend Aristocrats",
             "Reliable dividend payers with sustainable payouts",
-            f"{_base_where} AND dividend_yield > 2 AND score >= 50 AND (payout_ratio IS NULL OR payout_ratio < 80)",
-            "dividend_yield DESC",
+            f"{_base_where} AND COALESCE(dividend_yield, 0) > 1.5 AND score >= 40 AND (payout_ratio IS NULL OR payout_ratio < 80)",
+            "COALESCE(dividend_yield, 0) DESC",
             8,
         ),
         (
             "cash_rich",
             "Cash Rich Companies",
             "Generating strong operating cash flow",
-            f"{_base_where} AND free_cash_flow > 0 AND cash_from_operations > 0 AND score >= 50",
+            f"{_base_where} AND COALESCE(free_cash_flow, 0) > 0 AND COALESCE(cash_from_operations, 0) > 0 AND score >= 40",
             "score DESC",
             8,
         ),
@@ -1672,7 +1704,7 @@ async def get_discover_home_data() -> dict:
             "sector_leaders",
             "Sector Leaders",
             "Top-ranked stocks in their sectors",
-            f"{_base_where} AND sector_percentile >= 90 AND score >= 55",
+            f"{_base_where} AND COALESCE(sector_percentile, 0) >= 85 AND score >= 45",
             "score DESC",
             8,
         ),
@@ -1694,8 +1726,8 @@ async def get_discover_home_data() -> dict:
         *[_fetch_section(*s) for s in all_section_defs]
     )
     stock_sections = [s for s in stock_section_results if s is not None]
-    # Cap at 6 sections
-    stock_sections = stock_sections[:6]
+    # Cap at 8 sections
+    stock_sections = stock_sections[:8]
 
     # ── Mutual Fund sections ──
     _mf_cols = "scheme_code, scheme_name, category, sub_category, score, returns_1y, rolling_return_consistency"
@@ -1758,14 +1790,24 @@ async def get_discover_home_data() -> dict:
     mf_sections = [s for s in mf_section_results if s is not None]
 
     quick_categories = [
-        {"name": "Quality Stocks", "segment": "stocks", "preset": "quality"},
-        {"name": "Value Stocks", "segment": "stocks", "preset": "value"},
+        # Stocks
+        {"name": "Quality", "segment": "stocks", "preset": "quality"},
+        {"name": "Value", "segment": "stocks", "preset": "value"},
+        {"name": "Momentum", "segment": "stocks", "preset": "momentum"},
+        {"name": "Dividend", "segment": "stocks", "preset": "dividend"},
+        {"name": "Large Cap", "segment": "stocks", "preset": "large-cap"},
+        {"name": "Small Cap", "segment": "stocks", "preset": "small-cap"},
+        {"name": "Mid Cap", "segment": "stocks", "preset": "mid-cap"},
         {"name": "High Volume", "segment": "stocks", "preset": "high-volume"},
-        {"name": "Large Cap Funds", "segment": "mutual_funds", "preset": "large-cap"},
-        {"name": "Flexi Cap Funds", "segment": "mutual_funds", "preset": "flexi-cap"},
-        {"name": "Low Risk Funds", "segment": "mutual_funds", "preset": "low-risk"},
-        {"name": "Index Funds", "segment": "mutual_funds", "preset": "index"},
-        {"name": "Debt Funds", "segment": "mutual_funds", "preset": "debt"},
+        # Mutual Funds
+        {"name": "Large Cap", "segment": "mutual_funds", "preset": "large-cap"},
+        {"name": "Flexi Cap", "segment": "mutual_funds", "preset": "flexi-cap"},
+        {"name": "Mid Cap", "segment": "mutual_funds", "preset": "mid-cap"},
+        {"name": "Small Cap", "segment": "mutual_funds", "preset": "small-cap"},
+        {"name": "ELSS", "segment": "mutual_funds", "preset": "elss"},
+        {"name": "Index", "segment": "mutual_funds", "preset": "index"},
+        {"name": "Debt", "segment": "mutual_funds", "preset": "debt"},
+        {"name": "Low Risk", "segment": "mutual_funds", "preset": "low-risk"},
     ]
 
     result = {
