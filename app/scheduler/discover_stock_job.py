@@ -3079,7 +3079,7 @@ class DiscoverStockScraper(BaseScraper):
             tags.append({"tag": "Strong Conviction", "category": "conviction", "severity": "positive", "priority": 4,
                          "explanation": " ".join(lines)})
 
-        elif score >= 55 and ts >= 45 and ts > score * 0.7:
+        elif score >= 50 and ts >= 45 and ts > score * 0.7:
             lines = [f"Technicals ({ts:.0f}) are catching up with decent fundamentals ({score:.0f}){fund_str}."]
             if dma_str:
                 lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
@@ -3108,7 +3108,7 @@ class DiscoverStockScraper(BaseScraper):
             tags.append({"tag": "Technicals Lagging", "category": "conviction", "severity": "cautionary", "priority": 4,
                          "explanation": " ".join(lines)})
 
-        elif score < 42 and ts >= 55:
+        elif score < 45 and ts >= 50:
             lines = [f"Technical momentum is strong ({ts:.0f}) but fundamentals are weak ({score:.0f}){fund_str}."]
             if dma_str:
                 lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
@@ -3119,8 +3119,8 @@ class DiscoverStockScraper(BaseScraper):
             tags.append({"tag": "Momentum Without Fundamentals", "category": "conviction", "severity": "negative", "priority": 4,
                          "explanation": " ".join(lines)})
 
-        elif score < 45 and ts < 40:
-            lines = [f"Both fundamental ({score:.0f}) and technical ({ts:.0f}) scores are weak{fund_str}."]
+        elif score < 50:
+            lines = [f"Fundamental score ({score:.0f}) is below average{fund_str}, with technicals at {ts:.0f}."]
             if dma_str:
                 lines.append(f"Price ₹{price:,.0f} is {dma_str}.")
             if rsi_str:
@@ -3128,7 +3128,7 @@ class DiscoverStockScraper(BaseScraper):
             macd_ctx = _macd_str()
             if macd_ctx:
                 lines.append(macd_ctx)
-            lines.append("No clear edge from either side — limited conviction in any direction. Avoid new positions until a clear catalyst emerges.")
+            lines.append("Limited conviction — fundamentals don't support a strong view in either direction. Wait for a clear improvement in business metrics before considering.")
             tags.append({"tag": "Weak Conviction", "category": "conviction", "severity": "negative", "priority": 4,
                          "explanation": " ".join(lines)})
 
