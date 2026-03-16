@@ -6,9 +6,8 @@ from fastapi import APIRouter, HTTPException, Query, Response
 
 from app.schemas.discover_schema import (
     ComparisonDimension,
-    DiscoverHomeMutualFundItem,
     DiscoverHomeResponse,
-    DiscoverHomeStockItem,
+    DiscoverHomeSection,
     DiscoverMutualFundItemResponse,
     DiscoverMutualFundListResponse,
     DiscoverOverviewResponse,
@@ -109,26 +108,10 @@ async def get_discover_home(response: Response) -> DiscoverHomeResponse:
     response.headers["Cache-Control"] = "public, max-age=1800"
     try:
         payload = await discover_service.get_discover_home_data()
-        # Fetch market mood in parallel
-        mood_data = await discover_service.get_market_mood()
-        mood_dist = mood_data.get("score_distribution")
-        market_mood = MarketMood(
-            avg_score=mood_data.get("avg_score"),
-            score_distribution=ScoreDistribution(**mood_dist) if mood_dist else None,
-            summary=mood_data.get("summary"),
-        ) if mood_data.get("avg_score") is not None else None
         return DiscoverHomeResponse(
-            top_stocks=[DiscoverHomeStockItem(**s) for s in payload.get("top_stocks", [])],
-            top_equity_funds=[DiscoverHomeMutualFundItem(**m) for m in payload.get("top_equity_funds", [])],
-            top_debt_funds=[DiscoverHomeMutualFundItem(**m) for m in payload.get("top_debt_funds", [])],
-            trending_this_week=[DiscoverHomeStockItem(**s) for s in payload.get("trending_this_week", [])],
-            sector_champions=[DiscoverHomeStockItem(**s) for s in payload.get("sector_champions", [])],
-            gainers=[DiscoverHomeStockItem(**s) for s in payload.get("gainers", [])],
-            gainers_3m=[DiscoverHomeStockItem(**s) for s in payload.get("gainers_3m", [])],
-            losers=[DiscoverHomeStockItem(**s) for s in payload.get("losers", [])],
-            losers_3m=[DiscoverHomeStockItem(**s) for s in payload.get("losers_3m", [])],
+            stock_sections=[DiscoverHomeSection(**s) for s in payload.get("stock_sections", [])],
+            mf_sections=[DiscoverHomeSection(**s) for s in payload.get("mf_sections", [])],
             quick_categories=[QuickCategory(**c) for c in payload.get("quick_categories", [])],
-            market_mood=market_mood,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

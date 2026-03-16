@@ -1563,6 +1563,7 @@ _HOME_CACHE_TTL_SECONDS: int = 30 * 60  # 30 minutes
 
 
 async def get_discover_home_data() -> dict:
+    import asyncio
     import time as _time
 
     global _home_cache, _home_cache_until
@@ -1573,167 +1574,188 @@ async def get_discover_home_data() -> dict:
     pool = await get_pool()
 
     _stock_cols = (
-        "symbol, display_name, sector, last_price, percent_change, "
-        "percent_change_3m, percent_change_1w, score, score_quality, score_growth, "
-        "high_52w, low_52w, market_cap"
+        "symbol, display_name, sector, industry, last_price, percent_change, "
+        "percent_change_3m, percent_change_1w, percent_change_1y, "
+        "score, score_quality, score_growth, score_valuation, "
+        "high_52w, low_52w, market_cap, pe_ratio, roe, "
+        "debt_to_equity, dividend_yield, action_tag"
     )
 
-    def _decorate_stock_list(rows) -> list[dict]:
-        out = []
-        for r in rows:
-            d = record_to_dict(r)
-            out.append(d)
-        return out
-
-    # Top stocks by score (sector-diversified) — highest quality stocks
-    top_stock_rows = await pool.fetch(
-        f"""
-        SELECT * FROM (
-            SELECT {_stock_cols},
-                   ROW_NUMBER() OVER (PARTITION BY COALESCE(sector, 'Other') ORDER BY score DESC) AS rn
-            FROM {STOCK_TABLE}
-            WHERE market = 'IN' AND source_status IN ('primary', 'fallback') AND score >= 50
-        ) sub WHERE rn <= 2
-        ORDER BY score DESC LIMIT 8
-        """
-    )
-    top_stocks = _decorate_stock_list(top_stock_rows)
-
-    # Top equity mutual funds by score
-    top_equity_mf_rows = await pool.fetch(
-        f"""
-        SELECT * FROM (
-            SELECT scheme_code, scheme_name, category, sub_category, score, returns_1y,
-                   ROW_NUMBER() OVER (PARTITION BY COALESCE(sub_category, category, 'Other') ORDER BY score DESC) AS rn
-            FROM {MF_TABLE}
-            WHERE plan_type = 'direct'
-              AND (returns_1y IS NOT NULL OR returns_3y IS NOT NULL)
-              AND score >= 50
-              AND LOWER(COALESCE(category, '')) NOT LIKE '%%debt%%'
-              AND LOWER(COALESCE(category, '')) NOT LIKE '%%liquid%%'
-              AND LOWER(COALESCE(category, '')) NOT LIKE '%%gilt%%'
-              AND LOWER(COALESCE(category, '')) NOT LIKE '%%money market%%'
-              AND LOWER(COALESCE(category, '')) NOT LIKE '%%hybrid%%'
-        ) sub WHERE rn <= 2
-        ORDER BY score DESC LIMIT 5
-        """
-    )
-    top_equity_funds = []
-    for r in top_equity_mf_rows:
-        d = record_to_dict(r)
-        d["quality_badges"] = _compute_quality_badges(d)
-        d["display_name"] = _clean_mf_display_name(d.get("scheme_name", ""))
-        top_equity_funds.append(d)
-
-    # Top debt mutual funds by score
-    top_debt_mf_rows = await pool.fetch(
-        f"""
-        SELECT * FROM (
-            SELECT scheme_code, scheme_name, category, sub_category, score, returns_1y,
-                   ROW_NUMBER() OVER (PARTITION BY COALESCE(sub_category, category, 'Other') ORDER BY score DESC) AS rn
-            FROM {MF_TABLE}
-            WHERE plan_type = 'direct'
-              AND (returns_1y IS NOT NULL OR returns_3y IS NOT NULL)
-              AND score >= 40
-              AND (
-                  LOWER(COALESCE(category, '')) LIKE '%%debt%%'
-                  OR LOWER(COALESCE(category, '')) LIKE '%%liquid%%'
-                  OR LOWER(COALESCE(category, '')) LIKE '%%gilt%%'
-                  OR LOWER(COALESCE(category, '')) LIKE '%%money market%%'
-                  OR LOWER(COALESCE(sub_category, '')) LIKE '%%corporate bond%%'
-                  OR LOWER(COALESCE(sub_category, '')) LIKE '%%overnight%%'
-              )
-        ) sub WHERE rn <= 2
-        ORDER BY score DESC LIMIT 5
-        """
-    )
-    top_debt_funds = []
-    for r in top_debt_mf_rows:
-        d = record_to_dict(r)
-        d["quality_badges"] = _compute_quality_badges(d)
-        d["display_name"] = _clean_mf_display_name(d.get("scheme_name", ""))
-        top_debt_funds.append(d)
-
-    # Trending this week: stocks with highest traded_value
-    trending_rows = await pool.fetch(
-        f"""
-        SELECT {_stock_cols}
+    _base_where = f"""
         FROM {STOCK_TABLE}
         WHERE market = 'IN'
-        ORDER BY traded_value DESC NULLS LAST, symbol ASC
-        LIMIT 8
-        """
-    )
-    trending_this_week = _decorate_stock_list(trending_rows)
+          AND source_status IN ('primary', 'fallback')
+    """
 
-    # Top gainers (daily)
-    gainer_rows = await pool.fetch(
-        f"""
-        SELECT {_stock_cols}
-        FROM {STOCK_TABLE}
-        WHERE market = 'IN' AND percent_change IS NOT NULL AND percent_change > 0
-        ORDER BY percent_change DESC
-        LIMIT 8
-        """
-    )
-    gainers = _decorate_stock_list(gainer_rows)
+    def _to_items(rows) -> list[dict]:
+        return [record_to_dict(r) for r in rows]
 
-    # Top gainers (3M)
-    gainer_3m_rows = await pool.fetch(
-        f"""
-        SELECT {_stock_cols}
-        FROM {STOCK_TABLE}
-        WHERE market = 'IN' AND percent_change_3m IS NOT NULL AND percent_change_3m > 0
-        ORDER BY percent_change_3m DESC
-        LIMIT 8
-        """
-    )
-    gainers_3m = _decorate_stock_list(gainer_3m_rows)
+    # ── Signal & Theme section definitions ──
+    # Each: (key, title, subtitle, where_clause, order, limit)
+    _signal_sections = [
+        (
+            "undervalued_quality",
+            "Undervalued Quality",
+            "High-scoring stocks trading below fair value",
+            f"{_base_where} AND score >= 60 AND score_valuation >= 60",
+            "score DESC",
+            8,
+        ),
+        (
+            "momentum_building",
+            "Momentum Building",
+            "Gaining strength with solid fundamentals",
+            f"{_base_where} AND technical_score >= 55 AND score >= 50 AND percent_change_3m > 0",
+            "technical_score DESC",
+            8,
+        ),
+        (
+            "turnaround_candidates",
+            "Turnaround Candidates",
+            "Quality stocks beaten down in the correction",
+            f"{_base_where} AND score >= 50 AND percent_change_3m < -15 AND score_quality >= 55",
+            "score DESC",
+            8,
+        ),
+        (
+            "oversold_quality",
+            "Oversold Quality",
+            "Strong companies at technically oversold levels",
+            f"{_base_where} AND rsi_14 < 35 AND score >= 55",
+            "score DESC",
+            8,
+        ),
+        (
+            "high_growth_smallcap",
+            "High Growth Small Caps",
+            "Small companies growing revenue rapidly",
+            f"{_base_where} AND market_cap < 5000 AND compounded_sales_growth_3y > 20 AND score >= 50",
+            "compounded_sales_growth_3y DESC",
+            8,
+        ),
+        (
+            "fii_favorites",
+            "FII Favorites",
+            "Stocks where foreign institutions are increasing stakes",
+            f"{_base_where} AND fii_holding > 15 AND fii_holding_change > 0 AND score >= 50",
+            "fii_holding_change DESC",
+            8,
+        ),
+    ]
 
-    # Top losers (daily)
-    loser_rows = await pool.fetch(
-        f"""
-        SELECT {_stock_cols}
-        FROM {STOCK_TABLE}
-        WHERE market = 'IN' AND percent_change IS NOT NULL AND percent_change < 0
-        ORDER BY percent_change ASC
-        LIMIT 8
-        """
-    )
-    losers = _decorate_stock_list(loser_rows)
+    _theme_sections = [
+        (
+            "debt_free_compounders",
+            "Debt-Free Compounders",
+            "Zero-debt companies with strong returns on equity",
+            f"{_base_where} AND (debt_to_equity IS NULL OR debt_to_equity = 0) AND roe > 15 AND score >= 55",
+            "roe DESC",
+            8,
+        ),
+        (
+            "dividend_aristocrats",
+            "Dividend Aristocrats",
+            "Reliable dividend payers with sustainable payouts",
+            f"{_base_where} AND dividend_yield > 2 AND score >= 50 AND (payout_ratio IS NULL OR payout_ratio < 80)",
+            "dividend_yield DESC",
+            8,
+        ),
+        (
+            "cash_rich",
+            "Cash Rich Companies",
+            "Generating strong operating cash flow",
+            f"{_base_where} AND free_cash_flow > 0 AND cash_from_operations > 0 AND score >= 50",
+            "score DESC",
+            8,
+        ),
+        (
+            "sector_leaders",
+            "Sector Leaders",
+            "Top-ranked stocks in their sectors",
+            f"{_base_where} AND sector_percentile >= 90 AND score >= 55",
+            "score DESC",
+            8,
+        ),
+    ]
 
-    # Top losers (3M)
-    loser_3m_rows = await pool.fetch(
-        f"""
-        SELECT {_stock_cols}
-        FROM {STOCK_TABLE}
-        WHERE market = 'IN' AND percent_change_3m IS NOT NULL AND percent_change_3m < 0
-        ORDER BY percent_change_3m ASC
-        LIMIT 8
-        """
-    )
-    losers_3m = _decorate_stock_list(loser_3m_rows)
+    all_section_defs = _signal_sections + _theme_sections
 
-    # Sector Champions: top 1 stock from each sector by 70% score + 30% 3M change
-    champion_rows = await pool.fetch(
-        f"""
-        SELECT * FROM (
-            SELECT {_stock_cols},
-                   ROW_NUMBER() OVER (
-                       PARTITION BY sector
-                       ORDER BY (score * 0.70 + COALESCE(percent_change_3m, 0) * 0.30) DESC
-                   ) AS rn
-            FROM {STOCK_TABLE}
-            WHERE market = 'IN'
-              AND sector IS NOT NULL
-              AND sector != 'Other'
-              AND source_status IN ('primary', 'fallback')
-              AND score >= 30
-        ) sub WHERE rn = 1
-        ORDER BY (score * 0.70 + COALESCE(percent_change_3m, 0) * 0.30) DESC
-        """
+    # Run all section queries in parallel
+    async def _fetch_section(key, title, subtitle, where, order, limit):
+        rows = await pool.fetch(
+            f"SELECT {_stock_cols} {where} ORDER BY {order} LIMIT {limit}"
+        )
+        items = _to_items(rows)
+        if len(items) < 3:
+            return None  # skip sections with too few results
+        return {"key": key, "title": title, "subtitle": subtitle, "items": items}
+
+    stock_section_results = await asyncio.gather(
+        *[_fetch_section(*s) for s in all_section_defs]
     )
-    sector_champions = _decorate_stock_list(champion_rows)
+    stock_sections = [s for s in stock_section_results if s is not None]
+    # Cap at 6 sections
+    stock_sections = stock_sections[:6]
+
+    # ── Mutual Fund sections ──
+    _mf_cols = "scheme_code, scheme_name, category, sub_category, score, returns_1y, rolling_return_consistency"
+
+    async def _fetch_mf_section(key, title, subtitle, where_extra, order, limit):
+        rows = await pool.fetch(
+            f"""
+            SELECT * FROM (
+                SELECT {_mf_cols},
+                       ROW_NUMBER() OVER (PARTITION BY COALESCE(sub_category, category, 'Other') ORDER BY score DESC) AS rn
+                FROM {MF_TABLE}
+                WHERE plan_type = 'direct'
+                  AND (returns_1y IS NOT NULL OR returns_3y IS NOT NULL)
+                  {where_extra}
+            ) sub WHERE rn <= 2
+            ORDER BY {order} LIMIT {limit}
+            """
+        )
+        items = []
+        for r in rows:
+            d = record_to_dict(r)
+            d["quality_badges"] = _compute_quality_badges(d)
+            d["display_name"] = _clean_mf_display_name(d.get("scheme_name", ""))
+            items.append(d)
+        if len(items) < 3:
+            return None
+        return {"key": key, "title": title, "subtitle": subtitle, "items": items}
+
+    mf_section_results = await asyncio.gather(
+        _fetch_mf_section(
+            "top_equity", "Top Equity Funds", "Best performing equity mutual funds",
+            """AND score >= 50
+               AND LOWER(COALESCE(category, '')) NOT LIKE '%%debt%%'
+               AND LOWER(COALESCE(category, '')) NOT LIKE '%%liquid%%'
+               AND LOWER(COALESCE(category, '')) NOT LIKE '%%gilt%%'
+               AND LOWER(COALESCE(category, '')) NOT LIKE '%%money market%%'
+               AND LOWER(COALESCE(category, '')) NOT LIKE '%%hybrid%%'""",
+            "score DESC", 8,
+        ),
+        _fetch_mf_section(
+            "top_debt", "Top Debt Funds", "Stable returns from fixed income",
+            """AND score >= 40
+               AND (
+                   LOWER(COALESCE(category, '')) LIKE '%%debt%%'
+                   OR LOWER(COALESCE(category, '')) LIKE '%%liquid%%'
+                   OR LOWER(COALESCE(category, '')) LIKE '%%gilt%%'
+                   OR LOWER(COALESCE(category, '')) LIKE '%%money market%%'
+                   OR LOWER(COALESCE(sub_category, '')) LIKE '%%corporate bond%%'
+                   OR LOWER(COALESCE(sub_category, '')) LIKE '%%overnight%%'
+               )""",
+            "score DESC", 8,
+        ),
+        _fetch_mf_section(
+            "consistent_performers", "Consistent Performers",
+            "Funds with steady returns across market cycles",
+            "AND score >= 60 AND rolling_return_consistency IS NOT NULL",
+            "rolling_return_consistency ASC", 8,
+        ),
+    )
+    mf_sections = [s for s in mf_section_results if s is not None]
 
     quick_categories = [
         {"name": "Quality Stocks", "segment": "stocks", "preset": "quality"},
@@ -1747,15 +1769,8 @@ async def get_discover_home_data() -> dict:
     ]
 
     result = {
-        "top_stocks": top_stocks,
-        "top_equity_funds": top_equity_funds,
-        "top_debt_funds": top_debt_funds,
-        "trending_this_week": trending_this_week,
-        "gainers": gainers,
-        "gainers_3m": gainers_3m,
-        "losers": losers,
-        "losers_3m": losers_3m,
-        "sector_champions": sector_champions,
+        "stock_sections": stock_sections,
+        "mf_sections": mf_sections,
         "quick_categories": quick_categories,
     }
 

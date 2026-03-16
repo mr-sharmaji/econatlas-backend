@@ -298,16 +298,24 @@ class DiscoverHomeStockItem(BaseModel):
     symbol: str
     display_name: str
     sector: str | None = None
+    industry: str | None = None
     last_price: float
     percent_change: float | None = None
     percent_change_3m: float | None = None
     percent_change_1w: float | None = None
+    percent_change_1y: float | None = None
     score: float
     score_quality: float | None = None
     score_growth: float | None = None
+    score_valuation: float | None = None
     high_52w: float | None = None
     low_52w: float | None = None
     market_cap: float | None = None
+    pe_ratio: float | None = None
+    roe: float | None = None
+    debt_to_equity: float | None = None
+    dividend_yield: float | None = None
+    action_tag: str | None = None
 
 
 class DiscoverHomeMutualFundItem(BaseModel):
@@ -320,6 +328,13 @@ class DiscoverHomeMutualFundItem(BaseModel):
     quality_badges: list[str] = Field(default_factory=list)
 
 
+class DiscoverHomeSection(BaseModel):
+    key: str
+    title: str
+    subtitle: str
+    items: list[dict] = Field(default_factory=list)
+
+
 class QuickCategory(BaseModel):
     name: str
     segment: Literal["stocks", "mutual_funds"]
@@ -329,17 +344,9 @@ class QuickCategory(BaseModel):
 
 
 class DiscoverHomeResponse(BaseModel):
-    top_stocks: list[DiscoverHomeStockItem] = Field(default_factory=list)
-    top_equity_funds: list[DiscoverHomeMutualFundItem] = Field(default_factory=list)
-    top_debt_funds: list[DiscoverHomeMutualFundItem] = Field(default_factory=list)
-    trending_this_week: list[DiscoverHomeStockItem] = Field(default_factory=list)
-    sector_champions: list[DiscoverHomeStockItem] = Field(default_factory=list)
-    gainers: list[DiscoverHomeStockItem] = Field(default_factory=list)
-    gainers_3m: list[DiscoverHomeStockItem] = Field(default_factory=list)
-    losers: list[DiscoverHomeStockItem] = Field(default_factory=list)
-    losers_3m: list[DiscoverHomeStockItem] = Field(default_factory=list)
+    stock_sections: list[DiscoverHomeSection] = Field(default_factory=list)
+    mf_sections: list[DiscoverHomeSection] = Field(default_factory=list)
     quick_categories: list[QuickCategory] = Field(default_factory=list)
-    market_mood: MarketMood | None = None
 
 
 # --- Chart History ---
