@@ -3092,7 +3092,7 @@ class DiscoverStockScraper(BaseScraper):
             tags.append({"tag": "Improving Setup", "category": "conviction", "severity": "positive", "priority": 4,
                          "explanation": " ".join(lines)})
 
-        elif score >= 58 and ts < 38:
+        elif score >= 55:
             lines = [f"Fundamentals are solid ({score:.0f}){fund_str}, but technicals are weak ({ts:.0f})."]
             if price and dma_str:
                 lines.append(f"Price ₹{price:,.0f} is {dma_str} — still in a downtrend.")
