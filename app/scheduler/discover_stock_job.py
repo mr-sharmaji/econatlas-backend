@@ -4099,6 +4099,28 @@ class DiscoverStockScraper(BaseScraper):
                     row["roe"] = None  # near-zero equity, meaningless
                 elif _roe_raw < -100:
                     row["roe"] = -100.0
+            # Fallback: compute revenue/earnings growth from pl_annual when Yahoo returns null
+            _pl = row.get("pl_annual")
+            if isinstance(_pl, str):
+                try:
+                    _pl = json.loads(_pl)
+                except Exception:
+                    _pl = None
+            if isinstance(_pl, dict):
+                _sales = _pl.get("sales") or []
+                _np = _pl.get("net_profit") or []
+                # Need at least 2 annual values (excl. TTM which is last if len > len(years))
+                _years = _pl.get("years") or []
+                _n_annual = len(_years)
+                if row.get("revenue_growth") is None and len(_sales) >= 2 and _n_annual >= 2:
+                    _prev, _cur = _sales[_n_annual - 2], _sales[_n_annual - 1]
+                    if _prev and _prev > 0:
+                        row["revenue_growth"] = (_cur - _prev) / _prev
+                if row.get("earnings_growth") is None and len(_np) >= 2 and _n_annual >= 2:
+                    _prev, _cur = _np[_n_annual - 2], _np[_n_annual - 1]
+                    if _prev and _prev > 0:
+                        row["earnings_growth"] = (_cur - _prev) / _prev
+
             # Revenue growth: winsorize extreme values
             _rg_raw = row.get("revenue_growth")
             if _rg_raw is not None and isinstance(_rg_raw, (int, float)):
