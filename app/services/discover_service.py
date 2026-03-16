@@ -1425,11 +1425,26 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
                 item[jkey] = _json.loads(val)
             except (ValueError, TypeError):
                 item[jkey] = None
-    # Prefer Screener P&L-derived growth (from actual Indian filings) over Yahoo
+    # Growth priority: Screener pre-computed → Yahoo → compute from P&L arrays
     if item.get("sales_growth_yoy") is not None:
         item["revenue_growth"] = item["sales_growth_yoy"]
     if item.get("profit_growth_yoy") is not None:
         item["earnings_growth"] = item["profit_growth_yoy"]
+    # Last resort: compute from pl_annual arrays when both sources are null
+    pl = item.get("pl_annual")
+    if isinstance(pl, dict):
+        if item.get("revenue_growth") is None:
+            sales = pl.get("sales") or pl.get("revenue") or []
+            if len(sales) >= 2:
+                prev, curr = sales[-2], sales[-1]
+                if isinstance(prev, (int, float)) and isinstance(curr, (int, float)) and prev > 0:
+                    item["revenue_growth"] = round((curr / prev) - 1, 4)
+        if item.get("earnings_growth") is None:
+            profits = pl.get("net_profit") or []
+            if len(profits) >= 2:
+                prev, curr = profits[-2], profits[-1]
+                if isinstance(prev, (int, float)) and isinstance(curr, (int, float)) and prev > 0:
+                    item["earnings_growth"] = round((curr / prev) - 1, 4)
     item["why_ranked"] = _stock_why_ranked(item, sector_stats)
     item["metric_insights"] = _generate_metric_insights(item, sector_stats)
     return item
