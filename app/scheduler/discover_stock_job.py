@@ -2988,7 +2988,6 @@ class DiscoverStockScraper(BaseScraper):
         return "low"
 
     @staticmethod
-    @staticmethod
     def _generate_context_tags(
         score: float,
         tech_score: float | None,
