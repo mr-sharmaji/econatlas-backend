@@ -42,6 +42,7 @@ _CAT_OWNERSHIP = "ownership"
 _SEV_POSITIVE = "positive"
 _SEV_NEGATIVE = "negative"
 _SEV_NEUTRAL = "neutral"
+_SEV_CAUTIONARY = "cautionary"
 
 # Tags that rely on transient market conditions and should be refreshed
 _TRANSIENT_TAGS = frozenset({
@@ -190,7 +191,7 @@ def generate_stock_tags(
             ))
         else:
             tagged.append(_tag(
-                "Small Cap", _CAT_CLASSIFICATION, _SEV_NEUTRAL, 1,
+                "Small Cap", _CAT_CLASSIFICATION, _SEV_CAUTIONARY, 1,
                 explanation=f"Market cap \u20B9{mcap:,.0f} Cr. Small-cap companies have high growth potential but come with higher risk and volatility. They can be less liquid, meaning it may be harder to buy or sell large quantities.",
             ))
 
@@ -213,9 +214,16 @@ def generate_stock_tags(
         "slow_grower": "A profitable company growing slowly (under 5% revenue growth), or with declining revenue. May pay good dividends. Best suited for income-oriented investors rather than capital appreciation.",
         "speculative": "This company has weak fundamentals \u2014 loss-making, barely profitable (very high P/E or very low ROE), or showing significant deterioration. Speculative stocks can deliver big returns if the business improves, but carry significant risk. Only for risk-tolerant investors.",
     }
+    lynch_severity = {
+        "turnaround": _SEV_CAUTIONARY,
+        "cyclical": _SEV_CAUTIONARY,
+        "speculative": _SEV_NEGATIVE,
+        "slow_grower": _SEV_CAUTIONARY,
+    }
     if lynch_classification in lynch_tag_map:
         tagged.append(_tag(
-            lynch_tag_map[lynch_classification], _CAT_STYLE, _SEV_NEUTRAL, 2,
+            lynch_tag_map[lynch_classification], _CAT_STYLE,
+            lynch_severity.get(lynch_classification, _SEV_NEUTRAL), 2,
             explanation=lynch_explanations.get(lynch_classification, "Peter Lynch classification based on growth profile"),
         ))
 
@@ -367,13 +375,13 @@ def generate_stock_tags(
     transient_exp = _transient_expiry()
     if momentum_score >= 65 and quality_score < 40:
         tagged.append(_tag(
-            "Momentum Without Quality", _CAT_RISK, _SEV_NEGATIVE, 4,
+            "Momentum Without Quality", _CAT_RISK, _SEV_CAUTIONARY, 4,
             explanation="The stock price has strong upward momentum, but the company's fundamentals are weak. This is a warning sign \u2014 the price may be driven by speculation rather than business strength. Such rallies often don't sustain.",
             expires_at=transient_exp,
         ))
     if quality_score >= 65 and momentum_score < 35:
         tagged.append(_tag(
-            "Quality Weak Momentum", _CAT_TREND, _SEV_NEUTRAL, 4,
+            "Quality Weak Momentum", _CAT_TREND, _SEV_CAUTIONARY, 4,
             explanation="The company has strong fundamentals but the stock price hasn't been performing well recently. This can be a buying opportunity if you believe the market will eventually recognize the company's value.",
             expires_at=transient_exp,
         ))
@@ -467,7 +475,7 @@ def generate_stock_tags(
 
     if public is not None and public < 25:
         tagged.append(_tag(
-            "Low Free Float", _CAT_RISK, _SEV_NEGATIVE, 5,
+            "Low Free Float", _CAT_RISK, _SEV_CAUTIONARY, 5,
             explanation=f"Only {public:.1f}% of shares are available for public trading. Low free float means fewer shares in circulation, which can cause exaggerated price movements and make it harder to buy or sell at desired prices.",
         ))
 

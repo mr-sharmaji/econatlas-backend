@@ -3105,7 +3105,7 @@ class DiscoverStockScraper(BaseScraper):
                 lines.append(f"Watch for price to reclaim the 50DMA (₹{ma_50:,.0f}) as a sign of technical recovery.")
             else:
                 lines.append("Wait for technical confirmation before acting — the market hasn't recognized the fundamental strength yet.")
-            tags.append({"tag": "Technicals Lagging", "category": "conviction", "severity": "neutral", "priority": 4,
+            tags.append({"tag": "Technicals Lagging", "category": "conviction", "severity": "cautionary", "priority": 4,
                          "explanation": " ".join(lines)})
 
         elif score < 42 and ts >= 55:
@@ -3191,7 +3191,7 @@ class DiscoverStockScraper(BaseScraper):
             if rsi_str:
                 lines.append(f"{rsi_str}.")
             lines.append(f"Near 52W lows can signal opportunity or trap — watch for support holding near ₹{low_52w:,.0f} and volume pickup as confirmation." if low_52w else "Near 52W lows can signal opportunity or trap. Watch for support and volume pickup as confirmation.")
-            tags.append({"tag": "Near 52W Low", "category": "risk", "severity": "neutral", "priority": 5,
+            tags.append({"tag": "Near 52W Low", "category": "risk", "severity": "cautionary", "priority": 5,
                          "explanation": " ".join(lines)})
 
         elif pos_52w is not None and pos_52w > 0.90 and score >= 60:
@@ -3223,7 +3223,7 @@ class DiscoverStockScraper(BaseScraper):
                 lines.append(f"Stocks like this often lead the recovery when market sentiment shifts. Watch for price to reclaim 50DMA (₹{ma_50:,.0f}) and MACD bullish crossover as early turnaround signals.")
             else:
                 lines.append("Could lead recovery when market turns — fundamentally sound companies in beaten-down markets often rebound first.")
-            tags.append({"tag": "Recovery Candidate", "category": "context", "severity": "neutral", "priority": 6,
+            tags.append({"tag": "Recovery Candidate", "category": "context", "severity": "cautionary", "priority": 6,
                          "explanation": " ".join(lines)})
 
         elif data_quality in ("limited", "partial"):
