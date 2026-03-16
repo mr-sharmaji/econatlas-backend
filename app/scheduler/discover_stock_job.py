@@ -4874,11 +4874,11 @@ async def run_discover_stock_job() -> None:
             if nifty_row:
                 nifty_price = float(nifty_row["price"])
             nifty_200dma_row = await _pool.fetchrow(
-                """SELECT AVG(close) AS dma200
+                """SELECT AVG(price) AS dma200
                    FROM (
-                       SELECT close FROM discover_stock_price_history
-                       WHERE symbol = 'NIFTY 50'
-                       ORDER BY trade_date DESC LIMIT 200
+                       SELECT price FROM market_prices
+                       WHERE asset = 'Nifty 50' AND instrument_type = 'index'
+                       ORDER BY "timestamp" DESC LIMIT 200
                    ) sub"""
             )
             if nifty_200dma_row and nifty_200dma_row["dma200"]:
@@ -5062,11 +5062,11 @@ async def rescore_discover_stocks() -> dict:
         if nifty_row:
             nifty_price = float(nifty_row["price"])
         nifty_200dma_row = await pool.fetchrow(
-            """SELECT AVG(close) AS dma200
+            """SELECT AVG(price) AS dma200
                FROM (
-                   SELECT close FROM discover_stock_price_history
-                   WHERE symbol = 'NIFTY 50'
-                   ORDER BY trade_date DESC LIMIT 200
+                   SELECT price FROM market_prices
+                   WHERE asset = 'Nifty 50' AND instrument_type = 'index'
+                   ORDER BY "timestamp" DESC LIMIT 200
                ) sub"""
         )
         if nifty_200dma_row and nifty_200dma_row["dma200"]:
