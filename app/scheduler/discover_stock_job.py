@@ -2743,9 +2743,8 @@ class DiscoverStockScraper(BaseScraper):
         tech_details: dict | None = None,
         breakout_signal: str = "none",
         market_regime: str = "neutral",
-        risk_reward_tag: str = "neutral",
     ) -> tuple[str, str]:
-        """R3: Regime-adaptive action tag with risk-reward modifier.
+        """R3: Regime-adaptive action tag.
 
         Returns (tag, reasoning).
         """
@@ -2938,19 +2937,6 @@ class DiscoverStockScraper(BaseScraper):
         elif breakout_signal == "approaching_breakdown":
             reason += " Approaching 52W low — monitor for breakdown risk."
 
-        # 6. Risk-Reward modifier (R9)
-        if risk_reward_tag == "poor" and tag in ("Strong Outperformer", "Outperformer", "Accumulate"):
-            _rr_downgrades = {
-                "Strong Outperformer": "Outperformer",
-                "Outperformer": "Accumulate",
-                "Accumulate": "Hold",
-            }
-            old_tag = tag
-            tag = _rr_downgrades[tag]
-            reason += f" Downgraded from {old_tag} due to poor risk-reward positioning."
-        elif risk_reward_tag == "favorable" and tag in ("Neutral", "Hold", "Watchlist"):
-            reason += " Risk-reward positioning is favorable — potential entry opportunity."
-
         return tag, reason
 
     @staticmethod
@@ -3002,83 +2988,71 @@ class DiscoverStockScraper(BaseScraper):
         return "low"
 
     @staticmethod
-    def _compute_entry_exit_signal(
-        tech_details: dict,
+    @staticmethod
+    def _generate_context_tags(
         score: float,
         tech_score: float | None,
-        market_regime: str = "neutral",
-    ) -> dict:
-        """R9: Compute entry/exit signal with risk-reward assessment.
+        quality_score: float,
+        risk_score: float | None,
+        tech_details: dict,
+        data_quality: str,
+        market_regime: str,
+    ) -> list[dict]:
+        """Generate up to 3 contextual tags (conviction + risk + context).
 
-        Returns dict with entry_exit_signal, entry_signals, exit_signals,
-        risk_reward_ratio, risk_reward_tag.
+        Each category picks the first matching tag. Returns list of tag dicts.
         """
+        tags: list[dict] = []
         rsi = tech_details.get("rsi_14")
-        macd_hist = tech_details.get("macd_histogram")
-        breakout = tech_details.get("breakout_signal", "none")
-        dist_high = tech_details.get("dist_to_52w_high_pct")
-        dist_low = tech_details.get("dist_to_52w_low_pct")
+        pos_52w = tech_details.get("52w_position")
+        ts = tech_score or 0.0
 
-        entry_signals = 0
-        exit_signals = 0
+        # ── Conviction (max 1) ──
+        if score >= 65 and ts >= 55:
+            tags.append({"tag": "Strong Conviction", "category": "conviction", "severity": "positive", "priority": 4,
+                         "explanation": f"Both fundamental score ({score:.0f}) and technical score ({ts:.0f}) are strong — high confidence in the current assessment."})
+        elif score >= 55 and ts >= 45 and ts > score * 0.7:
+            tags.append({"tag": "Improving Setup", "category": "conviction", "severity": "positive", "priority": 4,
+                         "explanation": f"Technicals ({ts:.0f}) are catching up with decent fundamentals ({score:.0f}) — the setup is improving."})
+        elif score >= 58 and ts < 38:
+            tags.append({"tag": "Technicals Lagging", "category": "conviction", "severity": "neutral", "priority": 4,
+                         "explanation": f"Good fundamentals ({score:.0f}) but weak technicals ({ts:.0f}). Price hasn't caught up — wait for technical confirmation."})
+        elif score < 42 and ts >= 55:
+            tags.append({"tag": "Momentum Without Fundamentals", "category": "conviction", "severity": "negative", "priority": 4,
+                         "explanation": f"Technical momentum ({ts:.0f}) isn't backed by fundamentals ({score:.0f}). Risk of mean reversion."})
+        elif score < 45 and ts < 40:
+            tags.append({"tag": "Weak Conviction", "category": "conviction", "severity": "negative", "priority": 4,
+                         "explanation": f"Both fundamental ({score:.0f}) and technical ({ts:.0f}) scores are weak — limited conviction in any direction."})
 
-        if rsi is not None:
-            if rsi < 35:
-                entry_signals += 1
-            if rsi > 75:
-                exit_signals += 1
+        # ── Risk-adjusted (max 1) ──
+        if rsi is not None and rsi < 30 and score >= 60:
+            tags.append({"tag": "Oversold Quality", "category": "risk", "severity": "positive", "priority": 5,
+                         "explanation": f"RSI at {rsi:.0f} indicates oversold conditions for a quality stock (score {score:.0f}). Historically, quality names recover from oversold levels."})
+        elif risk_score is not None and risk_score >= 70 and quality_score >= 60:
+            tags.append({"tag": "Low Risk Setup", "category": "risk", "severity": "positive", "priority": 5,
+                         "explanation": f"Low risk profile (risk score {risk_score:.0f}) combined with high quality ({quality_score:.0f}) — defensive characteristics."})
+        elif risk_score is not None and risk_score < 40 and ts >= 55:
+            tags.append({"tag": "High Risk Momentum", "category": "risk", "severity": "negative", "priority": 5,
+                         "explanation": f"Technical momentum exists but risk score is elevated ({risk_score:.0f}). Size positions accordingly."})
+        elif rsi is not None and rsi > 75 and score < 55:
+            tags.append({"tag": "Overbought Warning", "category": "risk", "severity": "negative", "priority": 5,
+                         "explanation": f"RSI at {rsi:.0f} indicates overbought conditions with below-average fundamentals ({score:.0f}). Risk of pullback."})
+        elif pos_52w is not None and pos_52w < 0.10 and score >= 50:
+            tags.append({"tag": "Near 52W Low", "category": "risk", "severity": "neutral", "priority": 5,
+                         "explanation": f"Trading near 52-week low but fundamentals are decent ({score:.0f}). Could be a value opportunity or value trap."})
+        elif pos_52w is not None and pos_52w > 0.90 and score >= 60:
+            tags.append({"tag": "Near 52W High", "category": "risk", "severity": "positive", "priority": 5,
+                         "explanation": f"Near 52-week high backed by strong fundamentals ({score:.0f}). Strength tends to persist in quality stocks."})
 
-        if macd_hist is not None:
-            if macd_hist > 0:
-                entry_signals += 1
-            else:
-                exit_signals += 1
+        # ── Context (max 1) ──
+        if score >= 55 and ts < 35 and market_regime in ("correction", "bear"):
+            tags.append({"tag": "Recovery Candidate", "category": "context", "severity": "neutral", "priority": 6,
+                         "explanation": f"Decent fundamentals ({score:.0f}) in a weak market with depressed technicals ({ts:.0f}). Could lead recovery when market turns."})
+        elif data_quality in ("limited", "partial"):
+            tags.append({"tag": "Data Limited", "category": "context", "severity": "neutral", "priority": 6,
+                         "explanation": f"Scoring based on {data_quality} data — some metrics unavailable. Confidence in assessment is lower."})
 
-        if breakout in ("breakout", "approaching_breakout"):
-            entry_signals += 1
-        if breakout in ("breakdown", "approaching_breakdown"):
-            exit_signals += 1
-
-        # Risk-reward from 52W positioning
-        rr_ratio: float | None = None
-        rr_tag = "neutral"
-        if dist_high is not None and dist_low is not None:
-            reward = max(dist_high, 0.01)
-            risk = max(dist_low, 0.01)
-            rr_ratio = round(reward / risk, 2)
-
-            if rr_ratio >= 2.5:
-                rr_tag = "favorable"
-            elif rr_ratio >= 1.2:
-                rr_tag = "balanced"
-            elif rr_ratio >= 0.5:
-                rr_tag = "unfavorable"
-            else:
-                rr_tag = "poor"
-
-        # Regime adjustment — bias toward caution in bear/crisis
-        if market_regime in ("bear", "crisis"):
-            exit_signals += 1
-
-        net = entry_signals - exit_signals
-        if net >= 2:
-            signal = "entry"
-        elif net == 1 and score >= 50:
-            signal = "entry"
-        elif net <= -2:
-            signal = "exit"
-        elif net == -1 and score < 45:
-            signal = "exit"
-        else:
-            signal = "hold"
-
-        return {
-            "entry_exit_signal": signal,
-            "entry_signals": entry_signals,
-            "exit_signals": exit_signals,
-            "risk_reward_ratio": rr_ratio,
-            "risk_reward_tag": rr_tag,
-        }
+        return tags
 
     @staticmethod
     def _detect_market_regime(
@@ -4210,104 +4184,19 @@ class DiscoverStockScraper(BaseScraper):
                 _bs_label = breakout_signal.replace("_", " ").title()
                 tags_v2.append({"tag": _bs_label, "category": "trend", "severity": _breakout_severity.get(breakout_signal, "neutral"), "priority": 5, "explanation": _breakout_explanations[breakout_signal]})
 
-            # ── R9: Entry/exit signal + risk-reward ──
-            ee_signal = self._compute_entry_exit_signal(
-                tech_details, score, tech_score, market_regime,
+            # ── Context tags (conviction, risk, context) ──
+            context_tags = self._generate_context_tags(
+                score=score,
+                tech_score=tech_score,
+                quality_score=quality_score,
+                risk_score=risk_score,
+                tech_details=tech_details,
+                data_quality=data_quality,
+                market_regime=market_regime,
             )
+            tags_v2.extend(context_tags)
 
-            # ── R9: 3 Core Tags (Signal, Risk-Reward, Regime) ──
-            # Tag 1: Signal (merges RSI + MACD + breakout into one)
-            _ee_sig = ee_signal.get("entry_exit_signal", "hold")
-            _signal_parts: list[str] = []
-            _rsi_v = tech_details.get("rsi_14")
-            if _rsi_v is not None:
-                if _rsi_v < 30:
-                    _signal_parts.append(f"RSI at {_rsi_v:.0f} (oversold)")
-                elif _rsi_v > 70:
-                    _signal_parts.append(f"RSI at {_rsi_v:.0f} (overbought)")
-                elif _rsi_v > 55:
-                    _signal_parts.append(f"RSI at {_rsi_v:.0f} (bullish)")
-                elif _rsi_v < 40:
-                    _signal_parts.append(f"RSI at {_rsi_v:.0f} (weak)")
-                else:
-                    _signal_parts.append(f"RSI at {_rsi_v:.0f} (neutral)")
-            _macd_v = tech_details.get("macd")
-            _macd_s = tech_details.get("macd_signal")
-            if _macd_v is not None and _macd_s is not None:
-                if _macd_v > _macd_s and _macd_v > 0:
-                    _signal_parts.append("strong bullish MACD")
-                elif _macd_v > _macd_s:
-                    _signal_parts.append("bullish MACD crossover (recovery starting)")
-                elif _macd_v > 0:
-                    _signal_parts.append("MACD weakening from positive territory")
-                else:
-                    _signal_parts.append("bearish MACD")
-            _bs = tech_details.get("breakout_signal", "none")
-            if _bs == "breakout":
-                _signal_parts.append("confirmed 52W breakout with volume")
-            elif _bs == "approaching_breakout":
-                _signal_parts.append("approaching 52W high")
-            elif _bs == "breakdown":
-                _signal_parts.append("52W breakdown with selling pressure")
-            elif _bs == "approaching_breakdown":
-                _signal_parts.append("approaching 52W low — breakdown risk")
-            elif _bs == "support":
-                _signal_parts.append("near 52W support zone")
-            _entry_ct = ee_signal.get("entry_signals", 0)
-            _exit_ct = ee_signal.get("exit_signals", 0)
-            _indicator_total = _entry_ct + _exit_ct
-            _indicator_summary = (
-                f"{_entry_ct} of {_indicator_total} indicators aligned {'bullish' if _entry_ct > _exit_ct else 'bearish'}"
-                if _indicator_total > 0 else ""
-            )
-            _sig_action = {"entry": "entry", "exit": "exit"}.get(_ee_sig, "hold — no clear directional edge")
-            _signal_explanation_parts = [
-                " and ".join(_signal_parts) if _signal_parts else "Limited technical data",
-                f"suggest a potential {_sig_action}",
-            ]
-            if _indicator_summary:
-                _signal_explanation_parts.append(_indicator_summary)
-            _ee_severities = {"entry": "positive", "exit": "negative", "hold": "neutral"}
-            tags_v2.append({
-                "tag": f"Signal: {_ee_sig.title()}", "category": "trend",
-                "severity": _ee_severities.get(_ee_sig, "neutral"), "priority": 2,
-                "explanation": ". ".join(_signal_explanation_parts) + ".",
-            })
-
-            # Tag 2: Risk-Reward
-            _rr_tag = ee_signal.get("risk_reward_tag", "neutral")
-            _rr_ratio = ee_signal.get("risk_reward_ratio")
-            _rr_severities = {"favorable": "positive", "balanced": "neutral", "unfavorable": "negative", "poor": "negative"}
-            if _rr_tag != "neutral" and _rr_ratio is not None:
-                _rr_explanations = {
-                    "favorable": f"Risk-reward ratio of {_rr_ratio:.1f}:1 is favorable — potential upside significantly exceeds downside based on 52-week positioning. Good entry zone if fundamentals confirm.",
-                    "balanced": f"Risk-reward ratio of {_rr_ratio:.1f}:1 is balanced — upside and downside roughly proportional. Position sizing should reflect moderate conviction.",
-                    "unfavorable": f"Risk-reward ratio of {_rr_ratio:.1f}:1 is unfavorable — downside exceeds upside from current levels. Consider waiting for a better entry point.",
-                    "poor": f"Risk-reward ratio of {_rr_ratio:.1f}:1 is poor — stock is closer to 52W high than low, limited upside with significant downside risk.",
-                }
-                tags_v2.append({
-                    "tag": f"Risk-Reward: {_rr_tag.title()}", "category": "risk",
-                    "severity": _rr_severities.get(_rr_tag, "neutral"), "priority": 3,
-                    "explanation": _rr_explanations.get(_rr_tag, ""),
-                })
-
-            # Tag 3: Market Regime
-            _regime_explanations = {
-                "bull": "Broad market is in a bullish regime (Nifty above 200-DMA with healthy breadth). Risk appetite is high — momentum strategies and growth stocks tend to outperform.",
-                "neutral": "Market regime is neutral — no strong directional bias. Stock-picking and quality factors matter more than broad market direction.",
-                "correction": "Market is in a correction phase (3-8% below 200-DMA). Volatility is elevated but a full bear hasn't materialized. Focus on quality names near support levels.",
-                "bear": "Market is in a bear regime (significantly below 200-DMA with weak breadth). Defensive positioning, cash preservation, and quality-over-momentum are critical.",
-                "crisis": "Market is in crisis mode (deep below 200-DMA with widespread selling). Extreme caution warranted — only highest-quality names with strong balance sheets merit fresh entry.",
-                "recovery": "Market shows early recovery signs (below 200-DMA but momentum improving). Early-stage opportunities may emerge in quality names that were oversold during the downturn.",
-            }
-            _regime_severities = {"bull": "positive", "neutral": "neutral", "correction": "negative", "bear": "negative", "crisis": "negative", "recovery": "positive"}
-            tags_v2.append({
-                "tag": f"Regime: {market_regime.title()}", "category": "trend",
-                "severity": _regime_severities.get(market_regime, "neutral"), "priority": 1,
-                "explanation": _regime_explanations.get(market_regime, ""),
-            })
-
-            # ── Action tag (R3: with regime + risk-reward) ──
+            # ── Action tag (R3: regime-adaptive) ──
             action_tag, action_tag_reasoning = self._compute_action_tag(
                 score, tech_score,
                 quality_score, momentum,
@@ -4320,7 +4209,6 @@ class DiscoverStockScraper(BaseScraper):
                 tech_details=tech_details,
                 breakout_signal=breakout_signal,
                 market_regime=market_regime,
-                risk_reward_tag=ee_signal.get("risk_reward_tag", "neutral"),
             )
 
             enriched = {
@@ -4346,9 +4234,6 @@ class DiscoverStockScraper(BaseScraper):
                 "score_confidence": score_confidence,
                 "trend_alignment": trend_alignment,
                 "breakout_signal": breakout_signal,
-                "entry_exit_signal": ee_signal.get("entry_exit_signal"),
-                "risk_reward_ratio": ee_signal.get("risk_reward_ratio"),
-                "risk_reward_tag": ee_signal.get("risk_reward_tag"),
                 "score_breakdown": {
                     "quality": round(quality_score, 2),
                     "valuation": round(valuation_score, 2) if valuation_score is not None else None,
@@ -4363,9 +4248,6 @@ class DiscoverStockScraper(BaseScraper):
                     "score_confidence": score_confidence,
                     "trend_alignment": trend_alignment,
                     "breakout_signal": breakout_signal,
-                    "entry_exit_signal": ee_signal.get("entry_exit_signal"),
-                    "risk_reward_ratio": ee_signal.get("risk_reward_ratio"),
-                    "risk_reward_tag": ee_signal.get("risk_reward_tag"),
                     "52w_position": pos_52w_by_sym.get(symbol),
                     "combined_signal": round((momentum + liquidity) / 2.0, 2),
                     "quality_coverage": f"{metrics_used}/5",
@@ -4390,9 +4272,24 @@ class DiscoverStockScraper(BaseScraper):
             sec = str(enriched.get("sector") or "Other")
             sec_scores = sector_scores.get(sec, [])
             if sec_scores:
-                enriched["sector_percentile"] = round(
+                pctile = round(
                     self._percentile_rank(sec_scores, enriched["score"]), 1
                 )
+                enriched["sector_percentile"] = pctile
+                # Sector context tags
+                tv2 = enriched.get("tags_v2", [])
+                if pctile >= 90:
+                    tv2.append({
+                        "tag": "Sector Outperformer", "category": "context",
+                        "severity": "positive", "priority": 4,
+                        "explanation": f"Ranks in the top 10% of {sec} by overall score. Consistently outperforming sector peers across fundamentals and technicals.",
+                    })
+                elif pctile <= 10:
+                    tv2.append({
+                        "tag": "Sector Laggard", "category": "context",
+                        "severity": "negative", "priority": 4,
+                        "explanation": f"Ranks in the bottom 10% of {sec} by overall score. Underperforming most sector peers — review fundamentals before considering.",
+                    })
 
         # Add sector_leader tag to top 3 scorers in each sector
         sector_leaders: set[str] = set()

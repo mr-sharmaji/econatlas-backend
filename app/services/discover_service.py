@@ -260,18 +260,6 @@ def _stock_breakdown_payload(row: dict) -> dict:
     if bs is not None:
         result["breakout_signal"] = str(bs)
 
-    ees = stored_sb.get("entry_exit_signal") or row.get("entry_exit_signal")
-    if ees is not None:
-        result["entry_exit_signal"] = str(ees)
-
-    rrr = _to_float(stored_sb.get("risk_reward_ratio") or row.get("risk_reward_ratio"))
-    if rrr is not None:
-        result["risk_reward_ratio"] = round(rrr, 2)
-
-    rrt = stored_sb.get("risk_reward_tag") or row.get("risk_reward_tag")
-    if rrt is not None:
-        result["risk_reward_tag"] = str(rrt)
-
     return result
 
 
@@ -418,8 +406,7 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
     # Promote action_tag / technical_score from breakdown if top-level columns are NULL
     sb = item["score_breakdown"]
     for _k in ("action_tag", "action_tag_reasoning", "technical_score", "rsi_14",
-                "score_confidence", "trend_alignment", "breakout_signal",
-                "entry_exit_signal", "risk_reward_ratio", "risk_reward_tag"):
+                "score_confidence", "trend_alignment", "breakout_signal"):
         if item.get(_k) is None and sb.get(_k) is not None:
             item[_k] = sb[_k]
     # Parse tags_v2 structured tags → expose as "tags" in API
@@ -518,7 +505,6 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     sector_percentile, lynch_classification, percent_change_5y,
                     technical_score, rsi_14, action_tag, action_tag_reasoning,
                     score_confidence, trend_alignment, breakout_signal,
-                    entry_exit_signal, risk_reward_ratio, risk_reward_tag,
                     tags_v2
                 )
                 VALUES (
@@ -553,8 +539,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     $85, $86, $87,
                     $88, $89, $90, $91,
                     $92, $93, $94,
-                    $95, $96, $97,
-                    $98
+                    $95
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -660,9 +645,6 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     score_confidence = COALESCE(EXCLUDED.score_confidence, {STOCK_TABLE}.score_confidence),
                     trend_alignment = COALESCE(EXCLUDED.trend_alignment, {STOCK_TABLE}.trend_alignment),
                     breakout_signal = COALESCE(EXCLUDED.breakout_signal, {STOCK_TABLE}.breakout_signal),
-                    entry_exit_signal = COALESCE(EXCLUDED.entry_exit_signal, {STOCK_TABLE}.entry_exit_signal),
-                    risk_reward_ratio = COALESCE(EXCLUDED.risk_reward_ratio, {STOCK_TABLE}.risk_reward_ratio),
-                    risk_reward_tag = COALESCE(EXCLUDED.risk_reward_tag, {STOCK_TABLE}.risk_reward_tag),
                     tags_v2 = COALESCE(EXCLUDED.tags_v2, {STOCK_TABLE}.tags_v2)
                 """,
                 str(row.get("market") or "IN"),                                    # $1
@@ -759,10 +741,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 row.get("score_confidence"),                                       # $92
                 row.get("trend_alignment"),                                        # $93
                 row.get("breakout_signal"),                                        # $94
-                row.get("entry_exit_signal"),                                     # $95
-                _to_float(row.get("risk_reward_ratio")),                         # $96
-                row.get("risk_reward_tag"),                                       # $97
-                _to_jsonb(row.get("tags_v2"), []) if row.get("score") is not None else None,  # $98
+                _to_jsonb(row.get("tags_v2"), []) if row.get("score") is not None else None,  # $95
             )
             count += 1
     return count
