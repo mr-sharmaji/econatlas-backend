@@ -769,8 +769,9 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
     )
 
     opm = _f("operating_margins")
-    # Derive from Screener financing_margin_pct when operating_margins isn't present.
-    if opm is None and isinstance(_pl_data, dict) and _is_financial_margin:
+    # For financial businesses, always prefer Screener financing_margin_pct
+    # over generic operating_margins (which can be misleading for lenders).
+    if isinstance(_pl_data, dict) and _is_financial_margin:
         _fm = _pl_data.get("financing_margin_pct") or []
         _yrs = _pl_data.get("years") or []
         _n_yr = len(_yrs)
