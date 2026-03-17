@@ -835,24 +835,48 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
     eg_val = _f("earnings_growth")
     if eg_val is not None:
         eg_pct = eg_val * 100 if abs(eg_val) < 2 else eg_val
+        # Detect if the company is currently in losses
+        npm = _f("profit_margins")
+        is_loss_making = npm is not None and npm < 0
         if eg_pct > 20:
-            _add("earnings_growth",
-                 f"Earnings growth tracks how fast profits are increasing year over year. "
-                 f"At {eg_pct:.1f}%, profits are expanding strongly — faster than revenue growth means improving margins. "
-                 f"This is exactly what drives PE compression and share price growth.",
-                 "positive")
+            if is_loss_making:
+                _add("earnings_growth",
+                     f"Earnings growth tracks how fast profits are changing year over year. "
+                     f"At {eg_pct:+.1f}%, losses have narrowed significantly compared to last year. "
+                     f"Improvement is encouraging, but the company is still unprofitable — watch for a sustained turnaround.",
+                     "neutral")
+            else:
+                _add("earnings_growth",
+                     f"Earnings growth tracks how fast profits are increasing year over year. "
+                     f"At {eg_pct:+.1f}%, profits are expanding strongly — faster than revenue growth means improving margins. "
+                     f"This is exactly what drives PE compression and share price growth.",
+                     "positive")
         elif eg_pct > 0:
-            _add("earnings_growth",
-                 f"Earnings growth tracks how fast profits are increasing year over year. "
-                 f"At {eg_pct:.1f}%, profits are growing at a moderate pace. "
-                 f"Acceptable for stable businesses, but watch whether margins are steady or compressing.",
-                 "neutral")
+            if is_loss_making:
+                _add("earnings_growth",
+                     f"Earnings growth tracks how fast profits are changing year over year. "
+                     f"At {eg_pct:+.1f}%, losses have narrowed slightly. "
+                     f"The company is still in the red — a full turnaround to profitability remains some distance away.",
+                     "neutral")
+            else:
+                _add("earnings_growth",
+                     f"Earnings growth tracks how fast profits are increasing year over year. "
+                     f"At {eg_pct:+.1f}%, profits are growing at a moderate pace. "
+                     f"Acceptable for stable businesses, but watch whether margins are steady or compressing.",
+                     "neutral")
         else:
-            _add("earnings_growth",
-                 f"Earnings growth tracks how fast profits are increasing year over year. "
-                 f"At {eg_pct:.1f}%, profits are declining. "
-                 f"Unless the company is investing heavily for future growth, falling earnings erode the investment case.",
-                 "negative")
+            if is_loss_making:
+                _add("earnings_growth",
+                     f"Earnings growth tracks how fast profits are changing year over year. "
+                     f"At {eg_pct:+.1f}%, losses have widened compared to last year. "
+                     f"The company is burning more cash — financial distress risk rises the longer this continues.",
+                     "negative")
+            else:
+                _add("earnings_growth",
+                     f"Earnings growth tracks how fast profits are increasing year over year. "
+                     f"At {eg_pct:+.1f}%, profits are declining. "
+                     f"Unless the company is investing heavily for future growth, falling earnings erode the investment case.",
+                     "negative")
 
     csg_val = _f("compounded_sales_growth_3y")
     if csg_val is not None:
@@ -966,6 +990,12 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
                  f"At {ic:.1f}x, the company is barely covering interest payments. "
                  f"Any further earnings decline could make debt service difficult — a significant financial risk.",
                  "negative")
+        else:
+            _add("interest_coverage",
+                 f"Interest coverage tells you how many times the company's operating profit can pay its interest bill. "
+                 f"At {ic:.1f}x, operating profit doesn't cover interest — the company is losing money before even paying its debt. "
+                 f"This is a serious red flag that signals financial distress.",
+                 "negative")
 
     td = _f("total_debt")
     if td is not None and mcap and mcap > 0:
@@ -976,6 +1006,12 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
                  f"Debt is minimal relative to the company's market cap. "
                  f"The business is funded primarily through equity and internal cash flows — low financial risk.",
                  "positive")
+        elif ratio > 1.0:
+            _add("total_debt",
+                 f"Total debt is the combined short-term and long-term borrowings on the balance sheet. "
+                 f"Debt exceeds market cap — the company owes more than it is worth in the market. "
+                 f"Heavy leverage increases bankruptcy risk and leaves little room for shareholders.",
+                 "negative")
         elif ratio > 0.5:
             _add("total_debt",
                  f"Total debt is the combined short-term and long-term borrowings on the balance sheet. "
@@ -1443,8 +1479,12 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
             profits = pl.get("net_profit") or []
             if len(profits) >= 2:
                 prev, curr = profits[-2], profits[-1]
-                if isinstance(prev, (int, float)) and isinstance(curr, (int, float)) and prev > 0:
-                    item["earnings_growth"] = round((curr / prev) - 1, 4)
+                if isinstance(prev, (int, float)) and isinstance(curr, (int, float)):
+                    if prev > 0:
+                        item["earnings_growth"] = round((curr / prev) - 1, 4)
+                    elif prev < 0:
+                        # Loss-to-loss or loss-to-profit: use absolute change relative to abs(prev)
+                        item["earnings_growth"] = round((curr - prev) / abs(prev), 4)
     item["why_ranked"] = _stock_why_ranked(item, sector_stats)
     item["metric_insights"] = _generate_metric_insights(item, sector_stats)
     return item

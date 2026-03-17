@@ -4143,10 +4143,14 @@ class DiscoverStockScraper(BaseScraper):
                     _prev, _cur = _sales[_n_annual - 2], _sales[_n_annual - 1]
                     if _prev and _prev > 0:
                         row["revenue_growth"] = (_cur - _prev) / _prev
+                    elif _prev and _prev < 0:
+                        row["revenue_growth"] = (_cur - _prev) / abs(_prev)
                 if row.get("earnings_growth") is None and len(_np) >= 2 and _n_annual >= 2:
                     _prev, _cur = _np[_n_annual - 2], _np[_n_annual - 1]
                     if _prev and _prev > 0:
                         row["earnings_growth"] = (_cur - _prev) / _prev
+                    elif _prev and _prev < 0:
+                        row["earnings_growth"] = (_cur - _prev) / abs(_prev)
 
             # Revenue growth: winsorize extreme values
             _rg_raw = row.get("revenue_growth")
