@@ -1608,6 +1608,45 @@ class DiscoverStockScraper(BaseScraper):
                     pl_full = self._extract_full_table(html, "profit-loss")
                     if pl_full:
                         fundamentals["pl_annual"] = pl_full
+                        # Compute Screener-derived metrics from P&L arrays
+                        # Use latest annual values (aligned to years), not TTM trailing element
+                        _pl_sales = pl_full.get("sales", [])
+                        _pl_op = pl_full.get("operating_profit", [])
+                        _pl_np = pl_full.get("net_profit", [])
+                        _pl_opm = pl_full.get("opm_pct", [])
+                        _pl_years = pl_full.get("years", [])
+                        _n_yr = len(_pl_years)
+                        _pl_dpct = pl_full.get("dividend_payout_pct", [])
+
+                        # Operating margin (prefer opm_pct array, else compute)
+                        if _pl_opm and _n_yr > 0 and len(_pl_opm) >= _n_yr:
+                            fundamentals["operating_margins"] = round(_pl_opm[_n_yr - 1] / 100, 5)
+                        elif _n_yr > 0 and len(_pl_sales) >= _n_yr and len(_pl_op) >= _n_yr and _pl_sales[_n_yr - 1]:
+                            fundamentals["operating_margins"] = round(_pl_op[_n_yr - 1] / _pl_sales[_n_yr - 1], 5)
+
+                        # Profit margin
+                        if _n_yr > 0 and len(_pl_sales) >= _n_yr and len(_pl_np) >= _n_yr and _pl_sales[_n_yr - 1]:
+                            fundamentals["profit_margins"] = round(_pl_np[_n_yr - 1] / _pl_sales[_n_yr - 1], 5)
+
+                        # Revenue & earnings growth YoY
+                        if _n_yr >= 2 and len(_pl_sales) >= _n_yr:
+                            _prev, _cur = _pl_sales[_n_yr - 2], _pl_sales[_n_yr - 1]
+                            if _prev and _prev > 0:
+                                fundamentals["revenue_growth"] = round((_cur - _prev) / _prev, 4)
+                            elif _prev and _prev < 0:
+                                fundamentals["revenue_growth"] = round((_cur - _prev) / abs(_prev), 4)
+                        if _n_yr >= 2 and len(_pl_np) >= _n_yr:
+                            _prev, _cur = _pl_np[_n_yr - 2], _pl_np[_n_yr - 1]
+                            if _prev and _prev > 0:
+                                fundamentals["earnings_growth"] = round((_cur - _prev) / _prev, 4)
+                            elif _prev and _prev < 0:
+                                fundamentals["earnings_growth"] = round((_cur - _prev) / abs(_prev), 4)
+
+                        # Payout ratio
+                        if _pl_dpct and _n_yr > 0 and len(_pl_dpct) >= _n_yr:
+                            _dpv = _pl_dpct[_n_yr - 1]
+                            if _dpv is not None and isinstance(_dpv, (int, float)):
+                                fundamentals["payout_ratio"] = round(_dpv / 100, 4)
                     bs_full = self._extract_full_table(html, "balance-sheet")
                     if bs_full:
                         fundamentals["bs_annual"] = bs_full
@@ -4655,17 +4694,23 @@ class DiscoverStockScraper(BaseScraper):
                         fundamentals[field] = yahoo[field]
                         yahoo_fields_filled += 1
 
-                # Add Yahoo-exclusive fields (always overwrite with Yahoo data)
+                # Add Yahoo-exclusive fields (always overwrite — Screener doesn't have these)
                 for field in ("beta", "free_cash_flow", "operating_cash_flow", "total_cash",
-                              "total_debt", "total_revenue", "gross_margins", "operating_margins",
-                              "profit_margins", "revenue_growth", "earnings_growth",
+                              "total_debt", "total_revenue", "gross_margins",
                               "forward_pe",
                               "analyst_target_mean", "analyst_count", "analyst_recommendation",
                               "analyst_recommendation_mean", "analyst_strong_buy", "analyst_buy",
                               "analyst_hold", "analyst_sell",
-                              "payout_ratio", "fifty_day_avg", "two_hundred_day_avg"):
+                              "fifty_day_avg", "two_hundred_day_avg"):
                     if yahoo.get(field) is not None:
                         fundamentals[field] = yahoo[field]
+                        yahoo_fields_filled += 1
+
+                # Screener-preferred fields: Yahoo only fills gaps
+                for mfield in ("operating_margins", "profit_margins",
+                               "revenue_growth", "earnings_growth", "payout_ratio"):
+                    if fundamentals.get(mfield) is None and yahoo.get(mfield) is not None:
+                        fundamentals[mfield] = yahoo[mfield]
                         yahoo_fields_filled += 1
 
                 if fundamentals_source == "unavailable":
