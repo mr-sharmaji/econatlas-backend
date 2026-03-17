@@ -801,36 +801,54 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
         npm_pct = npm * 100 if abs(npm) < 1 else npm
         avg_npm = _sf("avg_npm")
         avg_npm_pct = (avg_npm * 100 if avg_npm and abs(avg_npm) < 1 else avg_npm) if avg_npm else None
+
+        # Compute historical net margin trend from P&L
+        _npm_trend = ""
+        _pl_data = row.get("pl_annual")
+        if isinstance(_pl_data, dict):
+            _pl_s = _pl_data.get("sales") or []
+            _pl_np = _pl_data.get("net_profit") or []
+            _n_yr = len(_pl_data.get("years") or [])
+            if _n_yr >= 3 and len(_pl_s) >= _n_yr and len(_pl_np) >= _n_yr:
+                _s0 = _pl_s[0]
+                _np0 = _pl_np[0]
+                if _s0 and _np0 is not None and _s0 != 0:
+                    _old_npm = _np0 / _s0 * 100
+                    if npm_pct > _old_npm + 2:
+                        _npm_trend = f" Net margin has expanded from {_old_npm:.0f}% to {npm_pct:.0f}% over {_n_yr} years — improving profitability."
+                    elif npm_pct < _old_npm - 2:
+                        _npm_trend = f" Net margin has compressed from {_old_npm:.0f}% to {npm_pct:.0f}% over {_n_yr} years — profitability is declining."
+                    else:
+                        _npm_trend = f" Net margin has been stable around {npm_pct:.0f}% over {_n_yr} years."
+
         if avg_npm_pct and avg_npm_pct > 0 and npm_pct > avg_npm_pct * 1.2:
             _add("profit_margins",
                  f"Net profit margin is what the company keeps after paying all expenses — operations, interest, and taxes. "
                  f"At {npm_pct:.1f}%, this beats the {industry} average of {avg_npm_pct:.1f}%. "
-                 f"Superior profitability that translates into better earnings growth for shareholders.",
+                 f"Superior profitability that translates into better earnings growth for shareholders.{_npm_trend}",
                  "positive")
         elif avg_npm_pct and avg_npm_pct > 0 and npm_pct < avg_npm_pct * 0.6:
             _add("profit_margins",
                  f"Net profit margin is what the company keeps after paying all expenses — operations, interest, and taxes. "
                  f"At {npm_pct:.1f}%, this trails the {industry} average of {avg_npm_pct:.1f}%. "
-                 f"Higher costs or interest burden may be eating into bottom-line profitability.",
+                 f"Higher costs or interest burden may be eating into bottom-line profitability.{_npm_trend}",
                  "negative")
         else:
             if npm_pct > 10:
                 _add("profit_margins",
                      f"Net profit margin is what the company keeps after paying all expenses — operations, interest, and taxes. "
-                     f"At {npm_pct:.1f}%, the company converts a healthy portion of revenue into profit. "
-                     f"Indicates a well-run business with good cost control.",
+                     f"At {npm_pct:.1f}%, the company converts a healthy portion of revenue into profit.{_npm_trend}",
                      "positive")
             elif npm_pct < 3:
                 _add("profit_margins",
                      f"Net profit margin is what the company keeps after paying all expenses — operations, interest, and taxes. "
                      f"At {npm_pct:.1f}%, very little revenue flows to the bottom line. "
-                     f"The company needs volume or pricing improvements to become meaningfully profitable.",
+                     f"The company needs volume or pricing improvements to become meaningfully profitable.{_npm_trend}",
                      "negative")
             else:
                 _add("profit_margins",
                      f"Net profit margin is what the company keeps after paying all expenses — operations, interest, and taxes. "
-                     f"At {npm_pct:.1f}%, margins are moderate. "
-                     f"Adequate profitability — check whether margins are trending up or down.",
+                     f"At {npm_pct:.1f}%, margins are moderate.{_npm_trend}",
                      "neutral")
 
     # ── Revenue, Profit & Margins chart ────────────────────────────
