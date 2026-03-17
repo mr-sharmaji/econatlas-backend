@@ -1721,9 +1721,11 @@ class DiscoverStockScraper(BaseScraper):
                             nse_symbol, len(html), _sh_match is not None,
                         )
 
-                    # If consolidated page had no P&L data and we have a standalone fallback, try it
+                    # If consolidated page is missing P&L or growth data, try standalone fallback
+                    _needs_pl = fundamentals.get("pl_annual") is None
+                    _needs_gr = not fundamentals.get("growth_ranges")
                     if (url.endswith("/consolidated/")
-                            and fundamentals.get("pl_annual") is None
+                            and (_needs_pl or _needs_gr)
                             and len(candidates) > 1):
                         standalone_url = candidates[1]  # /company/SYMBOL/
                         try:
@@ -1765,11 +1767,17 @@ class DiscoverStockScraper(BaseScraper):
                                         fundamentals["earnings_growth"] = round((_cur - _prev) / _prev, 4)
                                     elif _prev and _prev < 0:
                                         fundamentals["earnings_growth"] = round((_cur - _prev) / abs(_prev), 4)
-                            logger.info("Standalone fallback for %s: pl=%s bs=%s cf=%s",
+                            # Re-extract compounded growth from standalone if consolidated had none
+                            if not fundamentals.get("growth_ranges"):
+                                sa_cg = self._extract_compounded_growth(sa_html)
+                                if sa_cg:
+                                    fundamentals.update(sa_cg)
+                            logger.info("Standalone fallback for %s: pl=%s bs=%s cf=%s gr=%s",
                                         nse_symbol,
                                         "OK" if fundamentals.get("pl_annual") else "MISS",
                                         "OK" if fundamentals.get("bs_annual") else "MISS",
-                                        "OK" if fundamentals.get("cf_annual") else "MISS")
+                                        "OK" if fundamentals.get("cf_annual") else "MISS",
+                                        "OK" if fundamentals.get("growth_ranges") else "MISS")
                         except Exception:
                             logger.debug("Standalone fallback failed for %s", nse_symbol, exc_info=True)
 
