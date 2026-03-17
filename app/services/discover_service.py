@@ -801,17 +801,13 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
             _n_yr = len(_pl_years)
             if _n_yr >= 3 and len(_pl_opm) >= _n_yr and _pl_opm[0] is not None:
                 _opm_old = _pl_opm[0]
-                _opm_valid = [v for v in _pl_opm[:_n_yr] if v is not None]
-                _opm_min = min(_opm_valid) if _opm_valid else None
-                _opm_max = max(_opm_valid) if _opm_valid else None
-                _range_str = f" (range: {_opm_min:.0f}%–{_opm_max:.0f}%)" if _opm_min is not None and _opm_max is not None and _opm_min != _opm_max else ""
                 _yr_start = _pl_years[0] if _pl_years else ""
                 if opm_pct > _opm_old + 2:
-                    _opm_trend = f" {_margin_name} has expanded from {_opm_old:.0f}% ({_yr_start}) to {opm_pct:.0f}% (TTM){_range_str}."
+                    _opm_trend = f" {_margin_name} has expanded from {_opm_old:.0f}% ({_yr_start}) to {opm_pct:.0f}% (TTM)."
                 elif opm_pct < _opm_old - 2:
-                    _opm_trend = f" {_margin_name} has compressed from {_opm_old:.0f}% ({_yr_start}) to {opm_pct:.0f}% (TTM){_range_str}."
+                    _opm_trend = f" {_margin_name} has compressed from {_opm_old:.0f}% ({_yr_start}) to {opm_pct:.0f}% (TTM)."
                 else:
-                    _opm_trend = f" {_margin_name} has remained around {opm_pct:.0f}% over {_n_yr} years{_range_str}."
+                    _opm_trend = f" {_margin_name} has remained around {opm_pct:.0f}% over {_n_yr} years."
 
         if avg_opm_pct and avg_opm_pct > 0:
             if opm_pct > avg_opm_pct * 1.2:
