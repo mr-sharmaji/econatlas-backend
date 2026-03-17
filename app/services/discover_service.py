@@ -405,6 +405,107 @@ def _compute_quality_badges(row: dict) -> list[str]:
     return badges
 
 
+def _mf_fund_insights(row: dict, category_stats: dict | None = None) -> list[dict]:
+    """Build a list of positive/negative fund insights for the MF detail screen."""
+    insights: list[dict] = []
+
+    score = _to_float(row.get("score")) or 0
+    ret3 = _to_float(row.get("returns_3y"))
+    avg_ret3 = category_stats.get("avg_ret3y") if category_stats else None
+
+    # ── Positive signals ──
+    if ret3 is not None and avg_ret3 is not None and ret3 > avg_ret3:
+        insights.append({"text": f"Outperforms category average over 3 years ({ret3:.1f}% vs {avg_ret3:.1f}%)", "sentiment": "positive"})
+
+    expense = _to_float(row.get("expense_ratio"))
+    if expense is not None and expense < 1.0:
+        insights.append({"text": f"Low cost with expense ratio of {expense:.2f}%", "sentiment": "positive"})
+
+    fund_age = _to_float(row.get("fund_age_years"))
+    if fund_age is not None and fund_age >= 5:
+        insights.append({"text": f"Established fund with {fund_age:.1f} years of track record", "sentiment": "positive"})
+
+    sub_rank = _to_int(row.get("sub_category_rank"))
+    sub_total = _to_int(row.get("sub_category_total"))
+    cat_rank = _to_int(row.get("category_rank"))
+    cat_total = _to_int(row.get("category_total"))
+    sub_cat = row.get("fund_classification") or row.get("sub_category") or row.get("category") or "its category"
+
+    if sub_rank is not None and sub_total and sub_total > 0 and sub_rank <= max(1, int(sub_total * 0.2)):
+        insights.append({"text": f"Ranked in top 20% of {sub_cat}", "sentiment": "positive"})
+    elif cat_rank is not None and cat_total and cat_total > 0 and cat_rank <= max(1, int(cat_total * 0.2)):
+        cat_name = row.get("category") or "its category"
+        insights.append({"text": f"Ranked in top 20% of {cat_name}", "sentiment": "positive"})
+
+    sharpe = _to_float(row.get("sharpe"))
+    if sharpe is not None and sharpe > 1.5:
+        insights.append({"text": f"Strong risk-adjusted returns (Sharpe {sharpe:.2f})", "sentiment": "positive"})
+
+    # ── Negative signals ──
+    if ret3 is not None and avg_ret3 is not None and ret3 < avg_ret3:
+        insights.append({"text": f"Underperforms category average over 3 years ({ret3:.1f}% vs {avg_ret3:.1f}%)", "sentiment": "negative"})
+
+    if expense is not None and expense > 2.0:
+        insights.append({"text": f"High expense ratio at {expense:.2f}%", "sentiment": "negative"})
+
+    if fund_age is not None and fund_age < 3:
+        insights.append({"text": f"Relatively new fund with only {fund_age:.1f} years of track record", "sentiment": "negative"})
+
+    if sub_rank is not None and sub_total and sub_total > 0 and sub_rank > max(1, int(sub_total * 0.7)):
+        insights.append({"text": f"Ranked in bottom 30% of {sub_cat}", "sentiment": "negative"})
+
+    max_dd = _to_float(row.get("max_drawdown"))
+    if max_dd is not None and max_dd < -20:
+        insights.append({"text": f"High drawdown risk ({max_dd:.1f}%)", "sentiment": "negative"})
+
+    if sharpe is not None and sharpe < 0.5:
+        insights.append({"text": f"Weak risk-adjusted returns (Sharpe {sharpe:.2f})", "sentiment": "negative"})
+
+    aum = _to_float(row.get("aum_cr"))
+    if aum is not None and aum < 100:
+        insights.append({"text": "Small fund size (< 100 Cr) — metrics may be less stable", "sentiment": "negative"})
+    elif aum is not None and aum > 10000:
+        insights.append({"text": f"Large AUM ({aum:,.0f} Cr) — well-established and liquid", "sentiment": "positive"})
+
+    # ── Deeper signals (backend-only data) ──
+    sortino = _to_float(row.get("sortino"))
+    if sortino is not None and sortino >= 2.0:
+        insights.append({"text": f"Excellent downside-adjusted returns (Sortino {sortino:.2f})", "sentiment": "positive"})
+    elif sortino is not None and sortino < 0.5:
+        insights.append({"text": f"Poor downside-adjusted returns (Sortino {sortino:.2f})", "sentiment": "negative"})
+
+    alpha = _to_float(row.get("alpha"))
+    if alpha is not None and alpha > 3:
+        insights.append({"text": f"Generates strong alpha of {alpha:.1f}% over benchmark", "sentiment": "positive"})
+    elif alpha is not None and alpha < -3:
+        insights.append({"text": f"Negative alpha of {alpha:.1f}% — lags behind benchmark", "sentiment": "negative"})
+
+    beta = _to_float(row.get("beta"))
+    if beta is not None and beta > 1.3:
+        insights.append({"text": f"High beta ({beta:.2f}) — amplifies market swings", "sentiment": "negative"})
+
+    rolling_consistency = _to_float(row.get("rolling_return_consistency"))
+    if rolling_consistency is not None and rolling_consistency >= 80:
+        insights.append({"text": f"Highly predictable returns ({rolling_consistency:.0f}% rolling consistency)", "sentiment": "positive"})
+    elif rolling_consistency is not None and rolling_consistency < 40:
+        insights.append({"text": f"Unpredictable returns ({rolling_consistency:.0f}% rolling consistency)", "sentiment": "negative"})
+
+    # Returns momentum: 1Y vs 3Y
+    ret1 = _to_float(row.get("returns_1y"))
+    if ret1 is not None and ret3 is not None and ret3 > 0:
+        if ret1 > ret3 * 1.5:
+            insights.append({"text": "Recent returns momentum is accelerating", "sentiment": "positive"})
+        elif ret1 < ret3 * 0.3 and ret3 > 5:
+            insights.append({"text": "Recent performance is slowing down vs historical", "sentiment": "negative"})
+
+    # Category fit score
+    cat_fit = _to_float(row.get("score_category_fit"))
+    if cat_fit is not None and cat_fit < 40:
+        insights.append({"text": "Fund deviates significantly from its stated mandate", "sentiment": "negative"})
+
+    return insights
+
+
 def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> dict:
     """Generate contextual metric explanations + sentiment for a stock.
 
@@ -1819,14 +1920,6 @@ def _decorate_mf_row(row: dict, category_stats: dict | None = None) -> dict:
     item["source_status"] = _normalize_source_status(item.get("source_status"))
     item["score_breakdown"] = _mf_breakdown_payload(item)
     item["display_name"] = _clean_mf_display_name(item.get("scheme_name", ""))
-    # Parse tags_v2 structured tags → expose as "tags" in API
-    tags_v2 = item.get("tags_v2")
-    if isinstance(tags_v2, str):
-        try:
-            tags_v2 = _json.loads(tags_v2)
-        except (ValueError, TypeError):
-            tags_v2 = []
-    item["tags"] = tags_v2 if isinstance(tags_v2, list) else []
     item.pop("tags_v2", None)
     # Look up sub-category stats using fund_classification
     sub_cat = item.get("fund_classification") or item.get("sub_category") or ""
@@ -1835,6 +1928,7 @@ def _decorate_mf_row(row: dict, category_stats: dict | None = None) -> dict:
         sub_stats = category_stats.get(sub_cat) or category_stats.get(item.get("category", ""))
     item["why_ranked"] = _mf_why_ranked(item, sub_stats)
     item["quality_badges"] = _compute_quality_badges(item)
+    item["fund_insights"] = _mf_fund_insights(item, sub_stats)
     if sub_stats:
         item["category_avg_returns_1y"] = sub_stats.get("avg_ret1y")
         item["category_avg_returns_3y"] = sub_stats.get("avg_ret3y")

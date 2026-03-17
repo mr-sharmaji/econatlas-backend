@@ -20,6 +20,12 @@ class TagV2Response(BaseModel):
     expires_at: datetime | None = None
 
 
+class FundInsight(BaseModel):
+    """A single positive or negative insight about a fund."""
+    text: str
+    sentiment: Literal["positive", "negative", "neutral"]
+
+
 class DiscoverStockScoreBreakdown(BaseModel):
     quality: float | None = None
     valuation: float | None = None
@@ -231,8 +237,8 @@ class DiscoverMutualFundItemResponse(BaseModel):
     sub_category_percentile: float | None = None
     fund_classification: str | None = None
     score_breakdown: DiscoverMutualFundScoreBreakdown | None = None
-    tags: list[TagV2Response] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)
+    fund_insights: list[FundInsight] = Field(default_factory=list)
     top_holdings: list[dict] | None = None
     sector_allocation: list[dict] | None = None
     asset_allocation: dict | None = None
