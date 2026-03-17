@@ -1792,11 +1792,11 @@ async def run_discover_mutual_fund_job() -> None:
             FROM (
                 SELECT scheme_code,
                        DENSE_RANK() OVER (
-                           PARTITION BY COALESCE(NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
+                           PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
                            ORDER BY score DESC
                        ) AS rnk,
                        COUNT(*) OVER (
-                           PARTITION BY COALESCE(NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
+                           PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
                        ) AS total
                 FROM discover_mutual_fund_snapshots
             ) sub
@@ -1913,6 +1913,43 @@ async def rescore_discover_mutual_funds() -> dict:
         "MF Rescore complete: %d rows in %.1fs (read=%.1fs, score=%.1fs, upsert=%.1fs)",
         total_upserted, total_elapsed, read_elapsed, score_elapsed, time_mod.time() - upsert_t0,
     )
+
+    # Recompute dual ranking after rescore
+    import time as _t
+    rank_t0 = _t.time()
+    await pool.execute("""
+        UPDATE discover_mutual_fund_snapshots AS t
+        SET sub_category_rank = sub.rnk, sub_category_total = sub.total
+        FROM (
+            SELECT scheme_code,
+                   DENSE_RANK() OVER (
+                       PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
+                       ORDER BY score DESC
+                   ) AS rnk,
+                   COUNT(*) OVER (
+                       PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
+                   ) AS total
+            FROM discover_mutual_fund_snapshots
+        ) sub
+        WHERE t.scheme_code = sub.scheme_code
+    """)
+    await pool.execute("""
+        UPDATE discover_mutual_fund_snapshots AS t
+        SET category_rank = sub.rnk, category_total = sub.total
+        FROM (
+            SELECT scheme_code,
+                   DENSE_RANK() OVER (
+                       PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
+                       ORDER BY score DESC
+                   ) AS rnk,
+                   COUNT(*) OVER (
+                       PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
+                   ) AS total
+            FROM discover_mutual_fund_snapshots
+        ) sub
+        WHERE t.scheme_code = sub.scheme_code
+    """)
+    logger.info("MF Rescore: rankings recomputed in %.1fs", _t.time() - rank_t0)
 
     # Sub-category distribution
     sub_cat_counts: dict[str, int] = {}

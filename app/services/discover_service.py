@@ -413,6 +413,12 @@ def _mf_fund_insights(row: dict, category_stats: dict | None = None) -> list[dic
     ret3 = _to_float(row.get("returns_3y"))
     avg_ret3 = category_stats.get("avg_ret3y") if category_stats else None
 
+    # Score-based insight
+    if score < 35:
+        insights.append({"text": "Below average overall score — consider alternatives in this category", "sentiment": "negative"})
+    elif score >= 80:
+        insights.append({"text": "Top-tier fund with excellent overall score", "sentiment": "positive"})
+
     # ── Positive signals ──
     if ret3 is not None and avg_ret3 is not None and ret3 > avg_ret3:
         insights.append({"text": f"Outperforms category average over 3 years ({ret3:.1f}% vs {avg_ret3:.1f}%)", "sentiment": "positive"})
@@ -445,6 +451,14 @@ def _mf_fund_insights(row: dict, category_stats: dict | None = None) -> list[dic
     if ret3 is not None and avg_ret3 is not None and ret3 < avg_ret3:
         insights.append({"text": f"Underperforms category average over 3 years ({ret3:.1f}% vs {avg_ret3:.1f}%)", "sentiment": "negative"})
 
+    # Negative returns (works even without category avg)
+    ret1 = _to_float(row.get("returns_1y"))
+    if ret1 is not None and ret1 < 0:
+        insights.append({"text": f"Negative 1Y return of {ret1:.1f}%", "sentiment": "negative"})
+
+    if ret3 is not None and ret3 < 5 and avg_ret3 is None:
+        insights.append({"text": f"Low 3Y return of {ret3:.1f}%", "sentiment": "negative"})
+
     if expense is not None and expense > 2.0:
         insights.append({"text": f"High expense ratio at {expense:.2f}%", "sentiment": "negative"})
 
@@ -453,13 +467,16 @@ def _mf_fund_insights(row: dict, category_stats: dict | None = None) -> list[dic
 
     if sub_rank is not None and sub_total and sub_total > 0 and sub_rank > max(1, int(sub_total * 0.7)):
         insights.append({"text": f"Ranked in bottom 30% of {sub_cat}", "sentiment": "negative"})
+    elif cat_rank is not None and cat_total and cat_total > 0 and cat_rank > max(1, int(cat_total * 0.7)):
+        cat_name = row.get("category") or "its category"
+        insights.append({"text": f"Ranked in bottom 30% of {cat_name}", "sentiment": "negative"})
 
     max_dd = _to_float(row.get("max_drawdown"))
     if max_dd is not None and max_dd < -20:
         insights.append({"text": f"High drawdown risk ({max_dd:.1f}%)", "sentiment": "negative"})
 
-    if sharpe is not None and sharpe < 0.5:
-        insights.append({"text": f"Weak risk-adjusted returns (Sharpe {sharpe:.2f})", "sentiment": "negative"})
+    if sharpe is not None and sharpe < 0.8:
+        insights.append({"text": f"Below-average risk-adjusted returns (Sharpe {sharpe:.2f})", "sentiment": "negative"})
 
     aum = _to_float(row.get("aum_cr"))
     if aum is not None and aum < 100:
@@ -477,7 +494,7 @@ def _mf_fund_insights(row: dict, category_stats: dict | None = None) -> list[dic
     alpha = _to_float(row.get("alpha"))
     if alpha is not None and alpha > 3:
         insights.append({"text": f"Generates strong alpha of {alpha:.1f}% over benchmark", "sentiment": "positive"})
-    elif alpha is not None and alpha < -3:
+    elif alpha is not None and alpha < -1:
         insights.append({"text": f"Negative alpha of {alpha:.1f}% — lags behind benchmark", "sentiment": "negative"})
 
     beta = _to_float(row.get("beta"))
