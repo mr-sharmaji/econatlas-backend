@@ -122,6 +122,10 @@ _DIRECT_RUN_JOBS: dict[str, tuple[str, str]] = {
         "app.scheduler.discover_mf_nav_job",
         "run_discover_mf_nav_job",
     ),
+    "discover_mf_holdings": (
+        "app.scheduler.discover_mf_holdings_job",
+        "run_discover_mf_holdings_job",
+    ),
 }
 
 
