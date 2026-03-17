@@ -281,7 +281,7 @@ def _mf_breakdown_payload(row: dict) -> dict:
     }
 
 
-def _stock_why_ranked(row: dict, sector_stats: dict | None = None) -> list[str]:
+def _stock_why_ranked(row: dict, industry_stats: dict | None = None) -> list[str]:
     reasons: list[str] = []
     pct = _to_float(row.get("percent_change"))
     if pct is not None and pct >= 2.0:
@@ -296,8 +296,8 @@ def _stock_why_ranked(row: dict, sector_stats: dict | None = None) -> list[str]:
 
     roe = _to_float(row.get("roe"))
     if roe is not None and roe >= 15:
-        if sector_stats and sector_stats.get("avg_roe"):
-            reasons.append(f"ROE of {roe:.1f}% vs sector avg {sector_stats['avg_roe']:.1f}%.")
+        if industry_stats and industry_stats.get("avg_roe"):
+            reasons.append(f"ROE of {roe:.1f}% vs industry avg {industry_stats['avg_roe']:.1f}%.")
         else:
             reasons.append(f"ROE of {roe:.1f}% indicates strong profitability.")
 
@@ -314,10 +314,10 @@ def _stock_why_ranked(row: dict, sector_stats: dict | None = None) -> list[str]:
         reasons.append("Negative EPS — profitability concern.")
 
     pe = _to_float(row.get("pe_ratio"))
-    if pe is not None and pe > 0 and sector_stats and sector_stats.get("median_pe"):
-        med = sector_stats["median_pe"]
+    if pe is not None and pe > 0 and industry_stats and industry_stats.get("median_pe"):
+        med = industry_stats["median_pe"]
         if pe < med * 0.8:
-            reasons.append(f"PE of {pe:.1f} is below sector median of {med:.1f}.")
+            reasons.append(f"PE of {pe:.1f} is below industry median of {med:.1f}.")
 
     status = _normalize_source_status(row.get("source_status"))
     if status != "primary":
@@ -398,14 +398,14 @@ def _compute_quality_badges(row: dict) -> list[str]:
     return badges
 
 
-def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> dict:
+def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> dict:
     """Generate contextual metric explanations + sentiment for a stock.
 
     Returns {metric_key: {"explanation": str, "sentiment": str}} where
     sentiment is one of "positive", "negative", "neutral", "warning".
     Only metrics with non-null values get an entry.
     """
-    ss = sector_stats or {}
+    ss = industry_stats or {}
     insights: dict[str, dict] = {}
 
     def _f(key: str) -> float | None:
@@ -417,7 +417,7 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
     def _add(key: str, explanation: str, sentiment: str) -> None:
         insights[key] = {"explanation": explanation, "sentiment": sentiment}
 
-    sector = row.get("sector") or "the sector"
+    industry = row.get("industry") or "the industry"
 
     # ── Valuation ───────────────────────────────────────────────────
     pe = _f("pe_ratio")
@@ -436,20 +436,20 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
             if ratio < 0.8:
                 _add("pe_ratio",
                      f"PE ratio tells you how many years of current earnings you're paying for. "
-                     f"At {pe:.1f}x, this stock trades below the {sector} average of {avg_pe:.1f}x. "
+                     f"At {pe:.1f}x, this stock trades below the {industry} average of {avg_pe:.1f}x. "
                      f"You're getting a discount relative to peers — worth investigating why.",
                      "positive")
             elif ratio > 1.5:
                 _add("pe_ratio",
                      f"PE ratio tells you how many years of current earnings you're paying for. "
-                     f"At {pe:.1f}x, this is significantly above the {sector} average of {avg_pe:.1f}x. "
+                     f"At {pe:.1f}x, this is significantly above the {industry} average of {avg_pe:.1f}x. "
                      f"You're paying a steep premium — justified only if growth is strong enough to bring the PE down over time.",
                      "negative")
             else:
                 _add("pe_ratio",
                      f"PE ratio tells you how many years of current earnings you're paying for. "
-                     f"At {pe:.1f}x, this is broadly in line with the {sector} average of {avg_pe:.1f}x. "
-                     f"The market prices this stock fairly relative to its sector peers.",
+                     f"At {pe:.1f}x, this is broadly in line with the {industry} average of {avg_pe:.1f}x. "
+                     f"The market prices this stock fairly relative to its industry peers.",
                      "neutral")
         else:
             if pe < 15:
@@ -488,19 +488,19 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
             if pb < avg_pb * 0.7:
                 _add("price_to_book",
                      f"Price-to-Book compares the stock price to the company's net asset value per share. "
-                     f"P/B of {pb:.2f} is below the {sector} average of {avg_pb:.2f}. "
+                     f"P/B of {pb:.2f} is below the {industry} average of {avg_pb:.2f}. "
                      f"You're paying less per rupee of book value than peers — could indicate undervaluation.",
                      "positive")
             elif pb > avg_pb * 1.5:
                 _add("price_to_book",
                      f"Price-to-Book compares the stock price to the company's net asset value per share. "
-                     f"P/B of {pb:.2f} is well above the {sector} average of {avg_pb:.2f}. "
+                     f"P/B of {pb:.2f} is well above the {industry} average of {avg_pb:.2f}. "
                      f"The market is assigning a premium to this company's assets — typically seen in high-ROE businesses.",
                      "negative")
             else:
                 _add("price_to_book",
                      f"Price-to-Book compares the stock price to the company's net asset value per share. "
-                     f"P/B of {pb:.2f} is close to the {sector} average of {avg_pb:.2f}. "
+                     f"P/B of {pb:.2f} is close to the {industry} average of {avg_pb:.2f}. "
                      f"Fairly valued on a book-value basis.",
                      "neutral")
         else:
@@ -563,7 +563,7 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
         _add("forward_pe",
              f"Forward PE uses analyst estimates of future earnings instead of past earnings. "
              f"Currently at {fwd_pe:.1f}x based on consensus estimates. "
-             f"Compare with sector peers and trailing PE for a complete valuation picture.",
+             f"Compare with industry peers and trailing PE for a complete valuation picture.",
              "neutral")
 
     # PEG from score_breakdown
@@ -603,13 +603,13 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
 
     div_yield = _f("dividend_yield")
     if div_yield is not None:
-        avg_dy = _sf("avg_div_yield")
+        avg_dy = _sf("avg_dy")
         payout_raw = _f("payout_ratio")
         payout_pct = (payout_raw * 100 if payout_raw is not None and abs(payout_raw) < 1 else payout_raw) if payout_raw is not None else None
         if div_yield > 2 and (payout_pct is None or payout_pct < 80):
             ctx = f"At {div_yield:.2f}%"
             if avg_dy and avg_dy > 0:
-                ctx += f" vs the {sector} average of {avg_dy:.2f}%"
+                ctx += f" vs the {industry} average of {avg_dy:.2f}%"
             ctx += ", this stock offers above-average income."
             sust = ""
             if payout_pct is not None:
@@ -675,19 +675,19 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
             if roe > avg_roe * 1.2:
                 _add("roe",
                      f"ROE measures how much profit the company generates for every ₹100 of shareholder equity. "
-                     f"At {roe:.1f}% vs the {sector} average of {avg_roe:.1f}%, this company is significantly more efficient. "
+                     f"At {roe:.1f}% vs the {industry} average of {avg_roe:.1f}%, this company is significantly more efficient. "
                      f"Consistently high ROE indicates strong management and a durable competitive advantage.",
                      "positive")
             elif roe < avg_roe * 0.6:
                 _add("roe",
                      f"ROE measures how much profit the company generates for every ₹100 of shareholder equity. "
-                     f"At {roe:.1f}% vs the {sector} average of {avg_roe:.1f}%, returns are lagging peers. "
+                     f"At {roe:.1f}% vs the {industry} average of {avg_roe:.1f}%, returns are lagging peers. "
                      f"The company is either less efficient or may be going through a cyclical downturn.",
                      "negative")
             else:
                 _add("roe",
                      f"ROE measures how much profit the company generates for every ₹100 of shareholder equity. "
-                     f"At {roe:.1f}%, it's broadly in line with the {sector} average of {avg_roe:.1f}%. "
+                     f"At {roe:.1f}%, it's broadly in line with the {industry} average of {avg_roe:.1f}%. "
                      f"Competitive positioning is on par with peers.",
                      "neutral")
         else:
@@ -717,19 +717,19 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
             if roce > avg_roce * 1.2:
                 _add("roce",
                      f"ROCE measures how efficiently the company uses all its capital — both equity and debt. "
-                     f"At {roce:.1f}% vs the {sector} average of {avg_roce:.1f}%, capital efficiency is well above peers. "
+                     f"At {roce:.1f}% vs the {industry} average of {avg_roce:.1f}%, capital efficiency is well above peers. "
                      f"This suggests the business has strong pricing power or operates in a high-return niche.",
                      "positive")
             elif roce < avg_roce * 0.6:
                 _add("roce",
                      f"ROCE measures how efficiently the company uses all its capital — both equity and debt. "
-                     f"At {roce:.1f}% vs the {sector} average of {avg_roce:.1f}%, returns on capital are lagging. "
+                     f"At {roce:.1f}% vs the {industry} average of {avg_roce:.1f}%, returns on capital are lagging. "
                      f"The company may be over-invested or operating in a low-margin segment.",
                      "negative")
             else:
                 _add("roce",
                      f"ROCE measures how efficiently the company uses all its capital — both equity and debt. "
-                     f"At {roce:.1f}%, it's close to the {sector} average of {avg_roce:.1f}%. "
+                     f"At {roce:.1f}%, it's close to the {industry} average of {avg_roce:.1f}%. "
                      f"Capital deployment is on par with peers — neither a standout nor a laggard.",
                      "neutral")
         else:
@@ -761,19 +761,19 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
             if opm_pct > avg_opm_pct * 1.2:
                 _add("operating_margins",
                      f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
-                     f"At {opm_pct:.1f}%, this exceeds the {sector} average of {avg_opm_pct:.1f}%. "
+                     f"At {opm_pct:.1f}%, this exceeds the {industry} average of {avg_opm_pct:.1f}%. "
                      f"The company has better cost control or pricing power than its peers.",
                      "positive")
             elif opm_pct < avg_opm_pct * 0.6:
                 _add("operating_margins",
                      f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
-                     f"At {opm_pct:.1f}%, this is below the {sector} average of {avg_opm_pct:.1f}%. "
+                     f"At {opm_pct:.1f}%, this is below the {industry} average of {avg_opm_pct:.1f}%. "
                      f"The company may be facing competitive pressure on pricing or higher input costs.",
                      "negative")
             else:
                 _add("operating_margins",
                      f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
-                     f"At {opm_pct:.1f}%, it's near the {sector} average of {avg_opm_pct:.1f}%. "
+                     f"At {opm_pct:.1f}%, it's near the {industry} average of {avg_opm_pct:.1f}%. "
                      f"Operational efficiency is on par with peers.",
                      "neutral")
         else:
@@ -804,13 +804,13 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
         if avg_npm_pct and avg_npm_pct > 0 and npm_pct > avg_npm_pct * 1.2:
             _add("profit_margins",
                  f"Net profit margin is what the company keeps after paying all expenses — operations, interest, and taxes. "
-                 f"At {npm_pct:.1f}%, this beats the {sector} average of {avg_npm_pct:.1f}%. "
+                 f"At {npm_pct:.1f}%, this beats the {industry} average of {avg_npm_pct:.1f}%. "
                  f"Superior profitability that translates into better earnings growth for shareholders.",
                  "positive")
         elif avg_npm_pct and avg_npm_pct > 0 and npm_pct < avg_npm_pct * 0.6:
             _add("profit_margins",
                  f"Net profit margin is what the company keeps after paying all expenses — operations, interest, and taxes. "
-                 f"At {npm_pct:.1f}%, this trails the {sector} average of {avg_npm_pct:.1f}%. "
+                 f"At {npm_pct:.1f}%, this trails the {industry} average of {avg_npm_pct:.1f}%. "
                  f"Higher costs or interest burden may be eating into bottom-line profitability.",
                  "negative")
         else:
@@ -847,7 +847,7 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
             _add("revenue_growth",
                  f"Revenue growth shows how fast the company's top line is expanding year over year. "
                  f"At {rg_pct:.1f}%, the business is growing but at a measured pace. "
-                 f"Steady growth is fine for mature businesses, but fast-growing sectors demand more.",
+                 f"Steady growth is fine for mature businesses, but fast-growing industries demand more.",
                  "neutral")
         else:
             _add("revenue_growth",
@@ -914,7 +914,7 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
             _add("compounded_sales_growth_3y",
                  f"3-year revenue CAGR smooths out annual fluctuations to show the underlying growth trajectory. "
                  f"At {csg_val:.1f}%, the company has grown steadily but not spectacularly. "
-                 f"Moderate growth — typical of mature businesses in established sectors.",
+                 f"Moderate growth — typical of mature businesses in established industries.",
                  "neutral")
         elif csg_val > 0:
             _add("compounded_sales_growth_3y",
@@ -975,7 +975,7 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
         elif de < 0.5:
             ctx = f"At {de:.2f}, leverage is conservative"
             if avg_de and avg_de > 0:
-                ctx += f" (below the {sector} average of {avg_de:.2f})"
+                ctx += f" (below the {industry} average of {avg_de:.2f})"
             _add("debt_to_equity",
                  f"Debt-to-Equity compares total borrowings to shareholder equity — lower means less financial risk. "
                  f"{ctx}. "
@@ -984,7 +984,7 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
         elif de > 1.5:
             ctx = f"At {de:.2f}, the company is heavily leveraged"
             if avg_de and avg_de > 0:
-                ctx += f" ({sector} average is {avg_de:.2f})"
+                ctx += f" ({industry} average is {avg_de:.2f})"
             _add("debt_to_equity",
                  f"Debt-to-Equity compares total borrowings to shareholder equity — lower means less financial risk. "
                  f"{ctx}. "
@@ -993,7 +993,7 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
         else:
             ctx = f"At {de:.2f}, leverage is moderate"
             if avg_de and avg_de > 0:
-                ctx += f" ({sector} average is {avg_de:.2f})"
+                ctx += f" ({industry} average is {avg_de:.2f})"
             _add("debt_to_equity",
                  f"Debt-to-Equity compares total borrowings to shareholder equity — lower means less financial risk. "
                  f"{ctx}. "
@@ -1467,7 +1467,7 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
     return insights
 
 
-def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
+def _decorate_stock_row(row: dict, industry_stats: dict | None = None) -> dict:
     import json as _json
     item = dict(row)
     item["source_status"] = _normalize_source_status(item.get("source_status"))
@@ -1534,8 +1534,8 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
                     equity = ec + res
                     if equity != 0:
                         item["debt_to_equity"] = round(debt / equity, 2)
-    item["why_ranked"] = _stock_why_ranked(item, sector_stats)
-    item["metric_insights"] = _generate_metric_insights(item, sector_stats)
+    item["why_ranked"] = _stock_why_ranked(item, industry_stats)
+    item["metric_insights"] = _generate_metric_insights(item, industry_stats)
     return item
 
 
@@ -2053,24 +2053,38 @@ def _normalize_order(sort_order: str | None) -> str:
     return "ASC" if str(sort_order or "").strip().lower() == "asc" else "DESC"
 
 
-async def _get_stock_sector_stats(pool) -> dict[str, dict]:
-    """Fetch per-sector avg ROE, median PE for contextual why_ranked."""
+async def _get_stock_industry_stats(pool) -> dict[str, dict]:
+    """Fetch per-industry averages for contextual insights and why_ranked."""
     rows = await pool.fetch(f"""
         SELECT
-            COALESCE(NULLIF(sector, ''), 'Other') AS sector,
+            COALESCE(NULLIF(industry, ''), 'Other') AS industry,
             ROUND(AVG(roe)::numeric, 1) AS avg_roe,
+            ROUND(AVG(roce)::numeric, 1) AS avg_roce,
             PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY pe_ratio)
-                FILTER (WHERE pe_ratio > 0) AS median_pe
+                FILTER (WHERE pe_ratio > 0) AS median_pe,
+            ROUND(AVG(pe_ratio)::numeric, 1) FILTER (WHERE pe_ratio > 0) AS avg_pe,
+            ROUND(AVG(price_to_book)::numeric, 2) FILTER (WHERE price_to_book > 0) AS avg_pb,
+            ROUND(AVG(debt_to_equity)::numeric, 2) FILTER (WHERE debt_to_equity >= 0) AS avg_de,
+            ROUND(AVG(operating_margins * 100)::numeric, 1) FILTER (WHERE operating_margins IS NOT NULL) AS avg_opm,
+            ROUND(AVG(profit_margins * 100)::numeric, 1) FILTER (WHERE profit_margins IS NOT NULL) AS avg_npm,
+            ROUND(AVG(dividend_yield)::numeric, 2) FILTER (WHERE dividend_yield > 0) AS avg_dy
         FROM {STOCK_TABLE}
         WHERE market = 'IN'
-        GROUP BY COALESCE(NULLIF(sector, ''), 'Other')
+        GROUP BY COALESCE(NULLIF(industry, ''), 'Other')
     """)
     out: dict[str, dict] = {}
     for r in rows:
-        sector = str(r["sector"])
-        out[sector] = {
+        industry = str(r["industry"])
+        out[industry] = {
             "avg_roe": float(r["avg_roe"]) if r["avg_roe"] is not None else None,
+            "avg_roce": float(r["avg_roce"]) if r["avg_roce"] is not None else None,
             "median_pe": float(r["median_pe"]) if r["median_pe"] is not None else None,
+            "avg_pe": float(r["avg_pe"]) if r["avg_pe"] is not None else None,
+            "avg_pb": float(r["avg_pb"]) if r["avg_pb"] is not None else None,
+            "avg_de": float(r["avg_de"]) if r["avg_de"] is not None else None,
+            "avg_opm": float(r["avg_opm"]) if r["avg_opm"] is not None else None,
+            "avg_npm": float(r["avg_npm"]) if r["avg_npm"] is not None else None,
+            "avg_dy": float(r["avg_dy"]) if r["avg_dy"] is not None else None,
         }
     return out
 
@@ -2229,7 +2243,7 @@ async def list_discover_stocks(
     args.extend([max(1, min(limit, 250)), max(0, offset)])
 
     pool = await get_pool()
-    sector_stats = await _get_stock_sector_stats(pool)
+    industry_stats = await _get_stock_industry_stats(pool)
 
     rows = await pool.fetch(
         f"""
@@ -2277,8 +2291,8 @@ async def list_discover_stocks(
     items = []
     for r in rows:
         d = record_to_dict(r)
-        s = str(d.get("sector") or "Other")
-        items.append(_decorate_stock_row(d, sector_stats.get(s)))
+        ind = str(d.get("industry") or "Other")
+        items.append(_decorate_stock_row(d, industry_stats.get(ind)))
 
     return {
         "preset": preset_norm,
@@ -2980,27 +2994,28 @@ async def get_stock_by_symbol(*, symbol: str) -> dict | None:
     if row is None:
         return None
     d = record_to_dict(row)
-    # Fetch sector stats for decoration
-    sector = str(d.get("sector") or "Other")
-    sector_stats_rows = await pool.fetch(
+    # Fetch industry stats for decoration
+    ind = str(d.get("industry") or "Other")
+    industry_stats_rows = await pool.fetch(
         f"""
         SELECT
-            AVG(pe_ratio) AS avg_pe,
-            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY pe_ratio) AS median_pe,
+            AVG(pe_ratio) FILTER (WHERE pe_ratio > 0) AS avg_pe,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY pe_ratio)
+                FILTER (WHERE pe_ratio > 0) AS median_pe,
             AVG(roe) AS avg_roe,
             AVG(roce) AS avg_roce,
-            AVG(price_to_book) AS avg_pb,
-            AVG(operating_margins) AS avg_opm,
-            AVG(profit_margins) AS avg_npm,
-            AVG(dividend_yield) AS avg_div_yield,
-            AVG(debt_to_equity) AS avg_de,
+            AVG(price_to_book) FILTER (WHERE price_to_book > 0) AS avg_pb,
+            AVG(operating_margins * 100) FILTER (WHERE operating_margins IS NOT NULL) AS avg_opm,
+            AVG(profit_margins * 100) FILTER (WHERE profit_margins IS NOT NULL) AS avg_npm,
+            AVG(dividend_yield) FILTER (WHERE dividend_yield > 0) AS avg_dy,
+            AVG(debt_to_equity) FILTER (WHERE debt_to_equity >= 0) AS avg_de,
             AVG(beta) AS avg_beta
         FROM {STOCK_TABLE}
-        WHERE sector = $1 AND source_status IN ('primary', 'fallback')
+        WHERE industry = $1 AND source_status IN ('primary', 'fallback')
         """,
-        sector,
+        ind,
     )
-    stats = record_to_dict(sector_stats_rows[0]) if sector_stats_rows else {}
+    stats = record_to_dict(industry_stats_rows[0]) if industry_stats_rows else {}
     return _decorate_stock_row(d, stats)
 
 
@@ -3271,7 +3286,7 @@ async def get_mf_nav_history(*, scheme_code: str, days: int = 365) -> list[dict]
 async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
     """Get peer stocks in the same industry (fallback to sector), sorted by score descending."""
     pool = await get_pool()
-    sector_stats = await _get_stock_sector_stats(pool)
+    industry_stats = await _get_stock_industry_stats(pool)
 
     target = await pool.fetchrow(
         f"SELECT sector, industry FROM {STOCK_TABLE} WHERE symbol = $1",
@@ -3346,8 +3361,8 @@ async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
     items = []
     for r in rows:
         d = record_to_dict(r)
-        s = str(d.get("sector") or "Other")
-        items.append(_decorate_stock_row(d, sector_stats.get(s)))
+        ind = str(d.get("industry") or "Other")
+        items.append(_decorate_stock_row(d, industry_stats.get(ind)))
     return items
 
 
@@ -3602,7 +3617,7 @@ async def get_stock_story(*, symbol: str) -> dict | None:
 async def compare_stocks(*, symbols: list[str]) -> dict:
     """Side-by-side comparison of multiple stocks."""
     pool = await get_pool()
-    sector_stats = await _get_stock_sector_stats(pool)
+    industry_stats = await _get_stock_industry_stats(pool)
 
     rows = await pool.fetch(
         f"SELECT * FROM {STOCK_TABLE} WHERE symbol = ANY($1::text[])",
@@ -3612,8 +3627,8 @@ async def compare_stocks(*, symbols: list[str]) -> dict:
     items = []
     for r in rows:
         d = record_to_dict(r)
-        s = str(d.get("sector") or "Other")
-        items.append(_decorate_stock_row(d, sector_stats.get(s)))
+        ind = str(d.get("industry") or "Other")
+        items.append(_decorate_stock_row(d, industry_stats.get(ind)))
 
     # Sort items to match the requested symbol order
     sym_order = {s: i for i, s in enumerate(symbols)}
