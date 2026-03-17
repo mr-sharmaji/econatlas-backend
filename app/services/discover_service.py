@@ -833,6 +833,60 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
                      f"Adequate profitability — check whether margins are trending up or down.",
                      "neutral")
 
+    # ── Revenue, Profit & Margins chart ────────────────────────────
+    pl = row.get("pl_annual")
+    if isinstance(pl, dict):
+        _pl_sales = pl.get("sales") or []
+        _pl_np = pl.get("net_profit") or []
+        _pl_opm = pl.get("opm_pct") or []
+        _n_pl = len(pl.get("years") or [])
+        if _n_pl >= 3 and len(_pl_sales) >= _n_pl and len(_pl_np) >= _n_pl:
+            # Compare oldest available vs latest annual year
+            _s_old = _pl_sales[0]
+            _s_new = _pl_sales[_n_pl - 1]
+            _np_old = _pl_np[0]
+            _np_new = _pl_np[_n_pl - 1]
+            _opm_old = _pl_opm[0] if _pl_opm else None
+            _opm_new = _pl_opm[_n_pl - 1] if len(_pl_opm) >= _n_pl else None
+            _rev_grew = _s_new > _s_old if _s_old and _s_new else None
+            _profit_grew = _np_new > _np_old if _np_old is not None and _np_new is not None else None
+            _margin_expanded = (_opm_new > _opm_old) if _opm_old is not None and _opm_new is not None else None
+
+            parts = []
+            if _rev_grew is True and _profit_grew is True and _margin_expanded is True:
+                parts.append(
+                    f"Revenue, profit, and margins have all expanded over the last {_n_pl} years — "
+                    f"the strongest signal of a well-managed, growing business.")
+                _sent = "positive"
+            elif _rev_grew is True and _profit_grew is True:
+                parts.append(
+                    f"Both revenue and profit have grown over {_n_pl} years.")
+                if _margin_expanded is False:
+                    parts.append(
+                        "However, margins have compressed — costs are growing faster than revenue.")
+                    _sent = "neutral"
+                else:
+                    _sent = "positive"
+            elif _rev_grew is True and _profit_grew is False:
+                parts.append(
+                    f"Revenue has grown over {_n_pl} years but profits haven't kept pace — "
+                    f"rising costs or investments are eating into the bottom line.")
+                _sent = "warning"
+            elif _rev_grew is False:
+                parts.append(
+                    f"Revenue has declined over {_n_pl} years — the business may be in structural decline "
+                    f"or undergoing a transformation.")
+                _sent = "negative"
+            else:
+                parts.append(f"The chart shows {_n_pl} years of revenue, profit, and margin data.")
+                _sent = "neutral"
+
+            if _opm_old is not None and _opm_new is not None:
+                parts.append(
+                    f"Operating margin moved from {_opm_old:.0f}% to {_opm_new:.0f}% over this period.")
+
+            _add("revenue_profit_margins", " ".join(parts), _sent)
+
     # ── Growth ─────────────────────────────────────────────────────
     rg_val = _f("revenue_growth")
     if rg_val is not None:
@@ -974,6 +1028,48 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
                  f"3-year profit CAGR shows whether profitability is consistently improving. "
                  f"At {cpg_val:.1f}%, profits have been declining over three years. "
                  f"A serious concern — the business is becoming less profitable over time.{_ctx}",
+                 "negative")
+
+    # ── Stock Price CAGR ────────────────────────────────────────────
+    _gr_price = gr.get("stock_price_cagr", {})
+    # Use 1Y as the primary value (most recent return)
+    _spc_1y = _gr_price.get("1y")
+    _spc_10y = _gr_price.get("10y")
+    _spc_5y = _gr_price.get("5y")
+    _spc_3y = _gr_price.get("3y")
+    _spc_val = _spc_1y  # primary display value
+    if _spc_val is not None:
+        _ctx_parts = []
+        if _spc_10y is not None:
+            _ctx_parts.append(f"10Y: {_spc_10y:.0f}%")
+        if _spc_5y is not None:
+            _ctx_parts.append(f"5Y: {_spc_5y:.0f}%")
+        if _spc_3y is not None:
+            _ctx_parts.append(f"3Y: {_spc_3y:.0f}%")
+        _ctx = f" (Compare: {', '.join(_ctx_parts)}.)" if _ctx_parts else ""
+        if _spc_val > 20:
+            _add("stock_price_cagr",
+                 f"Stock price CAGR shows how the stock has performed for investors over time. "
+                 f"At {_spc_val:.0f}% over the last year, the stock has delivered strong returns. "
+                 f"Check if fundamentals support this move or if the rally is speculative.{_ctx}",
+                 "positive")
+        elif _spc_val > 0:
+            _add("stock_price_cagr",
+                 f"Stock price CAGR shows how the stock has performed for investors over time. "
+                 f"At {_spc_val:.0f}% over the last year, the stock has delivered modest positive returns. "
+                 f"Steady appreciation in line with or slightly above market averages.{_ctx}",
+                 "neutral")
+        elif _spc_val > -10:
+            _add("stock_price_cagr",
+                 f"Stock price CAGR shows how the stock has performed for investors over time. "
+                 f"At {_spc_val:.0f}% over the last year, the stock has slightly underperformed. "
+                 f"A small decline — could be a buying opportunity if fundamentals remain strong.{_ctx}",
+                 "warning")
+        else:
+            _add("stock_price_cagr",
+                 f"Stock price CAGR shows how the stock has performed for investors over time. "
+                 f"At {_spc_val:.0f}% over the last year, the stock has fallen significantly. "
+                 f"Investigate whether the decline reflects deteriorating fundamentals or a temporary setback.{_ctx}",
                  "negative")
 
     # ── Debt & Leverage ────────────────────────────────────────────
