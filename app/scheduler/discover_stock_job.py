@@ -1772,26 +1772,36 @@ class DiscoverStockScraper(BaseScraper):
                                 sa_cg = self._extract_compounded_growth(sa_html)
                                 if sa_cg:
                                     fundamentals.update(sa_cg)
-                            # Re-extract top-level ratios from standalone if consolidated had blanks
+                            # Re-extract top-level ratios from standalone.
+                            # Always overwrite ROE/ROCE — consolidated's "Return on equity"
+                            # regex can falsely match the growth section (e.g. "Last Year: 10%")
+                            # instead of the empty top-ratio. Standalone top-ratios are reliable.
                             sa_text = re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", sa_html)))
-                            _ratio_keys = {
-                                "roce": ["ROCE", "Return on capital employed"],
-                                "roe": ["ROE", "Return on equity"],
+                            _ratio_keys_fill = {
                                 "pe_ratio": ["Stock P/E", "P/E"],
                                 "eps": ["EPS", "Earnings Per Share"],
                             }
-                            for _rk, _labels in _ratio_keys.items():
+                            _ratio_keys_overwrite = {
+                                "roce": ["ROCE", "Return on capital employed"],
+                                "roe": ["ROE", "Return on equity"],
+                            }
+                            for _rk, _labels in _ratio_keys_fill.items():
                                 if fundamentals.get(_rk) is None:
                                     _rv = self._extract_labeled_number(sa_text, _labels)
                                     if _rv is not None:
                                         fundamentals[_rk] = _rv
-                            logger.info("Standalone fallback for %s: pl=%s bs=%s cf=%s gr=%s roce=%s",
+                            for _rk, _labels in _ratio_keys_overwrite.items():
+                                _rv = self._extract_labeled_number(sa_text, _labels)
+                                if _rv is not None:
+                                    fundamentals[_rk] = _rv
+                            logger.info("Standalone fallback for %s: pl=%s bs=%s cf=%s gr=%s roce=%s roe=%s",
                                         nse_symbol,
                                         "OK" if fundamentals.get("pl_annual") else "MISS",
                                         "OK" if fundamentals.get("bs_annual") else "MISS",
                                         "OK" if fundamentals.get("cf_annual") else "MISS",
                                         "OK" if fundamentals.get("growth_ranges") else "MISS",
-                                        fundamentals.get("roce"))
+                                        fundamentals.get("roce"),
+                                        fundamentals.get("roe"))
                         except Exception:
                             logger.debug("Standalone fallback failed for %s", nse_symbol, exc_info=True)
 
