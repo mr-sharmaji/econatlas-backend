@@ -1017,82 +1017,107 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
     _gr_profit = gr.get("compounded_profit_growth", {})
     _csg_10y = _gr_sales.get("10y")
     _csg_5y = _gr_sales.get("5y")
+    _csg_ttm = _gr_sales.get("ttm")
+    # Use the oldest available period as the primary display value (matches app)
+    _csg_display = _csg_10y or _csg_5y or csg_val
+    _csg_period = "10-year" if _csg_10y is not None else ("5-year" if _csg_5y is not None else "3-year")
     if csg_val is not None:
-        # Build multi-period context suffix
+        # Build multi-period context: all periods
         _ctx_parts = []
         if _csg_10y is not None:
             _ctx_parts.append(f"10Y: {_csg_10y:.0f}%")
         if _csg_5y is not None:
             _ctx_parts.append(f"5Y: {_csg_5y:.0f}%")
-        _ctx = f" (Compare: {', '.join(_ctx_parts)}.)" if _ctx_parts else ""
-        if csg_val > 15:
+        _ctx_parts.append(f"3Y: {csg_val:.0f}%")
+        if _csg_ttm is not None:
+            _ctx_parts.append(f"TTM: {_csg_ttm:.0f}%")
+        _ctx = f" ({', '.join(_ctx_parts)})"
+        # Detect deceleration: current growth below long-term average
+        _decel = ""
+        _oldest_csg = _csg_10y or _csg_5y
+        _current_csg = _csg_ttm if _csg_ttm is not None else csg_val
+        if _oldest_csg is not None and _current_csg < _oldest_csg - 3:
+            _decel = f" However, growth has decelerated from {_oldest_csg:.0f}% to {_current_csg:.0f}% recently — the pace is slowing."
+        if _csg_display > 15:
             _add("compounded_sales_growth_3y",
-                 f"3-year revenue CAGR smooths out annual fluctuations to show the underlying growth trajectory. "
-                 f"At {csg_val:.1f}%, revenue has compounded at a strong pace over three years. "
-                 f"This consistent top-line expansion signals a business with structural tailwinds.{_ctx}",
-                 "positive")
-        elif csg_val > 5:
+                 f"Revenue CAGR smooths out annual fluctuations to show the underlying growth trajectory. "
+                 f"At {_csg_display:.0f}% over {_csg_period}, revenue has compounded at a strong pace. "
+                 f"Consistent top-line expansion signals a business with structural tailwinds.{_ctx}{_decel}",
+                 "warning" if _decel else "positive")
+        elif _csg_display > 5:
             _add("compounded_sales_growth_3y",
-                 f"3-year revenue CAGR smooths out annual fluctuations to show the underlying growth trajectory. "
-                 f"At {csg_val:.1f}%, the company has grown steadily but not spectacularly. "
-                 f"Moderate growth — typical of mature businesses in established industries.{_ctx}",
-                 "neutral")
-        elif csg_val > 0:
+                 f"Revenue CAGR smooths out annual fluctuations to show the underlying growth trajectory. "
+                 f"At {_csg_display:.0f}% over {_csg_period}, the company has grown steadily. "
+                 f"Moderate growth — typical of mature businesses in established industries.{_ctx}{_decel}",
+                 "warning" if _decel else "neutral")
+        elif _csg_display > 0:
             _add("compounded_sales_growth_3y",
-                 f"3-year revenue CAGR smooths out annual fluctuations to show the underlying growth trajectory. "
-                 f"At {csg_val:.1f}%, growth has been sluggish over the past three years. "
-                 f"The business may be in a mature phase or facing competitive headwinds.{_ctx}",
-                 "neutral")
+                 f"Revenue CAGR smooths out annual fluctuations to show the underlying growth trajectory. "
+                 f"At {_csg_display:.0f}% over {_csg_period}, growth has been sluggish. "
+                 f"The business may be in a mature phase or facing competitive headwinds.{_ctx}{_decel}",
+                 "warning" if _decel else "neutral")
         else:
             _add("compounded_sales_growth_3y",
-                 f"3-year revenue CAGR smooths out annual fluctuations to show the underlying growth trajectory. "
-                 f"At {csg_val:.1f}%, revenue has been shrinking over three years. "
+                 f"Revenue CAGR smooths out annual fluctuations to show the underlying growth trajectory. "
+                 f"At {_csg_display:.0f}% over {_csg_period}, revenue has been shrinking. "
                  f"A structural decline unless the company is pivoting to a new business model.{_ctx}",
                  "negative")
 
     cpg_val = _f("compounded_profit_growth_3y")
     _cpg_10y = _gr_profit.get("10y")
     _cpg_5y = _gr_profit.get("5y")
+    _cpg_ttm = _gr_profit.get("ttm")
+    _cpg_display = _cpg_10y or _cpg_5y or cpg_val
+    _cpg_period = "10-year" if _cpg_10y is not None else ("5-year" if _cpg_5y is not None else "3-year")
     if cpg_val is not None:
         _ctx_parts = []
         if _cpg_10y is not None:
             _ctx_parts.append(f"10Y: {_cpg_10y:.0f}%")
         if _cpg_5y is not None:
             _ctx_parts.append(f"5Y: {_cpg_5y:.0f}%")
-        _ctx = f" (Compare: {', '.join(_ctx_parts)}.)" if _ctx_parts else ""
-        if cpg_val > 15:
+        _ctx_parts.append(f"3Y: {cpg_val:.0f}%")
+        if _cpg_ttm is not None:
+            _ctx_parts.append(f"TTM: {_cpg_ttm:.0f}%")
+        _ctx = f" ({', '.join(_ctx_parts)})"
+        # Detect deceleration
+        _decel = ""
+        _oldest_cpg = _cpg_10y or _cpg_5y
+        _current_cpg = _cpg_ttm if _cpg_ttm is not None else cpg_val
+        if _oldest_cpg is not None and _current_cpg < _oldest_cpg - 3:
+            _decel = f" However, profit growth has decelerated from {_oldest_cpg:.0f}% to {_current_cpg:.0f}% recently — momentum is fading."
+        if _cpg_display > 15:
             _add("compounded_profit_growth_3y",
-                 f"3-year profit CAGR shows whether profitability is consistently improving. "
-                 f"At {cpg_val:.1f}%, profits have compounded strongly. "
-                 f"This signals improving efficiency and operating leverage — a quality indicator.{_ctx}",
-                 "positive")
-        elif cpg_val > 5:
+                 f"Profit CAGR shows whether profitability is consistently improving. "
+                 f"At {_cpg_display:.0f}% over {_cpg_period}, profits have compounded strongly. "
+                 f"This signals improving efficiency and operating leverage — a quality indicator.{_ctx}{_decel}",
+                 "warning" if _decel else "positive")
+        elif _cpg_display > 5:
             _add("compounded_profit_growth_3y",
-                 f"3-year profit CAGR shows whether profitability is consistently improving. "
-                 f"At {cpg_val:.1f}%, profit growth has been steady but unspectacular. "
-                 f"The company is profitable and stable, if not a high-growth compounder.{_ctx}",
-                 "neutral")
-        elif cpg_val > 0:
+                 f"Profit CAGR shows whether profitability is consistently improving. "
+                 f"At {_cpg_display:.0f}% over {_cpg_period}, profit growth has been steady. "
+                 f"The company is profitable and stable, if not a high-growth compounder.{_ctx}{_decel}",
+                 "warning" if _decel else "neutral")
+        elif _cpg_display > 0:
             _add("compounded_profit_growth_3y",
-                 f"3-year profit CAGR shows whether profitability is consistently improving. "
-                 f"At {cpg_val:.1f}%, profits are barely growing. "
-                 f"Check if rising costs or competitive pressure is squeezing margins.{_ctx}",
-                 "neutral")
+                 f"Profit CAGR shows whether profitability is consistently improving. "
+                 f"At {_cpg_display:.0f}% over {_cpg_period}, profits are barely growing. "
+                 f"Check if rising costs or competitive pressure is squeezing margins.{_ctx}{_decel}",
+                 "warning" if _decel else "neutral")
         else:
             _add("compounded_profit_growth_3y",
-                 f"3-year profit CAGR shows whether profitability is consistently improving. "
-                 f"At {cpg_val:.1f}%, profits have been declining over three years. "
+                 f"Profit CAGR shows whether profitability is consistently improving. "
+                 f"At {_cpg_display:.0f}% over {_cpg_period}, profits have been declining. "
                  f"A serious concern — the business is becoming less profitable over time.{_ctx}",
                  "negative")
 
     # ── Stock Price CAGR ────────────────────────────────────────────
     _gr_price = gr.get("stock_price_cagr", {})
-    # Use 1Y as the primary value (most recent return)
     _spc_1y = _gr_price.get("1y")
     _spc_10y = _gr_price.get("10y")
     _spc_5y = _gr_price.get("5y")
     _spc_3y = _gr_price.get("3y")
-    _spc_val = _spc_1y  # primary display value
+    # Use 1Y as the primary display value (matches app)
+    _spc_val = _spc_1y
     if _spc_val is not None:
         _ctx_parts = []
         if _spc_10y is not None:
@@ -1101,24 +1126,30 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
             _ctx_parts.append(f"5Y: {_spc_5y:.0f}%")
         if _spc_3y is not None:
             _ctx_parts.append(f"3Y: {_spc_3y:.0f}%")
-        _ctx = f" (Compare: {', '.join(_ctx_parts)}.)" if _ctx_parts else ""
+        _ctx_parts.append(f"1Y: {_spc_val:.0f}%")
+        _ctx = f" ({', '.join(_ctx_parts)})"
+        # Detect deceleration from long-term
+        _decel = ""
+        _oldest_spc = _spc_10y or _spc_5y or _spc_3y
+        if _oldest_spc is not None and _spc_val < _oldest_spc - 5:
+            _decel = f" Recent returns ({_spc_val:.0f}%) lag the long-term CAGR ({_oldest_spc:.0f}%) — the stock may have run ahead of fundamentals or hit a correction."
         if _spc_val > 20:
             _add("stock_price_cagr",
                  f"Stock price CAGR shows how the stock has performed for investors over time. "
                  f"At {_spc_val:.0f}% over the last year, the stock has delivered strong returns. "
-                 f"Check if fundamentals support this move or if the rally is speculative.{_ctx}",
-                 "positive")
+                 f"Check if fundamentals support this move or if the rally is speculative.{_ctx}{_decel}",
+                 "warning" if _decel else "positive")
         elif _spc_val > 0:
             _add("stock_price_cagr",
                  f"Stock price CAGR shows how the stock has performed for investors over time. "
                  f"At {_spc_val:.0f}% over the last year, the stock has delivered modest positive returns. "
-                 f"Steady appreciation in line with or slightly above market averages.{_ctx}",
-                 "neutral")
+                 f"Steady appreciation in line with or slightly above market averages.{_ctx}{_decel}",
+                 "warning" if _decel else "neutral")
         elif _spc_val > -10:
             _add("stock_price_cagr",
                  f"Stock price CAGR shows how the stock has performed for investors over time. "
                  f"At {_spc_val:.0f}% over the last year, the stock has slightly underperformed. "
-                 f"A small decline — could be a buying opportunity if fundamentals remain strong.{_ctx}",
+                 f"A small decline — could be a buying opportunity if fundamentals remain strong.{_ctx}{_decel}",
                  "warning")
         else:
             _add("stock_price_cagr",
