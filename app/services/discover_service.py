@@ -1488,7 +1488,7 @@ def _decorate_stock_row(row: dict, industry_stats: dict | None = None) -> dict:
     item["tags"] = tags_v2 if isinstance(tags_v2, list) else []
     item.pop("tags_v2", None)
     # Parse JSONB columns that come back as strings from asyncpg
-    for jkey in ("pl_annual", "bs_annual", "cf_annual", "shareholding_quarterly"):
+    for jkey in ("pl_annual", "bs_annual", "cf_annual", "shareholding_quarterly", "growth_ranges"):
         val = item.get(jkey)
         if isinstance(val, str):
             try:
@@ -1614,7 +1614,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     sector_percentile, lynch_classification, percent_change_5y,
                     technical_score, rsi_14, action_tag, action_tag_reasoning,
                     score_confidence, trend_alignment, breakout_signal,
-                    tags_v2
+                    tags_v2, growth_ranges
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -1648,7 +1648,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     $85, $86, $87,
                     $88, $89, $90, $91,
                     $92, $93, $94,
-                    $95
+                    $95,
+                    $96
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
@@ -1754,7 +1755,8 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     score_confidence = COALESCE(EXCLUDED.score_confidence, {STOCK_TABLE}.score_confidence),
                     trend_alignment = COALESCE(EXCLUDED.trend_alignment, {STOCK_TABLE}.trend_alignment),
                     breakout_signal = COALESCE(EXCLUDED.breakout_signal, {STOCK_TABLE}.breakout_signal),
-                    tags_v2 = COALESCE(EXCLUDED.tags_v2, {STOCK_TABLE}.tags_v2)
+                    tags_v2 = COALESCE(EXCLUDED.tags_v2, {STOCK_TABLE}.tags_v2),
+                    growth_ranges = COALESCE(EXCLUDED.growth_ranges, {STOCK_TABLE}.growth_ranges)
                 """,
                 str(row.get("market") or "IN"),                                    # $1
                 str(row.get("symbol") or ""),                                      # $2
@@ -1851,6 +1853,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 row.get("trend_alignment"),                                        # $93
                 row.get("breakout_signal"),                                        # $94
                 _to_jsonb(row.get("tags_v2"), []) if row.get("score") is not None else None,  # $95
+                _to_jsonb_raw(row.get("growth_ranges")),                              # $96
             )
             count += 1
     return count
@@ -2261,7 +2264,7 @@ async def list_discover_stocks(
             cash_from_operations, cash_from_investing, cash_from_financing,
             num_shareholders_change_qoq, num_shareholders_change_yoy,
             synthetic_forward_pe,
-            pl_annual, bs_annual, cf_annual, shareholding_quarterly,
+            pl_annual, bs_annual, cf_annual, shareholding_quarterly, growth_ranges,
             percent_change_3m, percent_change_1w,
             percent_change_1y, percent_change_3y,
             score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
@@ -3312,7 +3315,7 @@ async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
             cash_from_operations, cash_from_investing, cash_from_financing,
             num_shareholders_change_qoq, num_shareholders_change_yoy,
             synthetic_forward_pe,
-            pl_annual, bs_annual, cf_annual, shareholding_quarterly,
+            pl_annual, bs_annual, cf_annual, shareholding_quarterly, growth_ranges,
             percent_change_3m, percent_change_1w,
             percent_change_1y, percent_change_3y,
             score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,

@@ -576,3 +576,6 @@ ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS breakout_signal TE
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS entry_exit_signal TEXT;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS risk_reward_ratio DOUBLE PRECISION;
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS risk_reward_tag TEXT;
+
+-- v1.1: Growth ranges (10Y, 5Y, 3Y, TTM/1Y for sales, profit, price CAGR, ROE)
+ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS growth_ranges JSONB;

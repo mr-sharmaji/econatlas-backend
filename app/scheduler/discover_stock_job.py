@@ -1375,20 +1375,17 @@ class DiscoverStockScraper(BaseScraper):
         Screener shows: Compounded Sales Growth, Compounded Profit Growth,
         Stock Price CAGR, Return on Equity — each with 10Y, 5Y, 3Y, TTM/1Y.
 
-        Returns dict with: compounded_sales_growth_3y, compounded_profit_growth_3y,
-        stock_price_cagr_3y, roe_3y_avg.
+        Returns dict with:
+        - compounded_sales_growth_3y, compounded_profit_growth_3y (flat fields for scoring)
+        - growth_ranges: full multi-period dict for app display
         """
         result: dict = {}
 
         def _extract_growth_value(section_label: str, period_label: str) -> float | None:
-            # Find the section
             idx = html.find(section_label)
             if idx < 0:
                 return None
-            # Search within a reasonable window after the label
             window = html[idx: idx + 800]
-            # Screener HTML: <td>3 Years:</td>\n<td>7%</td>
-            # Match across the </td><td> boundary
             pat = re.compile(
                 period_label + r'[:\s]*</td>\s*<td[^>]*>\s*([\-]?\d+)\s*%',
                 re.IGNORECASE,
@@ -1401,13 +1398,46 @@ class DiscoverStockScraper(BaseScraper):
                     return None
             return None
 
-        csg_3y = _extract_growth_value("Compounded Sales Growth", "3 Years")
-        cpg_3y = _extract_growth_value("Compounded Profit Growth", "3 Years")
+        def _extract_all_periods(section_label: str, periods: list[tuple[str, str]]) -> dict:
+            """Extract all period values for a section. periods = [(label, key), ...]"""
+            out = {}
+            for label, key in periods:
+                val = _extract_growth_value(section_label, label)
+                if val is not None:
+                    out[key] = val
+            return out
+
+        # Define periods per section (Screener uses different labels for the last column)
+        sales_profit_periods = [("10 Years", "10y"), ("5 Years", "5y"), ("3 Years", "3y"), ("TTM", "ttm")]
+        price_cagr_periods = [("10 Years", "10y"), ("5 Years", "5y"), ("3 Years", "3y"), ("1 Year", "1y")]
+        roe_periods = [("10 Years", "10y"), ("5 Years", "5y"), ("3 Years", "3y"), ("Last Year", "1y")]
+
+        growth_ranges: dict = {}
+
+        csg = _extract_all_periods("Compounded Sales Growth", sales_profit_periods)
+        if csg:
+            growth_ranges["compounded_sales_growth"] = csg
+        cpg = _extract_all_periods("Compounded Profit Growth", sales_profit_periods)
+        if cpg:
+            growth_ranges["compounded_profit_growth"] = cpg
+        spc = _extract_all_periods("Stock Price CAGR", price_cagr_periods)
+        if spc:
+            growth_ranges["stock_price_cagr"] = spc
+        roe = _extract_all_periods("Return on Equity", roe_periods)
+        if roe:
+            growth_ranges["return_on_equity"] = roe
+
+        # Flat 3Y fields for backward compat + scoring
+        csg_3y = csg.get("3y") if csg else None
+        cpg_3y = cpg.get("3y") if cpg else None
 
         if csg_3y is not None:
             result["compounded_sales_growth_3y"] = csg_3y
         if cpg_3y is not None:
             result["compounded_profit_growth_3y"] = cpg_3y
+
+        if growth_ranges:
+            result["growth_ranges"] = growth_ranges
 
         return result
 
@@ -4913,6 +4943,8 @@ class DiscoverStockScraper(BaseScraper):
             "bs_annual": fundamentals.get("bs_annual"),
             "cf_annual": fundamentals.get("cf_annual"),
             "shareholding_quarterly": fundamentals.get("shareholding_quarterly"),
+            # Growth ranges (10Y/5Y/3Y/TTM for sales, profit, price CAGR, ROE)
+            "growth_ranges": fundamentals.get("growth_ranges"),
             # Shareholder trends
             "num_shareholders_change_qoq": fundamentals.get("num_shareholders_change_qoq"),
             "num_shareholders_change_yoy": fundamentals.get("num_shareholders_change_yoy"),

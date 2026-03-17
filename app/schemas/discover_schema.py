@@ -144,6 +144,8 @@ class DiscoverStockItemResponse(BaseModel):
     bs_annual: dict | None = None
     cf_annual: dict | None = None
     shareholding_quarterly: dict | None = None
+    # Growth ranges (10Y/5Y/3Y/TTM for sales growth, profit growth, price CAGR, ROE)
+    growth_ranges: dict | None = None
     # Technical & action tag
     technical_score: float | None = None
     rsi_14: float | None = None
