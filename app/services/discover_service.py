@@ -752,17 +752,50 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
                      f"Not bad, but there's room for improvement in capital efficiency.",
                      "neutral")
 
+    # Financial businesses (banks/NBFCs) use financing margin from Screener
+    # instead of operating margin.
+    _pl_data = row.get("pl_annual")
+    _is_financial_margin = (
+        isinstance(_pl_data, dict)
+        and bool(_pl_data.get("financing_margin_pct"))
+        and not bool(_pl_data.get("opm_pct"))
+    )
+    _margin_key = "financial_margin" if _is_financial_margin else "operating_margins"
+    _margin_name = "Financial margin" if _is_financial_margin else "Operating margin"
+    _margin_scope = (
+        "net interest income relative to earning assets"
+        if _is_financial_margin
+        else "profit from core business operations before interest and taxes"
+    )
+
     opm = _f("operating_margins")
+    # Derive from Screener financing_margin_pct when operating_margins isn't present.
+    if opm is None and isinstance(_pl_data, dict) and _is_financial_margin:
+        _fm = _pl_data.get("financing_margin_pct") or []
+        _yrs = _pl_data.get("years") or []
+        _n_yr = len(_yrs)
+        _idx = _n_yr if len(_fm) > _n_yr else len(_fm) - 1
+        if _idx >= 0 and _idx < len(_fm):
+            _v = _fm[_idx]
+            if isinstance(_v, (int, float)):
+                opm = float(_v) / 100.0
+
     if opm is not None:
         avg_opm = _sf("avg_opm")
         opm_pct = opm * 100 if abs(opm) < 1 else opm
-        avg_opm_pct = (avg_opm * 100 if avg_opm and abs(avg_opm) < 1 else avg_opm) if avg_opm else None
+        # Industry avg_opm is not a meaningful peer baseline for financial margins.
+        avg_opm_pct = None if _is_financial_margin else (
+            (avg_opm * 100 if avg_opm and abs(avg_opm) < 1 else avg_opm) if avg_opm else None
+        )
 
-        # Compute historical OPM trend from P&L opm_pct array
+        # Compute historical margin trend from P&L arrays.
         _opm_trend = ""
-        _pl_data = row.get("pl_annual")
         if isinstance(_pl_data, dict):
-            _pl_opm = _pl_data.get("opm_pct") or []
+            _pl_opm = (
+                _pl_data.get("financing_margin_pct") or []
+                if _is_financial_margin
+                else _pl_data.get("opm_pct") or []
+            )
             _pl_years = _pl_data.get("years") or []
             _n_yr = len(_pl_years)
             if _n_yr >= 3 and len(_pl_opm) >= _n_yr and _pl_opm[0] is not None:
@@ -773,50 +806,67 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
                 _range_str = f" (range: {_opm_min:.0f}%–{_opm_max:.0f}%)" if _opm_min is not None and _opm_max is not None and _opm_min != _opm_max else ""
                 _yr_start = _pl_years[0] if _pl_years else ""
                 if opm_pct > _opm_old + 2:
-                    _opm_trend = f" Operating margin has expanded from {_opm_old:.0f}% ({_yr_start}) to {opm_pct:.0f}% (TTM){_range_str} — improving efficiency."
+                    _opm_trend = f" {_margin_name} has expanded from {_opm_old:.0f}% ({_yr_start}) to {opm_pct:.0f}% (TTM){_range_str}."
                 elif opm_pct < _opm_old - 2:
-                    _opm_trend = f" Operating margin has compressed from {_opm_old:.0f}% ({_yr_start}) to {opm_pct:.0f}% (TTM){_range_str} — margin pressure."
+                    _opm_trend = f" {_margin_name} has compressed from {_opm_old:.0f}% ({_yr_start}) to {opm_pct:.0f}% (TTM){_range_str}."
                 else:
-                    _opm_trend = f" Operating margin has been stable around {opm_pct:.0f}% over {_n_yr} years{_range_str}."
+                    _opm_trend = f" {_margin_name} has remained around {opm_pct:.0f}% over {_n_yr} years{_range_str}."
 
         if avg_opm_pct and avg_opm_pct > 0:
             if opm_pct > avg_opm_pct * 1.2:
-                _add("operating_margins",
-                     f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
+                _add(_margin_key,
+                     f"{_margin_name} shows {_margin_scope}. "
                      f"At {opm_pct:.1f}%, this exceeds the {industry} average of {avg_opm_pct:.1f}%. "
                      f"The company has better cost control or pricing power than its peers.{_opm_trend}",
                      "positive")
             elif opm_pct < avg_opm_pct * 0.6:
-                _add("operating_margins",
-                     f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
+                _add(_margin_key,
+                     f"{_margin_name} shows {_margin_scope}. "
                      f"At {opm_pct:.1f}%, this is below the {industry} average of {avg_opm_pct:.1f}%. "
                      f"The company may be facing competitive pressure on pricing or higher input costs.{_opm_trend}",
                      "negative")
             else:
-                _add("operating_margins",
-                     f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
+                _add(_margin_key,
+                     f"{_margin_name} shows {_margin_scope}. "
                      f"At {opm_pct:.1f}%, it's near the {industry} average of {avg_opm_pct:.1f}%. "
                      f"Operational efficiency is on par with peers.{_opm_trend}",
                      "neutral")
         else:
-            if opm_pct > 15:
-                _add("operating_margins",
-                     f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
-                     f"At {opm_pct:.1f}%, the company retains a healthy share of revenue as operating profit. "
-                     f"Good cost discipline and potential pricing power.{_opm_trend}",
-                     "positive")
-            elif opm_pct < 5:
-                _add("operating_margins",
-                     f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
-                     f"At {opm_pct:.1f}%, margins are thin. "
-                     f"The business has little buffer against cost increases or revenue slowdowns.{_opm_trend}",
-                     "negative")
+            if _is_financial_margin:
+                if opm_pct > 4:
+                    _add(_margin_key,
+                         f"{_margin_name} shows {_margin_scope}. "
+                         f"At {opm_pct:.1f}%, spreads are healthy for lending economics.{_opm_trend}",
+                         "positive")
+                elif opm_pct < 2:
+                    _add(_margin_key,
+                         f"{_margin_name} shows {_margin_scope}. "
+                         f"At {opm_pct:.1f}%, spreads are thin and earnings can be sensitive to funding costs.{_opm_trend}",
+                         "negative")
+                else:
+                    _add(_margin_key,
+                         f"{_margin_name} shows {_margin_scope}. "
+                         f"At {opm_pct:.1f}%, spreads are in a moderate range.{_opm_trend}",
+                         "neutral")
             else:
-                _add("operating_margins",
-                     f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
-                     f"At {opm_pct:.1f}%, margins are in a moderate range. "
-                     f"Watch the trend — expanding margins are a bullish signal.{_opm_trend}",
-                     "neutral")
+                if opm_pct > 15:
+                    _add(_margin_key,
+                         f"{_margin_name} shows {_margin_scope}. "
+                         f"At {opm_pct:.1f}%, the company retains a healthy share of revenue as operating profit. "
+                         f"Good cost discipline and potential pricing power.{_opm_trend}",
+                         "positive")
+                elif opm_pct < 5:
+                    _add(_margin_key,
+                         f"{_margin_name} shows {_margin_scope}. "
+                         f"At {opm_pct:.1f}%, margins are thin. "
+                         f"The business has little buffer against cost increases or revenue slowdowns.{_opm_trend}",
+                         "negative")
+                else:
+                    _add(_margin_key,
+                         f"{_margin_name} shows {_margin_scope}. "
+                         f"At {opm_pct:.1f}%, margins are in a moderate range. "
+                         f"Watch the trend — expanding margins are a bullish signal.{_opm_trend}",
+                         "neutral")
 
     npm = _f("profit_margins")
     if npm is not None:
@@ -888,12 +938,11 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
                      f"At {npm_pct:.1f}%, margins are moderate.{_npm_trend}",
                      "neutral")
 
-    # ── Revenue, Profit & Margins chart ────────────────────────────
+    # ── Revenue Profit chart ────────────────────────────
     pl = row.get("pl_annual")
     if isinstance(pl, dict):
         _pl_sales = pl.get("sales") or []
         _pl_np = pl.get("net_profit") or []
-        _pl_opm = pl.get("opm_pct") or []
         _n_pl = len(pl.get("years") or [])
         if _n_pl >= 3 and len(_pl_sales) >= _n_pl and len(_pl_np) >= _n_pl:
             # Compare oldest available vs latest annual year
@@ -901,44 +950,33 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
             _s_new = _pl_sales[_n_pl - 1]
             _np_old = _pl_np[0]
             _np_new = _pl_np[_n_pl - 1]
-            _opm_old = _pl_opm[0] if _pl_opm else None
-            _opm_new = _pl_opm[_n_pl - 1] if len(_pl_opm) >= _n_pl else None
             _rev_grew = _s_new > _s_old if _s_old and _s_new else None
             _profit_grew = _np_new > _np_old if _np_old is not None and _np_new is not None else None
-            _margin_expanded = (_opm_new > _opm_old) if _opm_old is not None and _opm_new is not None else None
 
             parts = []
-            if _rev_grew is True and _profit_grew is True and _margin_expanded is True:
+            if _rev_grew is True and _profit_grew is True:
                 parts.append(
-                    f"Revenue, profit, and margins have all expanded over the last {_n_pl} years — "
-                    f"the strongest signal of a well-managed, growing business.")
+                    f"Revenue and profit have both grown over the last {_n_pl} years — "
+                    f"a healthy sign of business scale and earnings strength.")
                 _sent = "positive"
-            elif _rev_grew is True and _profit_grew is True:
-                parts.append(
-                    f"Both revenue and profit have grown over {_n_pl} years.")
-                if _margin_expanded is False:
-                    parts.append(
-                        "However, margins have compressed — costs are growing faster than revenue.")
-                    _sent = "neutral"
-                else:
-                    _sent = "positive"
             elif _rev_grew is True and _profit_grew is False:
                 parts.append(
                     f"Revenue has grown over {_n_pl} years but profits haven't kept pace — "
-                    f"rising costs or investments are eating into the bottom line.")
+                    f"rising costs or reinvestment may be pressuring earnings.")
                 _sent = "warning"
+            elif _rev_grew is False and _profit_grew is True:
+                parts.append(
+                    f"Revenue has declined over {_n_pl} years, but profit has improved. "
+                    f"This can happen with cost optimization, but verify whether this is sustainable.")
+                _sent = "neutral"
             elif _rev_grew is False:
                 parts.append(
-                    f"Revenue has declined over {_n_pl} years — the business may be in structural decline "
-                    f"or undergoing a transformation.")
+                    f"Revenue and profit have weakened over {_n_pl} years — "
+                    f"the business may be facing demand pressure or structural challenges.")
                 _sent = "negative"
             else:
-                parts.append(f"The chart shows {_n_pl} years of revenue, profit, and margin data.")
+                parts.append(f"The chart shows {_n_pl} years of revenue and profit data.")
                 _sent = "neutral"
-
-            if _opm_old is not None and _opm_new is not None:
-                parts.append(
-                    f"Operating margin moved from {_opm_old:.0f}% to {_opm_new:.0f}% over this period.")
 
             _add("revenue_profit_margins", " ".join(parts), _sent)
 
