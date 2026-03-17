@@ -757,43 +757,59 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
         avg_opm = _sf("avg_opm")
         opm_pct = opm * 100 if abs(opm) < 1 else opm
         avg_opm_pct = (avg_opm * 100 if avg_opm and abs(avg_opm) < 1 else avg_opm) if avg_opm else None
+
+        # Compute historical OPM trend from P&L opm_pct array
+        _opm_trend = ""
+        _pl_data = row.get("pl_annual")
+        if isinstance(_pl_data, dict):
+            _pl_opm = _pl_data.get("opm_pct") or []
+            _n_yr = len(_pl_data.get("years") or [])
+            if _n_yr >= 3 and len(_pl_opm) >= _n_yr and _pl_opm[0] is not None:
+                _opm_old = _pl_opm[0]
+                if opm_pct > _opm_old + 2:
+                    _opm_trend = f" Operating margin has expanded from {_opm_old:.0f}% to {opm_pct:.0f}% over {_n_yr} years — improving efficiency."
+                elif opm_pct < _opm_old - 2:
+                    _opm_trend = f" Operating margin has compressed from {_opm_old:.0f}% to {opm_pct:.0f}% over {_n_yr} years — margin pressure."
+                else:
+                    _opm_trend = f" Operating margin has been stable around {opm_pct:.0f}% over {_n_yr} years."
+
         if avg_opm_pct and avg_opm_pct > 0:
             if opm_pct > avg_opm_pct * 1.2:
                 _add("operating_margins",
                      f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
                      f"At {opm_pct:.1f}%, this exceeds the {industry} average of {avg_opm_pct:.1f}%. "
-                     f"The company has better cost control or pricing power than its peers.",
+                     f"The company has better cost control or pricing power than its peers.{_opm_trend}",
                      "positive")
             elif opm_pct < avg_opm_pct * 0.6:
                 _add("operating_margins",
                      f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
                      f"At {opm_pct:.1f}%, this is below the {industry} average of {avg_opm_pct:.1f}%. "
-                     f"The company may be facing competitive pressure on pricing or higher input costs.",
+                     f"The company may be facing competitive pressure on pricing or higher input costs.{_opm_trend}",
                      "negative")
             else:
                 _add("operating_margins",
                      f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
                      f"At {opm_pct:.1f}%, it's near the {industry} average of {avg_opm_pct:.1f}%. "
-                     f"Operational efficiency is on par with peers.",
+                     f"Operational efficiency is on par with peers.{_opm_trend}",
                      "neutral")
         else:
             if opm_pct > 15:
                 _add("operating_margins",
                      f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
                      f"At {opm_pct:.1f}%, the company retains a healthy share of revenue as operating profit. "
-                     f"Good cost discipline and potential pricing power.",
+                     f"Good cost discipline and potential pricing power.{_opm_trend}",
                      "positive")
             elif opm_pct < 5:
                 _add("operating_margins",
                      f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
                      f"At {opm_pct:.1f}%, margins are thin. "
-                     f"The business has little buffer against cost increases or revenue slowdowns.",
+                     f"The business has little buffer against cost increases or revenue slowdowns.{_opm_trend}",
                      "negative")
             else:
                 _add("operating_margins",
                      f"Operating margin shows how much profit comes from core business operations before interest and taxes. "
                      f"At {opm_pct:.1f}%, margins are in a moderate range. "
-                     f"Watch the trend — expanding margins are a bullish signal.",
+                     f"Watch the trend — expanding margins are a bullish signal.{_opm_trend}",
                      "neutral")
 
     npm = _f("profit_margins")
