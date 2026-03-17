@@ -1373,7 +1373,8 @@ class DiscoverStockScraper(BaseScraper):
         """Extract pre-computed compounded growth rates from Screener.in.
 
         Screener shows: Compounded Sales Growth, Compounded Profit Growth,
-        Stock Price CAGR, Return on Equity — each with 10Y, 5Y, 3Y, TTM/1Y.
+        Stock Price CAGR, Return on Equity, Return on Capital Employed —
+        each with 10Y, 5Y, 3Y, TTM/1Y.
 
         Returns dict with:
         - compounded_sales_growth_3y, compounded_profit_growth_3y (flat fields for scoring)
@@ -1411,6 +1412,7 @@ class DiscoverStockScraper(BaseScraper):
         sales_profit_periods = [("10 Years", "10y"), ("5 Years", "5y"), ("3 Years", "3y"), ("TTM", "ttm")]
         price_cagr_periods = [("10 Years", "10y"), ("5 Years", "5y"), ("3 Years", "3y"), ("1 Year", "1y")]
         roe_periods = [("10 Years", "10y"), ("5 Years", "5y"), ("3 Years", "3y"), ("Last Year", "1y")]
+        roce_periods = [("10 Years", "10y"), ("5 Years", "5y"), ("3 Years", "3y"), ("Last Year", "1y")]
 
         growth_ranges: dict = {}
 
@@ -1426,6 +1428,13 @@ class DiscoverStockScraper(BaseScraper):
         roe = _extract_all_periods("Return on Equity", roe_periods)
         if roe:
             growth_ranges["return_on_equity"] = roe
+        roce = _extract_all_periods(
+            "Return on Capital Employed", roce_periods)
+        if not roce:
+            roce = _extract_all_periods(
+                "Return on capital employed", roce_periods)
+        if roce:
+            growth_ranges["return_on_capital_employed"] = roce
 
         # Flat 3Y fields for backward compat + scoring
         csg_3y = csg.get("3y") if csg else None

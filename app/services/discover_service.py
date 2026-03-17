@@ -712,44 +712,66 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
 
     roce = _f("roce")
     if roce is not None:
+        _roce_trend = ""
+        _roce_history = ""
+        _gr = row.get("growth_ranges")
+        _gr_roce = _gr.get("return_on_capital_employed") if isinstance(_gr, dict) else None
+        if isinstance(_gr_roce, dict):
+            _r_latest = _to_float(_gr_roce.get("1y") if _gr_roce.get("1y") is not None else _gr_roce.get("ttm"))
+            _r3 = _to_float(_gr_roce.get("3y"))
+            if _r_latest is not None and _r3 is not None:
+                if _r_latest > _r3 + 1:
+                    _roce_trend = f" ROCE trend is improving ({_r3:.0f}% 3Y → {_r_latest:.0f}% latest)."
+                elif _r_latest < _r3 - 1:
+                    _roce_trend = f" ROCE trend has softened ({_r3:.0f}% 3Y → {_r_latest:.0f}% latest)."
+                else:
+                    _roce_trend = f" ROCE trend is broadly stable around {_r_latest:.0f}%."
+            _snapshots = []
+            for _k, _label in (("10y", "10Y"), ("5y", "5Y"), ("3y", "3Y"), ("1y", "1Y"), ("ttm", "TTM")):
+                _v = _to_float(_gr_roce.get(_k))
+                if _v is not None:
+                    _snapshots.append(f"{_label} {_v:.0f}%")
+            if _snapshots:
+                _roce_history = " Historical ROCE (Screener): " + ", ".join(_snapshots) + "."
+
         avg_roce = _sf("avg_roce")
         if avg_roce and avg_roce > 0:
             if roce > avg_roce * 1.2:
                 _add("roce",
                      f"ROCE measures how efficiently the company uses all its capital — both equity and debt. "
                      f"At {roce:.1f}% vs the {industry} average of {avg_roce:.1f}%, capital efficiency is well above peers. "
-                     f"This suggests the business has strong pricing power or operates in a high-return niche.",
+                     f"This suggests the business has strong pricing power or operates in a high-return niche.{_roce_trend}{_roce_history}",
                      "positive")
             elif roce < avg_roce * 0.6:
                 _add("roce",
                      f"ROCE measures how efficiently the company uses all its capital — both equity and debt. "
                      f"At {roce:.1f}% vs the {industry} average of {avg_roce:.1f}%, returns on capital are lagging. "
-                     f"The company may be over-invested or operating in a low-margin segment.",
+                     f"The company may be over-invested or operating in a low-margin segment.{_roce_trend}{_roce_history}",
                      "negative")
             else:
                 _add("roce",
                      f"ROCE measures how efficiently the company uses all its capital — both equity and debt. "
                      f"At {roce:.1f}%, it's close to the {industry} average of {avg_roce:.1f}%. "
-                     f"Capital deployment is on par with peers — neither a standout nor a laggard.",
+                     f"Capital deployment is on par with peers — neither a standout nor a laggard.{_roce_trend}{_roce_history}",
                      "neutral")
         else:
             if roce > 15:
                 _add("roce",
                      f"ROCE measures how efficiently the company uses all its capital — both equity and debt. "
                      f"At {roce:.1f}%, this exceeds the 15% benchmark for well-run businesses. "
-                     f"The company is generating solid returns on every rupee of capital deployed.",
+                     f"The company is generating solid returns on every rupee of capital deployed.{_roce_trend}{_roce_history}",
                      "positive")
             elif roce < 8:
                 _add("roce",
                      f"ROCE measures how efficiently the company uses all its capital — both equity and debt. "
                      f"At {roce:.1f}%, returns are below the 8% mark. "
-                     f"The company isn't generating enough from its capital — a concern for long-term investors.",
+                     f"The company isn't generating enough from its capital — a concern for long-term investors.{_roce_trend}{_roce_history}",
                      "negative")
             else:
                 _add("roce",
                      f"ROCE measures how efficiently the company uses all its capital — both equity and debt. "
                      f"At {roce:.1f}%, returns are in a moderate range. "
-                     f"Not bad, but there's room for improvement in capital efficiency.",
+                     f"Not bad, but there's room for improvement in capital efficiency.{_roce_trend}{_roce_history}",
                      "neutral")
 
     # Financial businesses (banks/NBFCs) use financing margin from Screener
