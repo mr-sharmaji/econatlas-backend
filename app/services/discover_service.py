@@ -1029,7 +1029,9 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
 
     td = _f("total_debt")
     if td is not None and mcap and mcap > 0:
-        ratio = td / mcap
+        # total_debt from Yahoo is in raw ₹; market_cap from Screener is in ₹ Cr
+        td_cr = td / 1e7 if td > 1e6 else td
+        ratio = td_cr / mcap
         if ratio < 0.1:
             _add("total_debt",
                  f"Total debt is the combined short-term and long-term borrowings on the balance sheet. "
@@ -1057,7 +1059,9 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
 
     tc = _f("total_cash")
     if tc is not None and mcap and mcap > 0:
-        ratio = tc / mcap
+        # total_cash from Yahoo is in raw ₹; market_cap from Screener is in ₹ Cr
+        tc_cr = tc / 1e7 if tc > 1e6 else tc
+        ratio = tc_cr / mcap
         if ratio > 0.15:
             _add("total_cash",
                  f"Total cash includes cash and cash equivalents available on the balance sheet. "
