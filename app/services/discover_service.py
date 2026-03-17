@@ -2267,12 +2267,12 @@ async def _get_stock_industry_stats(pool) -> dict[str, dict]:
             ROUND(AVG(roce)::numeric, 1) AS avg_roce,
             PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY pe_ratio)
                 FILTER (WHERE pe_ratio > 0) AS median_pe,
-            ROUND(AVG(pe_ratio)::numeric, 1) FILTER (WHERE pe_ratio > 0) AS avg_pe,
-            ROUND(AVG(price_to_book)::numeric, 2) FILTER (WHERE price_to_book > 0) AS avg_pb,
-            ROUND(AVG(debt_to_equity)::numeric, 2) FILTER (WHERE debt_to_equity >= 0) AS avg_de,
-            ROUND(AVG(operating_margins * 100)::numeric, 1) FILTER (WHERE operating_margins IS NOT NULL) AS avg_opm,
-            ROUND(AVG(profit_margins * 100)::numeric, 1) FILTER (WHERE profit_margins IS NOT NULL) AS avg_npm,
-            ROUND(AVG(dividend_yield)::numeric, 2) FILTER (WHERE dividend_yield > 0) AS avg_dy
+            ROUND((AVG(pe_ratio) FILTER (WHERE pe_ratio > 0))::numeric, 1) AS avg_pe,
+            ROUND((AVG(price_to_book) FILTER (WHERE price_to_book > 0))::numeric, 2) AS avg_pb,
+            ROUND((AVG(debt_to_equity) FILTER (WHERE debt_to_equity >= 0))::numeric, 2) AS avg_de,
+            ROUND((AVG(operating_margins * 100) FILTER (WHERE operating_margins IS NOT NULL))::numeric, 1) AS avg_opm,
+            ROUND((AVG(profit_margins * 100) FILTER (WHERE profit_margins IS NOT NULL))::numeric, 1) AS avg_npm,
+            ROUND((AVG(dividend_yield) FILTER (WHERE dividend_yield > 0))::numeric, 2) AS avg_dy
         FROM {STOCK_TABLE}
         WHERE market = 'IN'
         GROUP BY COALESCE(NULLIF(industry, ''), 'Other')
