@@ -1639,7 +1639,7 @@ class DiscoverStockScraper(BaseScraper):
                     if pl_full:
                         fundamentals["pl_annual"] = pl_full
                         # Compute Screener-derived metrics from P&L arrays
-                        # Use latest annual values (aligned to years), not TTM trailing element
+                        # Prefer TTM (trailing element after years) when available, else latest annual
                         _pl_sales = pl_full.get("sales", [])
                         _pl_op = pl_full.get("operating_profit", [])
                         _pl_np = pl_full.get("net_profit", [])
@@ -1647,15 +1647,22 @@ class DiscoverStockScraper(BaseScraper):
                         _pl_years = pl_full.get("years", [])
                         _n_yr = len(_pl_years)
                         _pl_dpct = pl_full.get("dividend_payout_pct", [])
+                        _has_ttm = len(_pl_sales) > _n_yr  # trailing TTM element exists
 
-                        # Operating margin (prefer opm_pct array, else compute)
-                        if _pl_opm and _n_yr > 0 and len(_pl_opm) >= _n_yr:
+                        # Operating margin: prefer TTM, else latest annual
+                        if _has_ttm and _pl_opm and len(_pl_opm) > _n_yr and _pl_opm[-1] is not None:
+                            fundamentals["operating_margins"] = round(_pl_opm[-1] / 100, 5)
+                        elif _has_ttm and len(_pl_sales) > _n_yr and len(_pl_op) > _n_yr and _pl_sales[-1]:
+                            fundamentals["operating_margins"] = round(_pl_op[-1] / _pl_sales[-1], 5)
+                        elif _pl_opm and _n_yr > 0 and len(_pl_opm) >= _n_yr:
                             fundamentals["operating_margins"] = round(_pl_opm[_n_yr - 1] / 100, 5)
                         elif _n_yr > 0 and len(_pl_sales) >= _n_yr and len(_pl_op) >= _n_yr and _pl_sales[_n_yr - 1]:
                             fundamentals["operating_margins"] = round(_pl_op[_n_yr - 1] / _pl_sales[_n_yr - 1], 5)
 
-                        # Profit margin
-                        if _n_yr > 0 and len(_pl_sales) >= _n_yr and len(_pl_np) >= _n_yr and _pl_sales[_n_yr - 1]:
+                        # Profit margin: prefer TTM, else latest annual
+                        if _has_ttm and len(_pl_sales) > _n_yr and len(_pl_np) > _n_yr and _pl_sales[-1]:
+                            fundamentals["profit_margins"] = round(_pl_np[-1] / _pl_sales[-1], 5)
+                        elif _n_yr > 0 and len(_pl_sales) >= _n_yr and len(_pl_np) >= _n_yr and _pl_sales[_n_yr - 1]:
                             fundamentals["profit_margins"] = round(_pl_np[_n_yr - 1] / _pl_sales[_n_yr - 1], 5)
 
                         # Revenue & earnings growth YoY
@@ -1749,9 +1756,18 @@ class DiscoverStockScraper(BaseScraper):
                                 _pl_years = pl_full.get("years", [])
                                 _n_yr = len(_pl_years)
                                 _pl_dpct = pl_full.get("dividend_payout_pct", [])
-                                if _pl_opm and _n_yr > 0 and len(_pl_opm) >= _n_yr:
+                                _has_ttm = len(_pl_sales) > _n_yr
+                                # Operating margin: prefer TTM
+                                if _has_ttm and _pl_opm and len(_pl_opm) > _n_yr and _pl_opm[-1] is not None:
+                                    fundamentals["operating_margins"] = round(_pl_opm[-1] / 100, 5)
+                                elif _has_ttm and len(_pl_op) > _n_yr and _pl_sales[-1]:
+                                    fundamentals["operating_margins"] = round(_pl_op[-1] / _pl_sales[-1], 5)
+                                elif _pl_opm and _n_yr > 0 and len(_pl_opm) >= _n_yr:
                                     fundamentals["operating_margins"] = round(_pl_opm[_n_yr - 1] / 100, 5)
-                                if _n_yr > 0 and len(_pl_sales) >= _n_yr and len(_pl_np) >= _n_yr and _pl_sales[_n_yr - 1]:
+                                # Profit margin: prefer TTM
+                                if _has_ttm and len(_pl_np) > _n_yr and _pl_sales[-1]:
+                                    fundamentals["profit_margins"] = round(_pl_np[-1] / _pl_sales[-1], 5)
+                                elif _n_yr > 0 and len(_pl_sales) >= _n_yr and len(_pl_np) >= _n_yr and _pl_sales[_n_yr - 1]:
                                     fundamentals["profit_margins"] = round(_pl_np[_n_yr - 1] / _pl_sales[_n_yr - 1], 5)
                                 if len(_pl_sales) > _n_yr and _pl_sales[-1]:
                                     fundamentals["total_revenue"] = _pl_sales[-1] * 1e7
