@@ -1647,12 +1647,35 @@ class DiscoverStockScraper(BaseScraper):
                             _dpv = _pl_dpct[_n_yr - 1]
                             if _dpv is not None and isinstance(_dpv, (int, float)):
                                 fundamentals["payout_ratio"] = round(_dpv / 100, 4)
+
+                        # Total revenue — use TTM (trailing element) if available, else latest annual
+                        if len(_pl_sales) > _n_yr and _pl_sales[-1]:
+                            fundamentals["total_revenue"] = _pl_sales[-1] * 1e7  # TTM, raw ₹
+                        elif _n_yr > 0 and len(_pl_sales) >= _n_yr and _pl_sales[_n_yr - 1]:
+                            fundamentals["total_revenue"] = _pl_sales[_n_yr - 1] * 1e7  # annual, raw ₹
+
                     bs_full = self._extract_full_table(html, "balance-sheet")
                     if bs_full:
                         fundamentals["bs_annual"] = bs_full
+                        _bs_years = bs_full.get("years", [])
+                        _n_bs = len(_bs_years)
+                        # Total debt from borrowings
+                        _borrow = bs_full.get("borrowings", [])
+                        if _n_bs > 0 and len(_borrow) >= _n_bs and _borrow[_n_bs - 1] is not None:
+                            fundamentals["total_debt"] = _borrow[_n_bs - 1] * 1e7  # raw ₹
+                        # total_cash kept from Yahoo — Screener's other_assets includes
+                        # receivables/inventory, not just cash equivalents
+
                     cf_full = self._extract_full_table(html, "cash-flow")
                     if cf_full:
                         fundamentals["cf_annual"] = cf_full
+                        _cf_years = cf_full.get("years", [])
+                        _n_cf = len(_cf_years)
+                        # Operating cash flow
+                        _cfo = cf_full.get("cash_from_operating_activity", [])
+                        if _n_cf > 0 and len(_cfo) >= _n_cf and _cfo[_n_cf - 1] is not None:
+                            fundamentals["operating_cash_flow"] = _cfo[_n_cf - 1] * 1e7  # raw ₹
+                        # free_cash_flow kept from Yahoo (needs capex breakdown not available in Screener CF)
                     sh_full = self._extract_full_table(html, "shareholding")
                     if sh_full:
                         fundamentals["shareholding_quarterly"] = sh_full
@@ -1667,6 +1690,58 @@ class DiscoverStockScraper(BaseScraper):
                             "Shareholding JSONB MISSING for %s: html_len=%d, section_found=%s",
                             nse_symbol, len(html), _sh_match is not None,
                         )
+
+                    # If consolidated page had no P&L data and we have a standalone fallback, try it
+                    if (url.endswith("/consolidated/")
+                            and fundamentals.get("pl_annual") is None
+                            and len(candidates) > 1):
+                        standalone_url = candidates[1]  # /company/SYMBOL/
+                        try:
+                            sa_html = self._get_text(standalone_url, timeout=self._screener_timeout)
+                            for tbl_id, tbl_key in (
+                                ("profit-loss", "pl_annual"),
+                                ("balance-sheet", "bs_annual"),
+                                ("cash-flow", "cf_annual"),
+                            ):
+                                if fundamentals.get(tbl_key) is None:
+                                    tbl = self._extract_full_table(sa_html, tbl_id)
+                                    if tbl:
+                                        fundamentals[tbl_key] = tbl
+                            # Re-compute Screener-derived metrics from standalone P&L
+                            pl_full = fundamentals.get("pl_annual")
+                            if pl_full:
+                                _pl_sales = pl_full.get("sales", [])
+                                _pl_op = pl_full.get("operating_profit", [])
+                                _pl_np = pl_full.get("net_profit", [])
+                                _pl_opm = pl_full.get("opm_pct", [])
+                                _pl_years = pl_full.get("years", [])
+                                _n_yr = len(_pl_years)
+                                _pl_dpct = pl_full.get("dividend_payout_pct", [])
+                                if _pl_opm and _n_yr > 0 and len(_pl_opm) >= _n_yr:
+                                    fundamentals["operating_margins"] = round(_pl_opm[_n_yr - 1] / 100, 5)
+                                if _n_yr > 0 and len(_pl_sales) >= _n_yr and len(_pl_np) >= _n_yr and _pl_sales[_n_yr - 1]:
+                                    fundamentals["profit_margins"] = round(_pl_np[_n_yr - 1] / _pl_sales[_n_yr - 1], 5)
+                                if len(_pl_sales) > _n_yr and _pl_sales[-1]:
+                                    fundamentals["total_revenue"] = _pl_sales[-1] * 1e7
+                                elif _n_yr > 0 and len(_pl_sales) >= _n_yr and _pl_sales[_n_yr - 1]:
+                                    fundamentals["total_revenue"] = _pl_sales[_n_yr - 1] * 1e7
+                                if _n_yr >= 2 and len(_pl_sales) >= _n_yr:
+                                    _prev, _cur = _pl_sales[_n_yr - 2], _pl_sales[_n_yr - 1]
+                                    if _prev and _prev > 0:
+                                        fundamentals["revenue_growth"] = round((_cur - _prev) / _prev, 4)
+                                if _n_yr >= 2 and len(_pl_np) >= _n_yr:
+                                    _prev, _cur = _pl_np[_n_yr - 2], _pl_np[_n_yr - 1]
+                                    if _prev and _prev > 0:
+                                        fundamentals["earnings_growth"] = round((_cur - _prev) / _prev, 4)
+                                    elif _prev and _prev < 0:
+                                        fundamentals["earnings_growth"] = round((_cur - _prev) / abs(_prev), 4)
+                            logger.info("Standalone fallback for %s: pl=%s bs=%s cf=%s",
+                                        nse_symbol,
+                                        "OK" if fundamentals.get("pl_annual") else "MISS",
+                                        "OK" if fundamentals.get("bs_annual") else "MISS",
+                                        "OK" if fundamentals.get("cf_annual") else "MISS")
+                        except Exception:
+                            logger.debug("Standalone fallback failed for %s", nse_symbol, exc_info=True)
 
                     return fundamentals, "screener_in"
                 except requests.exceptions.HTTPError as e:
@@ -4695,8 +4770,7 @@ class DiscoverStockScraper(BaseScraper):
                         yahoo_fields_filled += 1
 
                 # Add Yahoo-exclusive fields (always overwrite — Screener doesn't have these)
-                for field in ("beta", "free_cash_flow", "operating_cash_flow", "total_cash",
-                              "total_debt", "total_revenue", "gross_margins",
+                for field in ("beta", "free_cash_flow", "total_cash", "gross_margins",
                               "forward_pe",
                               "analyst_target_mean", "analyst_count", "analyst_recommendation",
                               "analyst_recommendation_mean", "analyst_strong_buy", "analyst_buy",
@@ -4708,7 +4782,9 @@ class DiscoverStockScraper(BaseScraper):
 
                 # Screener-preferred fields: Yahoo only fills gaps
                 for mfield in ("operating_margins", "profit_margins",
-                               "revenue_growth", "earnings_growth", "payout_ratio"):
+                               "revenue_growth", "earnings_growth", "payout_ratio",
+                               "total_revenue", "total_debt",
+                               "operating_cash_flow"):
                     if fundamentals.get(mfield) is None and yahoo.get(mfield) is not None:
                         fundamentals[mfield] = yahoo[mfield]
                         yahoo_fields_filled += 1
