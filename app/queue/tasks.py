@@ -113,6 +113,12 @@ async def task_discover_mf_nav(ctx: dict) -> None:
     await _run_with_retry(ctx, "discover_mf_nav", run_discover_mf_nav_job)
 
 
+async def task_discover_mf_holdings(ctx: dict) -> None:
+    from app.scheduler.discover_mf_holdings_job import run_discover_mf_holdings_job
+
+    await _run_with_retry(ctx, "discover_mf_holdings", run_discover_mf_holdings_job)
+
+
 async def task_ipo(ctx: dict) -> None:
     from app.services import ipo_service
 

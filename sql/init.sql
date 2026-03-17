@@ -579,3 +579,11 @@ ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS risk_reward_tag TE
 
 -- v1.1: Growth ranges (10Y, 5Y, 3Y, TTM/1Y for sales, profit, price CAGR, ROE)
 ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS growth_ranges JSONB;
+
+-- ================================================================
+-- v1.2: MF holdings / portfolio data
+-- ================================================================
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS top_holdings JSONB;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS sector_allocation JSONB;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS asset_allocation JSONB;
+ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS holdings_as_of DATE;

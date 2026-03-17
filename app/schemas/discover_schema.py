@@ -233,6 +233,10 @@ class DiscoverMutualFundItemResponse(BaseModel):
     score_breakdown: DiscoverMutualFundScoreBreakdown | None = None
     tags: list[TagV2Response] = Field(default_factory=list)
     why_ranked: list[str] = Field(default_factory=list)
+    top_holdings: list[dict] | None = None
+    sector_allocation: list[dict] | None = None
+    asset_allocation: dict | None = None
+    holdings_as_of: str | None = None
     source_status: SourceStatus
     source_timestamp: datetime
     ingested_at: datetime

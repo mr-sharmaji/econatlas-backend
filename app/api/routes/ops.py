@@ -23,6 +23,7 @@ _VALID_JOBS = {
     "market", "commodity", "crypto", "brief", "macro", "news",
     "discover_stock", "discover_mutual_funds",
     "discover_stock_price", "discover_mf_nav",
+    "discover_mf_holdings",
     "ipo", "tax",
 }
 

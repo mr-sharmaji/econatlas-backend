@@ -106,6 +106,10 @@ async def _run_discover_mf_nav() -> None:
     await _enqueue("discover_mf_nav")
 
 
+async def _run_discover_mf_holdings() -> None:
+    await _enqueue("discover_mf_holdings")
+
+
 async def _run_ipo() -> None:
     await _enqueue("ipo")
 
@@ -237,6 +241,20 @@ def start_scheduler() -> None:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=10800,
+        )
+        # Weekly MF holdings scrape (Sundays 3AM IST)
+        _scheduler.add_job(
+            _run_discover_mf_holdings,
+            "cron",
+            day_of_week="sun",
+            hour=3,
+            minute=0,
+            timezone="Asia/Kolkata",
+            id="discover_mf_holdings",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=43200,
         )
         logger.info(
             "Scheduler: discover cron ENABLED — stocks %s@%02d:%02d IST, MF %s@%02d:%02d IST",

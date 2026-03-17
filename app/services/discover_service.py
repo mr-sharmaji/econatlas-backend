@@ -377,11 +377,18 @@ def _compute_quality_badges(row: dict) -> list[str]:
     if sub_pctl is not None and sub_pctl >= 90:
         badges.append("Top Performer")
     elif sub_pctl is None:
-        category_rank = _to_int(row.get("category_rank"))
-        category_total = _to_int(row.get("category_total"))
-        if category_rank is not None and category_total is not None:
-            if category_rank <= max(1, int(category_total * 0.1)):
+        # Prefer sub_category_rank (more granular), fallback to category_rank
+        sub_rank = _to_int(row.get("sub_category_rank"))
+        sub_total = _to_int(row.get("sub_category_total"))
+        if sub_rank is not None and sub_total is not None:
+            if sub_rank <= max(1, int(sub_total * 0.1)):
                 badges.append("Top Performer")
+        else:
+            category_rank = _to_int(row.get("category_rank"))
+            category_total = _to_int(row.get("category_total"))
+            if category_rank is not None and category_total is not None:
+                if category_rank <= max(1, int(category_total * 0.1)):
+                    badges.append("Top Performer")
     returns_1y = _to_float(row.get("returns_1y"))
     returns_3y = _to_float(row.get("returns_3y"))
     returns_5y = _to_float(row.get("returns_5y"))
@@ -2750,7 +2757,9 @@ async def list_discover_mutual_funds(
             score_performance, score_category_fit,
             score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
-            category_rank, category_total, fund_age_years,
+            category_rank, category_total,
+            sub_category_rank, sub_category_total,
+            fund_age_years,
             max_drawdown, rolling_return_consistency,
             alpha, beta, score_alpha, score_beta,
             sub_category_percentile, fund_classification
@@ -3664,7 +3673,9 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
             score_performance, score_category_fit,
             score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
-            category_rank, category_total, fund_age_years,
+            category_rank, category_total,
+            sub_category_rank, sub_category_total,
+            fund_age_years,
             max_drawdown, rolling_return_consistency,
             alpha, beta, score_alpha, score_beta,
             sub_category_percentile, fund_classification
@@ -3692,7 +3703,9 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
                 score, score_return, score_risk, score_cost, score_consistency,
                 score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
                 primary_source, secondary_source,
-                category_rank, category_total, fund_age_years
+                category_rank, category_total,
+                sub_category_rank, sub_category_total,
+                fund_age_years
             FROM {MF_TABLE}
             WHERE category = $1
               AND scheme_code != $2

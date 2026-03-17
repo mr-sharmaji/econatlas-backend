@@ -345,6 +345,19 @@ async def init_pool() -> asyncpg.Pool:
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_job_dead_letters_failed_at ON job_dead_letters (failed_at DESC)"
         )
+        # MF holdings / portfolio columns
+        await conn.execute(
+            "ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS top_holdings JSONB"
+        )
+        await conn.execute(
+            "ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS sector_allocation JSONB"
+        )
+        await conn.execute(
+            "ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS asset_allocation JSONB"
+        )
+        await conn.execute(
+            "ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS holdings_as_of DATE"
+        )
         logger.info("Idempotent indexes ensured")
     return _pool
 
