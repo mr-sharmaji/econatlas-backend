@@ -2193,14 +2193,26 @@ class DiscoverStockScraper(BaseScraper):
         row: dict,
         sector: str,
     ) -> tuple[float | None, dict]:
-        """Growth score with 5Y compounding and sector-specific weights."""
+        """Growth score with 10Y/5Y/3Y blending and sector-specific weights."""
         parts: dict[str, float] = {}
 
-        # Revenue CAGR: blend 3Y and 5Y
+        # ── Extract growth_ranges for 10Y Screener data ──
+        gr = row.get("growth_ranges") or {}
+        gr_sales = gr.get("compounded_sales_growth", {})
+        gr_profit = gr.get("compounded_profit_growth", {})
+
+        # Revenue CAGR: blend 3Y, 5Y, and 10Y
         csg_3y = row.get("compounded_sales_growth_3y")
         sg_yoy = row.get("sales_growth_yoy")
         rg = row.get("revenue_growth")
         rev_cagr_5y = row.get("_hist_5y_revenue_cagr")
+        # Prefer Screener 5Y over computed, use 10Y as anchor
+        rev_cagr_5y_scr = gr_sales.get("5y")
+        if rev_cagr_5y_scr is not None:
+            rev_cagr_5y = rev_cagr_5y_scr / 100.0
+        rev_cagr_10y = gr_sales.get("10y")
+        if rev_cagr_10y is not None:
+            rev_cagr_10y = rev_cagr_10y / 100.0
 
         sales_signal_3y = None
         if csg_3y is not None:
@@ -2213,47 +2225,97 @@ class DiscoverStockScraper(BaseScraper):
         rev_parts: list[tuple[float, float]] = []
         if sales_signal_3y is not None:
             capped = min(sales_signal_3y, 0.50)
-            rev_parts.append((self._clamp(50 + capped * 200), 0.50))
+            rev_parts.append((self._clamp(50 + capped * 200), 0.45))
         if rev_cagr_5y is not None:
             capped = min(rev_cagr_5y, 0.50)
-            rev_parts.append((self._clamp(50 + capped * 200), 0.50))
+            rev_parts.append((self._clamp(50 + capped * 200), 0.35))
+        if rev_cagr_10y is not None:
+            capped = min(rev_cagr_10y, 0.50)
+            rev_parts.append((self._clamp(50 + capped * 200), 0.20))
         if rev_parts:
             rw = sum(w for _, w in rev_parts)
             parts["revenue_cagr"] = self._clamp(sum(s * w / rw for s, w in rev_parts))
 
-        # Profit CAGR: blend 3Y and 5Y
+        # Profit CAGR: blend 3Y, 5Y, and 10Y
         profit_cagr_3y = row.get("_hist_profit_growth_3y_cagr")
         profit_cagr_5y = row.get("_hist_5y_profit_cagr")
+        prof_cagr_5y_scr = gr_profit.get("5y")
+        if prof_cagr_5y_scr is not None:
+            profit_cagr_5y = prof_cagr_5y_scr / 100.0
+        prof_cagr_10y = gr_profit.get("10y")
+        if prof_cagr_10y is not None:
+            prof_cagr_10y = prof_cagr_10y / 100.0
+        else:
+            prof_cagr_10y = None
 
         prof_parts: list[tuple[float, float]] = []
         if profit_cagr_3y is not None and isinstance(profit_cagr_3y, (int, float)):
             capped = min(profit_cagr_3y, 0.50)
-            prof_parts.append((self._clamp(50 + capped * 200), 0.50))
+            prof_parts.append((self._clamp(50 + capped * 200), 0.45))
         if profit_cagr_5y is not None:
             capped = min(profit_cagr_5y, 0.50)
-            prof_parts.append((self._clamp(50 + capped * 200), 0.50))
+            prof_parts.append((self._clamp(50 + capped * 200), 0.35))
+        if prof_cagr_10y is not None:
+            capped = min(prof_cagr_10y, 0.50)
+            prof_parts.append((self._clamp(50 + capped * 200), 0.20))
         if prof_parts:
             pw = sum(w for _, w in prof_parts)
             parts["profit_cagr"] = self._clamp(sum(s * w / pw for s, w in prof_parts))
 
-        # Consistency
+        # Consistency: combine binary YoY count + period spread check
         sales_cons = row.get("_hist_sales_growth_consistency", 0)
         profit_cons = row.get("_hist_profit_growth_consistency", 0)
-        if sales_cons > 0 or profit_cons > 0:
-            parts["consistency"] = self._clamp((sales_cons + profit_cons) / 10.0 * 100)
+        cons_score = (sales_cons + profit_cons) / 10.0 * 100 if (sales_cons > 0 or profit_cons > 0) else 0
 
-        # 5Y compounding bonus
+        # Period spread bonus: tight spread across 10Y/5Y/3Y = true compounder
+        _spread_bonus = 0.0
+        for gr_section in (gr_sales, gr_profit):
+            vals = [gr_section.get(k) for k in ("10y", "5y", "3y") if gr_section.get(k) is not None]
+            if len(vals) >= 3:
+                spread = max(vals) - min(vals)
+                if spread <= 3:        # all within 3pp — rock-solid consistency
+                    _spread_bonus += 10.0
+                elif spread <= 6:      # within 6pp — good consistency
+                    _spread_bonus += 5.0
+        if cons_score > 0 or _spread_bonus > 0:
+            parts["consistency"] = self._clamp(cons_score + _spread_bonus)
+
+        # Compounding bonus: tiered by 10Y and 5Y
         if rev_cagr_5y is not None and profit_cagr_5y is not None:
-            if rev_cagr_5y > 0.15 and profit_cagr_5y > 0.15:
+            if (rev_cagr_10y is not None and rev_cagr_10y > 0.15
+                    and prof_cagr_10y is not None and prof_cagr_10y > 0.15):
+                # True decade compounder — both 10Y and 5Y above 15%
+                parts["compounding_bonus"] = 95.0
+            elif rev_cagr_5y > 0.15 and profit_cagr_5y > 0.15:
                 parts["compounding_bonus"] = 85.0
             elif rev_cagr_5y > 0.10 and profit_cagr_5y > 0.10:
                 parts["compounding_bonus"] = 70.0
 
-        # R9: Growth deceleration penalty — if current growth is significantly
-        # below historical CAGR, the company is decelerating. Historical CAGR
-        # shouldn't mask a company that's losing momentum.
-        yoy_rev_cur = row.get("revenue_growth")
-        yoy_earn_cur = row.get("earnings_growth")
+        # Acceleration bonus: TTM > 3Y > 5Y means momentum accelerating
+        ttm_sales = gr_sales.get("ttm")
+        y3_sales = gr_sales.get("3y")
+        y5_sales = gr_sales.get("5y")
+        accel_bonus = 0.0
+        if ttm_sales is not None and y3_sales is not None and y5_sales is not None:
+            if ttm_sales > y3_sales > y5_sales and y5_sales > 5:
+                accel_bonus += 5.0
+        ttm_profit = gr_profit.get("ttm")
+        y3_profit = gr_profit.get("3y")
+        y5_profit = gr_profit.get("5y")
+        if ttm_profit is not None and y3_profit is not None and y5_profit is not None:
+            if ttm_profit > y3_profit > y5_profit and y5_profit > 5:
+                accel_bonus += 5.0
+        if accel_bonus > 0:
+            parts["acceleration_bonus"] = accel_bonus
+
+        # R9: Growth deceleration penalty — current growth significantly
+        # below historical CAGR means decelerating.
+        # Prefer Screener TTM over Yahoo YoY for current signal
+        ttm_rev_screener = gr_sales.get("ttm")
+        yoy_rev_cur = (ttm_rev_screener / 100.0) if ttm_rev_screener is not None else row.get("revenue_growth")
+        ttm_profit_screener = gr_profit.get("ttm")
+        yoy_earn_cur = (ttm_profit_screener / 100.0) if ttm_profit_screener is not None else row.get("earnings_growth")
+
         current_decline_cap: float | None = None
         decel_penalty = 0.0
         if yoy_rev_cur is not None and yoy_earn_cur is not None:
@@ -2264,13 +2326,18 @@ class DiscoverStockScraper(BaseScraper):
             else:
                 # Deceleration: current growth < half of 3Y CAGR
                 rev_cagr_3y = csg_3y / 100.0 if csg_3y is not None else None
-                prof_cagr_3y = row.get("_hist_profit_growth_3y_cagr")
+                prof_cagr_3y_val = row.get("_hist_profit_growth_3y_cagr")
                 if rev_cagr_3y is not None and rev_cagr_3y > 0.10:
                     if yoy_rev_cur < rev_cagr_3y * 0.5:
                         decel_penalty += 8.0
-                if prof_cagr_3y is not None and prof_cagr_3y > 0.10:
-                    if yoy_earn_cur is not None and yoy_earn_cur < prof_cagr_3y * 0.5:
+                if prof_cagr_3y_val is not None and prof_cagr_3y_val > 0.10:
+                    if yoy_earn_cur is not None and yoy_earn_cur < prof_cagr_3y_val * 0.5:
                         decel_penalty += 7.0
+
+        # Structural slowdown: 10Y → 5Y → 3Y declining trajectory
+        if rev_cagr_10y is not None and rev_cagr_5y is not None and sales_signal_3y is not None:
+            if rev_cagr_10y > 0.10 and rev_cagr_5y < rev_cagr_10y * 0.6 and sales_signal_3y < rev_cagr_5y * 0.6:
+                decel_penalty += 5.0  # structural revenue deceleration
 
         if parts:
             w = _SECTOR_GROWTH_WEIGHTS.get(sector, _SECTOR_GROWTH_WEIGHTS["DEFAULT"])
@@ -2496,14 +2563,36 @@ class DiscoverStockScraper(BaseScraper):
         return min(caps) if caps else None
 
     def _classify_lynch(self, row: dict, sector: str) -> str:
-        """Peter Lynch stock classification."""
+        """Peter Lynch stock classification with multi-period verification."""
         mcap = row.get("market_cap") or 0
+        gr = row.get("growth_ranges") or {}
+        gr_sales = gr.get("compounded_sales_growth", {})
+        gr_profit = gr.get("compounded_profit_growth", {})
+        gr_roe = gr.get("return_on_equity", {})
+
         rev_cagr = row.get("_hist_5y_revenue_cagr")
         if rev_cagr is None:
             _csg3y = row.get("compounded_sales_growth_3y")
             if _csg3y is not None:
                 rev_cagr = _csg3y / 100.0
+        # Prefer Screener 5Y if available
+        _scr_5y_rev = gr_sales.get("5y")
+        if _scr_5y_rev is not None:
+            rev_cagr = _scr_5y_rev / 100.0
+
         profit_cagr = row.get("_hist_5y_profit_cagr") or row.get("_hist_profit_growth_3y_cagr")
+        _scr_5y_prof = gr_profit.get("5y")
+        if _scr_5y_prof is not None:
+            profit_cagr = _scr_5y_prof / 100.0
+
+        # 10Y CAGRs for classification verification
+        rev_cagr_10y = gr_sales.get("10y")
+        if rev_cagr_10y is not None:
+            rev_cagr_10y = rev_cagr_10y / 100.0
+        prof_cagr_10y = gr_profit.get("10y")
+        if prof_cagr_10y is not None:
+            prof_cagr_10y = prof_cagr_10y / 100.0
+
         opm_std = row.get("_hist_opm_std_5y")
         pb = row.get("price_to_book")
         net_profit_cons = row.get("_hist_profit_growth_consistency", 0)
@@ -2549,8 +2638,15 @@ class DiscoverStockScraper(BaseScraper):
         if not current_shrinking:
             if rev_cagr is not None and profit_cagr is not None:
                 if rev_cagr > cagr_threshold and profit_cagr > cagr_threshold:
-                    # Large caps: also verify current YoY earnings supports it
-                    if is_large_cap:
+                    # Cross-check with 10Y: if 10Y CAGR < 8%, this is likely
+                    # a cyclical recovery rather than a structural fast grower
+                    _10y_disqualify = (
+                        rev_cagr_10y is not None and rev_cagr_10y < 0.08
+                        and prof_cagr_10y is not None and prof_cagr_10y < 0.08
+                    )
+                    if _10y_disqualify:
+                        pass  # fall through to cyclical/stalwart
+                    elif is_large_cap:
                         if yoy_earn is not None and yoy_earn > 0.15:
                             return "fast_grower"
                     else:
@@ -2568,14 +2664,16 @@ class DiscoverStockScraper(BaseScraper):
             return "cyclical"
 
         # Slow grower: low growth, any profitable company (not just large caps)
-        # Both CAGR and current YoY must agree on slow growth
+        # Use 10Y CAGR as canonical signal (Lynch's methodology), with 5Y/YoY fallback
         yoy_rev_sl = row.get("revenue_growth")
         yoy_earn_sl = row.get("earnings_growth")
         cagr_slow = rev_cagr is not None and rev_cagr < 0.05
+        cagr_10y_slow = rev_cagr_10y is not None and rev_cagr_10y < 0.05
         yoy_slow = yoy_rev_sl is not None and yoy_rev_sl < 0.05
         # Don't classify as slow_grower if current YoY is strongly positive
         yoy_fast = yoy_rev_sl is not None and yoy_rev_sl > 0.15
-        has_slow_rev = (cagr_slow or yoy_slow) and not yoy_fast
+        # 10Y slow is definitive regardless of recent uptick
+        has_slow_rev = cagr_10y_slow or ((cagr_slow or yoy_slow) and not yoy_fast)
         if has_slow_rev and eps is not None and eps > 0:
             return "slow_grower"
 
@@ -3558,6 +3656,10 @@ class DiscoverStockScraper(BaseScraper):
         fcf = row.get("free_cash_flow")
         total_cash = row.get("total_cash")
         total_debt = row.get("total_debt")
+        gr = row.get("growth_ranges") or {}
+        gr_sales = gr.get("compounded_sales_growth", {})
+        gr_profit = gr.get("compounded_profit_growth", {})
+        gr_roe = gr.get("return_on_equity", {})
         rec_mean = row.get("analyst_recommendation_mean")
         analyst_count = row.get("analyst_count")
         target = row.get("analyst_target_mean")
@@ -3594,14 +3696,63 @@ class DiscoverStockScraper(BaseScraper):
             tagged.append((2, "Paper Profits"))
         if pledged is not None and pledged > 20:
             tagged.append((2, "High Pledge Risk"))
-        if sales_cons >= 4 and profit_cons >= 4:
+        # "Consistent Compounder": require 10Y CAGR >= 10% (both sales & profit)
+        # + tight spread across 10Y/5Y/3Y, OR fallback to old 5Y consistency count
+        _csg_10y = gr_sales.get("10y")
+        _cpg_10y = gr_profit.get("10y")
+        _csg_5y = gr_sales.get("5y")
+        _cpg_5y = gr_profit.get("5y")
+        _csg_3y_tag = gr_sales.get("3y")
+        _cpg_3y_tag = gr_profit.get("3y")
+        _is_consistent_compounder = False
+        if _csg_10y is not None and _cpg_10y is not None and _csg_10y >= 10 and _cpg_10y >= 10:
+            # Check spread: all periods within 8pp = true consistency
+            _s_vals = [v for v in [_csg_10y, _csg_5y, _csg_3y_tag] if v is not None]
+            _p_vals = [v for v in [_cpg_10y, _cpg_5y, _cpg_3y_tag] if v is not None]
+            if len(_s_vals) >= 2 and len(_p_vals) >= 2:
+                if (max(_s_vals) - min(_s_vals)) <= 8 and (max(_p_vals) - min(_p_vals)) <= 8:
+                    _is_consistent_compounder = True
+        if not _is_consistent_compounder and sales_cons >= 4 and profit_cons >= 4:
+            # Fallback: 5Y consistency count (old behavior for stocks without 10Y data)
+            _is_consistent_compounder = True
+        if _is_consistent_compounder:
             tagged.append((2, "Consistent Compounder"))
 
-        # Priority 3: Compounding
-        if rev_cagr_5y is not None and rev_cagr_5y > 0.15 and prof_cagr_5y is not None and prof_cagr_5y > 0.15:
+        # Priority 3: Compounding — use actual 10Y for "Decade Compounder"
+        if (_csg_10y is not None and _csg_10y >= 15
+                and _cpg_10y is not None and _cpg_10y >= 15):
             tagged.append((3, "Decade Compounder"))
+        elif rev_cagr_5y is not None and rev_cagr_5y > 0.15 and prof_cagr_5y is not None and prof_cagr_5y > 0.15:
+            tagged.append((3, "5Y Wealth Creator"))
         elif (rev_cagr_5y is not None and rev_cagr_5y > 0.15) or (prof_cagr_5y is not None and prof_cagr_5y > 0.15):
             tagged.append((3, "5Y Wealth Creator"))
+
+        # Priority 3: Growth trajectory signals from multi-period data
+        _ttm_sales = gr_sales.get("ttm")
+        _3y_sales = gr_sales.get("3y")
+        _5y_sales = gr_sales.get("5y")
+        _ttm_profit = gr_profit.get("ttm")
+        _3y_profit = gr_profit.get("3y")
+        _5y_profit = gr_profit.get("5y")
+        # Accelerating growth: TTM > 3Y > 5Y (both sales and profit)
+        if (_ttm_sales is not None and _3y_sales is not None and _5y_sales is not None
+                and _ttm_sales > _3y_sales > _5y_sales and _5y_sales > 5
+                and _ttm_profit is not None and _3y_profit is not None and _5y_profit is not None
+                and _ttm_profit > _3y_profit > _5y_profit and _5y_profit > 0):
+            tagged.append((3, "Accelerating Growth"))
+        # Decelerating: 3Y < 5Y < 10Y and both metrics declining
+        _10y_sales = gr_sales.get("10y")
+        _10y_profit = gr_profit.get("10y")
+        if (_10y_sales is not None and _5y_sales is not None and _3y_sales is not None
+                and _3y_sales < _5y_sales < _10y_sales and _10y_sales > 10
+                and _10y_profit is not None and _5y_profit is not None and _3y_profit is not None
+                and _3y_profit < _5y_profit < _10y_profit):
+            tagged.append((4, "Decelerating Growth"))
+        # ROE deterioration: 10Y ROE > 15% but last year < 10%
+        _roe_10y = gr_roe.get("10y")
+        _roe_1y = gr_roe.get("1y")
+        if _roe_10y is not None and _roe_1y is not None and _roe_10y >= 15 and _roe_1y < 10:
+            tagged.append((4, "Fading ROE"))
 
         # Priority 3: Quality signals
         if dte is not None and dte == 0 and eps is not None and eps > 0:
@@ -3744,6 +3895,9 @@ class DiscoverStockScraper(BaseScraper):
         roce = row.get("roce")
         rev_cagr_5y = row.get("_hist_5y_revenue_cagr")
         prof_cagr_5y = row.get("_hist_5y_profit_cagr")
+        _gr = row.get("growth_ranges") or {}
+        _gr_profit_n = _gr.get("compounded_profit_growth", {})
+        _prof_cagr_10y = _gr_profit_n.get("10y")
         opm_std = row.get("_hist_opm_std_5y")
         opm_chg = row.get("opm_change")
         dte = row.get("debt_to_equity")
@@ -3763,7 +3917,9 @@ class DiscoverStockScraper(BaseScraper):
         s1 = ""
 
         if lynch_classification == "fast_grower":
-            if prof_cagr_5y is not None and prof_cagr_5y > 0.15:
+            if _prof_cagr_10y is not None and _prof_cagr_10y >= 15:
+                s1 = f"A high-growth {ind_label} company compounding profits at {_prof_cagr_10y:.0f}% over a decade."
+            elif prof_cagr_5y is not None and prof_cagr_5y > 0.15:
                 s1 = f"A high-growth {ind_label} company compounding profits at {prof_cagr_5y*100:.0f}% over 5 years."
             elif rg is not None and rg > 0.20:
                 s1 = f"A fast-growing {ind_label} company with revenue up {rg*100:.0f}% YoY."

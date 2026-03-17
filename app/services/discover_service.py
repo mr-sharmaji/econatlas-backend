@@ -903,57 +903,77 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
                      "negative")
 
     csg_val = _f("compounded_sales_growth_3y")
+    gr = row.get("growth_ranges") or {}
+    _gr_sales = gr.get("compounded_sales_growth", {})
+    _gr_profit = gr.get("compounded_profit_growth", {})
+    _csg_10y = _gr_sales.get("10y")
+    _csg_5y = _gr_sales.get("5y")
     if csg_val is not None:
+        # Build multi-period context suffix
+        _ctx_parts = []
+        if _csg_10y is not None:
+            _ctx_parts.append(f"10Y: {_csg_10y:.0f}%")
+        if _csg_5y is not None:
+            _ctx_parts.append(f"5Y: {_csg_5y:.0f}%")
+        _ctx = f" (Compare: {', '.join(_ctx_parts)}.)" if _ctx_parts else ""
         if csg_val > 15:
             _add("compounded_sales_growth_3y",
                  f"3-year revenue CAGR smooths out annual fluctuations to show the underlying growth trajectory. "
                  f"At {csg_val:.1f}%, revenue has compounded at a strong pace over three years. "
-                 f"This consistent top-line expansion signals a business with structural tailwinds.",
+                 f"This consistent top-line expansion signals a business with structural tailwinds.{_ctx}",
                  "positive")
         elif csg_val > 5:
             _add("compounded_sales_growth_3y",
                  f"3-year revenue CAGR smooths out annual fluctuations to show the underlying growth trajectory. "
                  f"At {csg_val:.1f}%, the company has grown steadily but not spectacularly. "
-                 f"Moderate growth — typical of mature businesses in established industries.",
+                 f"Moderate growth — typical of mature businesses in established industries.{_ctx}",
                  "neutral")
         elif csg_val > 0:
             _add("compounded_sales_growth_3y",
                  f"3-year revenue CAGR smooths out annual fluctuations to show the underlying growth trajectory. "
                  f"At {csg_val:.1f}%, growth has been sluggish over the past three years. "
-                 f"The business may be in a mature phase or facing competitive headwinds.",
+                 f"The business may be in a mature phase or facing competitive headwinds.{_ctx}",
                  "neutral")
         else:
             _add("compounded_sales_growth_3y",
                  f"3-year revenue CAGR smooths out annual fluctuations to show the underlying growth trajectory. "
                  f"At {csg_val:.1f}%, revenue has been shrinking over three years. "
-                 f"A structural decline unless the company is pivoting to a new business model.",
+                 f"A structural decline unless the company is pivoting to a new business model.{_ctx}",
                  "negative")
 
     cpg_val = _f("compounded_profit_growth_3y")
+    _cpg_10y = _gr_profit.get("10y")
+    _cpg_5y = _gr_profit.get("5y")
     if cpg_val is not None:
+        _ctx_parts = []
+        if _cpg_10y is not None:
+            _ctx_parts.append(f"10Y: {_cpg_10y:.0f}%")
+        if _cpg_5y is not None:
+            _ctx_parts.append(f"5Y: {_cpg_5y:.0f}%")
+        _ctx = f" (Compare: {', '.join(_ctx_parts)}.)" if _ctx_parts else ""
         if cpg_val > 15:
             _add("compounded_profit_growth_3y",
                  f"3-year profit CAGR shows whether profitability is consistently improving. "
                  f"At {cpg_val:.1f}%, profits have compounded strongly. "
-                 f"This signals improving efficiency and operating leverage — a quality indicator.",
+                 f"This signals improving efficiency and operating leverage — a quality indicator.{_ctx}",
                  "positive")
         elif cpg_val > 5:
             _add("compounded_profit_growth_3y",
                  f"3-year profit CAGR shows whether profitability is consistently improving. "
                  f"At {cpg_val:.1f}%, profit growth has been steady but unspectacular. "
-                 f"The company is profitable and stable, if not a high-growth compounder.",
+                 f"The company is profitable and stable, if not a high-growth compounder.{_ctx}",
                  "neutral")
         elif cpg_val > 0:
             _add("compounded_profit_growth_3y",
                  f"3-year profit CAGR shows whether profitability is consistently improving. "
                  f"At {cpg_val:.1f}%, profits are barely growing. "
-                 f"Check if rising costs or competitive pressure is squeezing margins.",
+                 f"Check if rising costs or competitive pressure is squeezing margins.{_ctx}",
                  "neutral")
         else:
             _add("compounded_profit_growth_3y",
                  f"3-year profit CAGR shows whether profitability is consistently improving. "
                  f"At {cpg_val:.1f}%, profits have been declining over three years. "
-                 f"A serious concern — the business is becoming less profitable over time.",
+                 f"A serious concern — the business is becoming less profitable over time.{_ctx}",
                  "negative")
 
     # ── Debt & Leverage ────────────────────────────────────────────
