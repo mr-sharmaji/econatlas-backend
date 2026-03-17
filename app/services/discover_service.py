@@ -421,6 +421,14 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
 
     # ── Valuation ───────────────────────────────────────────────────
     pe = _f("pe_ratio")
+    if pe is None:
+        eps_val = _f("eps")
+        if eps_val is not None and eps_val <= 0:
+            _add("pe_ratio",
+                 f"PE ratio is not available because the company is currently loss-making (EPS: ₹{eps_val:.1f}). "
+                 f"PE requires positive earnings — it becomes meaningless when a company is unprofitable. "
+                 f"Look at Price-to-Book or EV/Revenue for alternative valuation.",
+                 "negative")
     if pe is not None:
         avg_pe = _sf("avg_pe")
         if avg_pe and avg_pe > 0:
@@ -464,6 +472,16 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
                      "neutral")
 
     pb = _f("price_to_book")
+    if pb is None:
+        bs = row.get("bs_annual")
+        if isinstance(bs, dict):
+            _res = bs.get("reserves") or []
+            if _res and isinstance(_res[-1], (int, float)) and _res[-1] < 0:
+                _add("price_to_book",
+                     f"Price-to-Book is not available because book value is negative — "
+                     f"accumulated losses (₹{abs(_res[-1]):,.0f} Cr) have eroded all shareholder equity. "
+                     f"This indicates severe financial distress.",
+                     "negative")
     if pb is not None:
         avg_pb = _sf("avg_pb")
         if avg_pb and avg_pb > 0:
@@ -557,6 +575,12 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
         except (ValueError, TypeError):
             sb = {}
     peg = _to_float(sb.get("peg_ratio"))
+    if peg is None or peg <= 0:
+        if pe is None:
+            _add("peg_ratio",
+                 f"PEG ratio is not available because PE ratio is undefined — the company is loss-making. "
+                 f"PEG requires both a positive PE and a positive growth rate to be meaningful.",
+                 "negative")
     if peg is not None and peg > 0:
         if peg < 1:
             _add("peg_ratio",
@@ -936,7 +960,13 @@ def _generate_metric_insights(row: dict, sector_stats: dict | None = None) -> di
     de = _f("debt_to_equity")
     if de is not None:
         avg_de = _sf("avg_de")
-        if de == 0 or de < 0.01:
+        if de < 0:
+            _add("debt_to_equity",
+                 f"Debt-to-Equity compares total borrowings to shareholder equity — lower means less financial risk. "
+                 f"D/E is negative ({de:.2f}) because shareholder equity is negative — accumulated losses have wiped out the equity base. "
+                 f"This is a severe financial distress signal.",
+                 "negative")
+        elif de < 0.01:
             _add("debt_to_equity",
                  f"Debt-to-Equity compares total borrowings to shareholder equity — lower means less financial risk. "
                  f"This company is essentially debt-free. "
@@ -1485,6 +1515,21 @@ def _decorate_stock_row(row: dict, sector_stats: dict | None = None) -> dict:
                     elif prev < 0:
                         # Loss-to-loss or loss-to-profit: use absolute change relative to abs(prev)
                         item["earnings_growth"] = round((curr - prev) / abs(prev), 4)
+    # D/E ratio fallback: compute from balance sheet when Yahoo doesn't provide it
+    if item.get("debt_to_equity") is None:
+        bs = item.get("bs_annual")
+        if isinstance(bs, dict):
+            borrowings = bs.get("borrowings") or []
+            reserves = bs.get("reserves") or []
+            eq_cap = bs.get("equity_capital") or bs.get("share_capital") or []
+            if borrowings and reserves:
+                debt = borrowings[-1] if isinstance(borrowings[-1], (int, float)) else None
+                res = reserves[-1] if isinstance(reserves[-1], (int, float)) else None
+                ec = eq_cap[-1] if eq_cap and isinstance(eq_cap[-1], (int, float)) else 0
+                if debt is not None and res is not None:
+                    equity = ec + res
+                    if equity != 0:
+                        item["debt_to_equity"] = round(debt / equity, 2)
     item["why_ranked"] = _stock_why_ranked(item, sector_stats)
     item["metric_insights"] = _generate_metric_insights(item, sector_stats)
     return item

@@ -1299,7 +1299,7 @@ class DiscoverStockScraper(BaseScraper):
         if borrowings:
             latest_borrow = borrowings[-1]
             latest_eq = (equity_capital[-1] if equity_capital else 0) + (reserves[-1] if reserves else 0)
-            if latest_eq > 0:
+            if latest_eq != 0:
                 result["debt_to_equity"] = round(latest_borrow / latest_eq, 2)
 
         # Total Assets (latest, in Cr)
