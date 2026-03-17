@@ -763,15 +763,21 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
         _pl_data = row.get("pl_annual")
         if isinstance(_pl_data, dict):
             _pl_opm = _pl_data.get("opm_pct") or []
-            _n_yr = len(_pl_data.get("years") or [])
+            _pl_years = _pl_data.get("years") or []
+            _n_yr = len(_pl_years)
             if _n_yr >= 3 and len(_pl_opm) >= _n_yr and _pl_opm[0] is not None:
                 _opm_old = _pl_opm[0]
+                _opm_valid = [v for v in _pl_opm[:_n_yr] if v is not None]
+                _opm_min = min(_opm_valid) if _opm_valid else None
+                _opm_max = max(_opm_valid) if _opm_valid else None
+                _range_str = f" (range: {_opm_min:.0f}%–{_opm_max:.0f}%)" if _opm_min is not None and _opm_max is not None and _opm_min != _opm_max else ""
+                _yr_start = _pl_years[0] if _pl_years else ""
                 if opm_pct > _opm_old + 2:
-                    _opm_trend = f" Operating margin has expanded from {_opm_old:.0f}% to {opm_pct:.0f}% over {_n_yr} years — improving efficiency."
+                    _opm_trend = f" Operating margin has expanded from {_opm_old:.0f}% ({_yr_start}) to {opm_pct:.0f}% (TTM){_range_str} — improving efficiency."
                 elif opm_pct < _opm_old - 2:
-                    _opm_trend = f" Operating margin has compressed from {_opm_old:.0f}% to {opm_pct:.0f}% over {_n_yr} years — margin pressure."
+                    _opm_trend = f" Operating margin has compressed from {_opm_old:.0f}% ({_yr_start}) to {opm_pct:.0f}% (TTM){_range_str} — margin pressure."
                 else:
-                    _opm_trend = f" Operating margin has been stable around {opm_pct:.0f}% over {_n_yr} years."
+                    _opm_trend = f" Operating margin has been stable around {opm_pct:.0f}% over {_n_yr} years{_range_str}."
 
         if avg_opm_pct and avg_opm_pct > 0:
             if opm_pct > avg_opm_pct * 1.2:
@@ -824,18 +830,33 @@ def _generate_metric_insights(row: dict, industry_stats: dict | None = None) -> 
         if isinstance(_pl_data, dict):
             _pl_s = _pl_data.get("sales") or []
             _pl_np = _pl_data.get("net_profit") or []
-            _n_yr = len(_pl_data.get("years") or [])
+            _pl_years = _pl_data.get("years") or []
+            _n_yr = len(_pl_years)
             if _n_yr >= 3 and len(_pl_s) >= _n_yr and len(_pl_np) >= _n_yr:
                 _s0 = _pl_s[0]
                 _np0 = _pl_np[0]
                 if _s0 and _np0 is not None and _s0 != 0:
                     _old_npm = _np0 / _s0 * 100
+                    # Compute range of net margins across years
+                    _npm_vals = []
+                    for _i in range(_n_yr):
+                        _si = _pl_s[_i]
+                        _ni = _pl_np[_i]
+                        if _si and _ni is not None and _si != 0:
+                            _npm_vals.append(_ni / _si * 100)
+                    _range_str = ""
+                    if len(_npm_vals) >= 2:
+                        _npm_min = min(_npm_vals)
+                        _npm_max = max(_npm_vals)
+                        if _npm_min != _npm_max:
+                            _range_str = f" (range: {_npm_min:.0f}%–{_npm_max:.0f}%)"
+                    _yr_start = _pl_years[0] if _pl_years else ""
                     if npm_pct > _old_npm + 2:
-                        _npm_trend = f" Net margin has expanded from {_old_npm:.0f}% to {npm_pct:.0f}% over {_n_yr} years — improving profitability."
+                        _npm_trend = f" Net margin has expanded from {_old_npm:.0f}% ({_yr_start}) to {npm_pct:.0f}% (TTM){_range_str} — improving profitability."
                     elif npm_pct < _old_npm - 2:
-                        _npm_trend = f" Net margin has compressed from {_old_npm:.0f}% to {npm_pct:.0f}% over {_n_yr} years — profitability is declining."
+                        _npm_trend = f" Net margin has compressed from {_old_npm:.0f}% ({_yr_start}) to {npm_pct:.0f}% (TTM){_range_str} — profitability is declining."
                     else:
-                        _npm_trend = f" Net margin has been stable around {npm_pct:.0f}% over {_n_yr} years."
+                        _npm_trend = f" Net margin has been stable around {npm_pct:.0f}% over {_n_yr} years{_range_str}."
 
         if avg_npm_pct and avg_npm_pct > 0 and npm_pct > avg_npm_pct * 1.2:
             _add("profit_margins",
