@@ -2746,9 +2746,13 @@ async def list_discover_mutual_funds(
     if direct_only:
         conds.append("LOWER(COALESCE(plan_type, 'direct')) = 'direct'")
 
-    # Filter IDCW variants by default (3218 variants, only 13 with data)
+    # Filter IDCW variants by default
     if not include_idcw:
-        conds.append("(COALESCE(option_type, '') NOT ILIKE '%idcw%')")
+        conds.append(
+            "(COALESCE(option_type, '') NOT ILIKE '%idcw%'"
+            " AND scheme_name NOT ILIKE '%idcw%'"
+            " AND scheme_name NOT ILIKE '%income distribution%')"
+        )
 
     # Exclude dead/discontinued/closed-ended funds:
     # - NAV not updated in the last 90 days (discontinued/merged/matured)
@@ -2761,7 +2765,15 @@ async def list_discover_mutual_funds(
         " AND scheme_name NOT ILIKE '%closed ended%'"
         " AND scheme_name NOT ILIKE '%interval%fund%'"
         " AND scheme_name NOT ILIKE '%capital protection%'"
-        " AND scheme_name NOT ILIKE '%fixed term%')"
+        " AND scheme_name NOT ILIKE '%fixed term%'"
+        " AND scheme_name NOT ILIKE '%unclaimed%'"
+        " AND scheme_name NOT ILIKE '%- bonus%'"
+        " AND scheme_name NOT ILIKE '%bonus option%'"
+        " AND scheme_name NOT ILIKE '%- payout%'"
+        " AND scheme_name NOT ILIKE '%- monthly%'"
+        " AND scheme_name NOT ILIKE '%- quarterly%'"
+        " AND scheme_name NOT ILIKE '%- half yearly%'"
+        " AND scheme_name NOT ILIKE '%- annual%')"
     )
 
     preset_norm = str(preset or "all").strip().lower()
@@ -3095,6 +3107,17 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
           AND scheme_name NOT ILIKE '%interval%fund%'
           AND scheme_name NOT ILIKE '%capital protection%'
           AND scheme_name NOT ILIKE '%fixed term%'
+          AND scheme_name NOT ILIKE '%idcw%'
+          AND scheme_name NOT ILIKE '%income distribution%'
+          AND scheme_name NOT ILIKE '%unclaimed%'
+          AND scheme_name NOT ILIKE '%- bonus%'
+          AND scheme_name NOT ILIKE '%bonus option%'
+          AND scheme_name NOT ILIKE '%- payout%'
+          AND scheme_name NOT ILIKE '%- monthly%'
+          AND scheme_name NOT ILIKE '%- quarterly%'
+          AND scheme_name NOT ILIKE '%- half yearly%'
+          AND scheme_name NOT ILIKE '%- annual%'
+          AND COALESCE(option_type, '') NOT ILIKE '%idcw%'
         ORDER BY score DESC NULLS LAST, scheme_name ASC
         LIMIT $2
         """,
