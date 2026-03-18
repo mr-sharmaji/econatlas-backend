@@ -1862,6 +1862,38 @@ class DiscoverMutualFundScraper(BaseScraper):
         merged.update(direct_merged)
 
         rows = [row for row in merged.values() if str(row.get("plan_type") or "").lower() == "direct"]
+
+        # ── Fix misclassified index fund sub_categories ──────────────────
+        for row in rows:
+            name_lower = (row.get("scheme_name") or "").lower()
+            sub = (row.get("sub_category") or "").lower()
+            classification = (row.get("fund_classification") or "").lower()
+
+            # Only correct index funds with generic/wrong sub_category
+            if classification != "index" and "index" not in sub:
+                continue
+
+            # Rule-based correction using index name keywords
+            # Order matters: more specific patterns first
+            if "nifty 500" in name_lower or "bse 500" in name_lower:
+                row["sub_category"] = "Multi Cap Index"
+            elif "largemidcap" in name_lower or "large midcap" in name_lower or "large mid cap" in name_lower or "nifty 250" in name_lower:
+                row["sub_category"] = "Large & MidCap Index"
+            elif "midsmallcap" in name_lower or "mid small" in name_lower:
+                row["sub_category"] = "Mid Cap Index"
+            elif ("smallcap" in name_lower or "small cap" in name_lower) and "mid" not in name_lower:
+                row["sub_category"] = "Small Cap Index"
+            elif ("midcap" in name_lower or "mid cap" in name_lower) and "small" not in name_lower and "large" not in name_lower:
+                row["sub_category"] = "Mid Cap Index"
+            elif "nifty 200" in name_lower:
+                row["sub_category"] = "Large & MidCap Index"
+            elif ("nifty 50 " in name_lower or "nifty50" in name_lower or "sensex" in name_lower or "bse 100" in name_lower) and "nifty 500" not in name_lower:
+                row["sub_category"] = "Large Cap Index"
+            elif "nifty next 50" in name_lower:
+                row["sub_category"] = "Large Cap Index"
+            elif "total market" in name_lower:
+                row["sub_category"] = "Multi Cap Index"
+
         return self._compute_scores(rows)
 
 
