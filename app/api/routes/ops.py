@@ -386,6 +386,62 @@ async def rescore_job(
     }
 
 
+@router.post("/jobs/rerank-mf")
+async def rerank_mf(
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Recompute sub_category_rank and category_rank for all MFs."""
+    _authorize(x_ops_token)
+    from app.db import get_pool
+    pool = await get_pool()
+    try:
+        sub_r = await pool.execute("""
+            UPDATE discover_mutual_fund_snapshots AS t
+            SET sub_category_rank = sub.rnk, sub_category_total = sub.total
+            FROM (
+                SELECT scheme_code,
+                       DENSE_RANK() OVER (
+                           PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
+                           ORDER BY score DESC
+                       ) AS rnk,
+                       COUNT(*) OVER (
+                           PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
+                       ) AS total
+                FROM discover_mutual_fund_snapshots
+            ) sub
+            WHERE t.scheme_code = sub.scheme_code
+        """)
+        cat_r = await pool.execute("""
+            UPDATE discover_mutual_fund_snapshots AS t
+            SET category_rank = sub.rnk, category_total = sub.total
+            FROM (
+                SELECT scheme_code,
+                       DENSE_RANK() OVER (
+                           PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
+                           ORDER BY score DESC
+                       ) AS rnk,
+                       COUNT(*) OVER (
+                           PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
+                       ) AS total
+                FROM discover_mutual_fund_snapshots
+            ) sub
+            WHERE t.scheme_code = sub.scheme_code
+        """)
+        # Verify
+        check = await pool.fetchrow(
+            "SELECT COUNT(*) AS total, COUNT(sub_category_rank) AS ranked FROM discover_mutual_fund_snapshots"
+        )
+        return {
+            "status": "done",
+            "sub_category_result": sub_r,
+            "category_result": cat_r,
+            "total_rows": check["total"],
+            "rows_with_sub_rank": check["ranked"],
+        }
+    except Exception as exc:
+        return {"status": "error", "detail": str(exc)}
+
+
 @router.get("/jobs")
 async def list_jobs(
     x_ops_token: str | None = Header(default=None),
