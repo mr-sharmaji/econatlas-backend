@@ -2074,7 +2074,9 @@ async def rescore_discover_mutual_funds() -> dict:
         )
         if missing_count > 0:
             logger.info("MF Rescore: %d direct funds missing returns — enriching from mfapi.in", missing_count)
-            _scraper._enrich_from_mfapi(direct_rows, max_enrich=600)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: _scraper._enrich_from_mfapi(direct_rows, max_enrich=600))
             # Write enriched data back to raw_rows
             for row in raw_rows:
                 sc = row.get("scheme_code")
