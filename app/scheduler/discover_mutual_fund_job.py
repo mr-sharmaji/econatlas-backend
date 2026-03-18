@@ -578,7 +578,7 @@ class DiscoverMutualFundScraper(BaseScraper):
         category_links = sorted(
             {
                 link
-                for link in re.findall(r'href="(/mutual-funds/(?:equity|debt|hybrid|other|solution-oriented|featured)/[^"]+/\d+)"', explore_html)
+                for link in re.findall(r'href="(/mutual-funds/(?:equity|debt|hybrid|other|solution-oriented|featured|fund-houses)/[^"]+/\d+)"', explore_html)
                 if link
             }
         )
