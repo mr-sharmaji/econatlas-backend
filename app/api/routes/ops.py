@@ -407,6 +407,16 @@ async def rerank_mf(
                   AND scheme_name NOT ILIKE '%interval%fund%'
                   AND scheme_name NOT ILIKE '%capital protection%'
                   AND scheme_name NOT ILIKE '%fixed term%'
+                  AND scheme_name NOT ILIKE '%idcw%'
+                  AND scheme_name NOT ILIKE '%income distribution%'
+                  AND scheme_name NOT ILIKE '%unclaimed%'
+                  AND scheme_name NOT ILIKE '%- bonus%'
+                  AND scheme_name NOT ILIKE '%bonus option%'
+                  AND scheme_name NOT ILIKE '%- payout%'
+                  AND scheme_name NOT ILIKE '%- monthly%'
+                  AND scheme_name NOT ILIKE '%- quarterly%'
+                  AND scheme_name NOT ILIKE '%- half yearly%'
+                  AND scheme_name NOT ILIKE '%- annual%'
         """
         sub_r = await pool.execute(f"""
             UPDATE discover_mutual_fund_snapshots AS t
