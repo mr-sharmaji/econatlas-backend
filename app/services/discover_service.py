@@ -283,12 +283,14 @@ def _mf_breakdown_payload(row: dict) -> dict:
         return existing
     perf = _to_float(row.get("score_performance"))
     cat_fit = _to_float(row.get("score_category_fit"))
+    beta_score = _to_float(row.get("score_beta"))
     return {
         "performance_score": round(perf, 2) if perf is not None else None,
         "consistency_score": round(_to_float(row.get("score_consistency")) or 0.0, 2) if _to_float(row.get("score_consistency")) is not None else None,
         "risk_score": round(_to_float(row.get("score_risk")) or 0.0, 2) if _to_float(row.get("score_risk")) is not None else None,
         "cost_score": round(_to_float(row.get("score_cost")) or 0.0, 2) if _to_float(row.get("score_cost")) is not None else None,
         "category_fit_score": round(cat_fit, 2) if cat_fit is not None else None,
+        "beta_score": round(beta_score, 2) if beta_score is not None else None,
         # Legacy
         "return_score": round(perf, 2) if perf is not None else None,
     }
@@ -1944,6 +1946,182 @@ def _decorate_stock_row(row: dict, industry_stats: dict | None = None) -> dict:
     return item
 
 
+def _generate_mf_metric_insights(row: dict) -> dict:
+    """Generate contextual metric explanations + sentiment for a mutual fund.
+
+    Returns {metric_key: {"explanation": str, "sentiment": str}} where
+    sentiment is one of "positive", "cautionary", "negative".
+    Only metrics with non-null values get an entry.
+    """
+    insights: dict[str, dict] = {}
+
+    def _f(key: str) -> float | None:
+        return _to_float(row.get(key))
+
+    def _add(key: str, explanation: str, sentiment: str) -> None:
+        insights[key] = {"explanation": explanation, "sentiment": sentiment}
+
+    # ── Sharpe Ratio ──
+    sharpe = _f("sharpe")
+    if sharpe is not None:
+        if sharpe > 1.5:
+            _add("sharpe", f"Sharpe ratio of {sharpe:.2f} is excellent — the fund generates strong risk-adjusted returns. Every unit of risk taken is well-compensated with returns above the risk-free rate.", "positive")
+        elif sharpe >= 0.5:
+            _add("sharpe", f"Sharpe ratio of {sharpe:.2f} is average — the fund generates moderate risk-adjusted returns. Returns are positive relative to the risk taken.", "cautionary")
+        else:
+            _add("sharpe", f"Sharpe ratio of {sharpe:.2f} is weak — the fund's returns don't adequately compensate for the risk taken. Consider whether the volatility is justified.", "negative")
+
+    # ── Sortino Ratio ──
+    sortino = _f("sortino")
+    if sortino is not None:
+        if sortino > 2.0:
+            _add("sortino", f"Sortino ratio of {sortino:.2f} is excellent — the fund delivers strong returns relative to downside risk. Unlike Sharpe, Sortino only penalizes harmful volatility (losses), not upside swings.", "positive")
+        elif sortino >= 1.0:
+            _add("sortino", f"Sortino ratio of {sortino:.2f} is acceptable — downside risk is reasonably managed. The fund doesn't frequently experience sharp declines.", "cautionary")
+        else:
+            _add("sortino", f"Sortino ratio of {sortino:.2f} is concerning — the fund experiences significant downside volatility. Losses are not well-controlled relative to the returns generated.", "negative")
+
+    # ── Max Drawdown ──
+    max_dd = _f("max_drawdown")
+    if max_dd is not None:
+        dd_abs = abs(max_dd)
+        if dd_abs < 10:
+            _add("max_drawdown", f"Maximum drawdown of {dd_abs:.1f}% is low — the fund has historically avoided large declines. This indicates strong downside protection and capital preservation.", "positive")
+        elif dd_abs <= 25:
+            _add("max_drawdown", f"Maximum drawdown of {dd_abs:.1f}% is moderate — the fund has experienced noticeable declines during market corrections, but within expected range for its category.", "cautionary")
+        else:
+            _add("max_drawdown", f"Maximum drawdown of {dd_abs:.1f}% is significant — the fund has experienced deep declines. Investors should be prepared for substantial temporary losses during market stress.", "negative")
+
+    # ── Alpha ──
+    alpha = _f("alpha")
+    if alpha is not None:
+        if alpha > 2:
+            _add("alpha", f"Alpha of {alpha:.2f}% means the fund outperforms its benchmark by {alpha:.2f}% annually after adjusting for risk. Strong alpha indicates skilled fund management.", "positive")
+        elif alpha >= 0:
+            _add("alpha", f"Alpha of {alpha:.2f}% indicates the fund roughly matches its benchmark performance. Returns are in line with what the market risk exposure would predict.", "cautionary")
+        else:
+            _add("alpha", f"Alpha of {alpha:.2f}% means the fund underperforms its benchmark by {abs(alpha):.2f}% annually. The fund is destroying value relative to a passive index alternative.", "negative")
+
+    # ── Beta ──
+    beta = _f("beta")
+    if beta is not None:
+        if beta < 0.8:
+            _add("beta", f"Beta of {beta:.2f} means the fund is defensive — it moves less than the market. When the market falls 10%, this fund historically falls only {beta * 10:.1f}%. Good for risk-averse investors.", "positive")
+        elif beta <= 1.2:
+            _add("beta", f"Beta of {beta:.2f} means the fund moves roughly in line with the market. It captures most of the market's upside and downside.", "cautionary")
+        else:
+            _add("beta", f"Beta of {beta:.2f} means the fund is aggressive — it amplifies market movements. When the market rises 10%, this fund may rise {beta * 10:.1f}%, but losses are equally amplified.", "negative")
+
+    # ── Rolling Return Consistency ──
+    rolling = _f("rolling_return_consistency")
+    if rolling is not None:
+        if rolling < 10:
+            _add("rolling_return_consistency", f"Rolling return std dev of {rolling:.1f}% indicates highly consistent performance — returns are predictable across different time periods. This fund delivers reliable outcomes.", "positive")
+        elif rolling <= 20:
+            _add("rolling_return_consistency", f"Rolling return std dev of {rolling:.1f}% indicates moderate consistency — returns vary somewhat depending on when you invest, but within an acceptable range.", "cautionary")
+        else:
+            _add("rolling_return_consistency", f"Rolling return std dev of {rolling:.1f}% indicates unpredictable returns — performance varies significantly depending on entry timing. Investors may see very different outcomes over similar holding periods.", "negative")
+
+    # ── Standard Deviation ──
+    std_dev = _f("std_dev")
+    if std_dev is not None:
+        if std_dev < 10:
+            _add("std_dev", f"Annualized volatility of {std_dev:.1f}% is low — the fund's NAV fluctuates minimally. Suitable for conservative investors seeking stability.", "positive")
+        elif std_dev <= 20:
+            _add("std_dev", f"Annualized volatility of {std_dev:.1f}% is moderate — typical for equity-oriented funds. Expect regular NAV fluctuations but within normal market ranges.", "cautionary")
+        else:
+            _add("std_dev", f"Annualized volatility of {std_dev:.1f}% is high — the fund experiences significant price swings. Only suitable for investors with high risk tolerance and long time horizons.", "negative")
+
+    # ── Expense Ratio ──
+    expense = _f("expense_ratio")
+    if expense is not None:
+        if expense < 0.5:
+            _add("expense_ratio", f"Expense ratio of {expense:.2f}% is very low — you keep more of your returns. Typical of index and passive funds.", "positive")
+        elif expense <= 1.5:
+            _add("expense_ratio", f"Expense ratio of {expense:.2f}% is reasonable for an actively managed fund. The cost is within industry norms.", "cautionary")
+        else:
+            _add("expense_ratio", f"Expense ratio of {expense:.2f}% is high — a significant portion of returns goes toward fund management fees. Consider if the fund's alpha justifies this cost.", "negative")
+
+    return insights
+
+
+def _generate_mf_tags(row: dict) -> list[dict]:
+    """Generate balanced tags (max 3) with sentiment for MF detail page.
+
+    Returns list of {tag, sentiment, preset} where sentiment is positive/cautionary/negative
+    and preset is the screener preset to navigate to (or null).
+    """
+    tags: list[tuple[int, dict]] = []  # (priority, tag_dict)
+
+    score = _to_float(row.get("score")) or 0
+    sub_pctl = _to_float(row.get("sub_category_percentile"))
+    ret1y = _to_float(row.get("returns_1y"))
+    ret3y = _to_float(row.get("returns_3y"))
+    expense = _to_float(row.get("expense_ratio"))
+    risk = (row.get("risk_level") or "").lower()
+    age = _to_float(row.get("fund_age_years"))
+    aum = _to_float(row.get("aum_cr"))
+    max_dd = _to_float(row.get("max_drawdown"))
+    sharpe = _to_float(row.get("sharpe"))
+    alpha = _to_float(row.get("alpha"))
+
+    # Positive tags
+    if sub_pctl is not None and sub_pctl >= 90:
+        tags.append((1, {"tag": "Top Performer", "sentiment": "positive", "preset": None}))
+    if ret3y is not None and ret3y > 15:
+        tags.append((2, {"tag": "Strong Returns", "sentiment": "positive", "preset": None}))
+    if expense is not None and expense < 0.5:
+        tags.append((2, {"tag": "Low Cost", "sentiment": "positive", "preset": None}))
+    if sharpe is not None and sharpe > 1.5:
+        tags.append((3, {"tag": "High Sharpe", "sentiment": "positive", "preset": None}))
+    if alpha is not None and alpha > 3:
+        tags.append((3, {"tag": "Strong Alpha", "sentiment": "positive", "preset": None}))
+    if age is not None and age >= 10:
+        tags.append((3, {"tag": "Established Fund", "sentiment": "positive", "preset": None}))
+
+    # Cautionary tags
+    if age is not None and age < 3:
+        tags.append((2, {"tag": "New Fund", "sentiment": "cautionary", "preset": None}))
+    if expense is not None and expense > 2.0:
+        tags.append((2, {"tag": "High Cost", "sentiment": "negative", "preset": None}))
+
+    # Negative tags
+    if risk in ("high", "very high"):
+        tags.append((1, {"tag": "High Risk", "sentiment": "negative", "preset": None}))
+    if ret1y is not None and ret1y < -10:
+        tags.append((1, {"tag": "Negative Returns", "sentiment": "negative", "preset": None}))
+    if aum is not None and aum < 50:
+        tags.append((2, {"tag": "Small Fund", "sentiment": "cautionary", "preset": None}))
+    if max_dd is not None and abs(max_dd) > 30:
+        tags.append((2, {"tag": "Deep Drawdown", "sentiment": "negative", "preset": None}))
+    if score < 30 and score > 0:
+        tags.append((2, {"tag": "Low Score", "sentiment": "negative", "preset": None}))
+
+    # Sort by priority, take max 3, ensure mix of sentiments
+    tags.sort(key=lambda x: x[0])
+    result = [t[1] for t in tags[:3]]
+
+    # Add sub-category tag with preset navigation
+    fc = row.get("fund_classification") or row.get("sub_category") or ""
+    if fc:
+        preset_map = {
+            "Large Cap": "large-cap", "Mid Cap": "mid-cap", "Small Cap": "small-cap",
+            "Flexi Cap": "flexi-cap", "Multi Cap": "multi-cap", "ELSS": "elss",
+            "Value": "value-mf", "Focused": "focused", "Index": "index",
+            "Sectoral": "sectoral", "Thematic": "sectoral",
+            "Liquid": "liquid", "Overnight": "overnight", "Money Market": "money-market",
+            "Gilt": "gilt", "Corporate Bond": "corporate-bond",
+            "Aggressive Hybrid": "aggressive-hybrid", "Arbitrage": "arbitrage",
+            "FoF Domestic": "fof-domestic", "FoF Overseas": "fof-overseas",
+            "Retirement": "retirement", "Children": "children",
+        }
+        preset = preset_map.get(fc)
+        if len(result) < 3:
+            result.append({"tag": fc, "sentiment": "neutral", "preset": preset})
+
+    return result
+
+
 def _decorate_mf_row(row: dict, category_stats: dict | None = None) -> dict:
     import json as _json
     item = dict(row)
@@ -1958,7 +2136,9 @@ def _decorate_mf_row(row: dict, category_stats: dict | None = None) -> dict:
         sub_stats = category_stats.get(sub_cat) or category_stats.get(item.get("category", ""))
     item["why_ranked"] = _mf_why_ranked(item, sub_stats)
     item["quality_badges"] = _compute_quality_badges(item)
+    item["tags"] = _generate_mf_tags(item)
     item["fund_insights"] = _mf_fund_insights(item, sub_stats)
+    item["metric_insights"] = _generate_mf_metric_insights(item)
     if sub_stats:
         item["category_avg_returns_1y"] = sub_stats.get("avg_ret1y")
         item["category_avg_returns_3y"] = sub_stats.get("avg_ret3y")
