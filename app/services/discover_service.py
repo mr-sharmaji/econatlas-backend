@@ -2869,6 +2869,32 @@ async def list_discover_mutual_funds(
         conds.append("(sub_category ILIKE '%multi%asset%' OR fund_classification ILIKE '%multi%asset%')")
     elif preset_norm == "equity-savings":
         conds.append("(sub_category ILIKE '%equity%savings%')")
+    elif preset_norm == "international":
+        conds.append("(sub_category ILIKE '%international%' OR fund_classification ILIKE '%international%')")
+    elif preset_norm == "ultra-short":
+        conds.append("(sub_category ILIKE '%ultra%short%')")
+    elif preset_norm == "low-duration":
+        conds.append("(sub_category ILIKE '%low%dur%')")
+    elif preset_norm == "medium-duration":
+        conds.append("(sub_category ILIKE '%medium%dur%' AND sub_category NOT ILIKE '%long%')")
+    elif preset_norm == "floater":
+        conds.append("(sub_category ILIKE '%floater%')")
+    elif preset_norm == "target-maturity":
+        conds.append("(sub_category ILIKE '%target%maturity%' OR fund_classification ILIKE '%target%maturity%')")
+    elif preset_norm == "credit-risk":
+        conds.append("(sub_category ILIKE '%credit%risk%')")
+    elif preset_norm == "other":
+        conds.append("(category NOT IN ('Equity', 'Debt', 'Hybrid') OR category IS NULL)")
+    elif preset_norm == "fof-domestic":
+        conds.append("(sub_category ILIKE '%fof%domestic%' OR fund_classification ILIKE '%fof%domestic%')")
+    elif preset_norm == "fof-overseas":
+        conds.append("(sub_category ILIKE '%fof%overseas%' OR fund_classification ILIKE '%fof%overseas%')")
+    elif preset_norm == "gold-silver":
+        conds.append("(scheme_name ILIKE '%gold%' OR scheme_name ILIKE '%silver%')")
+    elif preset_norm == "retirement":
+        conds.append("(sub_category ILIKE '%retirement%' OR fund_classification ILIKE '%retirement%')")
+    elif preset_norm == "children":
+        conds.append("(sub_category ILIKE '%child%' OR fund_classification ILIKE '%child%')")
 
     if search and search.strip():
         q = f"%{search.strip()}%"
