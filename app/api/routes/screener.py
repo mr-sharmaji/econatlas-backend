@@ -309,7 +309,7 @@ async def get_mf_history(
 @router.get("/stocks/sparklines")
 async def get_stock_sparklines(
     symbols: str = Query(..., description="Comma-separated stock symbols"),
-    days: int = Query(default=7, ge=1, le=90),
+    days: int = Query(default=7, ge=1, le=365),
 ) -> dict[str, list[dict]]:
     """Batch fetch price sparklines for multiple stocks."""
     try:
@@ -322,7 +322,7 @@ async def get_stock_sparklines(
 @router.get("/mutual-funds/sparklines")
 async def get_mf_sparklines(
     scheme_codes: str = Query(..., description="Comma-separated scheme codes"),
-    days: int = Query(default=7, ge=1, le=90),
+    days: int = Query(default=7, ge=1, le=365),
 ) -> dict[str, list[dict]]:
     """Batch fetch NAV sparklines for multiple mutual funds."""
     try:
