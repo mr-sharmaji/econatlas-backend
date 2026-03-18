@@ -2035,6 +2035,32 @@ async def rescore_discover_mutual_funds() -> dict:
         has_sortino, has_sortino / total * 100,
     )
 
+    # Fix misclassified index fund sub_categories before scoring
+    for row in raw_rows:
+        name_lower = (row.get("scheme_name") or "").lower()
+        sub = (row.get("sub_category") or "").lower()
+        classification = (row.get("fund_classification") or "").lower()
+        if classification != "index" and "index" not in sub:
+            continue
+        if "nifty 500" in name_lower or "bse 500" in name_lower:
+            row["sub_category"] = "Multi Cap Index"
+        elif "largemidcap" in name_lower or "large midcap" in name_lower or "large mid cap" in name_lower or "nifty 250" in name_lower:
+            row["sub_category"] = "Large & MidCap Index"
+        elif "midsmallcap" in name_lower or "mid small" in name_lower:
+            row["sub_category"] = "Mid Cap Index"
+        elif ("smallcap" in name_lower or "small cap" in name_lower) and "mid" not in name_lower:
+            row["sub_category"] = "Small Cap Index"
+        elif ("midcap" in name_lower or "mid cap" in name_lower) and "small" not in name_lower and "large" not in name_lower:
+            row["sub_category"] = "Mid Cap Index"
+        elif "nifty 200" in name_lower:
+            row["sub_category"] = "Large & MidCap Index"
+        elif ("nifty 50 " in name_lower or "nifty50" in name_lower or "sensex" in name_lower or "bse 100" in name_lower) and "nifty 500" not in name_lower:
+            row["sub_category"] = "Large Cap Index"
+        elif "nifty next 50" in name_lower:
+            row["sub_category"] = "Large Cap Index"
+        elif "total market" in name_lower:
+            row["sub_category"] = "Multi Cap Index"
+
     # Score
     score_t0 = time_mod.time()
     scored_rows = _scraper._compute_scores(raw_rows)
