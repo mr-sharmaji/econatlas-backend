@@ -46,6 +46,8 @@ def _clean_mf_display_name(name: str) -> str:
     result = re.sub(r'\s*Growth\s+Plan\b.*$', '', result, flags=re.IGNORECASE).strip()
     # Remove "Direct Growth" mid-string remnants
     result = re.sub(r'\s+Direct\s+Growth\b', '', result, flags=re.IGNORECASE).strip()
+    # Remove trailing "Direct" (with or without dash)
+    result = re.sub(r'\s*[-–]?\s*Direct\s*$', '', result, flags=re.IGNORECASE).strip()
     # Trim trailing dashes and whitespace
     result = re.sub(r'\s*[-–]+\s*$', '', result).strip()
     return result if result else name
