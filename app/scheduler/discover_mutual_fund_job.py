@@ -800,53 +800,56 @@ class DiscoverMutualFundScraper(BaseScraper):
 
     # ── Sub-category-specific layer weights ────────────────────────────
     _SUBCATEGORY_LAYER_WEIGHTS: dict[str, dict[str, float]] = {
-        "DEFAULT":        {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        # 6 layers: performance, consistency, risk, cost, category_fit, beta
+        # Beta weight is 0 for debt funds (not relevant), 0.10 for equity/hybrid
+        # Dynamic rebalancing handles missing beta gracefully
+        "DEFAULT":        {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
         # Equity
-        "Large Cap":      {"performance": 0.25, "consistency": 0.25, "risk": 0.15, "cost": 0.15, "category_fit": 0.20},
-        "Mid Cap":        {"performance": 0.30, "consistency": 0.20, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        "Small Cap":      {"performance": 0.30, "consistency": 0.20, "risk": 0.15, "cost": 0.15, "category_fit": 0.20},
-        "Flexi Cap":      {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        "Multi Cap":      {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        "ELSS":           {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        "Index":          {"performance": 0.20, "consistency": 0.20, "risk": 0.10, "cost": 0.30, "category_fit": 0.20},
-        "Sectoral":       {"performance": 0.30, "consistency": 0.15, "risk": 0.20, "cost": 0.15, "category_fit": 0.20},
-        "Thematic":       {"performance": 0.30, "consistency": 0.15, "risk": 0.20, "cost": 0.15, "category_fit": 0.20},
-        "Focused":        {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        "Contra":         {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        "Value":          {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        "Dividend Yield": {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        "Large & Mid Cap": {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        "International":  {"performance": 0.30, "consistency": 0.20, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        # Debt
-        "Liquid":         {"performance": 0.15, "consistency": 0.20, "risk": 0.25, "cost": 0.30, "category_fit": 0.10},
-        "Money Market":   {"performance": 0.15, "consistency": 0.20, "risk": 0.25, "cost": 0.30, "category_fit": 0.10},
-        "Overnight":      {"performance": 0.10, "consistency": 0.15, "risk": 0.25, "cost": 0.35, "category_fit": 0.15},
-        "Gilt":           {"performance": 0.20, "consistency": 0.25, "risk": 0.25, "cost": 0.20, "category_fit": 0.10},
-        "Corporate Bond": {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
-        "Credit Risk":    {"performance": 0.20, "consistency": 0.15, "risk": 0.30, "cost": 0.15, "category_fit": 0.20},
-        "Short Duration": {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
-        "Medium Duration": {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
-        "Long Duration":  {"performance": 0.25, "consistency": 0.20, "risk": 0.25, "cost": 0.15, "category_fit": 0.15},
-        "Ultra Short Duration": {"performance": 0.15, "consistency": 0.20, "risk": 0.25, "cost": 0.25, "category_fit": 0.15},
-        "Low Duration":   {"performance": 0.15, "consistency": 0.20, "risk": 0.25, "cost": 0.25, "category_fit": 0.15},
-        "Banking & PSU":  {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
-        "Floater":        {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
-        "Dynamic Bond":   {"performance": 0.20, "consistency": 0.25, "risk": 0.25, "cost": 0.15, "category_fit": 0.15},
-        "Target Maturity": {"performance": 0.15, "consistency": 0.25, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
-        "Medium to Long Duration": {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15},
-        # Hybrid
-        "Aggressive Hybrid":      {"performance": 0.25, "consistency": 0.20, "risk": 0.20, "cost": 0.15, "category_fit": 0.20},
-        "Balanced Hybrid":        {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        "Conservative Hybrid":    {"performance": 0.20, "consistency": 0.25, "risk": 0.25, "cost": 0.15, "category_fit": 0.15},
-        "Dynamic Asset Allocation": {"performance": 0.20, "consistency": 0.25, "risk": 0.25, "cost": 0.15, "category_fit": 0.15},
-        "Arbitrage":              {"performance": 0.15, "consistency": 0.20, "risk": 0.20, "cost": 0.30, "category_fit": 0.15},
-        "Multi-Asset":            {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        "Equity Savings":         {"performance": 0.20, "consistency": 0.25, "risk": 0.25, "cost": 0.15, "category_fit": 0.15},
+        "Large Cap":      {"performance": 0.22, "consistency": 0.22, "risk": 0.13, "cost": 0.13, "category_fit": 0.18, "beta": 0.12},
+        "Mid Cap":        {"performance": 0.25, "consistency": 0.18, "risk": 0.18, "cost": 0.13, "category_fit": 0.14, "beta": 0.12},
+        "Small Cap":      {"performance": 0.25, "consistency": 0.18, "risk": 0.13, "cost": 0.13, "category_fit": 0.18, "beta": 0.13},
+        "Flexi Cap":      {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
+        "Multi Cap":      {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
+        "ELSS":           {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
+        "Index":          {"performance": 0.18, "consistency": 0.18, "risk": 0.10, "cost": 0.28, "category_fit": 0.18, "beta": 0.08},
+        "Sectoral":       {"performance": 0.25, "consistency": 0.13, "risk": 0.18, "cost": 0.13, "category_fit": 0.18, "beta": 0.13},
+        "Thematic":       {"performance": 0.25, "consistency": 0.13, "risk": 0.18, "cost": 0.13, "category_fit": 0.18, "beta": 0.13},
+        "Focused":        {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
+        "Contra":         {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
+        "Value":          {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
+        "Dividend Yield": {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
+        "Large & Mid Cap": {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
+        "International":  {"performance": 0.27, "consistency": 0.18, "risk": 0.18, "cost": 0.13, "category_fit": 0.14, "beta": 0.10},
+        # Debt — no beta (weight = 0)
+        "Liquid":         {"performance": 0.15, "consistency": 0.20, "risk": 0.25, "cost": 0.30, "category_fit": 0.10, "beta": 0.0},
+        "Money Market":   {"performance": 0.15, "consistency": 0.20, "risk": 0.25, "cost": 0.30, "category_fit": 0.10, "beta": 0.0},
+        "Overnight":      {"performance": 0.10, "consistency": 0.15, "risk": 0.25, "cost": 0.35, "category_fit": 0.15, "beta": 0.0},
+        "Gilt":           {"performance": 0.20, "consistency": 0.25, "risk": 0.25, "cost": 0.20, "category_fit": 0.10, "beta": 0.0},
+        "Corporate Bond": {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15, "beta": 0.0},
+        "Credit Risk":    {"performance": 0.20, "consistency": 0.15, "risk": 0.30, "cost": 0.15, "category_fit": 0.20, "beta": 0.0},
+        "Short Duration": {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15, "beta": 0.0},
+        "Medium Duration": {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15, "beta": 0.0},
+        "Long Duration":  {"performance": 0.25, "consistency": 0.20, "risk": 0.25, "cost": 0.15, "category_fit": 0.15, "beta": 0.0},
+        "Ultra Short Duration": {"performance": 0.15, "consistency": 0.20, "risk": 0.25, "cost": 0.25, "category_fit": 0.15, "beta": 0.0},
+        "Low Duration":   {"performance": 0.15, "consistency": 0.20, "risk": 0.25, "cost": 0.25, "category_fit": 0.15, "beta": 0.0},
+        "Banking & PSU":  {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15, "beta": 0.0},
+        "Floater":        {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15, "beta": 0.0},
+        "Dynamic Bond":   {"performance": 0.20, "consistency": 0.25, "risk": 0.25, "cost": 0.15, "category_fit": 0.15, "beta": 0.0},
+        "Target Maturity": {"performance": 0.15, "consistency": 0.25, "risk": 0.25, "cost": 0.20, "category_fit": 0.15, "beta": 0.0},
+        "Medium to Long Duration": {"performance": 0.20, "consistency": 0.20, "risk": 0.25, "cost": 0.20, "category_fit": 0.15, "beta": 0.0},
+        # Hybrid — moderate beta weight
+        "Aggressive Hybrid":      {"performance": 0.22, "consistency": 0.18, "risk": 0.18, "cost": 0.13, "category_fit": 0.18, "beta": 0.11},
+        "Balanced Hybrid":        {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
+        "Conservative Hybrid":    {"performance": 0.20, "consistency": 0.25, "risk": 0.25, "cost": 0.15, "category_fit": 0.15, "beta": 0.0},
+        "Dynamic Asset Allocation": {"performance": 0.20, "consistency": 0.22, "risk": 0.22, "cost": 0.13, "category_fit": 0.13, "beta": 0.10},
+        "Arbitrage":              {"performance": 0.15, "consistency": 0.20, "risk": 0.20, "cost": 0.30, "category_fit": 0.15, "beta": 0.0},
+        "Multi-Asset":            {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
+        "Equity Savings":         {"performance": 0.20, "consistency": 0.22, "risk": 0.22, "cost": 0.13, "category_fit": 0.15, "beta": 0.08},
         # Special
-        "FoF Domestic":   {"performance": 0.25, "consistency": 0.25, "risk": 0.20, "cost": 0.20, "category_fit": 0.10},
-        "FoF Overseas":   {"performance": 0.30, "consistency": 0.20, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        "Retirement":     {"performance": 0.20, "consistency": 0.30, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
-        "Children":       {"performance": 0.20, "consistency": 0.30, "risk": 0.20, "cost": 0.15, "category_fit": 0.15},
+        "FoF Domestic":   {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.18, "category_fit": 0.10, "beta": 0.10},
+        "FoF Overseas":   {"performance": 0.27, "consistency": 0.18, "risk": 0.18, "cost": 0.13, "category_fit": 0.14, "beta": 0.10},
+        "Retirement":     {"performance": 0.18, "consistency": 0.27, "risk": 0.18, "cost": 0.13, "category_fit": 0.14, "beta": 0.10},
+        "Children":       {"performance": 0.18, "consistency": 0.27, "risk": 0.18, "cost": 0.13, "category_fit": 0.14, "beta": 0.10},
     }
 
     @staticmethod
@@ -994,6 +997,56 @@ class DiscoverMutualFundScraper(BaseScraper):
             return None
         total_w = sum(w for _, w in parts)
         return sum(s * w for s, w in parts) / total_w
+
+    def _score_beta(self, row: dict, peer_sets: dict) -> float | None:
+        """Score beta (market sensitivity) — lower beta = higher score.
+
+        Beta ~1 means fund moves with the market. Lower beta means less
+        market-correlated risk. For equity funds, moderately low beta is
+        ideal; for debt funds, beta should be near zero.
+        """
+        beta = self._to_float(row.get("beta"))
+        if beta is None:
+            return None
+
+        sub_cat = self._resolve_sub_category(row)
+        cat = str(row.get("category") or "Other")
+
+        # Percentile rank within peers (lower beta = higher percentile = better)
+        beta_pctl = self._peer_percentile(
+            beta,
+            peer_sets.get("sub_beta", {}).get(sub_cat, []),
+            peer_sets.get("cat_beta", {}).get(cat, []),
+            peer_sets.get("global_beta", []),
+        )
+        if beta_pctl is not None:
+            # Invert: lower beta should score higher
+            return 100.0 - beta_pctl
+
+        # Absolute scoring fallback when no peers available
+        fund_type = self._determine_fund_type(row)
+        if fund_type == "debt":
+            # Debt funds: beta should be near 0
+            if beta <= 0.1:
+                return 90.0
+            elif beta <= 0.3:
+                return 70.0
+            elif beta <= 0.5:
+                return 50.0
+            else:
+                return max(10.0, 50.0 - (beta - 0.5) * 80)
+        else:
+            # Equity/hybrid: beta ~0.7-0.9 is ideal, >1.3 is risky
+            if beta <= 0.5:
+                return 85.0
+            elif beta <= 0.8:
+                return 80.0
+            elif beta <= 1.0:
+                return 65.0
+            elif beta <= 1.2:
+                return 50.0
+            else:
+                return max(10.0, 50.0 - (beta - 1.2) * 60)
 
     def _score_category_fit(self, row: dict, peer_sets: dict) -> float | None:
         """Sub-category-specific quality assessment."""
@@ -1221,7 +1274,7 @@ class DiscoverMutualFundScraper(BaseScraper):
 
         # ── Pre-compute peer sets by sub_category, category, and global ──
         _METRICS = ("returns_1y", "returns_3y", "returns_5y", "sortino",
-                     "std_dev", "rolling_return_consistency", "max_drawdown")
+                     "std_dev", "rolling_return_consistency", "max_drawdown", "beta")
         peer_sets: dict[str, Any] = {}
         for metric in _METRICS:
             peer_sets[f"sub_{metric}"] = {}
@@ -1298,12 +1351,13 @@ class DiscoverMutualFundScraper(BaseScraper):
                 })
                 continue
 
-            # ── Compute 5 layer scores ──
+            # ── Compute 6 layer scores ──
             performance = self._score_performance(row, peer_sets)
             consistency = self._score_consistency(row, peer_sets)
             risk_score = self._score_risk(row, peer_sets)
             cost_score = self._cost_score(self._to_float(row.get("expense_ratio")))
             category_fit = self._score_category_fit(row, peer_sets)
+            beta_score = self._score_beta(row, peer_sets)
 
             # ── Look up sub-category weights ──
             weights = self._SUBCATEGORY_LAYER_WEIGHTS.get(
@@ -1317,6 +1371,7 @@ class DiscoverMutualFundScraper(BaseScraper):
                 "risk":         (weights["risk"], risk_score),
                 "cost":         (weights["cost"], cost_score if has_expense else None),
                 "category_fit": (weights["category_fit"], category_fit),
+                "beta":         (weights["beta"], beta_score),
             }
 
             parts: list[tuple[float, float]] = []
@@ -1398,14 +1453,15 @@ class DiscoverMutualFundScraper(BaseScraper):
                 "score_performance": round(performance, 2) if performance is not None else None,
                 "score_category_fit": round(category_fit, 2) if category_fit is not None else None,
                 "alpha": alpha_value,
-                "score_alpha": None,  # removed
-                "score_beta": None,   # removed
+                "score_alpha": None,  # alpha not a scoring layer
+                "score_beta": round(beta_score, 2) if beta_score is not None else None,
                 "score_breakdown": {
                     "performance_score": round(performance, 2) if performance is not None else None,
                     "consistency_score": round(consistency, 2) if consistency is not None else None,
                     "risk_score": round(risk_score, 2) if risk_score is not None else None,
                     "cost_score": round(cost_score, 2),
                     "category_fit_score": round(category_fit, 2) if category_fit is not None else None,
+                    "beta_score": round(beta_score, 2) if beta_score is not None else None,
                     # Legacy keys for backward compat
                     "return_score": round(performance, 2) if performance is not None else None,
                 },
