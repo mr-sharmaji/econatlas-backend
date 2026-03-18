@@ -1398,7 +1398,6 @@ class DiscoverMutualFundScraper(BaseScraper):
                 "score_performance": round(performance, 2) if performance is not None else None,
                 "score_category_fit": round(category_fit, 2) if category_fit is not None else None,
                 "alpha": alpha_value,
-                "beta": None,  # beta concept removed
                 "score_alpha": None,  # removed
                 "score_beta": None,   # removed
                 "score_breakdown": {
@@ -1465,6 +1464,8 @@ class DiscoverMutualFundScraper(BaseScraper):
         needs_enrichment = [
             code for code, row in rows.items()
             if row.get("fund_age_years") is None
+            or row.get("max_drawdown") is None
+            or row.get("rolling_return_consistency") is None
             or (row.get("std_dev") is None and row.get("returns_1y") is not None)
         ]
         if not needs_enrichment:
@@ -1473,6 +1474,26 @@ class DiscoverMutualFundScraper(BaseScraper):
         # Limit to avoid excessive API calls
         to_enrich = needs_enrichment[:max_enrich]
         logger.info("mfapi.in enrichment: %d / %d funds need data", len(to_enrich), len(needs_enrichment))
+
+        # Load Nifty 50 index fund NAVs from DB for beta computation (UTI Nifty 50 Index Direct)
+        benchmark_daily_returns: dict[str, float] = {}
+        try:
+            pool = await get_pool()
+            bench_rows = await pool.fetch(
+                "SELECT nav_date, nav::float FROM discover_mf_nav_history "
+                "WHERE scheme_code = '120505' ORDER BY nav_date ASC"
+            )
+            for j in range(1, len(bench_rows)):
+                prev_nav = bench_rows[j - 1]["nav"]
+                curr_nav = bench_rows[j]["nav"]
+                if prev_nav > 0:
+                    dr = (curr_nav / prev_nav) - 1.0
+                    # Use date string matching the format from mfapi.in enrichment
+                    dt_str = bench_rows[j]["nav_date"].strftime("%d-%m-%Y")
+                    benchmark_daily_returns[dt_str] = dr
+            logger.info("Benchmark (Nifty 50) daily returns loaded from DB: %d days", len(benchmark_daily_returns))
+        except Exception as e:
+            logger.warning("Failed to load Nifty 50 benchmark from DB: %s", e)
 
         enriched = 0
         for i, code in enumerate(to_enrich):
@@ -1637,6 +1658,29 @@ class DiscoverMutualFundScraper(BaseScraper):
                                         down_dev = math.sqrt(down_var) * math.sqrt(252) * 100
                                         if down_dev > 0:
                                             row["sortino"] = round((ann_return - risk_free) / down_dev, 2)
+
+                        # ── Beta vs Nifty 50 benchmark ──
+                        if benchmark_daily_returns and len(nav_pairs) >= 60:
+                            fund_dates = [p[0] for p in nav_pairs]
+                            fund_navs_map = {p[0]: p[1] for p in nav_pairs}
+                            paired_fund: list[float] = []
+                            paired_bench: list[float] = []
+                            for j in range(1, len(fund_dates)):
+                                dt = fund_dates[j]
+                                dt_prev = fund_dates[j - 1]
+                                if dt in benchmark_daily_returns and fund_navs_map.get(dt_prev, 0) > 0:
+                                    fr = (fund_navs_map[dt] / fund_navs_map[dt_prev]) - 1.0
+                                    br = benchmark_daily_returns[dt]
+                                    paired_fund.append(fr)
+                                    paired_bench.append(br)
+                            if len(paired_fund) >= 30:
+                                mean_f = sum(paired_fund) / len(paired_fund)
+                                mean_b = sum(paired_bench) / len(paired_bench)
+                                cov = sum((f - mean_f) * (b - mean_b) for f, b in zip(paired_fund, paired_bench)) / len(paired_fund)
+                                var_b = sum((b - mean_b) ** 2 for b in paired_bench) / len(paired_bench)
+                                if var_b > 0:
+                                    row["beta"] = round(cov / var_b, 2)
+
                     except Exception:
                         pass  # Skip on any calculation error
 
