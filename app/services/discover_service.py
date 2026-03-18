@@ -2750,6 +2750,20 @@ async def list_discover_mutual_funds(
     if not include_idcw:
         conds.append("(COALESCE(option_type, '') NOT ILIKE '%idcw%')")
 
+    # Exclude dead/discontinued/closed-ended funds:
+    # - NAV not updated in the last 90 days (discontinued/merged/matured)
+    # - Scheme names containing FMP/Fixed Maturity/Close Ended/Interval
+    conds.append("nav_date >= CURRENT_DATE - INTERVAL '90 days'")
+    conds.append(
+        "(scheme_name NOT ILIKE '%fmp%'"
+        " AND scheme_name NOT ILIKE '%fixed maturity%'"
+        " AND scheme_name NOT ILIKE '%close ended%'"
+        " AND scheme_name NOT ILIKE '%closed ended%'"
+        " AND scheme_name NOT ILIKE '%interval%fund%'"
+        " AND scheme_name NOT ILIKE '%capital protection%'"
+        " AND scheme_name NOT ILIKE '%fixed term%')"
+    )
+
     preset_norm = str(preset or "all").strip().lower()
     if preset_norm == "large-cap":
         conds.append(
@@ -3072,7 +3086,15 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
         SELECT scheme_code, scheme_name, category, nav, returns_1y,
                COALESCE(score, 0) AS score
         FROM {MF_TABLE}
-        WHERE scheme_name ILIKE $1 OR scheme_code ILIKE $1
+        WHERE (scheme_name ILIKE $1 OR scheme_code ILIKE $1)
+          AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
+          AND scheme_name NOT ILIKE '%fmp%'
+          AND scheme_name NOT ILIKE '%fixed maturity%'
+          AND scheme_name NOT ILIKE '%close ended%'
+          AND scheme_name NOT ILIKE '%closed ended%'
+          AND scheme_name NOT ILIKE '%interval%fund%'
+          AND scheme_name NOT ILIKE '%capital protection%'
+          AND scheme_name NOT ILIKE '%fixed term%'
         ORDER BY score DESC NULLS LAST, scheme_name ASC
         LIMIT $2
         """,
