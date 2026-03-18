@@ -395,6 +395,15 @@ async def rerank_mf(
     from app.core.database import get_pool
     pool = await get_pool()
     try:
+        # Auto-migrate: add fund_managers column if not exists
+        try:
+            await pool.execute("""
+                ALTER TABLE discover_mutual_fund_snapshots
+                ADD COLUMN IF NOT EXISTS fund_managers JSONB
+            """)
+        except Exception:
+            pass  # Column already exists or migration not needed
+
         # Fix misclassified index fund sub_categories before ranking
         fix_results = []
         index_corrections = [

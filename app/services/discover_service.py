@@ -2521,7 +2521,7 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     max_drawdown, rolling_return_consistency,
                     alpha, beta, score_alpha, score_beta,
                     score_performance, score_category_fit, sub_category_percentile, fund_classification,
-                    tags_v2
+                    tags_v2, fund_managers
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -2533,7 +2533,7 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     $30, $31,
                     $32, $33, $34, $35,
                     $36, $37, $38, $39,
-                    $40
+                    $40, $41
                 )
                 ON CONFLICT (scheme_code)
                 DO UPDATE SET
@@ -2576,7 +2576,8 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     score_category_fit = EXCLUDED.score_category_fit,
                     sub_category_percentile = EXCLUDED.sub_category_percentile,
                     fund_classification = EXCLUDED.fund_classification,
-                    tags_v2 = EXCLUDED.tags_v2
+                    tags_v2 = EXCLUDED.tags_v2,
+                    fund_managers = COALESCE(EXCLUDED.fund_managers, discover_mutual_fund_snapshots.fund_managers)
                 """,
                 str(row.get("scheme_code") or ""),
                 str(row.get("scheme_name") or ""),
@@ -2618,6 +2619,7 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("sub_category_percentile")),
                 row.get("fund_classification"),
                 _to_jsonb(row.get("tags_v2"), []),                                    # $40
+                _to_jsonb(row.get("fund_managers"), None),                              # $41
             )
             count += 1
     return count

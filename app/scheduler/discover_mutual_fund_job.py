@@ -364,6 +364,24 @@ class DiscoverMutualFundScraper(BaseScraper):
         if not name_key:
             return None
 
+        # Extract fund managers from JSON
+        fund_managers = None
+        try:
+            fm_match = re.search(r'"fundManagers"\s*:\s*(\[.*?\])', html, flags=re.DOTALL)
+            if fm_match:
+                import json as _json
+                fm_list = _json.loads(fm_match.group(1))
+                if isinstance(fm_list, list) and fm_list:
+                    fund_managers = [
+                        {"name": fm.get("name", ""), "experience": fm.get("experience", "")}
+                        for fm in fm_list
+                        if fm.get("name")
+                    ]
+                    if not fund_managers:
+                        fund_managers = None
+        except Exception:
+            pass
+
         return {
             "_name_key": name_key,
             "_is_direct": "direct" in slug_low,
@@ -377,6 +395,7 @@ class DiscoverMutualFundScraper(BaseScraper):
             "sharpe": sharpe,
             "sortino": sortino,
             "fund_age_years": fund_age_years,
+            "fund_managers": fund_managers,
             "source_status": "primary",
             "source_timestamp": datetime.now(timezone.utc),
             "primary_source": "etmoney_web",
@@ -1841,6 +1860,8 @@ class DiscoverMutualFundScraper(BaseScraper):
                     base_row[metric_key] = detail_row.get(metric_key)
             if detail_row.get("option_type") and not base_row.get("option_type"):
                 base_row["option_type"] = detail_row.get("option_type")
+            if detail_row.get("fund_managers"):
+                base_row["fund_managers"] = detail_row["fund_managers"]
 
             base_row["source_status"] = "primary"
             base_row["source_timestamp"] = datetime.now(timezone.utc)
