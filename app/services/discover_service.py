@@ -42,6 +42,8 @@ def _clean_mf_display_name(name: str) -> str:
         result = re.sub(p, '', result, flags=re.IGNORECASE).strip()
     # Remove trailing "Growth" even without separator (e.g. "FundGrowth")
     result = re.sub(r'\s*Growth\s*(?:Plan\s*)?(?:Option\s*)?$', '', result, flags=re.IGNORECASE).strip()
+    # Remove "Growth Plan" and everything after it (e.g. "FundGrowth Plan - Bonus Option")
+    result = re.sub(r'\s*Growth\s+Plan\b.*$', '', result, flags=re.IGNORECASE).strip()
     # Remove "Direct Growth" mid-string remnants
     result = re.sub(r'\s+Direct\s+Growth\b', '', result, flags=re.IGNORECASE).strip()
     # Trim trailing dashes and whitespace
