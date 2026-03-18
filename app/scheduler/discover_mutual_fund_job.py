@@ -1503,16 +1503,10 @@ class DiscoverMutualFundScraper(BaseScraper):
         )
         return out
 
-    def _enrich_from_mfapi(self, rows: dict[str, dict], *, max_enrich: int = 600) -> None:
-        """Enrich fund_age_years and risk metrics from mfapi.in for funds missing data.
+    def _enrich_from_mfapi(self, rows: dict[str, dict]) -> None:
+        """Enrich fund_age_years, returns, and risk metrics from mfapi.in for funds missing data.
 
-        Only enriches up to max_enrich funds to avoid rate-limiting. Prioritises
-        funds with missing fund_age_years, std_dev, sharpe, or sortino.
-
-        NOTE: expense_ratio and aum_cr are NOT available from any free public API
-        (mfapi.in, AMFI NAV file, ET Money, Groww, etc. all lack these fields or
-        block server-side requests). A premium data source or browser-based scraping
-        would be needed to populate these fields.
+        Processes all funds that need enrichment (no cap). Rate-limited at 0.5s/call.
         """
         import math
         import time
@@ -1522,14 +1516,14 @@ class DiscoverMutualFundScraper(BaseScraper):
             if row.get("fund_age_years") is None
             or row.get("max_drawdown") is None
             or row.get("rolling_return_consistency") is None
+            or row.get("returns_1y") is None
             or (row.get("std_dev") is None and row.get("returns_1y") is not None)
         ]
         if not needs_enrichment:
             return
 
-        # Limit to avoid excessive API calls
-        to_enrich = needs_enrichment[:max_enrich]
-        logger.info("mfapi.in enrichment: %d / %d funds need data", len(to_enrich), len(needs_enrichment))
+        to_enrich = needs_enrichment
+        logger.info("mfapi.in enrichment: %d funds need data", len(to_enrich))
 
         # Load Nifty 50 benchmark NAVs from mfapi.in for beta computation
         benchmark_daily_returns: dict[str, float] = {}
@@ -2060,30 +2054,6 @@ async def rescore_discover_mutual_funds() -> dict:
             row["sub_category"] = "Large Cap Index"
         elif "total market" in name_lower:
             row["sub_category"] = "Multi Cap Index"
-
-    # Enrich funds missing returns/risk data from mfapi.in
-    try:
-        direct_rows = {
-            r["scheme_code"]: r for r in raw_rows
-            if str(r.get("plan_type") or "").lower() == "direct"
-            and r.get("scheme_code")
-        }
-        missing_count = sum(
-            1 for r in direct_rows.values()
-            if r.get("returns_1y") is None and r.get("returns_3y") is None
-        )
-        if missing_count > 0:
-            logger.info("MF Rescore: %d direct funds missing returns — enriching from mfapi.in", missing_count)
-            import asyncio
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: _scraper._enrich_from_mfapi(direct_rows, max_enrich=600))
-            # Write enriched data back to raw_rows
-            for row in raw_rows:
-                sc = row.get("scheme_code")
-                if sc and sc in direct_rows:
-                    row.update(direct_rows[sc])
-    except Exception:
-        logger.exception("MF Rescore: mfapi.in enrichment failed")
 
     # Score
     score_t0 = time_mod.time()
