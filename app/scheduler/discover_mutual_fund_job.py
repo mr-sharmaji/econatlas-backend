@@ -1531,25 +1531,25 @@ class DiscoverMutualFundScraper(BaseScraper):
         to_enrich = needs_enrichment[:max_enrich]
         logger.info("mfapi.in enrichment: %d / %d funds need data", len(to_enrich), len(needs_enrichment))
 
-        # Load Nifty 50 index fund NAVs from DB for beta computation (UTI Nifty 50 Index Direct)
+        # Load Nifty 50 benchmark NAVs from mfapi.in for beta computation
         benchmark_daily_returns: dict[str, float] = {}
         try:
-            pool = await get_pool()
-            bench_rows = await pool.fetch(
-                "SELECT nav_date, nav::float FROM discover_mf_nav_history "
-                "WHERE scheme_code = '120505' ORDER BY nav_date ASC"
-            )
-            for j in range(1, len(bench_rows)):
-                prev_nav = bench_rows[j - 1]["nav"]
-                curr_nav = bench_rows[j]["nav"]
-                if prev_nav > 0:
-                    dr = (curr_nav / prev_nav) - 1.0
-                    # Use date string matching the format from mfapi.in enrichment
-                    dt_str = bench_rows[j]["nav_date"].strftime("%d-%m-%Y")
-                    benchmark_daily_returns[dt_str] = dr
-            logger.info("Benchmark (Nifty 50) daily returns loaded from DB: %d days", len(benchmark_daily_returns))
+            bench_resp = requests.get("https://api.mfapi.in/mf/120505", timeout=15)
+            if bench_resp.status_code == 200:
+                bench_data = bench_resp.json().get("data", [])
+                bench_data.reverse()  # Oldest first
+                for j in range(1, len(bench_data)):
+                    try:
+                        prev_nav = float(bench_data[j - 1].get("nav", 0))
+                        curr_nav = float(bench_data[j].get("nav", 0))
+                        if prev_nav > 0:
+                            dr = (curr_nav / prev_nav) - 1.0
+                            benchmark_daily_returns[bench_data[j].get("date", "")] = dr
+                    except (TypeError, ValueError):
+                        continue
+                logger.info("Benchmark (Nifty 50) daily returns loaded from mfapi.in: %d days", len(benchmark_daily_returns))
         except Exception as e:
-            logger.warning("Failed to load Nifty 50 benchmark from DB: %s", e)
+            logger.warning("Failed to load Nifty 50 benchmark: %s", e)
 
         enriched = 0
         for i, code in enumerate(to_enrich):
