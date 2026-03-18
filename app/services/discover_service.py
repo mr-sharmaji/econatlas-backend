@@ -2767,13 +2767,18 @@ async def list_discover_mutual_funds(
         " AND scheme_name NOT ILIKE '%capital protection%'"
         " AND scheme_name NOT ILIKE '%fixed term%'"
         " AND scheme_name NOT ILIKE '%unclaimed%'"
-        " AND scheme_name NOT ILIKE '%- bonus%'"
-        " AND scheme_name NOT ILIKE '%bonus option%'"
-        " AND scheme_name NOT ILIKE '%- payout%'"
+        " AND scheme_name NOT ILIKE '%bonus%'"
+        " AND scheme_name NOT ILIKE '%payout%'"
         " AND scheme_name NOT ILIKE '%- monthly%'"
         " AND scheme_name NOT ILIKE '%- quarterly%'"
         " AND scheme_name NOT ILIKE '%- half yearly%'"
-        " AND scheme_name NOT ILIKE '%- annual%')"
+        " AND scheme_name NOT ILIKE '%- annual%'"
+        " AND scheme_name NOT ILIKE '%icdw%'"
+        " AND scheme_name NOT ILIKE '%idwc%'"
+        " AND scheme_name NOT ILIKE '%p f option%'"
+        " AND scheme_name NOT ILIKE '%weekly%'"
+        " AND scheme_name NOT ILIKE '%daily%'"
+        " AND scheme_name NOT ILIKE '%linked insurance%')"
     )
 
     preset_norm = str(preset or "all").strip().lower()
@@ -3110,13 +3115,18 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
           AND scheme_name NOT ILIKE '%idcw%'
           AND scheme_name NOT ILIKE '%income distribution%'
           AND scheme_name NOT ILIKE '%unclaimed%'
-          AND scheme_name NOT ILIKE '%- bonus%'
-          AND scheme_name NOT ILIKE '%bonus option%'
-          AND scheme_name NOT ILIKE '%- payout%'
+          AND scheme_name NOT ILIKE '%bonus%'
+          AND scheme_name NOT ILIKE '%payout%'
           AND scheme_name NOT ILIKE '%- monthly%'
           AND scheme_name NOT ILIKE '%- quarterly%'
           AND scheme_name NOT ILIKE '%- half yearly%'
           AND scheme_name NOT ILIKE '%- annual%'
+          AND scheme_name NOT ILIKE '%icdw%'
+          AND scheme_name NOT ILIKE '%idwc%'
+          AND scheme_name NOT ILIKE '%p f option%'
+          AND scheme_name NOT ILIKE '%weekly%'
+          AND scheme_name NOT ILIKE '%daily%'
+          AND scheme_name NOT ILIKE '%linked insurance%'
           AND COALESCE(option_type, '') NOT ILIKE '%idcw%'
         ORDER BY score DESC NULLS LAST, scheme_name ASC
         LIMIT $2

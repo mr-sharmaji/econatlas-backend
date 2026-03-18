@@ -1900,13 +1900,18 @@ async def run_discover_mutual_fund_job() -> None:
                       AND scheme_name NOT ILIKE '%idcw%'
                       AND scheme_name NOT ILIKE '%income distribution%'
                       AND scheme_name NOT ILIKE '%unclaimed%'
-                      AND scheme_name NOT ILIKE '%- bonus%'
-                      AND scheme_name NOT ILIKE '%bonus option%'
-                      AND scheme_name NOT ILIKE '%- payout%'
+                      AND scheme_name NOT ILIKE '%bonus%'
+                      AND scheme_name NOT ILIKE '%payout%'
                       AND scheme_name NOT ILIKE '%- monthly%'
                       AND scheme_name NOT ILIKE '%- quarterly%'
                       AND scheme_name NOT ILIKE '%- half yearly%'
                       AND scheme_name NOT ILIKE '%- annual%'
+                      AND scheme_name NOT ILIKE '%icdw%'
+                      AND scheme_name NOT ILIKE '%idwc%'
+                      AND scheme_name NOT ILIKE '%p f option%'
+                      AND scheme_name NOT ILIKE '%weekly%'
+                      AND scheme_name NOT ILIKE '%daily%'
+                      AND scheme_name NOT ILIKE '%linked insurance%'
         """
 
         # 1. Sub-category rank (granular: Large Cap, Mid Cap, Corporate Bond, etc.)
