@@ -395,6 +395,22 @@ async def rerank_mf(
     from app.core.database import get_pool
     pool = await get_pool()
     try:
+        # Fix misclassified index fund sub_categories before ranking
+        fix_results = []
+        index_corrections = [
+            ("UPDATE discover_mutual_fund_snapshots SET sub_category = 'Multi Cap Index' WHERE fund_classification = 'Index' AND (scheme_name ILIKE '%Nifty 500%' OR scheme_name ILIKE '%BSE 500%') AND sub_category != 'Multi Cap Index'", ),
+            ("UPDATE discover_mutual_fund_snapshots SET sub_category = 'Large & MidCap Index' WHERE fund_classification = 'Index' AND (scheme_name ILIKE '%LargeMidcap%' OR scheme_name ILIKE '%Large Midcap%' OR scheme_name ILIKE '%Nifty 250%' OR scheme_name ILIKE '%Nifty 200 %') AND sub_category NOT IN ('Large & MidCap Index')", ),
+            ("UPDATE discover_mutual_fund_snapshots SET sub_category = 'Mid Cap Index' WHERE fund_classification = 'Index' AND (scheme_name ILIKE '%MidSmallcap%') AND sub_category != 'Mid Cap Index'", ),
+            ("UPDATE discover_mutual_fund_snapshots SET sub_category = 'Small Cap Index' WHERE fund_classification = 'Index' AND (scheme_name ILIKE '%Smallcap%' OR scheme_name ILIKE '%Small Cap%') AND scheme_name NOT ILIKE '%Mid%' AND sub_category != 'Small Cap Index'", ),
+            ("UPDATE discover_mutual_fund_snapshots SET sub_category = 'Mid Cap Index' WHERE fund_classification = 'Index' AND (scheme_name ILIKE '%Midcap%' OR scheme_name ILIKE '%Mid Cap%') AND scheme_name NOT ILIKE '%Small%' AND scheme_name NOT ILIKE '%Large%' AND sub_category NOT IN ('Mid Cap Index')", ),
+            ("UPDATE discover_mutual_fund_snapshots SET sub_category = 'Large Cap Index' WHERE fund_classification = 'Index' AND (scheme_name ILIKE '%Nifty 50 %' OR scheme_name ILIKE '%Nifty50%' OR scheme_name ILIKE '%Sensex%' OR scheme_name ILIKE '%BSE 100%' OR scheme_name ILIKE '%Nifty Next 50%') AND scheme_name NOT ILIKE '%Nifty 500%' AND sub_category NOT IN ('Large Cap Index')", ),
+            ("UPDATE discover_mutual_fund_snapshots SET sub_category = 'Multi Cap Index' WHERE fund_classification = 'Index' AND scheme_name ILIKE '%Total Market%' AND sub_category != 'Multi Cap Index'", ),
+        ]
+        for sql, in index_corrections:
+            r = await pool.execute(sql)
+            if r != "UPDATE 0":
+                fix_results.append(r)
+
         # Only rank active funds (recent NAV, direct, non-IDCW, non-closed/FMP)
         active_filter = """
                 WHERE nav_date >= CURRENT_DATE - INTERVAL '90 days'
@@ -463,6 +479,7 @@ async def rerank_mf(
         )
         return {
             "status": "done",
+            "index_fixes": fix_results,
             "sub_category_result": sub_r,
             "category_result": cat_r,
             "total_rows": check["total"],
