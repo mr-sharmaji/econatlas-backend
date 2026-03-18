@@ -46,6 +46,11 @@ def _clean_mf_display_name(name: str) -> str:
     result = re.sub(r'\s*Growth\s+Plan\b.*$', '', result, flags=re.IGNORECASE).strip()
     # Remove "Direct Growth" mid-string remnants
     result = re.sub(r'\s+Direct\s+Growth\b', '', result, flags=re.IGNORECASE).strip()
+    # Remove "(Growth)" and "(Direct)" in parentheses
+    result = re.sub(r'\s*\(Growth\)\s*', ' ', result, flags=re.IGNORECASE).strip()
+    result = re.sub(r'\s*\(Direct\)\s*', ' ', result, flags=re.IGNORECASE).strip()
+    # Remove "Growth / Payment" or "Growth/Payment"
+    result = re.sub(r'\s*[-–]?\s*Growth\s*/\s*Payment\b', '', result, flags=re.IGNORECASE).strip()
     # Remove trailing "Direct" (with or without dash)
     result = re.sub(r'\s*[-–]?\s*Direct\s*$', '', result, flags=re.IGNORECASE).strip()
     # Trim trailing dashes and whitespace
@@ -2829,7 +2834,7 @@ async def list_discover_mutual_funds(
     elif preset_norm == "elss":
         conds.append("(sub_category ILIKE '%elss%' OR sub_category ILIKE '%tax%sav%')")
     elif preset_norm == "value-mf":
-        conds.append("(sub_category ILIKE '%value%')")
+        conds.append("(sub_category ILIKE '%value%' OR fund_classification ILIKE '%value%')")
     elif preset_norm == "focused":
         conds.append("(sub_category ILIKE '%focused%')")
     elif preset_norm == "sectoral":
