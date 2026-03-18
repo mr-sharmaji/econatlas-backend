@@ -2841,7 +2841,7 @@ async def list_discover_mutual_funds(
     elif preset_norm == "sectoral":
         conds.append("(sub_category ILIKE '%sector%' OR sub_category ILIKE '%thematic%')")
     elif preset_norm == "short-duration":
-        conds.append("(sub_category ILIKE '%short%dur%')")
+        conds.append("(sub_category ILIKE '%short%dur%' AND sub_category NOT ILIKE '%ultra%')")
     elif preset_norm == "corporate-bond":
         conds.append("(sub_category ILIKE '%corporate%bond%')")
     elif preset_norm == "banking-psu":
@@ -2859,7 +2859,7 @@ async def list_discover_mutual_funds(
     elif preset_norm == "aggressive-hybrid":
         conds.append("(sub_category ILIKE '%aggressive%')")
     elif preset_norm == "balanced-hybrid":
-        conds.append("(sub_category ILIKE '%balanced%')")
+        conds.append("(sub_category ILIKE '%balanced%hybrid%' OR (sub_category ILIKE '%balanced%' AND sub_category NOT ILIKE '%dynamic%' AND sub_category NOT ILIKE '%advantage%'))")
     elif preset_norm == "conservative-hybrid":
         conds.append("(sub_category ILIKE '%conservative%')")
     elif preset_norm == "arbitrage":
