@@ -392,7 +392,7 @@ async def rerank_mf(
 ) -> dict:
     """Recompute sub_category_rank and category_rank for all MFs."""
     _authorize(x_ops_token)
-    from app.db import get_pool
+    from app.core.database import get_pool
     pool = await get_pool()
     try:
         sub_r = await pool.execute("""
