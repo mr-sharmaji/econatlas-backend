@@ -1848,10 +1848,23 @@ class DiscoverMutualFundScraper(BaseScraper):
             base_row["secondary_source"] = "amfi_nav_file"
             merged[best_code] = base_row
 
-        # Enrich missing data from mfapi.in (fund_age, risk metrics)
-        direct_codes = {code for code, row in merged.items()
-                        if str(row.get("plan_type") or "").lower() == "direct"}
-        direct_merged = {code: row for code, row in merged.items() if code in direct_codes}
+        # Enrich missing data from mfapi.in (fund_age, risk metrics) — only active funds
+        direct_merged = {}
+        for code, row in merged.items():
+            if str(row.get("plan_type") or "").lower() != "direct":
+                continue
+            name = (row.get("scheme_name") or "").lower()
+            opt = (row.get("option_type") or "").lower()
+            # Skip non-growth, IDCW, dead, and other filtered variants
+            if "idcw" in name or "idcw" in opt or "income distribution" in name:
+                continue
+            if any(kw in name for kw in ["fmp", "fixed maturity", "close ended", "closed ended",
+                                          "capital protection", "fixed term", "unclaimed",
+                                          "bonus", "payout", "icdw", "idwc", "weekly",
+                                          "daily", "linked insurance"]):
+                continue
+            direct_merged[code] = row
+        logger.info("Active direct funds for mfapi enrichment: %d", len(direct_merged))
         self._enrich_from_mfapi(direct_merged)
         merged.update(direct_merged)
 
