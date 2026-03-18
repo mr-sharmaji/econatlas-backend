@@ -402,7 +402,7 @@ class DiscoverMutualFundScraper(BaseScraper):
         self,
         detail_links: set[str],
         *,
-        max_pages: int = 3200,
+        max_pages: int = 5000,
     ) -> dict[str, dict]:
         if not detail_links:
             return {}
@@ -1503,7 +1503,7 @@ class DiscoverMutualFundScraper(BaseScraper):
         )
         return out
 
-    def _enrich_from_mfapi(self, rows: dict[str, dict], *, max_enrich: int = 200) -> None:
+    def _enrich_from_mfapi(self, rows: dict[str, dict], *, max_enrich: int = 600) -> None:
         """Enrich fund_age_years and risk metrics from mfapi.in for funds missing data.
 
         Only enriches up to max_enrich funds to avoid rate-limiting. Prioritises
@@ -2061,55 +2061,27 @@ async def rescore_discover_mutual_funds() -> dict:
         elif "total market" in name_lower:
             row["sub_category"] = "Multi Cap Index"
 
-    # Compute returns from NAV history for funds missing returns data
+    # Enrich funds missing returns/risk data from mfapi.in
     try:
-        from datetime import date as _date_cls, timedelta as _td
-        missing_returns = [r for r in raw_rows
-                           if r.get("returns_1y") is None and r.get("returns_3y") is None
-                           and r.get("scheme_code")]
-        if missing_returns:
-            logger.info("MF Rescore: %d funds missing returns — computing from NAV history", len(missing_returns))
-            # Process in batches to avoid query overload
-            enriched = 0
-            batch_size = 200
-            for batch_start in range(0, len(missing_returns), batch_size):
-                batch = missing_returns[batch_start:batch_start + batch_size]
-                batch_codes = [r["scheme_code"] for r in batch]
-                nav_rows = await pool.fetch("""
-                    SELECT scheme_code, nav_date, nav
-                    FROM discover_mf_nav_history
-                    WHERE scheme_code = ANY($1::text[])
-                    ORDER BY scheme_code, nav_date ASC
-                """, batch_codes)
-                nav_series: dict[str, list[tuple]] = {}
-                for nr in nav_rows:
-                    nav_series.setdefault(nr["scheme_code"], []).append(
-                        (nr["nav_date"], float(nr["nav"]))
-                    )
-                today = _date_cls.today()
-                for row in batch:
-                    sc = row["scheme_code"]
-                    series = nav_series.get(sc)
-                    if not series or len(series) < 30:
-                        continue
-                    latest_nav = series[-1][1]
-                    if latest_nav <= 0:
-                        continue
-                    for years, key in [(1, "returns_1y"), (3, "returns_3y"), (5, "returns_5y")]:
-                        target_date = today - _td(days=365 * years)
-                        closest = None
-                        for nav_date, nav_val in series:
-                            if nav_val <= 0:
-                                continue
-                            if closest is None or abs((nav_date - target_date).days) < abs((closest[0] - target_date).days):
-                                closest = (nav_date, nav_val)
-                        if closest and abs((closest[0] - target_date).days) <= 30:
-                            cagr = ((latest_nav / closest[1]) ** (1.0 / years) - 1) * 100
-                            row[key] = round(cagr, 2)
-                            enriched += 1
-            logger.info("MF Rescore: enriched %d return values from NAV history", enriched)
+        direct_rows = {
+            r["scheme_code"]: r for r in raw_rows
+            if str(r.get("plan_type") or "").lower() == "direct"
+            and r.get("scheme_code")
+        }
+        missing_count = sum(
+            1 for r in direct_rows.values()
+            if r.get("returns_1y") is None and r.get("returns_3y") is None
+        )
+        if missing_count > 0:
+            logger.info("MF Rescore: %d direct funds missing returns — enriching from mfapi.in", missing_count)
+            _scraper._enrich_from_mfapi(direct_rows, max_enrich=600)
+            # Write enriched data back to raw_rows
+            for row in raw_rows:
+                sc = row.get("scheme_code")
+                if sc and sc in direct_rows:
+                    row.update(direct_rows[sc])
     except Exception:
-        logger.exception("MF Rescore: NAV-based return computation failed")
+        logger.exception("MF Rescore: mfapi.in enrichment failed")
 
     # Score
     score_t0 = time_mod.time()
