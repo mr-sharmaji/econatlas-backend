@@ -2858,9 +2858,17 @@ async def list_discover_mutual_funds(
     elif preset_norm == "aggressive-hybrid":
         conds.append("(sub_category ILIKE '%aggressive%')")
     elif preset_norm == "balanced-hybrid":
-        conds.append("(sub_category ILIKE '%balanced%' OR sub_category ILIKE '%equity%savings%')")
+        conds.append("(sub_category ILIKE '%balanced%')")
     elif preset_norm == "conservative-hybrid":
         conds.append("(sub_category ILIKE '%conservative%')")
+    elif preset_norm == "arbitrage":
+        conds.append("(sub_category ILIKE '%arbitrage%')")
+    elif preset_norm == "dynamic-asset-allocation":
+        conds.append("(sub_category ILIKE '%dynamic%asset%' OR fund_classification ILIKE '%dynamic%asset%')")
+    elif preset_norm == "multi-asset":
+        conds.append("(sub_category ILIKE '%multi%asset%' OR fund_classification ILIKE '%multi%asset%')")
+    elif preset_norm == "equity-savings":
+        conds.append("(sub_category ILIKE '%equity%savings%')")
 
     if search and search.strip():
         q = f"%{search.strip()}%"
