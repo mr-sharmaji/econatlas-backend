@@ -40,6 +40,10 @@ def _clean_mf_display_name(name: str) -> str:
     ]
     for p in patterns:
         result = re.sub(p, '', result, flags=re.IGNORECASE).strip()
+    # Remove trailing "Growth" even without separator (e.g. "FundGrowth")
+    result = re.sub(r'\s*Growth\s*(?:Plan\s*)?(?:Option\s*)?$', '', result, flags=re.IGNORECASE).strip()
+    # Remove "Direct Growth" mid-string remnants
+    result = re.sub(r'\s+Direct\s+Growth\b', '', result, flags=re.IGNORECASE).strip()
     # Trim trailing dashes and whitespace
     result = re.sub(r'\s*[-–]+\s*$', '', result).strip()
     return result if result else name
@@ -2745,7 +2749,13 @@ async def list_discover_mutual_funds(
     preset_norm = str(preset or "all").strip().lower()
     if preset_norm == "large-cap":
         conds.append(
-            "(LOWER(COALESCE(category, '')) LIKE '%large%' OR LOWER(COALESCE(sub_category, '')) LIKE '%large%')"
+            "(LOWER(COALESCE(fund_classification, sub_category, '')) LIKE '%large%cap%'"
+            " AND LOWER(COALESCE(fund_classification, sub_category, '')) NOT LIKE '%mid%')"
+        )
+    elif preset_norm == "large-mid-cap":
+        conds.append(
+            "(LOWER(COALESCE(fund_classification, sub_category, '')) LIKE '%large%mid%cap%'"
+            " OR LOWER(COALESCE(fund_classification, sub_category, '')) LIKE '%large%&%mid%')"
         )
     elif preset_norm == "flexi-cap":
         conds.append(
@@ -2761,7 +2771,8 @@ async def list_discover_mutual_funds(
         )
     elif preset_norm == "mid-cap":
         conds.append(
-            "(LOWER(COALESCE(category, '')) LIKE '%mid%' OR LOWER(COALESCE(sub_category, '')) LIKE '%mid%')"
+            "(LOWER(COALESCE(fund_classification, sub_category, '')) LIKE '%mid%cap%'"
+            " AND LOWER(COALESCE(fund_classification, sub_category, '')) NOT LIKE '%large%')"
         )
     elif preset_norm == "debt":
         conds.append(

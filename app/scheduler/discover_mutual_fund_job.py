@@ -1886,22 +1886,26 @@ async def run_discover_mutual_fund_job() -> None:
         pool = await get_pool()
 
         # 1. Sub-category rank (granular: Large Cap, Mid Cap, Corporate Bond, etc.)
-        await pool.execute("""
-            UPDATE discover_mutual_fund_snapshots AS t
-            SET sub_category_rank = sub.rnk, sub_category_total = sub.total
-            FROM (
-                SELECT scheme_code,
-                       DENSE_RANK() OVER (
-                           PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
-                           ORDER BY score DESC
-                       ) AS rnk,
-                       COUNT(*) OVER (
-                           PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
-                       ) AS total
-                FROM discover_mutual_fund_snapshots
-            ) sub
-            WHERE t.scheme_code = sub.scheme_code
-        """)
+        try:
+            sub_r = await pool.execute("""
+                UPDATE discover_mutual_fund_snapshots AS t
+                SET sub_category_rank = sub.rnk, sub_category_total = sub.total
+                FROM (
+                    SELECT scheme_code,
+                           DENSE_RANK() OVER (
+                               PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
+                               ORDER BY score DESC
+                           ) AS rnk,
+                           COUNT(*) OVER (
+                               PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
+                           ) AS total
+                    FROM discover_mutual_fund_snapshots
+                ) sub
+                WHERE t.scheme_code = sub.scheme_code
+            """)
+            logger.info("MF Job: sub_category_rank updated: %s", sub_r)
+        except Exception:
+            logger.exception("MF Job: sub_category_rank update FAILED")
 
         # 2. Category rank (broader: Equity, Debt, Hybrid, etc.)
         await pool.execute("""
@@ -2017,38 +2021,46 @@ async def rescore_discover_mutual_funds() -> dict:
     # Recompute dual ranking after rescore
     import time as _t
     rank_t0 = _t.time()
-    await pool.execute("""
-        UPDATE discover_mutual_fund_snapshots AS t
-        SET sub_category_rank = sub.rnk, sub_category_total = sub.total
-        FROM (
-            SELECT scheme_code,
-                   DENSE_RANK() OVER (
-                       PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
-                       ORDER BY score DESC
-                   ) AS rnk,
-                   COUNT(*) OVER (
-                       PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
-                   ) AS total
-            FROM discover_mutual_fund_snapshots
-        ) sub
-        WHERE t.scheme_code = sub.scheme_code
-    """)
-    await pool.execute("""
-        UPDATE discover_mutual_fund_snapshots AS t
-        SET category_rank = sub.rnk, category_total = sub.total
-        FROM (
-            SELECT scheme_code,
-                   DENSE_RANK() OVER (
-                       PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
-                       ORDER BY score DESC
-                   ) AS rnk,
-                   COUNT(*) OVER (
-                       PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
-                   ) AS total
-            FROM discover_mutual_fund_snapshots
-        ) sub
-        WHERE t.scheme_code = sub.scheme_code
-    """)
+    try:
+        sub_result = await pool.execute("""
+            UPDATE discover_mutual_fund_snapshots AS t
+            SET sub_category_rank = sub.rnk, sub_category_total = sub.total
+            FROM (
+                SELECT scheme_code,
+                       DENSE_RANK() OVER (
+                           PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
+                           ORDER BY score DESC
+                       ) AS rnk,
+                       COUNT(*) OVER (
+                           PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
+                       ) AS total
+                FROM discover_mutual_fund_snapshots
+            ) sub
+            WHERE t.scheme_code = sub.scheme_code
+        """)
+        logger.info("MF Rescore: sub_category_rank updated: %s", sub_result)
+    except Exception:
+        logger.exception("MF Rescore: sub_category_rank update FAILED")
+    try:
+        cat_result = await pool.execute("""
+            UPDATE discover_mutual_fund_snapshots AS t
+            SET category_rank = sub.rnk, category_total = sub.total
+            FROM (
+                SELECT scheme_code,
+                       DENSE_RANK() OVER (
+                           PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
+                           ORDER BY score DESC
+                       ) AS rnk,
+                       COUNT(*) OVER (
+                           PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
+                       ) AS total
+                FROM discover_mutual_fund_snapshots
+            ) sub
+            WHERE t.scheme_code = sub.scheme_code
+        """)
+        logger.info("MF Rescore: category_rank updated: %s", cat_result)
+    except Exception:
+        logger.exception("MF Rescore: category_rank update FAILED")
     logger.info("MF Rescore: rankings recomputed in %.1fs", _t.time() - rank_t0)
 
     # Sub-category distribution
