@@ -395,7 +395,20 @@ async def rerank_mf(
     from app.core.database import get_pool
     pool = await get_pool()
     try:
-        sub_r = await pool.execute("""
+        # Only rank active funds (recent NAV, direct, non-IDCW, non-closed/FMP)
+        active_filter = """
+                WHERE nav_date >= CURRENT_DATE - INTERVAL '90 days'
+                  AND LOWER(COALESCE(plan_type, 'direct')) = 'direct'
+                  AND COALESCE(option_type, '') NOT ILIKE '%idcw%'
+                  AND scheme_name NOT ILIKE '%fmp%'
+                  AND scheme_name NOT ILIKE '%fixed maturity%'
+                  AND scheme_name NOT ILIKE '%close ended%'
+                  AND scheme_name NOT ILIKE '%closed ended%'
+                  AND scheme_name NOT ILIKE '%interval%fund%'
+                  AND scheme_name NOT ILIKE '%capital protection%'
+                  AND scheme_name NOT ILIKE '%fixed term%'
+        """
+        sub_r = await pool.execute(f"""
             UPDATE discover_mutual_fund_snapshots AS t
             SET sub_category_rank = sub.rnk, sub_category_total = sub.total
             FROM (
@@ -408,10 +421,11 @@ async def rerank_mf(
                            PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
                        ) AS total
                 FROM discover_mutual_fund_snapshots
+                {active_filter}
             ) sub
             WHERE t.scheme_code = sub.scheme_code
         """)
-        cat_r = await pool.execute("""
+        cat_r = await pool.execute(f"""
             UPDATE discover_mutual_fund_snapshots AS t
             SET category_rank = sub.rnk, category_total = sub.total
             FROM (
@@ -424,6 +438,7 @@ async def rerank_mf(
                            PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
                        ) AS total
                 FROM discover_mutual_fund_snapshots
+                {active_filter}
             ) sub
             WHERE t.scheme_code = sub.scheme_code
         """)

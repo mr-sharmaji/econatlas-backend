@@ -1885,9 +1885,23 @@ async def run_discover_mutual_fund_job() -> None:
         # After upsert, compute dual ranking: sub-category + category
         pool = await get_pool()
 
+        # Only rank active funds
+        _active_filter = """
+                    WHERE nav_date >= CURRENT_DATE - INTERVAL '90 days'
+                      AND LOWER(COALESCE(plan_type, 'direct')) = 'direct'
+                      AND COALESCE(option_type, '') NOT ILIKE '%idcw%'
+                      AND scheme_name NOT ILIKE '%fmp%'
+                      AND scheme_name NOT ILIKE '%fixed maturity%'
+                      AND scheme_name NOT ILIKE '%close ended%'
+                      AND scheme_name NOT ILIKE '%closed ended%'
+                      AND scheme_name NOT ILIKE '%interval%fund%'
+                      AND scheme_name NOT ILIKE '%capital protection%'
+                      AND scheme_name NOT ILIKE '%fixed term%'
+        """
+
         # 1. Sub-category rank (granular: Large Cap, Mid Cap, Corporate Bond, etc.)
         try:
-            sub_r = await pool.execute("""
+            sub_r = await pool.execute(f"""
                 UPDATE discover_mutual_fund_snapshots AS t
                 SET sub_category_rank = sub.rnk, sub_category_total = sub.total
                 FROM (
@@ -1900,6 +1914,7 @@ async def run_discover_mutual_fund_job() -> None:
                                PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
                            ) AS total
                     FROM discover_mutual_fund_snapshots
+                    {_active_filter}
                 ) sub
                 WHERE t.scheme_code = sub.scheme_code
             """)
@@ -1908,7 +1923,7 @@ async def run_discover_mutual_fund_job() -> None:
             logger.exception("MF Job: sub_category_rank update FAILED")
 
         # 2. Category rank (broader: Equity, Debt, Hybrid, etc.)
-        await pool.execute("""
+        await pool.execute(f"""
             UPDATE discover_mutual_fund_snapshots AS t
             SET category_rank = sub.rnk, category_total = sub.total
             FROM (
@@ -1921,6 +1936,7 @@ async def run_discover_mutual_fund_job() -> None:
                            PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
                        ) AS total
                 FROM discover_mutual_fund_snapshots
+                {_active_filter}
             ) sub
             WHERE t.scheme_code = sub.scheme_code
         """)
@@ -2018,11 +2034,23 @@ async def rescore_discover_mutual_funds() -> dict:
         total_upserted, total_elapsed, read_elapsed, score_elapsed, time_mod.time() - upsert_t0,
     )
 
-    # Recompute dual ranking after rescore
+    # Recompute dual ranking after rescore (only active funds)
     import time as _t
     rank_t0 = _t.time()
+    _active_rank_filter = """
+                WHERE nav_date >= CURRENT_DATE - INTERVAL '90 days'
+                  AND LOWER(COALESCE(plan_type, 'direct')) = 'direct'
+                  AND COALESCE(option_type, '') NOT ILIKE '%idcw%'
+                  AND scheme_name NOT ILIKE '%fmp%'
+                  AND scheme_name NOT ILIKE '%fixed maturity%'
+                  AND scheme_name NOT ILIKE '%close ended%'
+                  AND scheme_name NOT ILIKE '%closed ended%'
+                  AND scheme_name NOT ILIKE '%interval%fund%'
+                  AND scheme_name NOT ILIKE '%capital protection%'
+                  AND scheme_name NOT ILIKE '%fixed term%'
+    """
     try:
-        sub_result = await pool.execute("""
+        sub_result = await pool.execute(f"""
             UPDATE discover_mutual_fund_snapshots AS t
             SET sub_category_rank = sub.rnk, sub_category_total = sub.total
             FROM (
@@ -2035,6 +2063,7 @@ async def rescore_discover_mutual_funds() -> dict:
                            PARTITION BY COALESCE(NULLIF(fund_classification, ''), NULLIF(sub_category, ''), NULLIF(category, ''), 'Other')
                        ) AS total
                 FROM discover_mutual_fund_snapshots
+                {_active_rank_filter}
             ) sub
             WHERE t.scheme_code = sub.scheme_code
         """)
@@ -2042,7 +2071,7 @@ async def rescore_discover_mutual_funds() -> dict:
     except Exception:
         logger.exception("MF Rescore: sub_category_rank update FAILED")
     try:
-        cat_result = await pool.execute("""
+        cat_result = await pool.execute(f"""
             UPDATE discover_mutual_fund_snapshots AS t
             SET category_rank = sub.rnk, category_total = sub.total
             FROM (
@@ -2055,6 +2084,7 @@ async def rescore_discover_mutual_funds() -> dict:
                            PARTITION BY COALESCE(NULLIF(category, ''), 'Other')
                        ) AS total
                 FROM discover_mutual_fund_snapshots
+                {_active_rank_filter}
             ) sub
             WHERE t.scheme_code = sub.scheme_code
         """)
