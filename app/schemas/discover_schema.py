@@ -294,6 +294,7 @@ class SearchStockItem(BaseModel):
     sector: str | None = None
     last_price: float
     percent_change: float | None = None
+    percent_change_3m: float | None = None
     score: float = 0
 
 
@@ -302,7 +303,7 @@ class SearchMutualFundItem(BaseModel):
     scheme_name: str
     category: str | None = None
     nav: float
-    returns_3y: float | None = None
+    returns_1y: float | None = None
     score: float = 0
 
 

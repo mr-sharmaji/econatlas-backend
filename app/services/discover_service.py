@@ -3041,6 +3041,7 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
     stock_rows = await pool.fetch(
         f"""
         SELECT symbol, display_name, sector, last_price, percent_change,
+               percent_change_3m,
                COALESCE(score, 0) AS score
         FROM {STOCK_TABLE}
         WHERE symbol ILIKE $1 OR display_name ILIKE $1
@@ -3053,7 +3054,7 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
 
     mf_rows = await pool.fetch(
         f"""
-        SELECT scheme_code, scheme_name, category, nav, returns_3y,
+        SELECT scheme_code, scheme_name, category, nav, returns_1y,
                COALESCE(score, 0) AS score
         FROM {MF_TABLE}
         WHERE scheme_name ILIKE $1 OR scheme_code ILIKE $1
