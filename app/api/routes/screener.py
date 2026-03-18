@@ -313,7 +313,7 @@ async def get_stock_sparklines(
 ) -> dict[str, list[dict]]:
     """Batch fetch price sparklines for multiple stocks."""
     try:
-        symbol_list = [s.strip() for s in symbols.split(",") if s.strip()][:20]
+        symbol_list = [s.strip() for s in symbols.split(",") if s.strip()][:50]
         return await discover_service.get_stock_sparklines(symbols=symbol_list, days=days)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -326,7 +326,7 @@ async def get_mf_sparklines(
 ) -> dict[str, list[dict]]:
     """Batch fetch NAV sparklines for multiple mutual funds."""
     try:
-        code_list = [s.strip() for s in scheme_codes.split(",") if s.strip()][:20]
+        code_list = [s.strip() for s in scheme_codes.split(",") if s.strip()][:50]
         return await discover_service.get_mf_sparklines(scheme_codes=code_list, days=days)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
