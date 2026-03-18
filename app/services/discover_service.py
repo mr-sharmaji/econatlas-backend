@@ -2835,8 +2835,9 @@ async def list_discover_mutual_funds(
         conds.append("(sub_category ILIKE '%elss%' OR sub_category ILIKE '%tax%sav%')")
     elif preset_norm == "value-mf":
         conds.append("(sub_category ILIKE '%value%' OR fund_classification ILIKE '%value%')")
+        conds.append("(scheme_name NOT ILIKE '%focused%')")
     elif preset_norm == "focused":
-        conds.append("(sub_category ILIKE '%focused%')")
+        conds.append("(sub_category ILIKE '%focused%' OR scheme_name ILIKE '%focused%fund%')")
     elif preset_norm == "sectoral":
         conds.append("(sub_category ILIKE '%sector%' OR sub_category ILIKE '%thematic%')")
     elif preset_norm == "short-duration":
