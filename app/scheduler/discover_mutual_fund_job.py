@@ -1861,7 +1861,9 @@ class DiscoverMutualFundScraper(BaseScraper):
             if any(kw in name for kw in ["fmp", "fixed maturity", "close ended", "closed ended",
                                           "capital protection", "fixed term", "unclaimed",
                                           "bonus", "payout", "icdw", "idwc", "weekly",
-                                          "daily", "linked insurance"]):
+                                          "daily", "linked insurance", "interval fund",
+                                          "p f option", "- monthly", "- quarterly",
+                                          "- half yearly", "- annual"]):
                 continue
             direct_merged[code] = row
         logger.info("Active direct funds for mfapi enrichment: %d", len(direct_merged))
