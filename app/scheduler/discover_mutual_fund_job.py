@@ -578,7 +578,7 @@ class DiscoverMutualFundScraper(BaseScraper):
         category_links = sorted(
             {
                 link
-                for link in re.findall(r'href="(/mutual-funds/(?:equity|debt|hybrid|other|solution-oriented)/[^"]+/\d+)"', explore_html)
+                for link in re.findall(r'href="(/mutual-funds/(?:equity|debt|hybrid|other|solution-oriented|featured)/[^"]+/\d+)"', explore_html)
                 if link
             }
         )
@@ -2062,51 +2062,54 @@ async def rescore_discover_mutual_funds() -> dict:
             row["sub_category"] = "Multi Cap Index"
 
     # Compute returns from NAV history for funds missing returns data
-    missing_returns = [r for r in raw_rows
-                       if r.get("returns_1y") is None and r.get("returns_3y") is None
-                       and r.get("scheme_code")]
-    if missing_returns:
-        logger.info("MF Rescore: %d funds missing returns — computing from NAV history", len(missing_returns))
-        missing_codes = [r["scheme_code"] for r in missing_returns]
-        nav_rows = await pool.fetch("""
-            SELECT scheme_code, nav_date, nav
-            FROM discover_mf_nav_history
-            WHERE scheme_code = ANY($1::text[])
-            ORDER BY scheme_code, nav_date ASC
-        """, missing_codes)
-        # Build per-fund NAV series
-        nav_series: dict[str, list[tuple]] = {}
-        for nr in nav_rows:
-            nav_series.setdefault(nr["scheme_code"], []).append(
-                (nr["nav_date"], float(nr["nav"]))
-            )
-        enriched = 0
-        from datetime import date, timedelta
-        today = date.today()
-        for row in missing_returns:
-            sc = row["scheme_code"]
-            series = nav_series.get(sc)
-            if not series or len(series) < 30:
-                continue
-            latest_nav = series[-1][1]
-            if latest_nav <= 0:
-                continue
-            # Find NAV closest to 1Y, 3Y, 5Y ago
-            for years, key in [(1, "returns_1y"), (3, "returns_3y"), (5, "returns_5y")]:
-                target_date = today - timedelta(days=365 * years)
-                # Find closest NAV to target date
-                closest = None
-                for nav_date, nav_val in series:
-                    if nav_val <= 0:
+    try:
+        from datetime import date as _date_cls, timedelta as _td
+        missing_returns = [r for r in raw_rows
+                           if r.get("returns_1y") is None and r.get("returns_3y") is None
+                           and r.get("scheme_code")]
+        if missing_returns:
+            logger.info("MF Rescore: %d funds missing returns — computing from NAV history", len(missing_returns))
+            # Process in batches to avoid query overload
+            enriched = 0
+            batch_size = 200
+            for batch_start in range(0, len(missing_returns), batch_size):
+                batch = missing_returns[batch_start:batch_start + batch_size]
+                batch_codes = [r["scheme_code"] for r in batch]
+                nav_rows = await pool.fetch("""
+                    SELECT scheme_code, nav_date, nav
+                    FROM discover_mf_nav_history
+                    WHERE scheme_code = ANY($1::text[])
+                    ORDER BY scheme_code, nav_date ASC
+                """, batch_codes)
+                nav_series: dict[str, list[tuple]] = {}
+                for nr in nav_rows:
+                    nav_series.setdefault(nr["scheme_code"], []).append(
+                        (nr["nav_date"], float(nr["nav"]))
+                    )
+                today = _date_cls.today()
+                for row in batch:
+                    sc = row["scheme_code"]
+                    series = nav_series.get(sc)
+                    if not series or len(series) < 30:
                         continue
-                    if closest is None or abs((nav_date - target_date).days) < abs((closest[0] - target_date).days):
-                        closest = (nav_date, nav_val)
-                if closest and abs((closest[0] - target_date).days) <= 30:
-                    # CAGR = (latest/old)^(1/years) - 1
-                    cagr = ((latest_nav / closest[1]) ** (1.0 / years) - 1) * 100
-                    row[key] = round(cagr, 2)
-                    enriched += 1
-        logger.info("MF Rescore: enriched %d return values from NAV history", enriched)
+                    latest_nav = series[-1][1]
+                    if latest_nav <= 0:
+                        continue
+                    for years, key in [(1, "returns_1y"), (3, "returns_3y"), (5, "returns_5y")]:
+                        target_date = today - _td(days=365 * years)
+                        closest = None
+                        for nav_date, nav_val in series:
+                            if nav_val <= 0:
+                                continue
+                            if closest is None or abs((nav_date - target_date).days) < abs((closest[0] - target_date).days):
+                                closest = (nav_date, nav_val)
+                        if closest and abs((closest[0] - target_date).days) <= 30:
+                            cagr = ((latest_nav / closest[1]) ** (1.0 / years) - 1) * 100
+                            row[key] = round(cagr, 2)
+                            enriched += 1
+            logger.info("MF Rescore: enriched %d return values from NAV history", enriched)
+    except Exception:
+        logger.exception("MF Rescore: NAV-based return computation failed")
 
     # Score
     score_t0 = time_mod.time()
