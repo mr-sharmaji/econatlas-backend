@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 _MF_TABLE = "discover_mutual_fund_snapshots"
 _RATE_LIMIT_MIN = 0.3
 _RATE_LIMIT_MAX = 0.5
-_MAX_FUNDS_PER_RUN = 500
+_MAX_FUNDS_PER_RUN = 1800
 _BATCH_SIZE = 50
 
 # Keys to search for in __NEXT_DATA__ when looking for holdings data
@@ -684,10 +684,26 @@ async def _fetch_funds_needing_refresh(pool) -> list[dict]:
     rows = await pool.fetch(f"""
         SELECT scheme_code, scheme_name
         FROM {_MF_TABLE}
-        WHERE holdings_as_of IS NULL
-           OR holdings_as_of < CURRENT_DATE - INTERVAL '7 days'
+        WHERE (holdings_as_of IS NULL
+           OR holdings_as_of < CURRENT_DATE - INTERVAL '7 days')
+          AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
+          AND LOWER(COALESCE(plan_type, 'direct')) = 'direct'
+          AND COALESCE(option_type, '') NOT ILIKE '%%idcw%%'
+          AND scheme_name NOT ILIKE '%%income distribution%%'
+          AND scheme_name NOT ILIKE '%%idcw%%'
+          AND scheme_name NOT ILIKE '%%icdw%%'
+          AND scheme_name NOT ILIKE '%%idwc%%'
+          AND scheme_name NOT ILIKE '%%fmp%%'
+          AND scheme_name NOT ILIKE '%%fixed maturity%%'
+          AND scheme_name NOT ILIKE '%%close ended%%'
+          AND scheme_name NOT ILIKE '%%closed ended%%'
+          AND scheme_name NOT ILIKE '%%capital protection%%'
+          AND scheme_name NOT ILIKE '%%unclaimed%%'
+          AND scheme_name NOT ILIKE '%%bonus%%'
+          AND category != 'Income'
         ORDER BY
             holdings_as_of IS NULL DESC,
+            score DESC NULLS LAST,
             holdings_as_of ASC
         LIMIT $1
     """, _MAX_FUNDS_PER_RUN)

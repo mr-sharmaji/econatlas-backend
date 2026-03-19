@@ -2967,6 +2967,8 @@ async def list_discover_mutual_funds(
         " AND scheme_name NOT ILIKE '%daily%'"
         " AND scheme_name NOT ILIKE '%linked insurance%')"
     )
+    # Exclude "Income" category — interval/matured FMPs from AMFI
+    conds.append("category != 'Income'")
 
     preset_norm = str(preset or "all").strip().lower()
     if preset_norm == "large-cap":
