@@ -712,6 +712,99 @@ class DiscoverMfHoldingsScraper(BaseScraper):
 
         return result
 
+    # ── MoneyControl holdings extraction ───────────────────────────
+
+    @staticmethod
+    def _make_mc_slug(scheme_name: str) -> str:
+        """Convert scheme name to MoneyControl URL slug."""
+        name = scheme_name
+        # Strip all plan/growth/option suffixes
+        name = re.sub(
+            r'\s*[-–]\s*(Direct\s+Plan|Growth\s+Option|Growth|Direct|Plan)\s*',
+            ' ', name, flags=re.I,
+        )
+        name = re.sub(r'\s*\(formerly.*?\)', '', name, flags=re.I)
+        name = re.sub(r'\s*\(erstwhile.*?\)', '', name, flags=re.I)
+        name = name.strip(' -')
+        slug = name.lower()
+        slug = re.sub(r'[^a-z0-9\s-]', '', slug)
+        slug = re.sub(r'\s+', '-', slug.strip())
+        slug = re.sub(r'-+', '-', slug)
+        slug += "-direct-plan-growth"
+        return slug
+
+    def _fetch_mc_holdings(self, scheme_name: str) -> dict[str, Any]:
+        """Fetch stock-level holdings from MoneyControl portfolio page."""
+        empty = {"top_holdings": None, "sector_allocation": None}
+        slug = self._make_mc_slug(scheme_name)
+        url = f"https://www.moneycontrol.com/mutual-funds/{slug}/portfolio-holdings/"
+
+        try:
+            html = self._get_text(url, timeout=12, retries=1)
+        except Exception:
+            return empty
+
+        if len(html) < 50000:
+            return empty
+
+        # Extract stock holdings from table rows
+        pattern = re.compile(
+            r'stockpricequote/([^/"]+)/[^"]*"[^>]*>'
+            r'([^<]+)</a>'
+            r'.*?</td>\s*'
+            r'<td>([^<]*?)</td>\s*'
+            r'<td>[\d,.]+</td>\s*'
+            r'<td>([\d.]+)%</td>',
+            re.DOTALL,
+        )
+
+        all_matches = list(pattern.finditer(html))
+        if not all_matches:
+            return empty
+
+        # Take first half only (MC shows two monthly tables)
+        half = len(all_matches) // 2 if len(all_matches) > 10 else len(all_matches)
+        holdings: list[dict] = []
+        seen: set[str] = set()
+
+        for m in all_matches[:half]:
+            sector_url = m.group(1).replace("-", " ").title()
+            name = m.group(2).strip()
+            sector_text = m.group(3).strip()
+            pct = self._to_float(m.group(4))
+
+            sector = sector_text if sector_text and not re.match(r'^[\d.]+$', sector_text) else sector_url
+            sector = sector.replace("&amp;", "&")
+
+            if name and name not in seen and pct is not None and pct > 0:
+                seen.add(name)
+                holdings.append({
+                    "name": name,
+                    "percentage": round(pct, 2),
+                    "sector": sector,
+                })
+
+        if not holdings:
+            return empty
+
+        holdings.sort(key=lambda x: x["percentage"], reverse=True)
+        top_holdings = holdings[:25]
+
+        # Aggregate sector allocation
+        sectors: dict[str, float] = {}
+        for h in holdings:
+            s = h["sector"]
+            sectors[s] = round(sectors.get(s, 0) + h["percentage"], 2)
+        sector_alloc = [
+            {"sector": s, "percentage": p}
+            for s, p in sorted(sectors.items(), key=lambda x: -x[1])
+        ]
+
+        return {
+            "top_holdings": top_holdings,
+            "sector_allocation": sector_alloc,
+        }
+
     def fetch_all(self, funds: list[dict]) -> list[dict]:
         """Fetch holdings for a list of funds.
 
@@ -775,12 +868,50 @@ class DiscoverMfHoldingsScraper(BaseScraper):
             time.sleep(random.uniform(_RATE_LIMIT_MIN, _RATE_LIMIT_MAX))
 
         logger.info(
-            "Holdings fetch complete: %d funds, %d matched, %d fetched, %d with holdings data",
+            "ET Money holdings fetch complete: %d funds, %d matched, %d fetched, %d with data",
             min(len(funds), _MAX_FUNDS_PER_RUN),
             matched,
             fetched,
             with_holdings,
         )
+
+        # Second pass: MoneyControl for funds missing top_holdings
+        codes_with_holdings = {r["scheme_code"] for r in results if r.get("top_holdings")}
+        mc_candidates = [
+            f for f in funds[:_MAX_FUNDS_PER_RUN]
+            if f["scheme_code"] not in codes_with_holdings
+        ]
+        mc_success = 0
+        for j, fund in enumerate(mc_candidates):
+            mc_data = self._fetch_mc_holdings(fund["scheme_name"])
+            if mc_data.get("top_holdings"):
+                mc_success += 1
+                # Find existing result to merge, or create new
+                existing = next((r for r in results if r["scheme_code"] == fund["scheme_code"]), None)
+                if existing:
+                    existing["top_holdings"] = mc_data["top_holdings"]
+                    if mc_data.get("sector_allocation"):
+                        existing["sector_allocation"] = mc_data["sector_allocation"]
+                else:
+                    results.append({
+                        "scheme_code": fund["scheme_code"],
+                        "top_holdings": mc_data["top_holdings"],
+                        "sector_allocation": mc_data.get("sector_allocation"),
+                        "asset_allocation": None,
+                    })
+
+            if (j + 1) % 50 == 0:
+                logger.info(
+                    "MoneyControl holdings: %d/%d processed, %d with stock data",
+                    j + 1, len(mc_candidates), mc_success,
+                )
+            time.sleep(random.uniform(_RATE_LIMIT_MIN, _RATE_LIMIT_MAX))
+
+        logger.info(
+            "MoneyControl pass complete: %d candidates, %d with stock-level holdings",
+            len(mc_candidates), mc_success,
+        )
+
         return results
 
 
