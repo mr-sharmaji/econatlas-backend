@@ -108,6 +108,7 @@ class DiscoverMfHoldingsScraper(BaseScraper):
             "top_holdings": None,
             "sector_allocation": None,
             "asset_allocation": None,
+            "holdings_as_of": None,
         }
 
         # Extract compSchemeDTO JSON
@@ -144,6 +145,16 @@ class DiscoverMfHoldingsScraper(BaseScraper):
                             "cash_pct": round(cash, 2),
                             "other_pct": round(other_pct, 2),
                         }
+                        # Extract compositionDate (e.g. "28/02/2026")
+                        comp_date = port.get("compositionDate")
+                        if isinstance(comp_date, dict):
+                            comp_date = comp_date.get("value")
+                        if isinstance(comp_date, str) and comp_date:
+                            try:
+                                from datetime import datetime as _dt
+                                result["holdings_as_of"] = _dt.strptime(comp_date, "%d/%m/%Y").date().isoformat()
+                            except ValueError:
+                                pass
 
         # Extract holdings from mfCompanyDTOMapJson JS variable
         company_match = re.search(
@@ -680,6 +691,7 @@ class DiscoverMfHoldingsScraper(BaseScraper):
             "top_holdings": None,
             "sector_allocation": None,
             "asset_allocation": None,
+            "holdings_as_of": None,
         }
 
         try:
@@ -697,7 +709,7 @@ class DiscoverMfHoldingsScraper(BaseScraper):
         # Primary: extract from compSchemeDTO JS variable (ET Money's data format)
         comp_data = self._extract_comp_scheme_dto(html)
         if comp_data:
-            for key in ("top_holdings", "sector_allocation", "asset_allocation"):
+            for key in ("top_holdings", "sector_allocation", "asset_allocation", "holdings_as_of"):
                 if comp_data.get(key) is not None:
                     result[key] = comp_data[key]
 
@@ -889,6 +901,7 @@ class DiscoverMfHoldingsScraper(BaseScraper):
                     "top_holdings": holdings_data["top_holdings"],
                     "sector_allocation": holdings_data["sector_allocation"],
                     "asset_allocation": holdings_data["asset_allocation"],
+                    "holdings_as_of": holdings_data.get("holdings_as_of"),
                 })
 
             if (i + 1) % 50 == 0:
@@ -1013,14 +1026,15 @@ async def _persist_holdings(pool, results: list[dict]) -> int:
                         else None
                     )
 
+                    holdings_date = row.get("holdings_as_of") or None
                     result = await conn.execute(f"""
                         UPDATE {_MF_TABLE}
                         SET top_holdings = COALESCE($2::jsonb, top_holdings),
                             sector_allocation = COALESCE($3::jsonb, sector_allocation),
                             asset_allocation = COALESCE($4::jsonb, asset_allocation),
-                            holdings_as_of = CURRENT_DATE
+                            holdings_as_of = COALESCE($5::date, CURRENT_DATE)
                         WHERE scheme_code = $1
-                    """, row["scheme_code"], top_holdings_json, sector_json, asset_json)
+                    """, row["scheme_code"], top_holdings_json, sector_json, asset_json, holdings_date)
 
                     if result and result.endswith("1"):
                         updated += 1
