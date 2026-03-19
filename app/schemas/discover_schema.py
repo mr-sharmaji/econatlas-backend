@@ -238,7 +238,10 @@ class DiscoverMutualFundItemResponse(BaseModel):
     fund_classification: str | None = None
     score_breakdown: DiscoverMutualFundScoreBreakdown | None = None
     why_ranked: list[str] = Field(default_factory=list)
+    tags: list[dict] | None = None
     fund_insights: list[FundInsight] = Field(default_factory=list)
+    metric_insights: dict | None = None
+    fund_managers: list[dict] | None = None
     top_holdings: list[dict] | None = None
     sector_allocation: list[dict] | None = None
     asset_allocation: dict | None = None
