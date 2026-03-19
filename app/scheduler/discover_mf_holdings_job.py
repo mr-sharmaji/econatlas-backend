@@ -923,7 +923,8 @@ async def _fetch_funds_needing_refresh(pool) -> list[dict]:
         SELECT scheme_code, scheme_name
         FROM {_MF_TABLE}
         WHERE (holdings_as_of IS NULL
-           OR holdings_as_of < CURRENT_DATE - INTERVAL '7 days')
+           OR holdings_as_of < CURRENT_DATE - INTERVAL '7 days'
+           OR top_holdings IS NULL)
           AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
           AND LOWER(COALESCE(plan_type, 'direct')) = 'direct'
           AND COALESCE(option_type, '') NOT ILIKE '%%idcw%%'
