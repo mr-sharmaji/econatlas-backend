@@ -158,9 +158,9 @@ class DiscoverMfHoldingsScraper(BaseScraper):
                     holdings = []
                     for company_id, info in companies.items():
                         if isinstance(info, dict):
-                            name = info.get("companyName") or info.get("name")
-                            pct = self._to_float(info.get("corpusPer") or info.get("percentage"))
-                            sector = info.get("sectorName") or info.get("sector")
+                            name = info.get("companyName") or info.get("company") or info.get("name") or info.get("shortName")
+                            pct = self._to_float(info.get("corpusPer") or info.get("percentage") or info.get("weightage"))
+                            sector = info.get("sectorName") or info.get("sector") or info.get("industry")
                             if name and pct is not None and pct > 0:
                                 h = {"name": str(name).strip(), "percentage": round(pct, 2)}
                                 if sector:
