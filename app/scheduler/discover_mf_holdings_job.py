@@ -733,6 +733,11 @@ class DiscoverMfHoldingsScraper(BaseScraper):
         slug += "-direct-plan-growth"
         return slug
 
+    _MC_UA = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
+
     def _fetch_mc_holdings(self, scheme_name: str) -> dict[str, Any]:
         """Fetch stock-level holdings from MoneyControl portfolio page."""
         empty = {"top_holdings": None, "sector_allocation": None}
@@ -740,7 +745,10 @@ class DiscoverMfHoldingsScraper(BaseScraper):
         url = f"https://www.moneycontrol.com/mutual-funds/{slug}/portfolio-holdings/"
 
         try:
-            html = self._get_text(url, timeout=12, retries=1)
+            resp = requests.get(url, headers={"User-Agent": self._MC_UA}, timeout=12)
+            if resp.status_code != 200:
+                return empty
+            html = resp.text
         except Exception:
             return empty
 
