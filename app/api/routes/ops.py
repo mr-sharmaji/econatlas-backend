@@ -24,6 +24,8 @@ _VALID_JOBS = {
     "discover_stock", "discover_mutual_funds",
     "discover_stock_price", "discover_mf_nav",
     "discover_mf_holdings",
+    "discover_mf_holdings_etmoney",
+    "discover_mf_holdings_moneycontrol",
     "ipo", "tax",
 }
 
@@ -125,6 +127,14 @@ _DIRECT_RUN_JOBS: dict[str, tuple[str, str]] = {
     "discover_mf_holdings": (
         "app.scheduler.discover_mf_holdings_job",
         "run_discover_mf_holdings_job",
+    ),
+    "discover_mf_holdings_etmoney": (
+        "app.scheduler.discover_mf_holdings_job",
+        "run_discover_mf_holdings_etmoney_job",
+    ),
+    "discover_mf_holdings_moneycontrol": (
+        "app.scheduler.discover_mf_holdings_job",
+        "run_discover_mf_holdings_moneycontrol_job",
     ),
 }
 

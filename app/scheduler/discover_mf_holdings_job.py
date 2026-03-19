@@ -813,22 +813,51 @@ class DiscoverMfHoldingsScraper(BaseScraper):
             "sector_allocation": sector_alloc,
         }
 
-    def fetch_all(self, funds: list[dict]) -> list[dict]:
+    def fetch_all(self, funds: list[dict], *, source: str = "all") -> list[dict]:
         """Fetch holdings for a list of funds.
 
         Each fund dict should have: scheme_code, scheme_name.
+        source: "all" (both), "etmoney" (ET Money only), "moneycontrol" (MC only)
         Returns list of dicts with scheme_code + holdings data.
 
         This method runs synchronously (called from a thread executor).
         """
         # Discover ETMoney detail links
-        detail_links = self._discover_detail_links()
+        detail_links = self._discover_detail_links() if source in ("all", "etmoney") else {}
         base = self.settings.discover_mf_primary_url.rstrip("/")
 
         results: list[dict] = []
         matched = 0
         fetched = 0
         with_holdings = 0
+
+        if source == "moneycontrol":
+            # Skip ET Money pass entirely — jump to MC
+            logger.info("Skipping ET Money pass (source=moneycontrol)")
+            # Go straight to MoneyControl for all funds
+            mc_candidates = list(funds[:_MAX_FUNDS_PER_RUN])
+            mc_success = 0
+            for j, fund in enumerate(mc_candidates):
+                mc_data = self._fetch_mc_holdings(fund["scheme_name"])
+                if mc_data.get("top_holdings"):
+                    mc_success += 1
+                    results.append({
+                        "scheme_code": fund["scheme_code"],
+                        "top_holdings": mc_data["top_holdings"],
+                        "sector_allocation": mc_data.get("sector_allocation"),
+                        "asset_allocation": None,
+                    })
+                if (j + 1) % 50 == 0:
+                    logger.info(
+                        "MoneyControl holdings: %d/%d processed, %d with stock data",
+                        j + 1, len(mc_candidates), mc_success,
+                    )
+                time.sleep(random.uniform(_RATE_LIMIT_MIN, _RATE_LIMIT_MAX))
+            logger.info(
+                "MoneyControl pass complete: %d candidates, %d with stock-level holdings",
+                len(mc_candidates), mc_success,
+            )
+            return results
 
         for i, fund in enumerate(funds[:_MAX_FUNDS_PER_RUN]):
             scheme_code = fund["scheme_code"]
@@ -1011,48 +1040,61 @@ async def _persist_holdings(pool, results: list[dict]) -> int:
 _scraper = DiscoverMfHoldingsScraper()
 
 
-def _fetch_holdings_sync(funds: list[dict]) -> list[dict]:
+def _fetch_holdings_sync(funds: list[dict], source: str = "all") -> list[dict]:
     """Synchronous entry point for the thread executor."""
-    return _scraper.fetch_all(funds)
+    return _scraper.fetch_all(funds, source=source)
 
 
-# ── Public async entry point ───────────────────────────────────────
+# ── Public async entry points ──────────────────────────────────────
+
+async def _run_holdings(source: str = "all") -> None:
+    """Core holdings job logic with source filter."""
+    pool = await get_pool()
+    funds = await _fetch_funds_needing_refresh(pool)
+    if not funds:
+        logger.info("Holdings job (%s): no funds need refresh", source)
+        return
+
+    logger.info("Holdings job (%s): %d funds to process", source, len(funds))
+
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(
+        get_job_executor("discover-mf-holdings"),
+        _fetch_holdings_sync,
+        funds,
+        source,
+    )
+
+    if not results:
+        logger.info("Holdings job (%s): no data found", source)
+        return
+
+    updated = await _persist_holdings(pool, results)
+    logger.info(
+        "Holdings job (%s) complete: %d funds, %d with data, %d updated",
+        source, len(funds), len(results), updated,
+    )
+
 
 async def run_discover_mf_holdings_job() -> None:
-    """Weekly job: scrape mutual fund holdings from ETMoney and persist to DB."""
+    """Full holdings job: ET Money + MoneyControl."""
     try:
-        pool = await get_pool()
-
-        # 1. Find funds needing refresh
-        funds = await _fetch_funds_needing_refresh(pool)
-        if not funds:
-            logger.info("Holdings job: no funds need refresh, skipping")
-            return
-
-        logger.info("Holdings job: %d funds need holdings refresh", len(funds))
-
-        # 2. Scrape holdings in a background thread (synchronous HTTP)
-        loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(
-            get_job_executor("discover-mf-holdings"),
-            _fetch_holdings_sync,
-            funds,
-        )
-
-        if not results:
-            logger.info("Holdings job: no holdings data found from any fund")
-            return
-
-        # 3. Persist to database
-        updated = await _persist_holdings(pool, results)
-        logger.info(
-            "Holdings job complete: %d funds checked, %d with data, %d rows updated",
-            len(funds),
-            len(results),
-            updated,
-        )
-
-    except requests.RequestException:
-        logger.exception("Holdings job failed due to network exception")
+        await _run_holdings("all")
     except Exception:
         logger.exception("Holdings job failed")
+
+
+async def run_discover_mf_holdings_etmoney_job() -> None:
+    """ET Money only: asset allocation."""
+    try:
+        await _run_holdings("etmoney")
+    except Exception:
+        logger.exception("Holdings job (etmoney) failed")
+
+
+async def run_discover_mf_holdings_moneycontrol_job() -> None:
+    """MoneyControl only: stock-level holdings + sector allocation."""
+    try:
+        await _run_holdings("moneycontrol")
+    except Exception:
+        logger.exception("Holdings job (moneycontrol) failed")
