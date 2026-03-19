@@ -95,6 +95,112 @@ class DiscoverMfHoldingsScraper(BaseScraper):
         raw = re.sub(r"<[^>]+>", " ", text or "", flags=re.IGNORECASE)
         return re.sub(r"\s+", " ", unescape(raw)).strip()
 
+    # ── Holdings parsing from compSchemeDTO (ET Money JS variable) ──
+
+    def _extract_comp_scheme_dto(self, html: str) -> dict[str, Any] | None:
+        """Extract portfolio data from ET Money's compSchemeDTO JS variable.
+
+        ET Money embeds fund data in:  var compSchemeDTO = {...};
+        This contains mfPortfolioData with asset allocation and
+        mfCompanyDTOMap/mfSectorDTOMap with holdings and sector data.
+        """
+        result: dict[str, Any] = {
+            "top_holdings": None,
+            "sector_allocation": None,
+            "asset_allocation": None,
+        }
+
+        # Extract compSchemeDTO JSON
+        match = re.search(
+            r'var\s+compSchemeDTO\s*=\s*(\{.*?\});\s*\n',
+            html,
+            flags=re.DOTALL,
+        )
+        if not match:
+            return None
+
+        try:
+            data = json.loads(match.group(1))
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+        # Walk the JSON tree looking for portfolio data
+        for node in self._walk(data):
+            # Asset allocation from mfPortfolioData
+            if result["asset_allocation"] is None:
+                port = node.get("mfPortfolioData")
+                if isinstance(port, dict) and (port.get("equity") is not None or port.get("debt") is not None):
+                    equity = self._to_float(port.get("equity")) or 0
+                    debt = self._to_float(port.get("debt")) or 0
+                    others = self._to_float(port.get("others")) or 0
+                    commodities = self._to_float(port.get("commodities")) or 0
+                    cash = others + commodities if commodities == 0 else 0
+                    other_pct = commodities + (others if commodities > 0 else 0)
+                    total = equity + debt + cash + other_pct
+                    if total > 0:
+                        result["asset_allocation"] = {
+                            "equity_pct": round(equity, 2),
+                            "debt_pct": round(debt, 2),
+                            "cash_pct": round(cash, 2),
+                            "other_pct": round(other_pct, 2),
+                        }
+
+        # Extract holdings from mfCompanyDTOMapJson JS variable
+        company_match = re.search(
+            r'var\s+mfCompanyDTOMapJson\s*=\s*(\{.*?\});\s*\n',
+            html,
+            flags=re.DOTALL,
+        )
+        if company_match:
+            try:
+                companies = json.loads(company_match.group(1))
+                if isinstance(companies, dict) and companies:
+                    holdings = []
+                    for company_id, info in companies.items():
+                        if isinstance(info, dict):
+                            name = info.get("companyName") or info.get("name")
+                            pct = self._to_float(info.get("corpusPer") or info.get("percentage"))
+                            sector = info.get("sectorName") or info.get("sector")
+                            if name and pct is not None and pct > 0:
+                                h = {"name": str(name).strip(), "percentage": round(pct, 2)}
+                                if sector:
+                                    h["sector"] = str(sector).strip()
+                                holdings.append(h)
+                    if holdings:
+                        holdings.sort(key=lambda x: x.get("percentage", 0), reverse=True)
+                        result["top_holdings"] = holdings[:25]
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # Extract sector allocation from mfSectorDTOMapJson
+        sector_match = re.search(
+            r'var\s+mfSectorDTOMapJson\s*=\s*(\{.*?\});\s*\n',
+            html,
+            flags=re.DOTALL,
+        )
+        if sector_match:
+            try:
+                sectors = json.loads(sector_match.group(1))
+                if isinstance(sectors, dict) and sectors:
+                    sector_alloc = []
+                    for sector_id, info in sectors.items():
+                        if isinstance(info, dict):
+                            name = info.get("sectorName") or info.get("name")
+                            pct = self._to_float(info.get("corpusPer") or info.get("percentage"))
+                            if name and pct is not None and pct > 0:
+                                sector_alloc.append({
+                                    "sector": str(name).strip(),
+                                    "percentage": round(pct, 2),
+                                })
+                    if sector_alloc:
+                        sector_alloc.sort(key=lambda x: x.get("percentage", 0), reverse=True)
+                        result["sector_allocation"] = sector_alloc
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        has_any = any(v is not None for v in result.values())
+        return result if has_any else None
+
     # ── Holdings parsing from __NEXT_DATA__ ────────────────────────
 
     def _extract_holdings_from_next_data(
@@ -588,20 +694,21 @@ class DiscoverMfHoldingsScraper(BaseScraper):
 
         result = dict(empty)
 
-        # Primary: extract from __NEXT_DATA__
-        next_data = self._extract_next_data(html)
-        if next_data:
-            nd_result = self._extract_holdings_from_next_data(next_data)
+        # Primary: extract from compSchemeDTO JS variable (ET Money's data format)
+        comp_data = self._extract_comp_scheme_dto(html)
+        if comp_data:
             for key in ("top_holdings", "sector_allocation", "asset_allocation"):
-                if nd_result.get(key) is not None:
-                    result[key] = nd_result[key]
+                if comp_data.get(key) is not None:
+                    result[key] = comp_data[key]
 
-        # Fallback: HTML table parsing for any missing data
+        # Secondary: extract from __NEXT_DATA__ (some pages)
         if any(result[k] is None for k in ("top_holdings", "sector_allocation", "asset_allocation")):
-            html_result = self._parse_holdings_from_html(html)
-            for key in ("top_holdings", "sector_allocation", "asset_allocation"):
-                if result[key] is None and html_result.get(key) is not None:
-                    result[key] = html_result[key]
+            next_data = self._extract_next_data(html)
+            if next_data:
+                nd_result = self._extract_holdings_from_next_data(next_data)
+                for key in ("top_holdings", "sector_allocation", "asset_allocation"):
+                    if result[key] is None and nd_result.get(key) is not None:
+                        result[key] = nd_result[key]
 
         return result
 
