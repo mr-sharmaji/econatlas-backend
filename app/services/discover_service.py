@@ -2139,6 +2139,16 @@ def _decorate_mf_row(row: dict, category_stats: dict | None = None) -> dict:
     item["tags"] = _generate_mf_tags(item)
     item["fund_insights"] = _mf_fund_insights(item, sub_stats)
     item["metric_insights"] = _generate_mf_metric_insights(item)
+    # Sanitize JSONB fields that may contain JSON null as string 'null'
+    for jk in ("fund_managers", "top_holdings", "sector_allocation", "asset_allocation"):
+        v = item.get(jk)
+        if v is None or v == "null" or (isinstance(v, str) and v.strip() == "null"):
+            item[jk] = None
+        elif isinstance(v, str):
+            try:
+                item[jk] = _json.loads(v)
+            except Exception:
+                item[jk] = None
     if sub_stats:
         item["category_avg_returns_1y"] = sub_stats.get("avg_ret1y")
         item["category_avg_returns_3y"] = sub_stats.get("avg_ret3y")
