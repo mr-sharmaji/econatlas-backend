@@ -3141,7 +3141,8 @@ async def list_discover_mutual_funds(
             fund_age_years,
             max_drawdown, rolling_return_consistency,
             alpha, beta, score_alpha, score_beta,
-            sub_category_percentile, fund_classification
+            sub_category_percentile, fund_classification,
+            fund_managers
         FROM {MF_TABLE}
         {where_sql}
         ORDER BY {order_col} {order_dir} NULLS LAST, scheme_name ASC
