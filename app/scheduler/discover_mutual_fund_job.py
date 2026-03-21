@@ -1195,7 +1195,15 @@ class DiscoverMutualFundScraper(BaseScraper):
                 return "equity"
             return "equity"  # most FoFs are equity-oriented
         if cat == "index":
-            if any(k in sub for k in ("long debt", "gilt")):
+            name = (str(row.get("scheme_name") or "")).strip().lower()
+            if (any(k in sub for k in ("long debt", "gilt"))
+                    or any(k in name for k in (
+                        "g-sec", "gsec", "gilt", " sdl ", "sdl ", " sdl",
+                        "government sec", "govt sec",
+                        "bond index", "bond idx",
+                        "corporate bond", "crisil",
+                        "nifty bharat bond",
+                    ))):
                 return "debt"
             return "equity"
 

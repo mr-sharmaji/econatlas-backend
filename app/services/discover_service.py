@@ -2531,7 +2531,7 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     max_drawdown, rolling_return_consistency,
                     alpha, beta, score_alpha, score_beta,
                     score_performance, score_category_fit, sub_category_percentile, fund_classification,
-                    tags_v2, fund_managers
+                    tags_v2, fund_managers, fund_type
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -2543,7 +2543,7 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     $30, $31,
                     $32, $33, $34, $35,
                     $36, $37, $38, $39,
-                    $40, $41
+                    $40, $41, $42
                 )
                 ON CONFLICT (scheme_code)
                 DO UPDATE SET
@@ -2587,7 +2587,8 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     sub_category_percentile = EXCLUDED.sub_category_percentile,
                     fund_classification = EXCLUDED.fund_classification,
                     tags_v2 = EXCLUDED.tags_v2,
-                    fund_managers = COALESCE(EXCLUDED.fund_managers, discover_mutual_fund_snapshots.fund_managers)
+                    fund_managers = COALESCE(EXCLUDED.fund_managers, discover_mutual_fund_snapshots.fund_managers),
+                    fund_type = EXCLUDED.fund_type
                 """,
                 str(row.get("scheme_code") or ""),
                 str(row.get("scheme_name") or ""),
@@ -2629,7 +2630,8 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("sub_category_percentile")),
                 row.get("fund_classification"),
                 _to_jsonb(row.get("tags_v2"), []),                                    # $40
-                _to_jsonb(row.get("fund_managers"), None),                              # $41
+                _to_jsonb(row.get("fund_managers"), None),                             # $41
+                row.get("fund_type"),                                                  # $42
             )
             count += 1
     return count
@@ -3010,14 +3012,27 @@ async def list_discover_mutual_funds(
         )
     elif preset_norm == "debt":
         conds.append(
-            "(LOWER(COALESCE(category, '')) ~ '(debt|bond|gilt|money market|liquid|overnight|ultra short)')"
+            "(LOWER(COALESCE(category, '')) ~ '(debt|bond|gilt|money market|liquid|overnight|ultra short)'"
+            " OR fund_type = 'debt')"
         )
     elif preset_norm == "equity":
         conds.append(
             "(category ILIKE '%equity%' OR sub_category ILIKE '%cap%' OR sub_category ILIKE '%elss%'"
             " OR sub_category ILIKE '%value%' OR sub_category ILIKE '%focused%'"
             " OR sub_category ILIKE '%sector%' OR sub_category ILIKE '%thematic%'"
-            " OR sub_category ILIKE '%index%')"
+            " OR (sub_category ILIKE '%index%'"
+            "     AND scheme_name NOT ILIKE '%g-sec%'"
+            "     AND scheme_name NOT ILIKE '%gsec%'"
+            "     AND scheme_name NOT ILIKE '%gilt%'"
+            "     AND scheme_name NOT ILIKE '% sdl %'"
+            "     AND scheme_name NOT ILIKE '%government sec%'"
+            "     AND scheme_name NOT ILIKE '%govt sec%'"
+            "     AND scheme_name NOT ILIKE '%bond index%'"
+            "     AND scheme_name NOT ILIKE '%corporate bond%'"
+            "     AND scheme_name NOT ILIKE '%crisil%'"
+            "     AND scheme_name NOT ILIKE '%bharat bond%'"
+            "     AND COALESCE(fund_type, '') != 'debt'"
+            "))"
         )
     elif preset_norm == "hybrid":
         conds.append("(category ILIKE '%hybrid%')")
@@ -3155,7 +3170,8 @@ async def list_discover_mutual_funds(
             alpha, beta, score_alpha, score_beta,
             sub_category_percentile, fund_classification,
             fund_managers,
-            asset_allocation, holdings_as_of
+            asset_allocation, holdings_as_of,
+            fund_type
         FROM {MF_TABLE}
         {where_sql}
         ORDER BY {order_col} {order_dir} NULLS LAST, scheme_name ASC
@@ -3624,7 +3640,8 @@ async def get_discover_home_data() -> dict:
                AND LOWER(COALESCE(category, '')) NOT LIKE '%%liquid%%'
                AND LOWER(COALESCE(category, '')) NOT LIKE '%%gilt%%'
                AND LOWER(COALESCE(category, '')) NOT LIKE '%%money market%%'
-               AND LOWER(COALESCE(category, '')) NOT LIKE '%%hybrid%%'""",
+               AND LOWER(COALESCE(category, '')) NOT LIKE '%%hybrid%%'
+               AND COALESCE(fund_type, '') != 'debt'""",
             "score DESC", 8,
         ),
         _fetch_mf_section(
@@ -3637,6 +3654,7 @@ async def get_discover_home_data() -> dict:
                    OR LOWER(COALESCE(category, '')) LIKE '%%money market%%'
                    OR LOWER(COALESCE(sub_category, '')) LIKE '%%corporate bond%%'
                    OR LOWER(COALESCE(sub_category, '')) LIKE '%%overnight%%'
+                   OR fund_type = 'debt'
                )""",
             "score DESC", 8,
         ),

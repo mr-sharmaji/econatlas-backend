@@ -236,6 +236,7 @@ class DiscoverMutualFundItemResponse(BaseModel):
     score_beta: float | None = None
     sub_category_percentile: float | None = None
     fund_classification: str | None = None
+    fund_type: str | None = None
     score_breakdown: DiscoverMutualFundScoreBreakdown | None = None
     why_ranked: list[str] = Field(default_factory=list)
     tags: list[dict] | None = None
