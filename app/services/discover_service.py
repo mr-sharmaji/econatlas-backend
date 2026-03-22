@@ -3609,7 +3609,7 @@ async def get_discover_home_data() -> dict:
     stock_sections = [_section_map[k] for k in _order if k in _section_map]
 
     # ── Mutual Fund sections ──
-    _mf_cols = "scheme_code, scheme_name, category, sub_category, score, returns_1y, rolling_return_consistency"
+    _mf_cols = "scheme_code, scheme_name, category, sub_category, score, returns_1y, returns_3y, rolling_return_consistency, fund_classification, fund_type, risk_level, expense_ratio"
 
     async def _fetch_mf_section(key, title, subtitle, where_extra, order, limit):
         rows = await pool.fetch(
@@ -3644,6 +3644,8 @@ async def get_discover_home_data() -> dict:
                AND LOWER(COALESCE(category, '')) NOT LIKE '%%gilt%%'
                AND LOWER(COALESCE(category, '')) NOT LIKE '%%money market%%'
                AND LOWER(COALESCE(category, '')) NOT LIKE '%%hybrid%%'
+               AND LOWER(COALESCE(category, '')) NOT LIKE '%%other%%'
+               AND LOWER(COALESCE(category, '')) NOT LIKE '%%income%%'
                AND COALESCE(fund_type, '') != 'debt'""",
             "score DESC", 8,
         ),
@@ -3663,8 +3665,19 @@ async def get_discover_home_data() -> dict:
         ),
         _fetch_mf_section(
             "consistent_performers", "Consistent Performers",
-            "Funds with steady returns across market cycles",
-            "AND score >= 60 AND rolling_return_consistency IS NOT NULL",
+            "Equity funds with steady returns across market cycles",
+            """AND score >= 55 AND rolling_return_consistency IS NOT NULL
+               AND category != 'Income'
+               AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
+               AND scheme_name NOT ILIKE '%%fmp%%'
+               AND scheme_name NOT ILIKE '%%fixed maturity%%'
+               AND scheme_name NOT ILIKE '%%fixed horizon%%'
+               AND scheme_name NOT ILIKE '%%close ended%%'
+               AND scheme_name NOT ILIKE '%%closed ended%%'
+               AND scheme_name NOT ILIKE '%%capital protection%%'
+               AND scheme_name NOT ILIKE '%%fixed term%%'
+               AND COALESCE(fund_type, 'equity') = 'equity'
+               AND LOWER(COALESCE(category, '')) NOT LIKE '%%other%%'""",
             "rolling_return_consistency ASC", 8,
         ),
     )
