@@ -3635,10 +3635,20 @@ async def get_discover_home_data() -> dict:
             return None
         return {"key": key, "title": title, "subtitle": subtitle, "items": items}
 
+    _mf_alive = """AND category != 'Income'
+               AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
+               AND scheme_name NOT ILIKE '%%fmp%%'
+               AND scheme_name NOT ILIKE '%%fixed maturity%%'
+               AND scheme_name NOT ILIKE '%%fixed horizon%%'
+               AND scheme_name NOT ILIKE '%%close ended%%'
+               AND scheme_name NOT ILIKE '%%closed ended%%'
+               AND scheme_name NOT ILIKE '%%capital protection%%'
+               AND scheme_name NOT ILIKE '%%fixed term%%'"""
+
     mf_section_results = await asyncio.gather(
         _fetch_mf_section(
             "top_equity", "Top Equity Funds", "Best performing equity mutual funds",
-            """AND score >= 50
+            f"""AND score >= 50
                AND LOWER(COALESCE(category, '')) NOT LIKE '%%debt%%'
                AND LOWER(COALESCE(category, '')) NOT LIKE '%%liquid%%'
                AND LOWER(COALESCE(category, '')) NOT LIKE '%%gilt%%'
@@ -3646,12 +3656,13 @@ async def get_discover_home_data() -> dict:
                AND LOWER(COALESCE(category, '')) NOT LIKE '%%hybrid%%'
                AND LOWER(COALESCE(category, '')) NOT LIKE '%%other%%'
                AND LOWER(COALESCE(category, '')) NOT LIKE '%%income%%'
-               AND COALESCE(fund_type, '') != 'debt'""",
+               AND COALESCE(fund_type, '') != 'debt'
+               {_mf_alive}""",
             "score DESC", 8,
         ),
         _fetch_mf_section(
             "top_debt", "Top Debt Funds", "Stable returns from fixed income",
-            """AND score >= 40
+            f"""AND score >= 40
                AND (
                    LOWER(COALESCE(category, '')) LIKE '%%debt%%'
                    OR LOWER(COALESCE(category, '')) LIKE '%%liquid%%'
@@ -3660,25 +3671,48 @@ async def get_discover_home_data() -> dict:
                    OR LOWER(COALESCE(sub_category, '')) LIKE '%%corporate bond%%'
                    OR LOWER(COALESCE(sub_category, '')) LIKE '%%overnight%%'
                    OR fund_type = 'debt'
-               )""",
+               )
+               {_mf_alive}""",
+            "score DESC", 8,
+        ),
+        _fetch_mf_section(
+            "top_index", "Top Index Funds", "Best passive funds with low costs",
+            f"""AND score >= 50
+               AND fund_classification = 'Index'
+               AND COALESCE(fund_type, 'equity') = 'equity'
+               {_mf_alive}""",
+            "score DESC", 8,
+        ),
+        _fetch_mf_section(
+            "tax_saver", "Tax Saver (ELSS)", "Save tax under Section 80C with 3-year lock-in",
+            f"""AND score >= 40
+               AND (sub_category ILIKE '%%elss%%' OR sub_category ILIKE '%%tax%%sav%%')
+               {_mf_alive}""",
+            "score DESC", 8,
+        ),
+        _fetch_mf_section(
+            "small_mid_cap", "Small & Mid Cap Picks", "High-growth potential in smaller companies",
+            f"""AND score >= 45
+               AND fund_classification IN ('Small Cap', 'Mid Cap')
+               {_mf_alive}""",
             "score DESC", 8,
         ),
         _fetch_mf_section(
             "consistent_performers", "Consistent Performers",
             "Equity funds with steady returns across market cycles",
-            """AND score >= 55 AND rolling_return_consistency IS NOT NULL
-               AND category != 'Income'
-               AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
-               AND scheme_name NOT ILIKE '%%fmp%%'
-               AND scheme_name NOT ILIKE '%%fixed maturity%%'
-               AND scheme_name NOT ILIKE '%%fixed horizon%%'
-               AND scheme_name NOT ILIKE '%%close ended%%'
-               AND scheme_name NOT ILIKE '%%closed ended%%'
-               AND scheme_name NOT ILIKE '%%capital protection%%'
-               AND scheme_name NOT ILIKE '%%fixed term%%'
+            f"""AND score >= 55 AND rolling_return_consistency IS NOT NULL
                AND COALESCE(fund_type, 'equity') = 'equity'
-               AND LOWER(COALESCE(category, '')) NOT LIKE '%%other%%'""",
+               AND LOWER(COALESCE(category, '')) NOT LIKE '%%other%%'
+               {_mf_alive}""",
             "rolling_return_consistency ASC", 8,
+        ),
+        _fetch_mf_section(
+            "sector_thematic", "Trending Sectors", "Top performing sectoral and thematic funds",
+            f"""AND score >= 50
+               AND (sub_category ILIKE '%%sector%%' OR sub_category ILIKE '%%thematic%%')
+               AND returns_1y IS NOT NULL
+               {_mf_alive}""",
+            "returns_1y DESC", 8,
         ),
     )
     mf_sections = [s for s in mf_section_results if s is not None]
@@ -3700,6 +3734,7 @@ async def get_discover_home_data() -> dict:
         {"name": "Small Cap", "segment": "mutual_funds", "preset": "small-cap"},
         {"name": "ELSS", "segment": "mutual_funds", "preset": "elss"},
         {"name": "Index", "segment": "mutual_funds", "preset": "index"},
+        {"name": "Sectoral", "segment": "mutual_funds", "preset": "sectoral"},
         {"name": "Debt", "segment": "mutual_funds", "preset": "debt"},
         {"name": "Low Risk", "segment": "mutual_funds", "preset": "low-risk"},
     ]
