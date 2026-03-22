@@ -411,9 +411,6 @@ def _compute_quality_badges(row: dict) -> list[str]:
             and returns_3y is not None and returns_3y > 0
             and returns_5y is not None and returns_5y > 0):
         badges.append("Consistent Returns")
-    expense_ratio = _to_float(row.get("expense_ratio"))
-    if expense_ratio is not None and expense_ratio < 1.0:
-        badges.append("Cost Efficient")
     fund_age_years = _to_float(row.get("fund_age_years"))
     if fund_age_years is not None and fund_age_years >= 5:
         badges.append("Proven Track Record")
