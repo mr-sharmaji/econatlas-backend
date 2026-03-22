@@ -2960,6 +2960,7 @@ async def list_discover_mutual_funds(
     conds.append(
         "(scheme_name NOT ILIKE '%fmp%'"
         " AND scheme_name NOT ILIKE '%fixed maturity%'"
+        " AND scheme_name NOT ILIKE '%fixed horizon%'"
         " AND scheme_name NOT ILIKE '%close ended%'"
         " AND scheme_name NOT ILIKE '%closed ended%'"
         " AND scheme_name NOT ILIKE '%interval%fund%'"
@@ -3357,8 +3358,10 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
         FROM {MF_TABLE}
         WHERE (scheme_name ILIKE $1 OR scheme_code ILIKE $1)
           AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
+          AND category != 'Income'
           AND scheme_name NOT ILIKE '%fmp%'
           AND scheme_name NOT ILIKE '%fixed maturity%'
+          AND scheme_name NOT ILIKE '%fixed horizon%'
           AND scheme_name NOT ILIKE '%close ended%'
           AND scheme_name NOT ILIKE '%closed ended%'
           AND scheme_name NOT ILIKE '%interval%fund%'
@@ -4119,6 +4122,9 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
         WHERE COALESCE(NULLIF(sub_category, ''), category) = $1
           AND scheme_code != $2
           AND LOWER(COALESCE(plan_type, 'direct')) = 'direct'
+          AND category != 'Income'
+          AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
+          AND score IS NOT NULL
         ORDER BY score DESC NULLS LAST
         LIMIT $3
         """,
@@ -4146,6 +4152,9 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
             WHERE category = $1
               AND scheme_code != $2
               AND LOWER(COALESCE(plan_type, 'direct')) = 'direct'
+              AND category != 'Income'
+              AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
+              AND score IS NOT NULL
             ORDER BY score DESC NULLS LAST
             LIMIT $3
             """,
