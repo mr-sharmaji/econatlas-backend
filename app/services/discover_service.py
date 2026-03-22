@@ -4225,7 +4225,22 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
 # Batch sparklines
 # ---------------------------------------------------------------------------
 
-async def get_stock_sparklines(*, symbols: list[str], days: int = 7) -> dict[str, list[dict]]:
+def _downsample(points: list[dict], max_points: int) -> list[dict]:
+    """Downsample a list of points to at most max_points, keeping first and last."""
+    n = len(points)
+    if n <= max_points:
+        return points
+    # Always keep first and last; evenly sample the rest
+    if max_points <= 2:
+        return [points[0], points[-1]]
+    step = (n - 1) / (max_points - 1)
+    indices = {0, n - 1}
+    for i in range(1, max_points - 1):
+        indices.add(round(i * step))
+    return [points[i] for i in sorted(indices)]
+
+
+async def get_stock_sparklines(*, symbols: list[str], days: int = 7, max_points: int = 30) -> dict[str, list[dict]]:
     """Fetch price history for multiple symbols in a single query."""
     if not symbols:
         return {}
@@ -4246,10 +4261,13 @@ async def get_stock_sparklines(*, symbols: list[str], days: int = 7) -> dict[str
         sym = r["symbol"]
         if sym in result:
             result[sym].append({"date": str(r["trade_date"]), "value": float(r["close"])})
+    # Downsample each series
+    for key in result:
+        result[key] = _downsample(result[key], max_points)
     return result
 
 
-async def get_mf_sparklines(*, scheme_codes: list[str], days: int = 7) -> dict[str, list[dict]]:
+async def get_mf_sparklines(*, scheme_codes: list[str], days: int = 7, max_points: int = 30) -> dict[str, list[dict]]:
     """Fetch NAV history for multiple scheme codes in a single query."""
     if not scheme_codes:
         return {}
@@ -4270,6 +4288,9 @@ async def get_mf_sparklines(*, scheme_codes: list[str], days: int = 7) -> dict[s
         sc = r["scheme_code"]
         if sc in result:
             result[sc].append({"date": str(r["nav_date"]), "value": float(r["nav"])})
+    # Downsample each series
+    for key in result:
+        result[key] = _downsample(result[key], max_points)
     return result
 
 

@@ -310,11 +310,14 @@ async def get_mf_history(
 async def get_stock_sparklines(
     symbols: str = Query(..., description="Comma-separated stock symbols"),
     days: int = Query(default=7, ge=1, le=365),
+    max_points: int = Query(default=30, ge=5, le=365),
 ) -> dict[str, list[dict]]:
     """Batch fetch price sparklines for multiple stocks."""
     try:
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()][:50]
-        return await discover_service.get_stock_sparklines(symbols=symbol_list, days=days)
+        return await discover_service.get_stock_sparklines(
+            symbols=symbol_list, days=days, max_points=max_points,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -323,11 +326,14 @@ async def get_stock_sparklines(
 async def get_mf_sparklines(
     scheme_codes: str = Query(..., description="Comma-separated scheme codes"),
     days: int = Query(default=7, ge=1, le=365),
+    max_points: int = Query(default=30, ge=5, le=365),
 ) -> dict[str, list[dict]]:
     """Batch fetch NAV sparklines for multiple mutual funds."""
     try:
         code_list = [s.strip() for s in scheme_codes.split(",") if s.strip()][:50]
-        return await discover_service.get_mf_sparklines(scheme_codes=code_list, days=days)
+        return await discover_service.get_mf_sparklines(
+            scheme_codes=code_list, days=days, max_points=max_points,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
