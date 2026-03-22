@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     macro_interval_minutes: int = 60
     news_interval_minutes: int = 30
     brief_interval_minutes: int = 5
+    discover_cron_enabled: bool = True
     discover_stock_interval_minutes: int = 60
     discover_stock_daily_hour_ist: int = 16
     discover_stock_daily_minute_ist: int = 0
