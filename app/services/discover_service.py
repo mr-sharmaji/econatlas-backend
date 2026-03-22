@@ -2780,9 +2780,8 @@ async def list_discover_stocks(
         conds.append("COALESCE(roce, 0) >= 15")
         conds.append("(debt_to_equity IS NULL OR debt_to_equity <= 1.0)")
     elif preset_norm == "dividend":
+        conds.append("COALESCE(dividend_yield, 0) > 0.5")
         conds.append("COALESCE(eps, 0) > 0")
-        conds.append("(pe_ratio IS NULL OR pe_ratio <= 25)")
-        conds.append("score_quality >= 50")
 
     if search and search.strip():
         q = f"%{search.strip()}%"
