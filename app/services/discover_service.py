@@ -3716,24 +3716,29 @@ async def get_discover_home_data() -> dict:
 
     quick_categories = [
         # Stocks
+        {"name": "All", "segment": "stocks", "preset": "all"},
+        {"name": "Large Cap", "segment": "stocks", "preset": "large-cap"},
+        {"name": "Mid Cap", "segment": "stocks", "preset": "mid-cap"},
+        {"name": "Small Cap", "segment": "stocks", "preset": "small-cap"},
         {"name": "Quality", "segment": "stocks", "preset": "quality"},
         {"name": "Value", "segment": "stocks", "preset": "value"},
         {"name": "Momentum", "segment": "stocks", "preset": "momentum"},
+        {"name": "Low Volatility", "segment": "stocks", "preset": "low-volatility"},
         {"name": "Dividend", "segment": "stocks", "preset": "dividend"},
-        {"name": "Large Cap", "segment": "stocks", "preset": "large-cap"},
-        {"name": "Small Cap", "segment": "stocks", "preset": "small-cap"},
-        {"name": "Mid Cap", "segment": "stocks", "preset": "mid-cap"},
-        {"name": "High Volume", "segment": "stocks", "preset": "high-volume"},
         # Mutual Funds
+        {"name": "All", "segment": "mutual_funds", "preset": "all"},
+        {"name": "Equity", "segment": "mutual_funds", "preset": "equity"},
+        {"name": "Debt", "segment": "mutual_funds", "preset": "debt"},
+        {"name": "Hybrid", "segment": "mutual_funds", "preset": "hybrid"},
         {"name": "Large Cap", "segment": "mutual_funds", "preset": "large-cap"},
-        {"name": "Flexi Cap", "segment": "mutual_funds", "preset": "flexi-cap"},
         {"name": "Mid Cap", "segment": "mutual_funds", "preset": "mid-cap"},
         {"name": "Small Cap", "segment": "mutual_funds", "preset": "small-cap"},
+        {"name": "Flexi Cap", "segment": "mutual_funds", "preset": "flexi-cap"},
+        {"name": "Multi Cap", "segment": "mutual_funds", "preset": "multi-cap"},
         {"name": "ELSS", "segment": "mutual_funds", "preset": "elss"},
         {"name": "Index", "segment": "mutual_funds", "preset": "index"},
         {"name": "Sectoral", "segment": "mutual_funds", "preset": "sectoral"},
-        {"name": "Debt", "segment": "mutual_funds", "preset": "debt"},
-        {"name": "Low Risk", "segment": "mutual_funds", "preset": "low-risk"},
+        {"name": "Value", "segment": "mutual_funds", "preset": "value-mf"},
     ]
 
     result = {
