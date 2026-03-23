@@ -66,11 +66,18 @@ async def _get_redis() -> aioredis.Redis | None:
 
 def _cache_ttl(path: str) -> int | None:
     """Return TTL for a path, or None if not cacheable."""
+    def _matches(prefix: str, candidate_path: str) -> bool:
+        # Treat "/macro/" prefix as matching both "/macro" and "/macro/*".
+        normalized = prefix.rstrip("/")
+        if not normalized:
+            return False
+        return candidate_path == normalized or candidate_path.startswith(f"{normalized}/")
+
     for prefix in _NO_CACHE_PREFIXES:
-        if path.startswith(prefix):
+        if _matches(prefix, path):
             return None
     for prefix, ttl in _CACHE_TTLS.items():
-        if path.startswith(prefix):
+        if _matches(prefix, path):
             return ttl
     return None
 
