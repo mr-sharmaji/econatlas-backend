@@ -2,6 +2,8 @@
 
 Caches JSON responses by URL path + query string with configurable TTLs.
 Cache is automatically bypassed for non-GET requests and non-cacheable paths.
+
+Call `invalidate_cache()` after discovery/rescore jobs to flush stale data.
 """
 from __future__ import annotations
 
@@ -144,3 +146,22 @@ class RedisCacheMiddleware(BaseHTTPMiddleware):
                     )
 
         return response
+
+
+async def invalidate_cache() -> int:
+    """Flush all cached responses. Call after discovery/rescore jobs."""
+    r = await _get_redis()
+    if r is None:
+        return 0
+    try:
+        keys = []
+        async for key in r.scan_iter("cache:v1:*", count=500):
+            keys.append(key)
+        if keys:
+            deleted = await r.delete(*keys)
+            logger.info("Cache: invalidated %d keys", deleted)
+            return deleted
+        return 0
+    except Exception as exc:
+        logger.warning("Cache: invalidation failed: %s", exc)
+        return 0

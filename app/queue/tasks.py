@@ -23,6 +23,12 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
 
     try:
         await coro_factory()
+        # Invalidate response cache after successful job so users see fresh data
+        try:
+            from app.core.cache import invalidate_cache
+            await invalidate_cache()
+        except Exception:
+            logger.debug("Cache invalidation after %s failed (non-fatal)", job_name)
     except Exception as exc:
         if max_retries > 0 and job_try <= max_retries:
             delay = delay_base * (2 ** (job_try - 1))
