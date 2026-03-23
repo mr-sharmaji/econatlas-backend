@@ -2765,16 +2765,13 @@ async def list_discover_stocks(
         conds.append(cond.format(idx=len(args)))
 
     preset_norm = str(preset or "momentum").strip().lower()
-    if preset_norm == "value":
+    if preset_norm == "momentum":
+        conds.append("COALESCE(score_momentum, 0) >= 45")
+    elif preset_norm == "value":
         conds.append("score_quality >= 55")
         conds.append("(pe_ratio IS NULL OR pe_ratio <= 35)")
     elif preset_norm == "low-volatility":
         conds.append("ABS(COALESCE(percent_change, 0)) <= 1.5")
-    elif preset_norm == "high-volume":
-        conds.append("COALESCE(traded_value, 0) >= 100000000")
-    elif preset_norm == "breakout":
-        conds.append("ABS(COALESCE(percent_change, 0)) >= 2")
-        conds.append("COALESCE(volume, 0) >= 500000")
     elif preset_norm == "quality":
         conds.append("COALESCE(roe, 0) >= 15")
         conds.append("COALESCE(roce, 0) >= 15")
@@ -2782,6 +2779,14 @@ async def list_discover_stocks(
     elif preset_norm == "dividend":
         conds.append("COALESCE(dividend_yield, 0) > 0.5")
         conds.append("COALESCE(eps, 0) > 0")
+    elif preset_norm == "large-cap":
+        conds.append("COALESCE(market_cap, 0) >= 20000")
+    elif preset_norm == "mid-cap":
+        conds.append("COALESCE(market_cap, 0) >= 5000")
+        conds.append("COALESCE(market_cap, 0) < 20000")
+    elif preset_norm == "small-cap":
+        conds.append("COALESCE(market_cap, 0) > 0")
+        conds.append("COALESCE(market_cap, 0) < 5000")
 
     if search and search.strip():
         q = f"%{search.strip()}%"
