@@ -76,6 +76,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Redis response cache — must be added after CORS middleware
+    from app.core.cache import RedisCacheMiddleware
+    application.add_middleware(RedisCacheMiddleware)
+
     application.include_router(api_router)
 
     return application
