@@ -3354,7 +3354,7 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
 
     mf_rows = await pool.fetch(
         f"""
-        SELECT scheme_code, scheme_name, display_name, category, nav, returns_1y,
+        SELECT scheme_code, scheme_name, category, nav, returns_1y,
                COALESCE(score, 0) AS score
         FROM {MF_TABLE}
         WHERE (scheme_name ILIKE $1 OR scheme_code ILIKE $1)
@@ -3391,9 +3391,15 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
         max(1, min(limit, 50)),
     )
 
+    mf_items = []
+    for r in mf_rows:
+        d = record_to_dict(r)
+        d["display_name"] = _clean_mf_display_name(d.get("scheme_name", ""))
+        mf_items.append(d)
+
     return {
         "stocks": [record_to_dict(r) for r in stock_rows],
-        "mutual_funds": [record_to_dict(r) for r in mf_rows],
+        "mutual_funds": mf_items,
     }
 
 
