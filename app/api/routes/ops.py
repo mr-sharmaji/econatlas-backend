@@ -1031,18 +1031,7 @@ async def data_health(
 @router.post("/test-notification")
 async def test_notification() -> dict:
     """Send a test push notification to all subscribed devices."""
-    import os
-    from app.services.notification_service import _get_firebase, send_topic_notification
-    # Debug info
-    cred_env = os.environ.get("FIREBASE_CREDENTIALS_JSON", "NOT SET")
-    cred_preview = cred_env[:50] + "..." if len(cred_env) > 50 else cred_env
-    file_exists = os.path.isfile(cred_env) if not cred_env.startswith("{") and cred_env != "NOT SET" else None
-    try:
-        firebase_app = _get_firebase()
-    except Exception as e:
-        return {"sent": False, "reason": str(e), "env_preview": cred_preview, "file_exists": file_exists}
-    if firebase_app is None:
-        return {"sent": False, "reason": "Firebase init returned None", "env_preview": cred_preview, "file_exists": file_exists}
+    from app.services.notification_service import send_topic_notification
     success = await send_topic_notification(
         topic="market_alerts",
         title="🔔 EconAtlas Test",
