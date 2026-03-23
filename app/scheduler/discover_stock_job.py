@@ -4753,22 +4753,26 @@ class DiscoverStockScraper(BaseScraper):
             # ── Auto-tags (structured v2) ──
             med_pe = sector_medians.get(sector, {}).get("pe", 25.0)
             from app.services.tag_engine import generate_stock_tags
-            tags_v2 = generate_stock_tags(
-                row,
-                quality_score=quality_score,
-                valuation_score=valuation_score,
-                growth_score=growth_score,
-                momentum_score=momentum,
-                institutional_score=institutional_score,
-                risk_score=risk_score,
-                lynch_classification=lynch_class,
-                market_regime=market_regime,
-                sector=sector,
-                pct_change_5y=pct_change_5y,
-                peg_ratio=peg_ratio,
-                paper_profits=paper_profits,
-                sector_pe_median=med_pe,
-            )
+            try:
+                tags_v2 = generate_stock_tags(
+                    row,
+                    quality_score=quality_score,
+                    valuation_score=valuation_score,
+                    growth_score=growth_score,
+                    momentum_score=momentum,
+                    institutional_score=institutional_score,
+                    risk_score=risk_score,
+                    lynch_classification=lynch_class,
+                    market_regime=market_regime,
+                    sector=sector,
+                    pct_change_5y=pct_change_5y,
+                    peg_ratio=peg_ratio,
+                    paper_profits=paper_profits,
+                    sector_pe_median=med_pe,
+                )
+            except Exception:
+                logger.exception("Tag generation failed for %s", symbol)
+                tags_v2 = []
 
             pct_change_1w = vd.get("pct_change_1w") if vd else None
 
