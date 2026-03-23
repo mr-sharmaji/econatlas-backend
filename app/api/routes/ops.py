@@ -1025,3 +1025,16 @@ async def data_health(
     _authorize(x_ops_token)
     payload = await market_intel_service.get_data_health()
     return DataHealthResponse(**payload)
+
+
+@router.post("/test-notification")
+async def test_notification() -> dict:
+    """Send a test push notification to all subscribed devices."""
+    from app.services import notification_service
+    success = await notification_service.send_topic_notification(
+        topic="market_alerts",
+        title="🔔 EconAtlas Test",
+        body="Push notifications are working! You'll receive market open/close alerts.",
+        data={"type": "test"},
+    )
+    return {"sent": success}
