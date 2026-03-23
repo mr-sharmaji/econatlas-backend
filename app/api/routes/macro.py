@@ -5,6 +5,10 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.macro_schema import (
     EconCalendarResponse,
+    MacroLinkagesResponse,
+    MacroMetadataResponse,
+    MacroRegimeResponse,
+    MacroSummaryResponse,
     InstitutionalFlowsOverviewResponse,
     MacroForecastListResponse,
     MacroIndicatorCreate,
@@ -119,10 +123,85 @@ async def list_forecasts(
 async def list_calendar(
     days_ahead: int = Query(default=90, ge=1, le=365),
     country: str | None = Query(default=None),
+    include_past: bool = Query(default=False, description="Include recent past events for replay/timeline modules."),
 ) -> EconCalendarResponse:
     """Return upcoming economic events."""
     try:
-        events = await macro_service.get_upcoming_events(days_ahead=days_ahead, country=country)
+        events = await macro_service.get_upcoming_events(
+            days_ahead=days_ahead,
+            country=country,
+            include_past=include_past,
+        )
         return EconCalendarResponse(events=events, count=len(events))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/metadata", response_model=MacroMetadataResponse)
+async def macro_metadata() -> MacroMetadataResponse:
+    """Indicator metadata for display names, units, cadence, and chart hints."""
+    try:
+        items = await macro_service.get_metadata()
+        return MacroMetadataResponse(items=items, count=len(items))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/regime", response_model=MacroRegimeResponse)
+async def macro_regime(
+    country: str | None = Query(default=None),
+) -> MacroRegimeResponse:
+    """Normalized growth/inflation/policy regime map per country."""
+    try:
+        payload = await macro_service.get_regime(country=country)
+        countries = payload.get("countries", [])
+        return MacroRegimeResponse(
+            as_of=payload.get("as_of"),
+            countries=countries,
+            count=len(countries),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/linkages", response_model=MacroLinkagesResponse)
+async def macro_linkages(
+    country: str = Query(default="IN"),
+    indicator: str = Query(default="inflation"),
+    window_days: int = Query(default=365, ge=30, le=3650),
+) -> MacroLinkagesResponse:
+    """Rolling macro-to-market linkage snapshots for compare view."""
+    try:
+        payload = await macro_service.get_linkages(
+            country=country,
+            indicator_name=indicator,
+            window_days=window_days,
+        )
+        series = payload.get("series", [])
+        return MacroLinkagesResponse(
+            country=payload.get("country", country),
+            indicator_name=payload.get("indicator_name", indicator),
+            window_days=payload.get("window_days", window_days),
+            as_of=payload.get("as_of"),
+            series=series,
+            count=len(series),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/summary", response_model=MacroSummaryResponse)
+async def macro_summary(
+    country: str | None = Query(default=None),
+) -> MacroSummaryResponse:
+    """Country-level Now/Next/Risk summary payload optimized for fast paint."""
+    try:
+        payload = await macro_service.get_summary(country=country)
+        countries = payload.get("countries", [])
+        return MacroSummaryResponse(
+            as_of=payload.get("as_of"),
+            countries=countries,
+            count=len(countries),
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

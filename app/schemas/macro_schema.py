@@ -73,8 +73,95 @@ class EconCalendarEventResponse(BaseModel):
     event_type: str
     description: str | None = None
     source: str | None = None
+    importance: str | None = None
+    previous: float | None = None
+    consensus: float | None = None
+    actual: float | None = None
+    surprise: float | None = None
+    status: str | None = None
 
 
 class EconCalendarResponse(BaseModel):
     events: list[EconCalendarEventResponse]
+    count: int
+
+
+# ── Metadata ──
+
+class MacroIndicatorMetadataResponse(BaseModel):
+    indicator_name: str
+    display_name: str
+    unit: str
+    frequency: str
+    source: str
+    update_cadence: str
+    chart_type: str
+    thresholds: dict[str, float] = Field(default_factory=dict)
+
+
+class MacroMetadataResponse(BaseModel):
+    items: list[MacroIndicatorMetadataResponse]
+    count: int
+
+
+# ── Regime ──
+
+class MacroRegimeCountryResponse(BaseModel):
+    country: str
+    growth_score: float | None = None
+    inflation_score: float | None = None
+    policy_score: float | None = None
+    regime_label: str
+    confidence: float
+    freshness_hours: float | None = None
+    metrics: dict[str, float] = Field(default_factory=dict)
+
+
+class MacroRegimeResponse(BaseModel):
+    as_of: datetime | None = None
+    countries: list[MacroRegimeCountryResponse]
+    count: int
+
+
+# ── Linkages ──
+
+class MacroLinkagePointResponse(BaseModel):
+    date: date
+    macro_value: float
+    asset_value: float
+
+
+class MacroLinkageSeriesResponse(BaseModel):
+    asset: str
+    correlation: float | None = None
+    point_count: int
+    points: list[MacroLinkagePointResponse] = Field(default_factory=list)
+
+
+class MacroLinkagesResponse(BaseModel):
+    country: str
+    indicator_name: str
+    window_days: int
+    as_of: datetime | None = None
+    series: list[MacroLinkageSeriesResponse] = Field(default_factory=list)
+    count: int
+
+
+# ── Summary ──
+
+class MacroCountrySummaryResponse(BaseModel):
+    country: str
+    now_title: str
+    now_subtitle: str
+    risk_score: float
+    risk_label: str
+    freshness_hours: float | None = None
+    next_event_name: str | None = None
+    next_event_date: date | None = None
+    watchouts: list[str] = Field(default_factory=list)
+
+
+class MacroSummaryResponse(BaseModel):
+    as_of: datetime | None = None
+    countries: list[MacroCountrySummaryResponse] = Field(default_factory=list)
     count: int

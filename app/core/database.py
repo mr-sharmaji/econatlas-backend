@@ -105,6 +105,62 @@ async def init_pool() -> asyncpg.Pool:
         )
         await conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS macro_forecasts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                indicator_name TEXT NOT NULL,
+                country TEXT NOT NULL,
+                forecast_year INTEGER NOT NULL,
+                value DOUBLE PRECISION NOT NULL,
+                source TEXT,
+                fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_macro_forecasts_key "
+            "ON macro_forecasts (indicator_name, country, forecast_year)"
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS economic_calendar (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                event_name TEXT NOT NULL,
+                institution TEXT NOT NULL,
+                event_date DATE NOT NULL,
+                country TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                description TEXT,
+                source TEXT
+            )
+            """
+        )
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_economic_calendar_name_date "
+            "ON economic_calendar (event_name, event_date)"
+        )
+        await conn.execute(
+            "ALTER TABLE economic_calendar ADD COLUMN IF NOT EXISTS importance TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE economic_calendar ADD COLUMN IF NOT EXISTS previous DOUBLE PRECISION"
+        )
+        await conn.execute(
+            "ALTER TABLE economic_calendar ADD COLUMN IF NOT EXISTS consensus DOUBLE PRECISION"
+        )
+        await conn.execute(
+            "ALTER TABLE economic_calendar ADD COLUMN IF NOT EXISTS actual DOUBLE PRECISION"
+        )
+        await conn.execute(
+            "ALTER TABLE economic_calendar ADD COLUMN IF NOT EXISTS surprise DOUBLE PRECISION"
+        )
+        await conn.execute(
+            "ALTER TABLE economic_calendar ADD COLUMN IF NOT EXISTS status TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE economic_calendar ADD COLUMN IF NOT EXISTS revised_at TIMESTAMPTZ"
+        )
+        await conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS device_watchlists (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 device_id TEXT NOT NULL,

@@ -1,6 +1,280 @@
+from __future__ import annotations
+
+import math
+from datetime import UTC, date, datetime, timedelta
+
 from app.core.database import get_pool, parse_ts, record_to_dict
 
 TABLE = "macro_indicators"
+
+COUNTRY_ORDER = ["IN", "US", "EU", "JP"]
+
+INFLATION_TARGETS: dict[str, float] = {
+    "IN": 4.0,
+    "US": 2.0,
+    "EU": 2.0,
+    "JP": 2.0,
+}
+
+NEUTRAL_POLICY_RATE: dict[str, float] = {
+    "IN": 6.0,
+    "US": 2.5,
+    "EU": 2.0,
+    "JP": 1.0,
+}
+
+INDICATOR_METADATA: list[dict] = [
+    {
+        "indicator_name": "gdp_growth",
+        "display_name": "GDP Growth",
+        "unit": "percent",
+        "frequency": "quarterly",
+        "source": "fred_api/imf_weo",
+        "update_cadence": "quarterly",
+        "chart_type": "line",
+        "thresholds": {"slowdown": 2.0, "strong": 6.0},
+    },
+    {
+        "indicator_name": "inflation",
+        "display_name": "Inflation (CPI)",
+        "unit": "percent_yoy",
+        "frequency": "monthly",
+        "source": "fred_api",
+        "update_cadence": "monthly",
+        "chart_type": "line",
+        "thresholds": {"target_us_eu_jp": 2.0, "target_in": 4.0},
+    },
+    {
+        "indicator_name": "core_inflation",
+        "display_name": "Core Inflation",
+        "unit": "percent_yoy",
+        "frequency": "monthly",
+        "source": "fred_api/trading_economics",
+        "update_cadence": "monthly",
+        "chart_type": "line",
+        "thresholds": {"elevated": 4.0, "sticky": 5.0},
+    },
+    {
+        "indicator_name": "unemployment",
+        "display_name": "Unemployment",
+        "unit": "percent",
+        "frequency": "monthly",
+        "source": "fred_api/world_bank",
+        "update_cadence": "monthly",
+        "chart_type": "line",
+        "thresholds": {"moderate": 4.5, "high": 6.0},
+    },
+    {
+        "indicator_name": "repo_rate",
+        "display_name": "Policy Rate",
+        "unit": "percent",
+        "frequency": "monthly",
+        "source": "fred_api",
+        "update_cadence": "event-driven",
+        "chart_type": "line",
+        "thresholds": {"restrictive_gap": 1.5},
+    },
+    {
+        "indicator_name": "pmi_manufacturing",
+        "display_name": "PMI Manufacturing",
+        "unit": "index",
+        "frequency": "monthly",
+        "source": "trading_economics",
+        "update_cadence": "monthly",
+        "chart_type": "line",
+        "thresholds": {"expansion": 50.0, "strong": 55.0},
+    },
+    {
+        "indicator_name": "pmi_services",
+        "display_name": "PMI Services",
+        "unit": "index",
+        "frequency": "monthly",
+        "source": "trading_economics",
+        "update_cadence": "monthly",
+        "chart_type": "line",
+        "thresholds": {"expansion": 50.0, "strong": 55.0},
+    },
+    {
+        "indicator_name": "iip",
+        "display_name": "Industrial Production",
+        "unit": "percent_yoy",
+        "frequency": "monthly",
+        "source": "trading_economics/fred_api",
+        "update_cadence": "monthly",
+        "chart_type": "line",
+        "thresholds": {"contraction": 0.0, "strong": 5.0},
+    },
+    {
+        "indicator_name": "trade_balance",
+        "display_name": "Trade Balance",
+        "unit": "usd_mn",
+        "frequency": "monthly",
+        "source": "trading_economics",
+        "update_cadence": "monthly",
+        "chart_type": "bar",
+        "thresholds": {"deficit": 0.0},
+    },
+    {
+        "indicator_name": "current_account_deficit",
+        "display_name": "Current Account",
+        "unit": "usd_bn",
+        "frequency": "quarterly",
+        "source": "trading_economics",
+        "update_cadence": "quarterly",
+        "chart_type": "bar",
+        "thresholds": {"deficit": 0.0},
+    },
+    {
+        "indicator_name": "fiscal_deficit",
+        "display_name": "Fiscal Deficit",
+        "unit": "percent_gdp",
+        "frequency": "quarterly",
+        "source": "trading_economics",
+        "update_cadence": "quarterly",
+        "chart_type": "bar",
+        "thresholds": {"wide": 5.0},
+    },
+    {
+        "indicator_name": "bank_credit_growth",
+        "display_name": "Bank Credit Growth",
+        "unit": "percent",
+        "frequency": "monthly",
+        "source": "trading_economics",
+        "update_cadence": "monthly",
+        "chart_type": "line",
+        "thresholds": {"weak": 5.0, "strong": 12.0},
+    },
+    {
+        "indicator_name": "forex_reserves",
+        "display_name": "FX Reserves",
+        "unit": "usd_mn",
+        "frequency": "weekly",
+        "source": "trading_economics",
+        "update_cadence": "weekly",
+        "chart_type": "area",
+        "thresholds": {},
+    },
+    {
+        "indicator_name": "fii_net_cash",
+        "display_name": "FII Net Cash",
+        "unit": "inr_cr",
+        "frequency": "daily",
+        "source": "nse_fiidii_api",
+        "update_cadence": "daily",
+        "chart_type": "bar",
+        "thresholds": {"buying": 0.0},
+    },
+    {
+        "indicator_name": "dii_net_cash",
+        "display_name": "DII Net Cash",
+        "unit": "inr_cr",
+        "frequency": "daily",
+        "source": "nse_fiidii_api",
+        "update_cadence": "daily",
+        "chart_type": "bar",
+        "thresholds": {"buying": 0.0},
+    },
+    {
+        "indicator_name": "bond_yield_10y",
+        "display_name": "10Y Yield",
+        "unit": "percent",
+        "frequency": "intraday",
+        "source": "market_feed",
+        "update_cadence": "live",
+        "chart_type": "line",
+        "thresholds": {},
+    },
+    {
+        "indicator_name": "bond_yield_2y",
+        "display_name": "2Y Yield",
+        "unit": "percent",
+        "frequency": "intraday",
+        "source": "market_feed",
+        "update_cadence": "live",
+        "chart_type": "line",
+        "thresholds": {},
+    },
+]
+
+DEFAULT_LINKAGE_ASSETS: dict[str, list[str]] = {
+    "IN": ["Nifty 50", "India 10Y Bond Yield", "USD/INR", "gold", "crude oil"],
+    "US": ["S&P500", "US 10Y Treasury Yield", "US 2Y Treasury Yield", "gold", "bitcoin"],
+    "EU": ["DAX", "Euro Stoxx 50", "Germany 10Y Bond Yield", "EUR/INR", "gold"],
+    "JP": ["Nikkei 225", "Japan 10Y Bond Yield", "JPY/INR", "gold", "crude oil"],
+}
+
+
+def _as_dt(ts: object) -> datetime | None:
+    if ts is None:
+        return None
+    if isinstance(ts, datetime):
+        return ts if ts.tzinfo is not None else ts.replace(tzinfo=UTC)
+    try:
+        parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _clamp(value: float | None, low: float = -1.0, high: float = 1.0) -> float | None:
+    if value is None or not math.isfinite(value):
+        return None
+    return max(low, min(high, value))
+
+
+def _latest_by_indicator(rows: list[dict], country: str) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for row in rows:
+        if row.get("country") != country:
+            continue
+        name = str(row.get("indicator_name") or "")
+        current = out.get(name)
+        if current is None:
+            out[name] = row
+            continue
+        current_ts = _as_dt(current.get("timestamp"))
+        row_ts = _as_dt(row.get("timestamp"))
+        if current_ts is None or (row_ts is not None and row_ts > current_ts):
+            out[name] = row
+    return out
+
+
+def _pearson(xs: list[float], ys: list[float]) -> float | None:
+    n = min(len(xs), len(ys))
+    if n < 3:
+        return None
+    x = xs[:n]
+    y = ys[:n]
+    x_mean = sum(x) / n
+    y_mean = sum(y) / n
+    cov = sum((a - x_mean) * (b - y_mean) for a, b in zip(x, y))
+    var_x = sum((a - x_mean) ** 2 for a in x)
+    var_y = sum((b - y_mean) ** 2 for b in y)
+    if var_x <= 0 or var_y <= 0:
+        return None
+    return cov / math.sqrt(var_x * var_y)
+
+
+def _regime_label(growth_score: float | None, inflation_score: float | None) -> str:
+    g = growth_score or 0.0
+    i = inflation_score or 0.0
+    if g >= 0 and i > 0.25:
+        return "Overheating"
+    if g >= 0 and i <= 0.25:
+        return "Expansion"
+    if g < 0 and i > 0.25:
+        return "Stagflation Risk"
+    return "Disinflation Slowdown"
+
+
+def _risk_label(score: float) -> str:
+    if score >= 75:
+        return "High"
+    if score >= 50:
+        return "Elevated"
+    if score >= 30:
+        return "Moderate"
+    return "Contained"
 
 
 async def get_indicators(
@@ -321,17 +595,27 @@ async def upsert_calendar_events(events: list[dict]) -> int:
     count = 0
     async with pool.acquire() as conn:
         for e in events:
+            importance = e.get("importance")
+            if importance is None:
+                importance = "high" if str(e.get("event_type") or "").lower() == "rate_decision" else "medium"
             await conn.execute(
                 """
                 INSERT INTO economic_calendar
-                    (event_name, institution, event_date, country, event_type, description, source)
-                VALUES ($1, $2, $3::date, $4, $5, $6, $7)
+                    (event_name, institution, event_date, country, event_type, description, source, importance, previous, consensus, actual, surprise, status, revised_at)
+                VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 ON CONFLICT (event_name, event_date)
                 DO UPDATE SET institution = EXCLUDED.institution,
                              country = EXCLUDED.country,
                              event_type = EXCLUDED.event_type,
                              description = EXCLUDED.description,
-                             source = EXCLUDED.source
+                             source = EXCLUDED.source,
+                             importance = COALESCE(EXCLUDED.importance, economic_calendar.importance),
+                             previous = COALESCE(EXCLUDED.previous, economic_calendar.previous),
+                             consensus = COALESCE(EXCLUDED.consensus, economic_calendar.consensus),
+                             actual = COALESCE(EXCLUDED.actual, economic_calendar.actual),
+                             surprise = COALESCE(EXCLUDED.surprise, economic_calendar.surprise),
+                             status = COALESCE(EXCLUDED.status, economic_calendar.status),
+                             revised_at = COALESCE(EXCLUDED.revised_at, economic_calendar.revised_at)
                 """,
                 e["event_name"],
                 e["institution"],
@@ -340,6 +624,13 @@ async def upsert_calendar_events(events: list[dict]) -> int:
                 e["event_type"],
                 e.get("description"),
                 e.get("source"),
+                importance,
+                e.get("previous"),
+                e.get("consensus"),
+                e.get("actual"),
+                e.get("surprise"),
+                e.get("status") or "scheduled",
+                parse_ts(e.get("revised_at")),
             )
             count += 1
     return count
@@ -348,14 +639,16 @@ async def upsert_calendar_events(events: list[dict]) -> int:
 async def get_upcoming_events(
     days_ahead: int = 90,
     country: str | None = None,
+    include_past: bool = False,
 ) -> list[dict]:
-    """Fetch upcoming calendar events."""
+    """Fetch calendar events with optional include_past support."""
     pool = await get_pool()
+    lower_bound_sql = "event_date >= CURRENT_DATE" if not include_past else "event_date >= CURRENT_DATE - make_interval(days => 30)"
     if country:
         rows = await pool.fetch(
-            """
+            f"""
             SELECT * FROM economic_calendar
-            WHERE event_date >= CURRENT_DATE
+            WHERE {lower_bound_sql}
               AND event_date <= CURRENT_DATE + make_interval(days => $1)
               AND country = $2
             ORDER BY event_date ASC
@@ -364,12 +657,268 @@ async def get_upcoming_events(
         )
     else:
         rows = await pool.fetch(
-            """
+            f"""
             SELECT * FROM economic_calendar
-            WHERE event_date >= CURRENT_DATE
+            WHERE {lower_bound_sql}
               AND event_date <= CURRENT_DATE + make_interval(days => $1)
             ORDER BY event_date ASC
             """,
             days_ahead,
         )
-    return [record_to_dict(r) for r in rows]
+    today = date.today()
+    out: list[dict] = []
+    for row in rows:
+        item = record_to_dict(row)
+        event_date_raw = item.get("event_date")
+        try:
+            event_date = date.fromisoformat(str(event_date_raw))
+        except ValueError:
+            event_date = today
+        status = str(item.get("status") or "").lower()
+        if not status:
+            if item.get("revised_at"):
+                status = "revised"
+            elif item.get("actual") is not None or event_date < today:
+                status = "released"
+            else:
+                status = "scheduled"
+        item["status"] = status
+        if not item.get("importance"):
+            item["importance"] = "high" if str(item.get("event_type") or "").lower() == "rate_decision" else "medium"
+        out.append(item)
+    return out
+
+
+async def get_metadata() -> list[dict]:
+    return INDICATOR_METADATA
+
+
+async def get_regime(country: str | None = None) -> dict:
+    latest_rows = await get_indicators_latest(country=country)
+    countries = sorted({str(r.get("country")) for r in latest_rows if r.get("country")}, key=lambda c: COUNTRY_ORDER.index(c) if c in COUNTRY_ORDER else 99)
+    now = datetime.now(UTC)
+    items: list[dict] = []
+    as_of: datetime | None = None
+    for c in countries:
+        latest = _latest_by_indicator(latest_rows, c)
+        growth = latest.get("gdp_growth", {}).get("value")
+        inflation = latest.get("inflation", {}).get("value")
+        policy = latest.get("repo_rate", {}).get("value")
+        unemployment = latest.get("unemployment", {}).get("value")
+        try:
+            growth_v = float(growth) if growth is not None else None
+        except (TypeError, ValueError):
+            growth_v = None
+        try:
+            inflation_v = float(inflation) if inflation is not None else None
+        except (TypeError, ValueError):
+            inflation_v = None
+        try:
+            policy_v = float(policy) if policy is not None else None
+        except (TypeError, ValueError):
+            policy_v = None
+        try:
+            unemployment_v = float(unemployment) if unemployment is not None else None
+        except (TypeError, ValueError):
+            unemployment_v = None
+
+        growth_score = _clamp(None if growth_v is None else (growth_v - 2.5) / 4.0)
+        inflation_target = INFLATION_TARGETS.get(c, 2.0)
+        inflation_score = _clamp(None if inflation_v is None else (inflation_v - inflation_target) / 3.0)
+        neutral_policy = NEUTRAL_POLICY_RATE.get(c, 2.5)
+        policy_score = _clamp(None if policy_v is None else (policy_v - neutral_policy) / 2.0)
+
+        timestamps = []
+        for k in ("gdp_growth", "inflation", "repo_rate", "unemployment"):
+            ts = _as_dt(latest.get(k, {}).get("timestamp"))
+            if ts is not None:
+                timestamps.append(ts)
+        freshness_hours = None
+        if timestamps:
+            newest = max(timestamps)
+            oldest = min(timestamps)
+            freshness_hours = round((now - oldest).total_seconds() / 3600.0, 2)
+            as_of = newest if as_of is None else max(as_of, newest)
+
+        availability = sum(v is not None for v in (growth_v, inflation_v, policy_v, unemployment_v)) / 4.0
+        freshness_factor = 1.0
+        if freshness_hours is not None:
+            freshness_factor = 1.0 / (1.0 + (freshness_hours / 720.0))
+        confidence = max(0.1, min(1.0, availability * freshness_factor))
+        regime = _regime_label(growth_score, inflation_score)
+        metrics = {}
+        if growth_v is not None:
+            metrics["gdp_growth"] = round(growth_v, 3)
+        if inflation_v is not None:
+            metrics["inflation"] = round(inflation_v, 3)
+        if policy_v is not None:
+            metrics["repo_rate"] = round(policy_v, 3)
+        if unemployment_v is not None:
+            metrics["unemployment"] = round(unemployment_v, 3)
+
+        items.append(
+            {
+                "country": c,
+                "growth_score": growth_score,
+                "inflation_score": inflation_score,
+                "policy_score": policy_score,
+                "regime_label": regime,
+                "confidence": round(confidence, 3),
+                "freshness_hours": freshness_hours,
+                "metrics": metrics,
+            }
+        )
+    return {"as_of": as_of, "countries": items}
+
+
+async def get_linkages(
+    *,
+    country: str = "IN",
+    indicator_name: str = "inflation",
+    window_days: int = 365,
+    assets: list[str] | None = None,
+) -> dict:
+    pool = await get_pool()
+    selected_assets = assets or DEFAULT_LINKAGE_ASSETS.get(country, DEFAULT_LINKAGE_ASSETS["IN"])
+    start_ts = datetime.now(UTC) - timedelta(days=max(30, window_days))
+    macro_rows = await pool.fetch(
+        f"""
+        SELECT DISTINCT ON (("timestamp"::date))
+            ("timestamp"::date) AS d,
+            value
+        FROM {TABLE}
+        WHERE country = $1
+          AND indicator_name = $2
+          AND "timestamp" >= $3
+        ORDER BY ("timestamp"::date), "timestamp" DESC
+        """,
+        country,
+        indicator_name,
+        start_ts,
+    )
+    macro_series: dict[date, float] = {r["d"]: float(r["value"]) for r in macro_rows}
+    if not macro_series:
+        return {
+            "country": country,
+            "indicator_name": indicator_name,
+            "window_days": window_days,
+            "as_of": None,
+            "series": [],
+        }
+
+    out_series: list[dict] = []
+    latest_as_of: datetime | None = None
+    for asset in selected_assets:
+        asset_rows = await pool.fetch(
+            """
+            SELECT DISTINCT ON (("timestamp"::date))
+                ("timestamp"::date) AS d,
+                price,
+                "timestamp"
+            FROM market_prices
+            WHERE asset = $1
+              AND "timestamp" >= $2
+            ORDER BY ("timestamp"::date), "timestamp" DESC
+            """,
+            asset,
+            start_ts,
+        )
+        paired = []
+        for row in asset_rows:
+            d = row["d"]
+            if d not in macro_series:
+                continue
+            paired.append(
+                {
+                    "date": d,
+                    "macro_value": macro_series[d],
+                    "asset_value": float(row["price"]),
+                }
+            )
+            row_ts = _as_dt(row["timestamp"])
+            if row_ts is not None:
+                latest_as_of = row_ts if latest_as_of is None else max(latest_as_of, row_ts)
+        if len(paired) < 8:
+            continue
+        paired.sort(key=lambda p: p["date"])
+        xs = [p["macro_value"] for p in paired]
+        ys = [p["asset_value"] for p in paired]
+        corr = _pearson(xs, ys)
+        out_series.append(
+            {
+                "asset": asset,
+                "correlation": round(corr, 4) if corr is not None else None,
+                "point_count": len(paired),
+                "points": paired[-120:],
+            }
+        )
+
+    return {
+        "country": country,
+        "indicator_name": indicator_name,
+        "window_days": window_days,
+        "as_of": latest_as_of,
+        "series": out_series,
+    }
+
+
+async def get_summary(country: str | None = None) -> dict:
+    regime_payload = await get_regime(country=country)
+    countries = regime_payload.get("countries", [])
+    if not countries:
+        return {"as_of": regime_payload.get("as_of"), "countries": []}
+    all_events = await get_upcoming_events(days_ahead=180, include_past=False)
+    grouped_events: dict[str, list[dict]] = {}
+    for event in all_events:
+        c = str(event.get("country") or "")
+        if not c:
+            continue
+        grouped_events.setdefault(c, []).append(event)
+
+    out: list[dict] = []
+    for item in countries:
+        c = str(item.get("country"))
+        metrics = item.get("metrics", {})
+        growth = float(metrics.get("gdp_growth", 0.0))
+        inflation = float(metrics.get("inflation", 0.0))
+        policy = float(metrics.get("repo_rate", 0.0))
+        infl_gap = max(0.0, inflation - INFLATION_TARGETS.get(c, 2.0))
+        policy_gap = max(0.0, policy - NEUTRAL_POLICY_RATE.get(c, 2.5))
+        growth_drag = max(0.0, 1.5 - growth)
+        freshness_penalty = 0.0
+        freshness_h = item.get("freshness_hours")
+        if isinstance(freshness_h, (int, float)) and freshness_h > 24 * 45:
+            freshness_penalty = 12.0
+        risk_score = max(0.0, min(100.0, (infl_gap * 18.0) + (policy_gap * 10.0) + (growth_drag * 16.0) + freshness_penalty))
+        watchouts: list[str] = []
+        if infl_gap > 1.0:
+            watchouts.append("Inflation above target")
+        if growth_drag > 0.7:
+            watchouts.append("Growth momentum softening")
+        if policy_gap > 1.5:
+            watchouts.append("Policy stance restrictive")
+        if not watchouts:
+            watchouts.append("Macro backdrop relatively balanced")
+
+        next_event_name = None
+        next_event_date = None
+        events_for_country = grouped_events.get(c, [])
+        if events_for_country:
+            events_for_country.sort(key=lambda e: str(e.get("event_date")))
+            next_event_name = events_for_country[0].get("event_name")
+            next_event_date = events_for_country[0].get("event_date")
+
+        out.append(
+            {
+                "country": c,
+                "now_title": str(item.get("regime_label") or "Macro Regime"),
+                "now_subtitle": f"Growth {growth:.1f}% · Inflation {inflation:.1f}% · Policy {policy:.1f}%",
+                "risk_score": round(risk_score, 1),
+                "risk_label": _risk_label(risk_score),
+                "freshness_hours": item.get("freshness_hours"),
+                "next_event_name": next_event_name,
+                "next_event_date": next_event_date,
+                "watchouts": watchouts,
+            }
+        )
+    return {"as_of": regime_payload.get("as_of"), "countries": out}
