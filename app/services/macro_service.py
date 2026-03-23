@@ -135,7 +135,7 @@ INDICATOR_METADATA: list[dict] = [
         "indicator_name": "trade_balance",
         "display_name": "Trade Balance",
         "helper_text": "Trade Balance is exports minus imports. Persistent deficits can pressure the currency, while improving balance supports external stability.",
-        "unit": "usd_mn",
+        "unit": "usd_bn",
         "frequency": "monthly",
         "source": "trading_economics",
         "update_cadence": "monthly",
@@ -285,7 +285,7 @@ def _format_metric_value(value: float, unit: str) -> str:
 
 def _format_abs_change(delta: float, unit: str) -> str:
     if unit in PERCENT_UNITS:
-        return f"{abs(delta):.2f} pp"
+        return f"{abs(delta):.2f} percentage points"
     return f"{abs(delta):.2f}"
 
 
