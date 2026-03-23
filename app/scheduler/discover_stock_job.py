@@ -5215,6 +5215,13 @@ class DiscoverStockScraper(BaseScraper):
             if on_batch is None or (not force and len(_pending_batch) < batch_size):
                 return
             if _pending_batch:
+                # Normalize market_cap before incremental upsert:
+                # Yahoo reports in raw rupees, Screener in crores.
+                # Values > 1e7 are almost certainly raw rupees.
+                for _row in _pending_batch:
+                    _mcap = _row.get("market_cap")
+                    if _mcap is not None and isinstance(_mcap, (int, float)) and _mcap > 1e7:
+                        _row["market_cap"] = _mcap / 1e7
                 batch = list(_pending_batch)
                 _pending_batch.clear()
                 _batch_count += 1
