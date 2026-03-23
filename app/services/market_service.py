@@ -827,9 +827,9 @@ TABLE_MARKET_SCORES = "market_scores"
 
 def _compute_trend_score(prices: list[float]) -> float:
     """Score trend strength 0-100 based on SMA alignment.
-    Higher = stronger uptrend. Uses 20/50/200 day moving averages."""
+    Higher = stronger uptrend. Uses available SMAs from 5/20/50/200 day."""
     n = len(prices)
-    if n < 20:
+    if n < 5:
         return 50.0  # neutral if not enough data
 
     def sma(data: list[float], period: int) -> float | None:
@@ -838,40 +838,52 @@ def _compute_trend_score(prices: list[float]) -> float:
         return sum(data[-period:]) / period
 
     current = prices[-1]
+    # Use the shortest available SMA as primary when data is limited
+    sma5 = sma(prices, 5)
     sma20 = sma(prices, 20)
     sma50 = sma(prices, 50)
     sma200 = sma(prices, 200)
 
     score = 50.0  # baseline
+    contributions = 0
 
-    # Price vs SMAs (each contributes up to ~16.7 points)
-    if sma20 and sma20 > 0:
-        ratio = (current - sma20) / sma20
-        score += min(max(ratio * 500, -16.7), 16.7)
+    # Price vs shortest available SMA (strongest weight)
+    primary_sma = sma20 or sma5
+    if primary_sma and primary_sma > 0:
+        ratio = (current - primary_sma) / primary_sma
+        score += min(max(ratio * 500, -25), 25)
+        contributions += 1
 
     if sma50 and sma50 > 0:
         ratio = (current - sma50) / sma50
         score += min(max(ratio * 300, -16.7), 16.7)
+        contributions += 1
 
     if sma200 and sma200 > 0:
         ratio = (current - sma200) / sma200
         score += min(max(ratio * 200, -16.7), 16.7)
+        contributions += 1
+
+    # If only one SMA available, amplify its effect
+    if contributions == 1 and primary_sma and primary_sma > 0:
+        ratio = (current - primary_sma) / primary_sma
+        score += min(max(ratio * 300, -16.7), 16.7)
 
     return max(0.0, min(100.0, round(score, 1)))
 
 
 def _compute_volatility_score(prices: list[float]) -> float:
     """Score volatility 0-100. Higher = calmer (less volatile).
-    Compares recent 20-day vol to 60-day historical vol."""
+    Compares recent vol to longer-term historical vol."""
     n = len(prices)
-    if n < 20:
+    if n < 5:
         return 50.0
 
     def daily_returns(data: list[float]) -> list[float]:
         return [(data[i] - data[i-1]) / data[i-1] for i in range(1, len(data)) if data[i-1] != 0]
 
     returns = daily_returns(prices)
-    if len(returns) < 10:
+    if len(returns) < 3:
         return 50.0
 
     recent_returns = returns[-20:] if len(returns) >= 20 else returns
