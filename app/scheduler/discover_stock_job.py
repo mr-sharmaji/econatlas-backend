@@ -4918,6 +4918,11 @@ class DiscoverStockScraper(BaseScraper):
             }
             out.append(enriched)
 
+        # ── Tag generation stats ──
+        _tags_empty = sum(1 for e in out if not e.get("tags_v2"))
+        _tags_ok = sum(1 for e in out if e.get("tags_v2"))
+        logger.info("Tag generation stats: %d with tags, %d empty (total %d)", _tags_ok, _tags_empty, len(out))
+
         # ── Post-pass: sector percentiles and sector leaders ──
         sector_scores: dict[str, list[float]] = {}
         for enriched in out:
