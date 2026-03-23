@@ -102,48 +102,123 @@ def _scrape_fed_fomc() -> List[Dict]:
 
 
 def _scrape_rbi_mpc() -> List[Dict]:
-    """Scrape RBI MPC dates from rbi.org.in."""
+    """Scrape RBI MPC dates from multiple sources.
+
+    Strategy 1: RBI annual policy page → follow MPC schedule press release links
+    Strategy 2: 5paisa.com blog (table with meeting dates)
+    Strategy 3: zeebiz.com (article text with date patterns)
+
+    Merges results from all sources, deduplicates by date.
+    """
     events: List[Dict] = []
-    try:
-        resp = requests.get(
-            "https://www.rbi.org.in/Scripts/BS_PressReleaseDisplay.aspx?prid=57560",
-            headers=_HEADERS, timeout=20,
-        )
-        if resp.status_code != 200:
-            # Fallback: try TE for RBI info
-            logger.warning("RBI calendar HTTP %d, using Trading Economics fallback", resp.status_code)
-            return _scrape_te_calendar_for("india/interest-rate", "RBI MPC Decision", "RBI", "IN")
+    seen_dates: set[str] = set()
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        text = soup.get_text()
+    def _add_event(event_date: str, source: str) -> None:
+        if event_date not in seen_dates:
+            seen_dates.add(event_date)
+            events.append({
+                "event_name": "RBI MPC Decision",
+                "institution": "RBI",
+                "event_date": event_date,
+                "country": "IN",
+                "event_type": "rate_decision",
+                "description": "RBI Monetary Policy Committee rate decision",
+                "source": source,
+            })
 
-        # RBI publishes MPC dates in press releases
-        # Look for patterns like "April 7 to 9, 2025" or "February 5-7, 2026"
+    def _extract_mpc_dates(text: str, source: str) -> int:
+        """Extract MPC meeting dates from text. Returns count of new dates found."""
+        count = 0
+        # Pattern 1: "April 6 – April 8, 2026" or "April 6-8, 2026"
         for m in re.finditer(
-            r"(January|February|March|April|May|June|July|August|"
-            r"September|October|November|December)\s+(\d{1,2})\s*"
-            r"(?:to|[-–])\s*(\d{1,2})\s*,?\s*(\d{4})",
+            r"([A-Z][a-z]+)\s+(\d{1,2})\s*[–\-]\s*(?:[A-Z][a-z]+\s+)?(\d{1,2})\s*,?\s*(\d{4})",
             text,
         ):
-            month_name = m.group(1).lower()
-            last_day = int(m.group(3))
-            year = int(m.group(4))
-            month = _MONTH_MAP.get(month_name)
-            if month and 2024 <= year <= 2028:
-                event_date = f"{year}-{month:02d}-{last_day:02d}"
-                events.append({
-                    "event_name": "RBI MPC Decision",
-                    "institution": "RBI",
-                    "event_date": event_date,
-                    "country": "IN",
-                    "event_type": "rate_decision",
-                    "description": "RBI Monetary Policy Committee rate decision",
-                    "source": "rbi.org.in",
-                })
+            month = _MONTH_MAP.get(m.group(1).lower())
+            if month:
+                year = int(m.group(4))
+                last_day = int(m.group(3))
+                if 2025 <= year <= 2028 and last_day <= 31:
+                    _add_event(f"{year}-{month:02d}-{last_day:02d}", source)
+                    count += 1
 
-        logger.info("RBI MPC calendar: %d meetings scraped", len(events))
+        # Pattern 2: "April 6, 7 and 8, 2026"
+        for m in re.finditer(
+            r"([A-Z][a-z]+)\s+(\d{1,2})\s*,\s*(\d{1,2})\s*(?:and|,)\s*(\d{1,2})\s*,?\s*(\d{4})",
+            text,
+        ):
+            month = _MONTH_MAP.get(m.group(1).lower())
+            if month:
+                year = int(m.group(5))
+                last_day = int(m.group(4))
+                if 2025 <= year <= 2028 and last_day <= 31:
+                    _add_event(f"{year}-{month:02d}-{last_day:02d}", source)
+                    count += 1
+
+        # Pattern 3: "April 7 to 9, 2025" or "September 29 to October 1, 2025"
+        for m in re.finditer(
+            r"([A-Z][a-z]+)\s+(\d{1,2})\s*(?:to|[-–])\s*(?:([A-Z][a-z]+)\s+)?(\d{1,2})\s*,?\s*(\d{4})",
+            text,
+        ):
+            end_month_name = m.group(3) or m.group(1)
+            month = _MONTH_MAP.get(end_month_name.lower())
+            if month:
+                year = int(m.group(5))
+                last_day = int(m.group(4))
+                if 2025 <= year <= 2028 and last_day <= 31:
+                    _add_event(f"{year}-{month:02d}-{last_day:02d}", source)
+                    count += 1
+        return count
+
+    # ── Strategy 1: RBI annual policy page — follow press release links ──
+    try:
+        resp = requests.get(
+            "https://www.rbi.org.in/scripts/annualpolicy.aspx",
+            headers=_HEADERS, timeout=20,
+        )
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for a in soup.find_all("a", href=True):
+                text = a.get_text(strip=True).lower()
+                if "schedule" in text and ("mpc" in text or "monetary" in text):
+                    href = a["href"]
+                    if not href.startswith("http"):
+                        href = f"https://www.rbi.org.in{href}"
+                    try:
+                        r2 = requests.get(href, headers=_HEADERS, timeout=15)
+                        if r2.status_code == 200:
+                            _extract_mpc_dates(r2.text, "rbi.org.in")
+                    except Exception:
+                        pass
     except Exception:
-        logger.exception("RBI MPC scrape failed")
+        logger.exception("RBI annual policy scrape failed")
+
+    # ── Strategy 2: 5paisa blog (uses a stable URL that updates each FY) ──
+    try:
+        resp = requests.get(
+            "https://www.5paisa.com/blog/rbi-mpc-meeting-schedule",
+            headers=_HEADERS, timeout=20,
+        )
+        if resp.status_code == 200:
+            _extract_mpc_dates(resp.text, "5paisa.com")
+    except Exception:
+        logger.exception("5paisa RBI scrape failed")
+
+    # ── Strategy 3: Google search for latest RBI MPC schedule ──
+    try:
+        current_year = date.today().year
+        resp = requests.get(
+            f"https://www.google.com/search?q=RBI+MPC+meeting+schedule+dates+{current_year}+{current_year+1}",
+            headers=_HEADERS, timeout=15,
+        )
+        if resp.status_code == 200:
+            # Extract date patterns directly from Google snippets
+            _extract_mpc_dates(resp.text, "google_search")
+    except Exception:
+        logger.exception("Google search RBI scrape failed")
+
+    logger.info("RBI MPC calendar: %d meetings scraped from %d sources",
+                len(events), len({e["source"] for e in events}))
     return events
 
 
