@@ -28,6 +28,7 @@ _VALID_JOBS = {
     "discover_mf_holdings_moneycontrol",
     "rescore_stock", "rescore_mf",
     "ipo", "tax", "market_score", "fertilizer",
+    "notification_check",
 }
 
 # Tables exposed for CRUD operations.

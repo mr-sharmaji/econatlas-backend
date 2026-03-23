@@ -27,6 +27,8 @@ JOB_RETRY_POLICIES: dict[str, tuple[int, int]] = {
     "discover_mf_holdings": (3, 60),
     "market_score": (2, 60),
     "fertilizer": (2, 60),
+    # High-frequency (30s interval) — re-enqueued soon, no retry needed
+    "notification_check": (0, 0),
 }
 
 
@@ -51,6 +53,7 @@ def get_arq_functions() -> list:
         task_rescore_stock,
         task_fertilizer,
         task_market_score,
+        task_notification_check,
         task_tax,
     )
 
@@ -74,4 +77,5 @@ def get_arq_functions() -> list:
         func(task_tax, name="tax"),
         func(task_fertilizer, name="fertilizer", timeout=300),
         func(task_market_score, name="market_score", timeout=600),
+        func(task_notification_check, name="notification_check"),
     ]

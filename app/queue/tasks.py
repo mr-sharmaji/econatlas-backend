@@ -178,3 +178,9 @@ async def task_fertilizer(ctx: dict) -> None:
     from app.scheduler.commodity_job import run_fertilizer_job
 
     await _run_with_retry(ctx, "fertilizer", run_fertilizer_job)
+
+
+async def task_notification_check(ctx: dict) -> None:
+    from app.scheduler.notification_job import run_notification_job
+
+    await _run_with_retry(ctx, "notification_check", run_notification_job)

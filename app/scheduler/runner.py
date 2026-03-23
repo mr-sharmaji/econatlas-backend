@@ -134,6 +134,10 @@ async def _run_fertilizer() -> None:
     await _enqueue("fertilizer")
 
 
+async def _run_notification_check() -> None:
+    await _enqueue("notification_check")
+
+
 # ── Startup collection ───────────────────────────────────────────────
 
 
@@ -323,6 +327,13 @@ def start_scheduler() -> None:
         misfire_grace_time=3600,
     )
     logger.info("Scheduler: fertilizer every 6h")
+    # Notification check runs alongside market job to detect open/close transitions
+    if intervals["market_seconds"] and intervals["market_seconds"] > 0:
+        _scheduler.add_job(_run_notification_check, "interval", seconds=intervals["market_seconds"], id="notification_check", replace_existing=True)
+        logger.info("Scheduler: notification_check every %ds", intervals["market_seconds"])
+    else:
+        _scheduler.add_job(_run_notification_check, "interval", minutes=intervals["market_minutes"], id="notification_check", replace_existing=True)
+        logger.info("Scheduler: notification_check every %dm", intervals["market_minutes"])
     logger.info(
         "Scheduler: brief=%dm discover_stock=%s %02d:%02d IST retry=%s %02d:%02d IST discover_mf=%s %02d:%02d IST ipo=%dm macro=%dm news=%dm tax=%s",
         intervals["brief_minutes"],
