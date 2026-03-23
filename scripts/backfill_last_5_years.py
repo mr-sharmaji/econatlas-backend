@@ -39,10 +39,7 @@ FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 WORLD_BANK_URL = "https://api.worldbank.org/v2/country/{country}/indicator/{indicator}"
 
 INDEX_SYMBOLS = {
-    "^GSPC": "S&P500",
-    "^IXIC": "NASDAQ",
-    "^NDX": "Nasdaq 100",
-    "^DJI": "Dow Jones",
+    # India
     "^NSEI": "Nifty 50",
     "^BSESN": "Sensex",
     "^NSEBANK": "Nifty Bank",
@@ -50,8 +47,30 @@ INDEX_SYMBOLS = {
     "^CNXIT": "Nifty IT",
     "NIFTYMIDCAP150.NS": "Nifty Midcap 150",
     "NIFTYSMLCAP250.NS": "Nifty Smallcap 250",
+    "^CNXAUTO": "Nifty Auto",
+    "^CNXMETAL": "Nifty Metal",
+    "^CNXPHARMA": "Nifty Pharma",
+    "^INDIAVIX": "India VIX",
+    # US
+    "^GSPC": "S&P500",
+    "^IXIC": "NASDAQ",
+    "^NDX": "Nasdaq 100",
+    "^DJI": "Dow Jones",
+    "^VIX": "CBOE VIX",
+    "XLK": "S&P 500 Tech",
+    "XLF": "S&P 500 Financials",
+    "XLE": "S&P 500 Energy",
+    # Europe
+    "^FTSE": "FTSE 100",
+    "^GDAXI": "DAX",
+    "^FCHI": "CAC 40",
+    "^STOXX50E": "Euro Stoxx 50",
+    # Japan
+    "^N225": "Nikkei 225",
+    "^TOPX": "TOPIX",
 }
 FX_SYMBOLS = {
+    # Major
     "USDINR=X": "USD/INR",
     "EURINR=X": "EUR/INR",
     "GBPINR=X": "GBP/INR",
@@ -59,20 +78,40 @@ FX_SYMBOLS = {
     "AUDINR=X": "AUD/INR",
     "CADINR=X": "CAD/INR",
     "CHFINR=X": "CHF/INR",
+    "NZDINR=X": "NZD/INR",
+    # Asia-Pacific
     "CNYINR=X": "CNY/INR",
     "SGDINR=X": "SGD/INR",
     "HKDINR=X": "HKD/INR",
     "KRWINR=X": "KRW/INR",
-    "AEDINR=X": "AED/INR",
-    "NZDINR=X": "NZD/INR",
-    "SARINR=X": "SAR/INR",
+    "TWDINR=X": "TWD/INR",
     "THBINR=X": "THB/INR",
     "MYRINR=X": "MYR/INR",
     "IDRINR=X": "IDR/INR",
     "PHPINR=X": "PHP/INR",
-    "ZARINR=X": "ZAR/INR",
+    "VNDINR=X": "VND/INR",
+    "BDTINR=X": "BDT/INR",
+    "LKRINR=X": "LKR/INR",
+    "PKRINR=X": "PKR/INR",
+    "NPRINR=X": "NPR/INR",
+    # Middle East
+    "AEDINR=X": "AED/INR",
+    "SARINR=X": "SAR/INR",
+    "QARINR=X": "QAR/INR",
+    "KWDINR=X": "KWD/INR",
+    "BHDINR=X": "BHD/INR",
+    "OMRINR=X": "OMR/INR",
+    "ILSINR=X": "ILS/INR",
+    # Europe
+    "SEKINR=X": "SEK/INR",
+    "NOKINR=X": "NOK/INR",
+    "DKKINR=X": "DKK/INR",
+    "PLNINR=X": "PLN/INR",
+    "TRYINR=X": "TRY/INR",
+    # Americas & Africa
     "BRLINR=X": "BRL/INR",
     "MXNINR=X": "MXN/INR",
+    "ZARINR=X": "ZAR/INR",
 }
 
 # Yahoo chart does not expose these INR pairs (404). They remain runtime assets
@@ -103,6 +142,19 @@ COMMODITY_SYMBOLS = {
     "BZ=F": ("brent crude", "usd_per_barrel"),
     "RB=F": ("gasoline", "usd_per_gallon"),
     "HO=F": ("heating oil", "usd_per_gallon"),
+}
+
+CRYPTO_SYMBOLS = {
+    "BTC-USD": "bitcoin",
+    "ETH-USD": "ethereum",
+    "BNB-USD": "bnb",
+    "SOL-USD": "solana",
+    "XRP-USD": "xrp",
+    "ADA-USD": "cardano",
+    "DOGE-USD": "dogecoin",
+    "DOT-USD": "polkadot",
+    "AVAX-USD": "avalanche",
+    "LINK-USD": "chainlink",
 }
 
 BOND_SERIES = [
@@ -743,6 +795,25 @@ async def run_once(backfiller: HistoricalBackfiller, cfg: BackfillConfig) -> dic
                 for range_start, range_end in yearly:
                     rows = backfiller._collect_commodity_symbol_year(
                         symbol, asset, unit, range_start, range_end
+                    )
+                    if rows:
+                        fetched_market_count += len(rows)
+                        inc, sk = await insert_market_rows_idempotent(
+                            rows, range_start, range_end,
+                            cfg.db_batch_size, cfg.db_sleep_seconds,
+                        )
+                        inserted_market += inc
+                        skipped_market += sk
+                    del rows
+                if (sym_idx + 1) % backfiller.config.api_batch_size == 0:
+                    await asyncio.sleep(cfg.api_sleep_seconds)
+
+            # Crypto: per symbol, per year → fetch Yahoo then insert (uses same chart API)
+            for sym_idx, (symbol, asset) in enumerate(CRYPTO_SYMBOLS.items()):
+                yearly = backfiller._iter_yearly_chunks()
+                for range_start, range_end in yearly:
+                    rows = backfiller._collect_market_symbol_year(
+                        symbol, asset, "crypto", "usd", range_start, range_end
                     )
                     if rows:
                         fetched_market_count += len(rows)
