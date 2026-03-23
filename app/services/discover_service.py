@@ -2340,7 +2340,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     score_confidence = COALESCE(EXCLUDED.score_confidence, {STOCK_TABLE}.score_confidence),
                     trend_alignment = COALESCE(EXCLUDED.trend_alignment, {STOCK_TABLE}.trend_alignment),
                     breakout_signal = COALESCE(EXCLUDED.breakout_signal, {STOCK_TABLE}.breakout_signal),
-                    tags_v2 = COALESCE(EXCLUDED.tags_v2, {STOCK_TABLE}.tags_v2),
+                    tags_v2 = CASE WHEN EXCLUDED.tags_v2 IS NOT NULL AND EXCLUDED.tags_v2 != '[]'::jsonb THEN EXCLUDED.tags_v2 ELSE {STOCK_TABLE}.tags_v2 END,
                     growth_ranges = COALESCE(EXCLUDED.growth_ranges, {STOCK_TABLE}.growth_ranges)
                 """,
                 str(row.get("market") or "IN"),                                    # $1
