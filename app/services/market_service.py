@@ -1091,6 +1091,15 @@ def _trend_desc(score: float, inst: str, asset: str) -> str:
         if score >= 40: return f"{name} is consolidating near its averages"
         if score >= 25: return f"{name} is slipping below key moving averages"
         return f"{name} is in a sustained sell-off, well below all averages"
+    # Gift Nifty — predictive/indicative instrument
+    if asset == "Gift Nifty":
+        if score >= 60:
+            return "Gift Nifty is signaling a positive opening for Indian markets — SGX derivatives point to gains at open"
+        if score >= 40:
+            return "Gift Nifty is indicating a flat to mildly negative opening for Indian markets"
+        if score >= 25:
+            return "Gift Nifty is pointing to a weak opening — pre-market sentiment is cautious"
+        return "Gift Nifty is signaling a sharply negative opening for Indian markets — global cues are weak"
     # index
     name = asset
     if score >= 75: return f"{name} is trading well above key moving averages, in a strong uptrend"
@@ -1100,7 +1109,7 @@ def _trend_desc(score: float, inst: str, asset: str) -> str:
     return f"{name} is well below all moving averages, in a sustained decline"
 
 
-def _momentum_desc(score: float, inst: str) -> str:
+def _momentum_desc(score: float, inst: str, asset: str = "") -> str:
     """Human-readable momentum description, adapted by asset class."""
     if inst == "bond_yield":
         if score >= 70: return "Rate expectations are shifting rapidly — yields gaining fast."
@@ -1121,6 +1130,10 @@ def _momentum_desc(score: float, inst: str) -> str:
         if score >= 30: return "Demand is softening, putting pressure on prices."
         return "Oversupply or demand weakness is driving prices down sharply."
     # index / crypto
+    if asset == "Gift Nifty":
+        if score >= 60: return "Global cues and overnight US markets are supportive."
+        if score >= 40: return "Mixed global signals — no strong directional cue."
+        return "Overnight global markets were weak — risk-off sentiment."
     if score >= 70: return "Strong buying pressure with broad participation."
     if score >= 55: return "Positive momentum with steady buying interest."
     if score >= 45: return "Momentum is flat — neither buyers nor sellers in control."
@@ -1283,7 +1296,7 @@ def _generate_market_verdict(
     data_sentence = _stats_sentence(stats or {}, inst) if stats else ""
     reasoning = (
         f"{trend_text}. "
-        f"{_momentum_desc(momentum, inst)} "
+        f"{_momentum_desc(momentum, inst, asset)} "
         f"{_vol_context(volatility, inst)}"
     )
     if data_sentence:
