@@ -1044,11 +1044,12 @@ def _trend_desc(score: float, inst: str, asset: str) -> str:
         if score >= 25: return f"{name} is slipping below key moving averages"
         return f"{name} is in a sustained sell-off, well below all averages"
     # index
-    if score >= 75: return "the index is trading well above key moving averages, in a strong uptrend"
-    if score >= 60: return "the index is holding above most moving averages"
-    if score >= 40: return "the index is hovering near its moving averages with no clear direction"
-    if score >= 25: return "the index is trading below key moving averages"
-    return "the index is well below all moving averages, in a sustained decline"
+    name = asset
+    if score >= 75: return f"{name} is trading well above key moving averages, in a strong uptrend"
+    if score >= 60: return f"{name} is holding above most moving averages"
+    if score >= 40: return f"{name} is hovering near its moving averages with no clear direction"
+    if score >= 25: return f"{name} is trading below key moving averages"
+    return f"{name} is well below all moving averages, in a sustained decline"
 
 
 def _momentum_desc(score: float, inst: str) -> str:
