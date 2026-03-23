@@ -2080,6 +2080,60 @@ async def rescore_discover_mutual_funds() -> dict:
         has_sortino, has_sortino / total * 100,
     )
 
+    # ── Backfill CAGR returns from NAV history for funds missing them ──
+    missing_returns = [r for r in raw_rows if r.get("returns_1y") is None and r.get("scheme_code")]
+    if missing_returns:
+        logger.info("MF Rescore: %d funds missing returns_1y — computing from NAV history", len(missing_returns))
+        codes = [r["scheme_code"] for r in missing_returns]
+        code_to_row = {str(r["scheme_code"]): r for r in missing_returns}
+        try:
+            nav_rows = await pool.fetch(
+                """SELECT scheme_code, trade_date, nav
+                   FROM discover_mf_nav_history
+                   WHERE scheme_code = ANY($1::text[])
+                   ORDER BY scheme_code, trade_date""",
+                codes,
+            )
+            # Group by scheme_code
+            nav_by_code: dict[str, list[tuple]] = {}
+            for nr in nav_rows:
+                sc = str(nr["scheme_code"])
+                if sc not in nav_by_code:
+                    nav_by_code[sc] = []
+                nav_by_code[sc].append((nr["trade_date"], float(nr["nav"])))
+
+            filled = 0
+            for sc, pairs in nav_by_code.items():
+                if len(pairs) < 200:
+                    continue
+                row = code_to_row.get(sc)
+                if row is None:
+                    continue
+                latest_nav = pairs[-1][1]
+                total_days = len(pairs)
+                if total_days >= 200 and row.get("returns_1y") is None:
+                    idx_1y = max(0, total_days - 252)
+                    nav_1y = pairs[idx_1y][1]
+                    years_1y = (total_days - idx_1y) / 252.0
+                    if nav_1y > 0 and years_1y > 0:
+                        row["returns_1y"] = round(((latest_nav / nav_1y) ** (1.0 / years_1y) - 1.0) * 100, 2)
+                        filled += 1
+                if total_days >= 600 and row.get("returns_3y") is None:
+                    idx_3y = max(0, total_days - 756)
+                    nav_3y = pairs[idx_3y][1]
+                    years_3y = (total_days - idx_3y) / 252.0
+                    if nav_3y > 0 and years_3y > 0:
+                        row["returns_3y"] = round(((latest_nav / nav_3y) ** (1.0 / years_3y) - 1.0) * 100, 2)
+                if total_days >= 1000 and row.get("returns_5y") is None:
+                    idx_5y = max(0, total_days - 1260)
+                    nav_5y = pairs[idx_5y][1]
+                    years_5y = (total_days - idx_5y) / 252.0
+                    if nav_5y > 0 and years_5y > 0:
+                        row["returns_5y"] = round(((latest_nav / nav_5y) ** (1.0 / years_5y) - 1.0) * 100, 2)
+            logger.info("MF Rescore: filled returns for %d funds from NAV history (%d had NAV data)", filled, len(nav_by_code))
+        except Exception as exc:
+            logger.warning("MF Rescore: NAV history CAGR backfill failed: %s", exc)
+
     # Fix misclassified index fund sub_categories before scoring
     for row in raw_rows:
         name_lower = (row.get("scheme_name") or "").lower()
