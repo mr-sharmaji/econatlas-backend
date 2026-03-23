@@ -496,55 +496,51 @@ _TE_HEADERS = {
 }
 
 
-def _fetch_fertilizer_prices() -> List[Dict]:
-    """Scrape commodity prices from Index Mundi commodity index page via Playwright.
-    Single page load returns all prices — fertilizers + India-critical commodities."""
-    # Map Index Mundi names → our asset names and units
-    IM_MAP = {
+def _fetch_indexmundi_prices() -> List[Dict]:
+    """Scrape commodity prices from Index Mundi using plain requests (no Playwright).
+    Each commodity's ?months=12 page has a server-rendered tblData table."""
+    # slug → (asset_name, unit)
+    IM_COMMODITIES = {
         # Fertilizers
-        "Urea": ("urea", "usd_per_metric_ton"),
-        "DAP fertilizer": ("dap fertilizer", "usd_per_metric_ton"),
-        "Potassium Chloride": ("potash", "usd_per_metric_ton"),
-        "Triple Superphosphate": ("tsp fertilizer", "usd_per_metric_ton"),
-        # India-critical commodities (not on Yahoo Finance)
-        "Iron Ore": ("iron ore", "usd_per_dry_metric_ton"),
-        "Coal, Australian thermal coal": ("coal", "usd_per_metric_ton"),
-        "Palm oil": ("palm oil", "usd_per_metric_ton"),
-        "Rubber": ("rubber", "usd_per_kg"),
-        "Zinc": ("zinc", "usd_per_metric_ton"),
+        "urea": ("urea", "usd_per_metric_ton"),
+        "dap-fertilizer": ("dap fertilizer", "usd_per_metric_ton"),
+        "potassium-chloride": ("potash", "usd_per_metric_ton"),
+        "triple-superphosphate": ("tsp fertilizer", "usd_per_metric_ton"),
+        # India-critical
+        "iron-ore": ("iron ore", "usd_per_dry_metric_ton"),
+        "coal-australian": ("coal", "usd_per_metric_ton"),
+        "palm-oil": ("palm oil", "usd_per_metric_ton"),
+        "rubber": ("rubber", "usd_per_kg"),
+        "zinc": ("zinc", "usd_per_metric_ton"),
     }
     items: List[Dict] = []
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        logger.warning("Playwright not installed; skipping fertilizer scraping")
-        return items
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            page.goto("https://www.indexmundi.com/commodities/", timeout=40000)
-            page.wait_for_timeout(8000)
-            table_data = page.evaluate("""() => {
-                const rows = [];
-                document.querySelectorAll('table tr').forEach(r => {
-                    const cells = Array.from(r.querySelectorAll('td'));
-                    if (cells.length >= 2) rows.push([cells[0].innerText.trim(), cells[1].innerText.trim()]);
-                });
-                return rows;
-            }""")
-            browser.close()
-        now_iso = datetime.now(timezone.utc).isoformat()
-        for name, price_str in table_data:
-            if name not in IM_MAP:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"})
+
+    for slug, (asset, unit) in IM_COMMODITIES.items():
+        try:
+            url = f"https://www.indexmundi.com/commodities/?commodity={slug}&months=12&currency=usd"
+            resp = session.get(url, timeout=20)
+            if resp.status_code != 200:
+                logger.warning("IndexMundi HTTP %d for %s", resp.status_code, slug)
                 continue
-            try:
-                price = float(price_str.replace(",", ""))
-            except (ValueError, TypeError):
+            # Extract last row from tblData table
+            table_match = re.search(r'<table[^>]*class="tblData"[^>]*>([\s\S]*?)</table>', resp.text)
+            if not table_match:
+                logger.debug("IndexMundi no tblData for %s", slug)
                 continue
+            rows = re.findall(
+                r'<tr[^>]*>\s*<td[^>]*>([^<]+)</td>\s*<td[^>]*>([\d,]+(?:\.\d+)?)</td>',
+                table_match.group(1),
+            )
+            if not rows:
+                logger.debug("IndexMundi no data rows for %s", slug)
+                continue
+            _, price_str = rows[-1]  # latest month
+            price = float(price_str.replace(",", ""))
             if price <= 0:
                 continue
-            asset, unit = IM_MAP[name]
             items.append({
                 "asset": asset,
                 "price": price,
@@ -553,9 +549,10 @@ def _fetch_fertilizer_prices() -> List[Dict]:
                 "source": "indexmundi_scrape",
                 "source_timestamp": now_iso,
             })
-            logger.info("IndexMundi fertilizer: %s = %.2f", asset, price)
-    except Exception:
-        logger.warning("IndexMundi fertilizer scraping failed", exc_info=True)
+            logger.info("IndexMundi: %s = %.2f %s", asset, price, unit)
+        except Exception:
+            logger.warning("IndexMundi fetch failed for %s", slug, exc_info=True)
+        time.sleep(random.uniform(1.5, 3.0))
     return items
 
 
@@ -606,7 +603,7 @@ async def run_fertilizer_job() -> None:
         loop = asyncio.get_event_loop()
         te_rows_raw = await loop.run_in_executor(
             get_job_executor("fertilizer"),
-            _fetch_fertilizer_prices,
+            _fetch_indexmundi_prices,
         )
         if not te_rows_raw:
             logger.info("Fertilizer job: no rows fetched")
