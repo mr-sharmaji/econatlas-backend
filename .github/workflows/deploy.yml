@@ -39,7 +39,7 @@ jobs:
           FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
         run: |
           $ErrorActionPreference = "Stop"
-          $env:FIREBASE_CREDENTIALS_JSON | Out-File -FilePath "$env:DEPLOY_DIR\firebase-key.json" -Encoding utf8 -NoNewline
+          [System.IO.File]::WriteAllText("$env:DEPLOY_DIR\firebase-key.json", $env:FIREBASE_CREDENTIALS_JSON, [System.Text.UTF8Encoding]::new($false))
           Write-Host "Firebase credentials written to deploy directory"
 
       - name: Deploy with Docker Compose
