@@ -1238,14 +1238,6 @@ def _generate_market_verdict(
     avg = trend * 0.4 + momentum * 0.4 + volatility * 0.2
     inst = instrument_type
 
-    # Override: strong trend signal caps the verdict
-    # If trend < 25 (well below all SMAs), cap at Bearish even if momentum is neutral
-    # If trend > 75 (well above all SMAs), floor at Moderately Bullish
-    if trend < 25 and avg >= 30:
-        avg = min(avg, 29.9)  # force Bearish
-    elif trend > 75 and avg < 55:
-        avg = max(avg, 55.0)  # force at least Moderately Bullish
-
     if avg >= 70:
         verdict = "Strong positive signals across trend and momentum"
         action_tag = "Bullish"
@@ -1261,6 +1253,29 @@ def _generate_market_verdict(
     else:
         verdict = "Broad weakness across trend and momentum"
         action_tag = "Bearish"
+
+    # Sanity check: use actual price stats to override when scores don't match reality.
+    # A -20% drop in 3 months should never be "Neutral" or better.
+    if stats:
+        chg_3m = stats.get("chg_3m")
+        pct_from_high = stats.get("pct_from_high")
+        pct_from_low = stats.get("pct_from_low")
+
+        # Deep decline: if down >20% in 3M or >25% from 52W high → cap at Bearish
+        if (chg_3m is not None and chg_3m <= -20) or (pct_from_high is not None and pct_from_high <= -25):
+            if action_tag not in ("Bearish",):
+                action_tag = "Bearish"
+                verdict = "Broad weakness across trend and momentum"
+        # Moderate decline: if down >10% in 3M → cap at Moderately Bearish
+        elif chg_3m is not None and chg_3m <= -10:
+            if action_tag in ("Neutral", "Moderately Bullish", "Bullish"):
+                action_tag = "Moderately Bearish"
+                verdict = "Leaning negative with weakening price action"
+        # Strong rally: if up >20% in 3M or within 3% of 52W high → floor at Moderately Bullish
+        elif (chg_3m is not None and chg_3m >= 20) or (pct_from_high is not None and pct_from_high >= -3):
+            if action_tag in ("Neutral", "Moderately Bearish", "Bearish"):
+                action_tag = "Moderately Bullish"
+                verdict = "Leaning positive with supportive price action"
 
     trend_text = _trend_desc(trend, inst, asset)
     # Capitalize first letter
