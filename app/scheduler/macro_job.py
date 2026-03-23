@@ -25,7 +25,7 @@ FRED_DIRECT: Dict[str, List[Tuple[str, str]]] = {
     "US": [
         ("gdp_growth", "A191RL1Q225SBEA"),
         ("unemployment", "UNRATE"),
-        ("fed_rate", "FEDFUNDS"),
+        ("repo_rate", "FEDFUNDS"),
     ],
     "IN": [
         ("gdp_growth", "INDGDPRQPSMEI"),
@@ -76,7 +76,6 @@ VALUE_RANGES: Dict[str, Tuple[float, float]] = {
     "gdp_growth": (-50.0, 50.0),
     "unemployment": (0.0, 100.0),
     "repo_rate": (-5.0, 50.0),
-    "fed_rate": (-1.0, 25.0),
     "fii_net_cash": (-1_000_000.0, 1_000_000.0),
     "dii_net_cash": (-1_000_000.0, 1_000_000.0),
     "pmi_manufacturing": (20.0, 80.0),
