@@ -1100,9 +1100,88 @@ def _vol_context(score: float, inst: str) -> str:
     return "Elevated volatility — risk-off sentiment or event-driven uncertainty."
 
 
+def _extract_price_stats(prices: list[float]) -> dict:
+    """Extract concrete data points from the price array for rich reasoning."""
+    n = len(prices)
+    current = prices[-1]
+    stats: dict = {"current": current, "count": n}
+
+    def pct(old: float, new: float) -> float | None:
+        return round(((new - old) / old) * 100, 1) if old and old != 0 else None
+
+    # Period returns
+    if n >= 7:
+        stats["chg_1w"] = pct(prices[-7], current)
+    if n >= 30:
+        stats["chg_1m"] = pct(prices[-30], current)
+    if n >= 90:
+        stats["chg_3m"] = pct(prices[-90], current)
+
+    # 52-week high/low (up to 260 trading days)
+    lookback = prices[-min(260, n):]
+    high = max(lookback)
+    low = min(lookback)
+    stats["high_52w"] = high
+    stats["low_52w"] = low
+    stats["pct_from_high"] = pct(high, current)
+    stats["pct_from_low"] = pct(low, current)
+
+    # Consecutive direction
+    streak = 0
+    if n >= 2:
+        direction = 1 if prices[-1] >= prices[-2] else -1
+        for i in range(n - 2, max(n - 15, 0) - 1, -1):
+            if i <= 0:
+                break
+            d = 1 if prices[i] >= prices[i - 1] else -1
+            if d == direction:
+                streak += 1
+            else:
+                break
+        stats["streak"] = streak * direction  # positive = up days, negative = down days
+
+    return stats
+
+
+def _stats_sentence(stats: dict, inst: str) -> str:
+    """Build a concrete data sentence from extracted stats."""
+    parts = []
+
+    # Period change
+    chg_1m = stats.get("chg_1m")
+    chg_3m = stats.get("chg_3m")
+    if chg_1m is not None and chg_3m is not None and abs(chg_3m) > 3:
+        direction = "up" if chg_1m >= 0 else "down"
+        parts.append(f"{direction.capitalize()} {abs(chg_1m):.1f}% in the past month and {abs(chg_3m):.1f}% over 3 months")
+    elif chg_1m is not None:
+        direction = "up" if chg_1m >= 0 else "down"
+        parts.append(f"{direction.capitalize()} {abs(chg_1m):.1f}% over the past month")
+
+    # 52-week context
+    pct_high = stats.get("pct_from_high")
+    pct_low = stats.get("pct_from_low")
+    if pct_high is not None and pct_high <= -20:
+        parts.append(f"{abs(pct_high):.0f}% below its 52-week high")
+    elif pct_high is not None and pct_high >= -3:
+        parts.append("near its 52-week high")
+    elif pct_low is not None and pct_low <= 3:
+        parts.append("near its 52-week low")
+
+    # Streak
+    streak = stats.get("streak", 0)
+    if abs(streak) >= 4:
+        direction = "gains" if streak > 0 else "losses"
+        parts.append(f"{abs(streak)} consecutive sessions of {direction}")
+
+    if not parts:
+        return ""
+    return ", ".join(parts[:2]) + "."  # Keep it to 2 data points max
+
+
 def _generate_market_verdict(
     trend: float, volatility: float, momentum: float,
     asset: str = "", instrument_type: str = "index",
+    stats: dict | None = None,
 ) -> tuple[str, str, str]:
     """Generate verdict, action_tag, and action_tag_reasoning from scores.
     Returns (verdict, action_tag, action_tag_reasoning).
@@ -1130,11 +1209,14 @@ def _generate_market_verdict(
     trend_text = _trend_desc(trend, inst, asset)
     # Capitalize first letter
     trend_text = trend_text[0].upper() + trend_text[1:] if trend_text else ""
+    data_sentence = _stats_sentence(stats or {}, inst) if stats else ""
     reasoning = (
         f"{trend_text}. "
         f"{_momentum_desc(momentum, inst)} "
         f"{_vol_context(volatility, inst)}"
     )
+    if data_sentence:
+        reasoning += f" {data_sentence}"
 
     return verdict, action_tag, reasoning
 
@@ -1268,8 +1350,9 @@ async def compute_and_store_market_score(asset: str, instrument_type: str) -> di
     trend = _compute_trend_score(prices)
     vol = _compute_volatility_score(prices)
     mom = _compute_momentum_score(prices)
+    stats = _extract_price_stats(prices)
 
-    verdict, action_tag, reasoning = _generate_market_verdict(trend, vol, mom, asset, instrument_type)
+    verdict, action_tag, reasoning = _generate_market_verdict(trend, vol, mom, asset, instrument_type, stats)
     driver_tags = _generate_driver_tags(trend, vol, mom, asset, instrument_type)
     type_extras = _generate_type_extras(asset, instrument_type, trend, vol, mom)
 
