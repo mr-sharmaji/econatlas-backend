@@ -1110,9 +1110,9 @@ async def _run_holdings(source: str = "all") -> None:
 
 
 async def run_discover_mf_holdings_job() -> None:
-    """Full holdings job: ET Money + MoneyControl."""
+    """Holdings job: ET Money only (asset allocation + holdings)."""
     try:
-        await _run_holdings("all")
+        await _run_holdings("etmoney")
     except Exception:
         logger.exception("Holdings job failed")
 
