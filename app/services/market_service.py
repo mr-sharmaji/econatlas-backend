@@ -926,7 +926,9 @@ def _compute_momentum_score(prices: list[float]) -> float:
     avg_gain = sum(gains) / len(gains) if gains else 0
     avg_loss = sum(losses) / len(losses) if losses else 0
 
-    if avg_loss == 0:
+    if avg_gain == 0 and avg_loss == 0:
+        rsi = 50.0  # no movement = neutral
+    elif avg_loss == 0:
         rsi = 100.0
     else:
         rs = avg_gain / avg_loss
@@ -1040,6 +1042,11 @@ def _generate_driver_tags(trend: float, volatility: float, momentum: float,
             tags.append("Commodity Rally")
         elif trend <= 40 and momentum <= 40:
             tags.append("Commodity Slump")
+    elif instrument_type == "crypto":
+        if trend >= 60 and momentum >= 60:
+            tags.append("Crypto Rally")
+        elif trend <= 40 and momentum <= 40:
+            tags.append("Crypto Selloff")
 
     return tags
 
@@ -1080,6 +1087,14 @@ def _generate_type_extras(asset: str, instrument_type: str,
             extras["supply_demand"] = "oversupply"
         else:
             extras["supply_demand"] = "balanced"
+
+    elif instrument_type == "crypto":
+        if trend >= 60 and momentum >= 60:
+            extras["sentiment"] = "risk_on"
+        elif trend <= 40 and momentum <= 40:
+            extras["sentiment"] = "risk_off"
+        else:
+            extras["sentiment"] = "mixed"
 
     return extras if extras else None
 
