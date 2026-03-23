@@ -172,3 +172,9 @@ async def task_market_score(ctx: dict) -> None:
     from app.scheduler.market_score_job import run_market_score_job
 
     await _run_with_retry(ctx, "market_score", run_market_score_job)
+
+
+async def task_fertilizer(ctx: dict) -> None:
+    from app.scheduler.commodity_job import run_fertilizer_job
+
+    await _run_with_retry(ctx, "fertilizer", run_fertilizer_job)

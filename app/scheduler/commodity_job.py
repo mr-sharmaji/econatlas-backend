@@ -615,39 +615,40 @@ async def run_commodity_job() -> None:
             logger.info("Commodity job: no daily or intraday rows written")
         else:
             logger.info("Commodity job complete: %d rows upserted (daily)", updated)
-        # Fetch fertilizer prices from Trading Economics
-        try:
-            te_rows_raw = await loop.run_in_executor(
-                get_job_executor("commodity"),
-                _fetch_te_fertilizers,
-            )
-            if te_rows_raw:
-                now = _scraper.utc_now()
-                trading_date = get_trading_date(now, NYSE)
-                ts = datetime(trading_date.year, trading_date.month, trading_date.day, 0, 0, 0, tzinfo=timezone.utc).isoformat()
-                te_rows = [
-                    {
-                        "asset": it["asset"],
-                        "price": it["price"],
-                        "timestamp": ts,
-                        "source": it.get("source"),
-                        "instrument_type": "commodity",
-                        "unit": it.get("unit"),
-                        "change_percent": None,
-                        "previous_close": None,
-                        "source_timestamp": it.get("source_timestamp"),
-                        "provider": it.get("provider"),
-                        "provider_priority": it.get("provider_priority"),
-                        "confidence_level": it.get("confidence_level"),
-                        "is_fallback": it.get("is_fallback"),
-                        "quality": it.get("quality"),
-                    }
-                    for it in te_rows_raw
-                ]
-                te_updated = await market_service.insert_prices_batch_upsert_daily(te_rows)
-                logger.info("Commodity job: %d TE fertilizer rows upserted", te_updated)
-        except Exception:
-            logger.warning("TE fertilizer scraping failed", exc_info=True)
         logger.debug("Commodity job cycle completed")
     except Exception:
         logger.exception("Commodity job failed")
+
+
+async def run_fertilizer_job() -> None:
+    """Separate job for TE fertilizer scraping — runs every few hours, not every 30s."""
+    try:
+        logger.info("Fertilizer job started")
+        loop = asyncio.get_event_loop()
+        te_rows_raw = await loop.run_in_executor(
+            get_job_executor("fertilizer"),
+            _fetch_te_fertilizers,
+        )
+        if not te_rows_raw:
+            logger.info("Fertilizer job: no rows fetched")
+            return
+        now = datetime.now(timezone.utc)
+        trading_date = get_trading_date(now, NYSE)
+        ts = datetime(trading_date.year, trading_date.month, trading_date.day, 0, 0, 0, tzinfo=timezone.utc).isoformat()
+        te_rows = [
+            {
+                "asset": it["asset"],
+                "price": it["price"],
+                "timestamp": ts,
+                "source": it.get("source"),
+                "instrument_type": "commodity",
+                "unit": it.get("unit"),
+                "change_percent": None,
+                "previous_close": None,
+            }
+            for it in te_rows_raw
+        ]
+        updated = await market_service.insert_prices_batch_upsert_daily(te_rows)
+        logger.info("Fertilizer job: %d rows upserted", updated)
+    except Exception:
+        logger.exception("Fertilizer job failed")
