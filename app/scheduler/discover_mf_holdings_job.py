@@ -631,8 +631,14 @@ class DiscoverMfHoldingsScraper(BaseScraper):
         )
         return detail_links
 
-    @staticmethod
-    def _normalize_name_for_matching(name: str) -> str:
+    # Tokens that appear in almost every fund name — useless for matching
+    _NOISE_TOKENS = frozenset({
+        "fund", "direct", "plan", "growth", "option", "regular",
+        "scheme", "idcw", "dividend", "the", "of", "and", "in",
+    })
+
+    @classmethod
+    def _normalize_name_for_matching(cls, name: str) -> str:
         """Normalize a fund name for fuzzy matching against URL slugs."""
         text = name.lower().strip()
         # Remove common suffixes and noise
@@ -643,12 +649,21 @@ class DiscoverMfHoldingsScraper(BaseScraper):
         text = re.sub(r"\s+", " ", text).strip()
         return text
 
+    @classmethod
+    def _significant_tokens(cls, text: str) -> set[str]:
+        """Extract tokens that are meaningful for matching (exclude noise)."""
+        return {t for t in text.split() if t not in cls._NOISE_TOKENS and len(t) > 1}
+
     def _match_scheme_to_link(
         self,
         scheme_name: str,
         detail_links: dict[str, str],
     ) -> str | None:
-        """Try to match a scheme_name to an ETMoney detail link."""
+        """Try to match a scheme_name to an ETMoney detail link.
+
+        Uses significant tokens (excluding generic words like 'fund', 'direct',
+        'plan', 'growth') to avoid cross-matching different funds from the same AMC.
+        """
         norm_name = self._normalize_name_for_matching(scheme_name)
         if not norm_name:
             return None
@@ -657,21 +672,25 @@ class DiscoverMfHoldingsScraper(BaseScraper):
         if norm_name in detail_links:
             return detail_links[norm_name]
 
-        # Try matching by checking if the slug is contained in the name or vice versa
-        name_tokens = set(norm_name.split())
+        # Fuzzy match using significant tokens only
+        name_tokens = self._significant_tokens(norm_name)
+        if len(name_tokens) < 2:
+            return None  # too few meaningful tokens to match safely
+
         best_match: str | None = None
-        best_overlap = 0
+        best_score = 0.0
 
         for slug_key, rel_link in detail_links.items():
-            slug_tokens = set(slug_key.split())
-            overlap = len(name_tokens & slug_tokens)
-            # Require at least 3 overlapping tokens or 60% overlap
-            min_len = min(len(name_tokens), len(slug_tokens))
-            if min_len == 0:
+            slug_tokens = self._significant_tokens(slug_key)
+            if not slug_tokens:
                 continue
-            overlap_ratio = overlap / min_len
-            if overlap >= 3 and overlap_ratio >= 0.6 and overlap > best_overlap:
-                best_overlap = overlap
+            overlap = name_tokens & slug_tokens
+            if len(overlap) < 2:
+                continue
+            # Jaccard similarity on significant tokens
+            jaccard = len(overlap) / len(name_tokens | slug_tokens)
+            if jaccard >= 0.5 and jaccard > best_score:
+                best_score = jaccard
                 best_match = rel_link
 
         return best_match
