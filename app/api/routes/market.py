@@ -137,6 +137,16 @@ async def latest_market_prices(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.get("/scores", response_model=dict)
+async def get_all_market_scores() -> dict:
+    """Return action_tag for all scored market instruments. Lightweight endpoint for list views."""
+    try:
+        data = await market_service.get_all_market_scores()
+        return {"scores": data}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.get("/story", response_model=MarketStoryResponse)
 async def get_market_story(
     asset: str = Query(..., description="Asset name (e.g. Nifty 50, USD/INR, gold)"),

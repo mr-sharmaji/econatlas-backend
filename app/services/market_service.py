@@ -1405,6 +1405,15 @@ async def compute_and_store_market_score(asset: str, instrument_type: str) -> di
     return result
 
 
+async def get_all_market_scores() -> list[dict]:
+    """Return action_tag for all scored instruments. Lightweight for list views."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        f"SELECT asset, instrument_type, action_tag FROM {TABLE_MARKET_SCORES}"
+    )
+    return [{"asset": r["asset"], "instrument_type": r["instrument_type"], "action_tag": r["action_tag"]} for r in rows]
+
+
 async def get_market_story(asset: str, instrument_type: str) -> dict | None:
     """Read stored market scores and return story data. Generates verdict text on-the-fly."""
     pool = await get_pool()
