@@ -346,6 +346,35 @@ async def get_prices(
 ) -> list[dict]:
     """Fetch market prices with optional filters, ordered by most recent."""
     pool = await get_pool()
+
+    # Fast path: single-asset chart history — deduplicate in SQL
+    if asset and (limit == -1 or limit > 500):
+        conditions = [f"asset = $1"]
+        args: list = [asset]
+        n = 2
+        if instrument_type:
+            conditions.append(f"instrument_type = ${n}")
+            args.append(instrument_type)
+            n += 1
+        where = " AND ".join(conditions)
+        # Cap at 1825 days (5 years) for chart — no need for more
+        effective_limit = 1825 if limit == -1 else limit
+        rows = await pool.fetch(
+            f"""
+            SELECT DISTINCT ON (asset, instrument_type, ("timestamp"::date))
+                *
+            FROM {TABLE}
+            WHERE {where}
+            ORDER BY asset, instrument_type, ("timestamp"::date) DESC, "timestamp" DESC
+            LIMIT ${n}
+            """,
+            *args,
+            effective_limit,
+        )
+        out = [record_to_dict(r) for r in rows]
+        out.sort(key=lambda x: (x.get("timestamp") or ""), reverse=False)
+        return out
+
     conditions = []
     args = []
     n = 1
@@ -363,12 +392,7 @@ async def get_prices(
         f"SELECT * FROM {TABLE} WHERE {where} ORDER BY timestamp DESC LIMIT ${n} OFFSET ${n + 1}",
         *args,
     )
-    out = [record_to_dict(r) for r in rows]
-    # Chart use case: one point per day (dedupe by date so history is daily even if old intraday rows exist)
-    if asset and (limit == -1 or limit > 500):
-        out = _one_per_day(out)
-        out.sort(key=lambda x: (x.get("timestamp") or ""), reverse=False)
-    return out
+    return [record_to_dict(r) for r in rows]
 
 
 async def get_latest_prices(
@@ -946,6 +970,26 @@ def _compute_momentum_score(prices: list[float]) -> float:
     return max(0.0, min(100.0, round(score, 1)))
 
 
+def _trend_desc(score: float) -> str:
+    if score >= 75: return "trading well above key moving averages"
+    if score >= 60: return "holding above most moving averages"
+    if score >= 40: return "hovering near its moving averages"
+    if score >= 25: return "trading below key moving averages"
+    return "well below all moving averages, in a sustained decline"
+
+def _momentum_desc(score: float) -> str:
+    if score >= 75: return "strong buying pressure with accelerating gains"
+    if score >= 60: return "positive momentum with steady buying interest"
+    if score >= 40: return "limited momentum in either direction"
+    if score >= 25: return "weakening momentum with selling pressure building"
+    return "heavy selling pressure and rapid loss of momentum"
+
+def _vol_desc(score: float) -> str:
+    if score >= 65: return "Price moves have been orderly and predictable."
+    if score >= 35: return "Volatility is in line with historical norms."
+    return "Elevated volatility suggests heightened uncertainty."
+
+
 def _generate_market_verdict(trend: float, volatility: float, momentum: float) -> tuple[str, str, str]:
     """Generate verdict, action_tag, and action_tag_reasoning from scores.
     Returns (verdict, action_tag, action_tag_reasoning).
@@ -953,42 +997,39 @@ def _generate_market_verdict(trend: float, volatility: float, momentum: float) -
     avg = trend * 0.4 + momentum * 0.4 + volatility * 0.2
 
     if avg >= 70:
-        verdict = "Strong positive signals across trend, momentum, and stability"
+        verdict = "Strong positive signals across trend and momentum"
         action_tag = "Bullish"
         reasoning = (
-            f"Trend score {trend:.0f}/100 shows strong upward alignment, "
-            f"momentum at {momentum:.0f}/100 confirms buying pressure, "
-            f"and volatility score {volatility:.0f}/100 indicates stable conditions."
+            f"Price is {_trend_desc(trend)}, with {_momentum_desc(momentum)}. "
+            f"{_vol_desc(volatility)}"
         )
     elif avg >= 55:
-        verdict = "Moderately positive with some supportive signals"
+        verdict = "Leaning positive with supportive price action"
         action_tag = "Moderately Bullish"
         reasoning = (
-            f"Trend ({trend:.0f}) and momentum ({momentum:.0f}) lean positive, "
-            f"though not all dimensions are strongly aligned. "
-            f"Volatility score at {volatility:.0f} suggests {'calm' if volatility >= 50 else 'elevated risk'}."
+            f"Price is {_trend_desc(trend)}, showing {_momentum_desc(momentum)}. "
+            f"{_vol_desc(volatility)}"
         )
     elif avg >= 45:
-        verdict = "Mixed signals — no clear directional bias"
+        verdict = "No clear direction — price action is mixed"
         action_tag = "Neutral"
         reasoning = (
-            f"Scores are near neutral: trend {trend:.0f}, momentum {momentum:.0f}, "
-            f"volatility {volatility:.0f}. No strong conviction in either direction."
+            f"Price is {_trend_desc(trend)}, with {_momentum_desc(momentum)}. "
+            f"{_vol_desc(volatility)}"
         )
     elif avg >= 30:
-        verdict = "Moderately negative with some cautionary signals"
+        verdict = "Leaning negative with weakening price action"
         action_tag = "Moderately Bearish"
         reasoning = (
-            f"Trend ({trend:.0f}) and momentum ({momentum:.0f}) lean negative. "
-            f"Volatility at {volatility:.0f} {'adds concern' if volatility < 40 else 'provides some stability'}."
+            f"Price is {_trend_desc(trend)}, showing {_momentum_desc(momentum)}. "
+            f"{_vol_desc(volatility)}"
         )
     else:
-        verdict = "Significant negative signals across multiple dimensions"
+        verdict = "Broad weakness across trend and momentum"
         action_tag = "Bearish"
         reasoning = (
-            f"Weak trend ({trend:.0f}), poor momentum ({momentum:.0f}), "
-            f"and {'high volatility' if volatility < 30 else 'mixed stability'} ({volatility:.0f}) "
-            f"paint a concerning picture."
+            f"Price is {_trend_desc(trend)}, with {_momentum_desc(momentum)}. "
+            f"{_vol_desc(volatility)}"
         )
 
     return verdict, action_tag, reasoning
