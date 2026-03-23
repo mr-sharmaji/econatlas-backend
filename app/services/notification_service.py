@@ -37,9 +37,9 @@ def _get_firebase():
                 _firebase_app = firebase_admin.initialize_app()
         logger.info("Firebase Admin SDK initialized")
         return _firebase_app
-    except Exception:
-        logger.warning("Firebase Admin SDK not available — push notifications disabled", exc_info=True)
-        return None
+    except Exception as e:
+        logger.error("Firebase Admin SDK init failed: %s", e, exc_info=True)
+        raise
 
 
 async def send_topic_notification(

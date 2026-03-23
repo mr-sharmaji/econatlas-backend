@@ -1036,9 +1036,13 @@ async def test_notification() -> dict:
     # Debug info
     cred_env = os.environ.get("FIREBASE_CREDENTIALS_JSON", "NOT SET")
     cred_preview = cred_env[:50] + "..." if len(cred_env) > 50 else cred_env
-    firebase_app = _get_firebase()
+    file_exists = os.path.isfile(cred_env) if not cred_env.startswith("{") and cred_env != "NOT SET" else None
+    try:
+        firebase_app = _get_firebase()
+    except Exception as e:
+        return {"sent": False, "reason": str(e), "env_preview": cred_preview, "file_exists": file_exists}
     if firebase_app is None:
-        return {"sent": False, "reason": "Firebase init failed", "env_preview": cred_preview}
+        return {"sent": False, "reason": "Firebase init returned None", "env_preview": cred_preview, "file_exists": file_exists}
     success = await send_topic_notification(
         topic="market_alerts",
         title="🔔 EconAtlas Test",
