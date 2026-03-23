@@ -22,8 +22,10 @@ from app.core.database import get_pool
 logger = logging.getLogger(__name__)
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS?range=7d&interval=1d"
-MAX_RETRIES = 3
-RATE_LIMIT_SECONDS = 2.0
+MAX_RETRIES = 5
+RATE_LIMIT_SECONDS = 4.0
+BATCH_SIZE = 50
+BATCH_COOLDOWN = 30
 
 INSERT_SQL = """
 INSERT INTO discover_stock_price_history (symbol, trade_date, close, volume, source)
@@ -89,20 +91,30 @@ async def run_discover_stock_price_job() -> None:
     total_inserted = 0
     errors = 0
 
+    consecutive_429s = 0
     for i, symbol in enumerate(symbol_list, start=1):
         try:
             rows = await loop.run_in_executor(get_job_executor("discover-stock-price"), _fetch_yahoo_7d, symbol)
+            consecutive_429s = 0
             if rows:
                 await pool.executemany(INSERT_SQL, rows)
                 total_inserted += len(rows)
-        except Exception:
+        except Exception as e:
             errors += 1
-            logger.exception("Error updating price for %s — skipping.", symbol)
+            err_msg = str(e)
+            if "429" in err_msg:
+                consecutive_429s += 1
+                if consecutive_429s >= 3:
+                    logger.warning("3 consecutive 429s — pausing 120s to cool down.")
+                    await asyncio.sleep(120)
+                    consecutive_429s = 0
+            logger.warning("Error updating price for %s — skipping: %s", symbol, err_msg[:80])
 
-        await asyncio.sleep(RATE_LIMIT_SECONDS + random.uniform(0, 1))
+        await asyncio.sleep(RATE_LIMIT_SECONDS + random.uniform(0, 2))
 
-        if i % 50 == 0:
-            logger.info("Stock price update progress: %d / %d symbols.", i, len(symbol_list))
+        if i % BATCH_SIZE == 0:
+            logger.info("Stock price update progress: %d / %d symbols. Batch cooldown %ds.", i, len(symbol_list), BATCH_COOLDOWN)
+            await asyncio.sleep(BATCH_COOLDOWN)
 
     logger.info(
         "Stock price daily update complete: %d symbols, %d rows upserted, %d errors.",
