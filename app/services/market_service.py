@@ -827,7 +827,8 @@ TABLE_MARKET_SCORES = "market_scores"
 
 def _compute_trend_score(prices: list[float]) -> float:
     """Score trend strength 0-100 based on SMA alignment.
-    Higher = stronger uptrend. Uses available SMAs from 5/20/50/200 day."""
+    Higher = stronger uptrend. Uses all available SMAs, each contributing
+    proportionally to fill the ±50 range around the baseline of 50."""
     n = len(prices)
     if n < 5:
         return 50.0  # neutral if not enough data
@@ -838,36 +839,32 @@ def _compute_trend_score(prices: list[float]) -> float:
         return sum(data[-period:]) / period
 
     current = prices[-1]
-    # Use the shortest available SMA as primary when data is limited
     sma5 = sma(prices, 5)
     sma20 = sma(prices, 20)
     sma50 = sma(prices, 50)
     sma200 = sma(prices, 200)
 
-    score = 50.0  # baseline
-    contributions = 0
-
-    # Price vs shortest available SMA (strongest weight)
-    primary_sma = sma20 or sma5
-    if primary_sma and primary_sma > 0:
-        ratio = (current - primary_sma) / primary_sma
-        score += min(max(ratio * 500, -25), 25)
-        contributions += 1
-
+    # Collect all available SMA comparisons with multipliers
+    comparisons: list[tuple[float, float]] = []  # (ratio, weight)
+    if sma20 and sma20 > 0:
+        comparisons.append(((current - sma20) / sma20, 3.0))
+    elif sma5 and sma5 > 0:
+        comparisons.append(((current - sma5) / sma5, 3.0))
     if sma50 and sma50 > 0:
-        ratio = (current - sma50) / sma50
-        score += min(max(ratio * 300, -16.7), 16.7)
-        contributions += 1
-
+        comparisons.append(((current - sma50) / sma50, 2.0))
     if sma200 and sma200 > 0:
-        ratio = (current - sma200) / sma200
-        score += min(max(ratio * 200, -16.7), 16.7)
-        contributions += 1
+        comparisons.append(((current - sma200) / sma200, 1.0))
 
-    # If only one SMA available, amplify its effect
-    if contributions == 1 and primary_sma and primary_sma > 0:
-        ratio = (current - primary_sma) / primary_sma
-        score += min(max(ratio * 300, -16.7), 16.7)
+    if not comparisons:
+        return 50.0
+
+    # Divide ±50 range equally among available SMAs
+    per_sma_range = 50.0 / len(comparisons)
+    score = 50.0
+    for ratio, weight in comparisons:
+        # Scale ratio by weight, clamp to per-SMA range
+        contribution = ratio * weight * 100
+        score += max(-per_sma_range, min(per_sma_range, contribution))
 
     return max(0.0, min(100.0, round(score, 1)))
 
