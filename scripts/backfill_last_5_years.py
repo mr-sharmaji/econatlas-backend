@@ -396,6 +396,13 @@ class HistoricalBackfiller(BaseScraper):
         _fill_change_percent(symbol_rows)
         return symbol_rows
 
+    # Symbols that Yahoo reports in USX (cents) instead of USD
+    _USX_SYMBOLS = {"ZW=F", "ZC=F", "ZS=F", "ZO=F", "CT=F", "SB=F", "KC=F"}
+
+    def _get_commodity_currency_divisor(self, symbol: str) -> float:
+        """Return 100.0 for USX (cents) symbols, 1.0 for USD."""
+        return 100.0 if symbol in self._USX_SYMBOLS else 1.0
+
     def _collect_commodity_symbol_year(
         self,
         symbol: str,
@@ -405,6 +412,8 @@ class HistoricalBackfiller(BaseScraper):
         range_end: datetime,
     ) -> list[dict[str, Any]]:
         """Fetch one commodity’s rows for one year range. Used for year-by-year insert to limit memory."""
+        # Check if Yahoo reports in USX (cents) — grains, softs use this
+        usx_divisor = self._get_commodity_currency_divisor(symbol)
         symbol_rows: list[dict[str, Any]] = []
         try:
             points = self._fetch_yahoo_series(symbol, range_start, range_end)
@@ -412,7 +421,7 @@ class HistoricalBackfiller(BaseScraper):
                 symbol_rows.append(
                     {
                         "asset": asset,
-                        "price": price,
+                        "price": price / usx_divisor,
                         "timestamp": ts.isoformat(),
                         "source": "yahoo_chart_api_backfill",
                         "instrument_type": "commodity",

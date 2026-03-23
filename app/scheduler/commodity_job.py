@@ -94,6 +94,12 @@ class CommodityScraper(BaseScraper, QuoteProvider):
         currency = currency.upper()
         if currency == "USD":
             return value, 1.0
+        # USX = US cents (used by Yahoo for grains, softs like wheat, corn, cotton)
+        if currency == "USX":
+            return value / 100.0, 0.01
+        # GBX = British pence
+        if currency == "GBX":
+            return value / 100.0, 0.01
         rates = self._get_usd_rates()
         if currency not in rates or rates[currency] <= 0:
             raise ValueError(f"Missing FX rate for {currency}")
@@ -491,15 +497,35 @@ _TE_HEADERS = {
 
 
 def _fetch_te_fertilizers() -> List[Dict]:
-    """Scrape fertilizer prices from Trading Economics commodity pages."""
+    """Scrape fertilizer prices from Trading Economics commodity pages.
+    Uses session cookies and longer delays to avoid 403 blocks."""
     items: List[Dict] = []
     session = requests.Session()
     session.headers.update(_TE_HEADERS)
+    # Establish cookies by visiting homepage first (same approach as macro TE scraper)
+    try:
+        session.get(_TE_BASE_URL, timeout=15)
+        time.sleep(random.uniform(1.5, 3.0))
+    except Exception:
+        logger.warning("TE homepage visit failed; proceeding without cookies")
+
+    consecutive_failures = 0
     for path, (asset, unit) in TE_FERTILIZERS.items():
+        if consecutive_failures >= 3:
+            logger.warning("TE fertilizer: %d consecutive failures, stopping", consecutive_failures)
+            break
         try:
             url = f"{_TE_BASE_URL}{path}"
             resp = session.get(url, timeout=20)
-            resp.raise_for_status()
+            if resp.status_code == 403:
+                consecutive_failures += 1
+                logger.warning("TE 403 for %s (consecutive: %d)", path, consecutive_failures)
+                time.sleep(random.uniform(5.0, 8.0))
+                continue
+            if resp.status_code != 200:
+                logger.warning("TE HTTP %d for %s", resp.status_code, path)
+                continue
+            consecutive_failures = 0
             html = resp.text
             price = None
             # Try extracting price from <title> tag (format: "Urea - Price ... | 250.00")
@@ -545,11 +571,12 @@ def _fetch_te_fertilizers() -> List[Dict]:
                 })
                 logger.info("TE fertilizer fetched: %s = %.2f %s", asset, price, unit)
             else:
-                logger.warning("TE fertilizer price not found for %s", asset)
+                logger.warning("TE fertilizer price not found in HTML for %s", asset)
         except Exception:
             logger.warning("TE fertilizer fetch failed for %s", asset, exc_info=True)
-        # Rate limit: 2-4 seconds between requests
-        time.sleep(random.uniform(2.0, 4.0))
+            consecutive_failures += 1
+        # Rate limit: 3-6 seconds between requests (longer than Yahoo to avoid TE blocks)
+        time.sleep(random.uniform(3.0, 6.0))
     return items
 
 
