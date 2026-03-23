@@ -137,9 +137,9 @@ async def latest_market_prices(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/{asset}/story", response_model=MarketStoryResponse)
+@router.get("/story", response_model=MarketStoryResponse)
 async def get_market_story(
-    asset: str,
+    asset: str = Query(..., description="Asset name (e.g. Nifty 50, USD/INR, gold)"),
     instrument_type: str = Query("index", description="Instrument type: index, bond_yield, currency, commodity"),
 ) -> MarketStoryResponse:
     """Get verdict, scores, and narrative for a market instrument."""
