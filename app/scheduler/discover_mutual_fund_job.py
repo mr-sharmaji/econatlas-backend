@@ -1203,13 +1203,15 @@ class DiscoverMutualFundScraper(BaseScraper):
             name = (str(row.get("scheme_name") or "")).strip().lower()
             if (any(k in sub for k in ("long debt", "gilt"))
                     or any(k in name for k in (
-                        "g-sec", "gsec", "gilt", " sdl ", "sdl ", " sdl",
+                        "g-sec", "gsec", "g sec", "gilt", " sdl ", "sdl ", " sdl",
                         "government sec", "govt sec",
                         "bond index", "bond idx", "psu bond",
+                        "aaa bond", "nifty aaa",
                         "corporate bond", "composite bond",
                         "crisil", "nifty bharat bond",
                         "money market", "liquid index",
                         "overnight index", "short duration index",
+                        "target mat", "floating rate",
                     ))):
                 return "debt"
             return "equity"
