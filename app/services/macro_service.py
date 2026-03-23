@@ -283,11 +283,10 @@ def _format_metric_value(value: float, unit: str) -> str:
     return f"{value:.2f}"
 
 
-def _format_metric_change(delta: float, unit: str) -> str:
-    sign = "+" if delta >= 0 else ""
+def _format_abs_change(delta: float, unit: str) -> str:
     if unit in PERCENT_UNITS:
-        return f"{sign}{delta:.2f} pp"
-    return f"{sign}{delta:.2f}"
+        return f"{abs(delta):.2f} pp"
+    return f"{abs(delta):.2f}"
 
 
 def _metric_signal_text(
@@ -397,16 +396,10 @@ def _compose_dynamic_helper_text(
 
     latest_value = _to_float(None if latest_row is None else latest_row.get("value"))
     if latest_value is None:
-        if base:
-            return (
-                f"{base}\n\n"
-                f"{_country_name(country)} latest: not available.\n"
-                f"Signal: Waiting for a fresh {display_name} release."
-            )
-        return (
-            f"{_country_name(country)} latest {display_name}: not available.\n"
-            f"Signal: Waiting for a fresh release."
-        )
+        no_data_line = f"No fresh {_country_name(country)} release is available right now."
+        if not base:
+            return no_data_line
+        return f"{base}\n\n{no_data_line}"
 
     latest_ts = _as_dt(None if latest_row is None else latest_row.get("timestamp"))
     previous_value = _to_float(None if previous_row is None else previous_row.get("value"))
@@ -416,26 +409,28 @@ def _compose_dynamic_helper_text(
         country=country,
         thresholds=thresholds,
     )
+    value_label = _format_metric_value(latest_value, unit)
+    date_label = latest_ts.strftime("%b %Y") if latest_ts is not None else "latest release"
 
-    latest_line = f"{_country_name(country)} latest: {_format_metric_value(latest_value, unit)}"
-    if latest_ts is not None:
-        latest_line = f"{latest_line} ({latest_ts.date().isoformat()})"
-
-    change_line = "Change vs previous: No prior release."
-    if previous_value is not None:
+    if previous_value is None:
+        change_phrase = "with no prior comparable release yet"
+    else:
         delta = latest_value - previous_value
-        change_line = f"Change vs previous: {_format_metric_change(delta, unit)}"
+        if abs(delta) < 1e-9:
+            change_phrase = "and is unchanged versus the previous release"
+        else:
+            direction = "up" if delta > 0 else "down"
+            change_phrase = (
+                f"and is {direction} {_format_abs_change(delta, unit)} versus the previous release"
+            )
 
-    body = "\n".join(
-        [
-            latest_line,
-            change_line,
-            f"Signal: {signal}",
-        ]
+    dynamic_line = (
+        f"In {_country_name(country)}, {display_name} is {value_label} ({date_label}) {change_phrase}. "
+        f"{signal}"
     )
     if not base:
-        return body
-    return f"{base}\n\n{body}"
+        return dynamic_line
+    return f"{base}\n\n{dynamic_line}"
 
 
 async def _latest_two_rows_by_indicator(
