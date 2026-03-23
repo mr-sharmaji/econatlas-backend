@@ -17,24 +17,25 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-# Indicator definitions: (indicator_name, country, url_path, unit)
-TE_INDICATORS: List[Tuple[str, str, str, str]] = [
+# Indicator definitions: (indicator_name, country, url_path, unit, negate)
+# negate=True for deficit indicators where TE reports absolute value but we store negative
+TE_INDICATORS: List[Tuple[str, str, str, str, bool]] = [
     # Growth indicators
-    ("pmi_manufacturing", "IN", "/india/manufacturing-pmi", "index"),
-    ("pmi_manufacturing", "US", "/united-states/manufacturing-pmi", "index"),
-    ("pmi_services", "IN", "/india/services-pmi", "index"),
-    ("pmi_services", "US", "/united-states/non-manufacturing-pmi", "index"),
-    ("iip", "IN", "/india/industrial-production", "percent_yoy"),
-    ("iip", "US", "/united-states/industrial-production", "percent_yoy"),
+    ("pmi_manufacturing", "IN", "/india/manufacturing-pmi", "index", False),
+    ("pmi_manufacturing", "US", "/united-states/manufacturing-pmi", "index", False),
+    ("pmi_services", "IN", "/india/services-pmi", "index", False),
+    ("pmi_services", "US", "/united-states/non-manufacturing-pmi", "index", False),
+    ("iip", "IN", "/india/industrial-production", "percent_yoy", False),
+    ("iip", "US", "/united-states/industrial-production", "percent_yoy", False),
     # Prices
-    ("core_inflation", "IN", "/india/food-inflation", "percent_yoy"),  # food inflation as proxy (core CPI page redirects)
-    # Trade & Fiscal
-    ("forex_reserves", "IN", "/india/foreign-exchange-reserves", "usd_mn"),
-    ("trade_balance", "IN", "/india/balance-of-trade", "usd_mn"),
-    ("trade_balance", "US", "/united-states/balance-of-trade", "usd_mn"),
-    ("current_account_deficit", "IN", "/india/current-account", "usd_bn"),
-    ("fiscal_deficit", "IN", "/india/government-budget", "percent_gdp"),
-    ("bank_credit_growth", "IN", "/india/bank-lending-rate", "percent"),
+    ("core_inflation", "IN", "/india/food-inflation", "percent_yoy", False),
+    # Trade & Fiscal — negate deficits
+    ("forex_reserves", "IN", "/india/foreign-exchange-reserves", "usd_mn", False),
+    ("trade_balance", "IN", "/india/balance-of-trade", "usd_mn", True),
+    ("trade_balance", "US", "/united-states/balance-of-trade", "usd_mn", True),
+    ("current_account_deficit", "IN", "/india/current-account", "usd_bn", True),
+    ("fiscal_deficit", "IN", "/india/government-budget", "percent_gdp", False),
+    ("bank_credit_growth", "IN", "/india/bank-lending-rate", "percent", False),
 ]
 
 _BASE_URL = "https://tradingeconomics.com"
@@ -223,7 +224,7 @@ class TradingEconomicsScraper:
         fetched = 0
         succeeded = 0
 
-        for indicator_name, country, path, unit in TE_INDICATORS:
+        for indicator_name, country, path, unit, negate in TE_INDICATORS:
             if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                 logger.warning(
                     "TE circuit breaker: %d consecutive failures, aborting remaining %d indicators",
@@ -239,6 +240,8 @@ class TradingEconomicsScraper:
                 parsed = self._extract_value_and_date(html)
                 if parsed:
                     val, ts = parsed
+                    if negate and val > 0:
+                        val = -val
                     results.append({
                         "indicator_name": indicator_name,
                         "value": round(val, 4),
