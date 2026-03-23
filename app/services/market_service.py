@@ -1015,6 +1015,20 @@ def _commodity_context(asset: str, direction: str) -> str:
             return "natural gas prices are rising — energy and manufacturing costs may increase"
         if a == "copper":
             return "copper prices are up — often signals industrial demand and economic expansion"
+        if a in ("wheat", "corn", "soybeans", "rice", "oats"):
+            return f"{asset.capitalize()} prices are rising — food inflation and input costs may increase"
+        if a in ("cotton", "sugar", "coffee", "cocoa"):
+            return f"{asset.capitalize()} prices are climbing — consumer goods costs may rise"
+        if a in ("urea", "dap fertilizer", "potash", "tsp fertilizer", "ammonia"):
+            return f"{asset.capitalize()} prices are rising — farming costs increase, food inflation risk"
+        if a == "aluminum":
+            return "Aluminum prices are rising — packaging and construction costs may increase"
+        if a == "brent crude":
+            return "Brent crude prices are climbing — global fuel costs rising"
+        if a == "gasoline":
+            return "Gasoline prices are rising — direct impact on consumer fuel costs"
+        if a == "heating oil":
+            return "Heating oil prices are rising — winter energy costs increasing"
         return f"{asset.capitalize()} prices are moving higher"
     if a in ("gold", "silver"):
         return f"{asset.capitalize()} prices are falling — risk appetite may be improving, or the dollar is strengthening"
@@ -1024,6 +1038,20 @@ def _commodity_context(asset: str, direction: str) -> str:
         return "natural gas prices are declining — easing energy cost pressures"
     if a == "copper":
         return "copper prices are falling — may indicate slowing industrial activity"
+    if a in ("wheat", "corn", "soybeans", "rice", "oats"):
+        return f"{asset.capitalize()} prices are falling — easing food inflation pressures"
+    if a in ("cotton", "sugar", "coffee", "cocoa"):
+        return f"{asset.capitalize()} prices are dropping — input cost relief for manufacturers"
+    if a in ("urea", "dap fertilizer", "potash", "tsp fertilizer", "ammonia"):
+        return f"{asset.capitalize()} prices are falling — cheaper inputs for agriculture"
+    if a == "aluminum":
+        return "Aluminum prices are falling — easing industrial input costs"
+    if a == "brent crude":
+        return "Brent crude prices are dropping — easing transportation costs worldwide"
+    if a == "gasoline":
+        return "Gasoline prices are falling — relief at the pump for consumers"
+    if a == "heating oil":
+        return "Heating oil prices are falling — lower winter energy bills"
     return f"{asset.capitalize()} prices are under pressure"
 
 

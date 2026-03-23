@@ -95,6 +95,29 @@ ASSET_CATALOG: tuple[AssetCatalogItem, ...] = (
     AssetCatalogItem("copper", "commodity", "HG=F", "Commodities", "NYSE", "rolling_24h", 840, "commodity", "usd_per_pound", False, "gold"),
     AssetCatalogItem("crude oil", "commodity", "CL=F", "Commodities", "NYSE", "rolling_24h", 850, "commodity", "usd_per_barrel", True, "gold"),
     AssetCatalogItem("natural gas", "commodity", "NG=F", "Commodities", "NYSE", "rolling_24h", 860, "commodity", "usd_per_mmbtu", False, "gold"),
+    # Agriculture
+    AssetCatalogItem("wheat", "commodity", "ZW=F", "Commodities", "CBOT", "rolling_24h", 870, "commodity", "usd_per_bushel", False, "gold"),
+    AssetCatalogItem("corn", "commodity", "ZC=F", "Commodities", "CBOT", "rolling_24h", 880, "commodity", "usd_per_bushel", False, "gold"),
+    AssetCatalogItem("soybeans", "commodity", "ZS=F", "Commodities", "CBOT", "rolling_24h", 890, "commodity", "usd_per_bushel", False, "gold"),
+    AssetCatalogItem("rice", "commodity", "ZR=F", "Commodities", "CBOT", "rolling_24h", 900, "commodity", "usd_per_hundredweight", False, "gold"),
+    AssetCatalogItem("oats", "commodity", "ZO=F", "Commodities", "CBOT", "rolling_24h", 910, "commodity", "usd_per_bushel", False, "gold"),
+    # Softs
+    AssetCatalogItem("cotton", "commodity", "CT=F", "Commodities", "ICE", "rolling_24h", 920, "commodity", "usd_per_pound", False, "gold"),
+    AssetCatalogItem("sugar", "commodity", "SB=F", "Commodities", "ICE", "rolling_24h", 930, "commodity", "usd_per_pound", False, "gold"),
+    AssetCatalogItem("coffee", "commodity", "KC=F", "Commodities", "ICE", "rolling_24h", 940, "commodity", "usd_per_pound", False, "gold"),
+    AssetCatalogItem("cocoa", "commodity", "CC=F", "Commodities", "ICE", "rolling_24h", 950, "commodity", "usd_per_metric_ton", False, "gold"),
+    # Industrial Metal
+    AssetCatalogItem("aluminum", "commodity", "ALI=F", "Commodities", "COMEX", "rolling_24h", 960, "commodity", "usd_per_pound", False, "gold"),
+    # Energy
+    AssetCatalogItem("brent crude", "commodity", "BZ=F", "Commodities", "ICE", "rolling_24h", 970, "commodity", "usd_per_barrel", False, "gold"),
+    AssetCatalogItem("gasoline", "commodity", "RB=F", "Commodities", "NYMEX", "rolling_24h", 980, "commodity", "usd_per_gallon", False, "gold"),
+    AssetCatalogItem("heating oil", "commodity", "HO=F", "Commodities", "NYMEX", "rolling_24h", 990, "commodity", "usd_per_gallon", False, "gold"),
+    # Fertilizers (TE source, no Yahoo symbol)
+    AssetCatalogItem("urea", "commodity", "TE:urea", "Commodities", "OTC", "rolling_24h", 1000, "commodity", "usd_per_metric_ton", False, "gold"),
+    AssetCatalogItem("dap fertilizer", "commodity", "TE:dap", "Commodities", "OTC", "rolling_24h", 1010, "commodity", "usd_per_metric_ton", False, "gold"),
+    AssetCatalogItem("potash", "commodity", "TE:potash", "Commodities", "OTC", "rolling_24h", 1020, "commodity", "usd_per_metric_ton", False, "gold"),
+    AssetCatalogItem("tsp fertilizer", "commodity", "TE:tsp", "Commodities", "OTC", "rolling_24h", 1030, "commodity", "usd_per_metric_ton", False, "gold"),
+    AssetCatalogItem("ammonia", "commodity", "TE:ammonia", "Commodities", "OTC", "rolling_24h", 1040, "commodity", "usd_per_metric_ton", False, "gold"),
     # Crypto
     AssetCatalogItem("bitcoin", "crypto", "BTC-USD", "Crypto", "GLOBAL", "rolling_24h", 900, "crypto", "usd", True, "bitcoin"),
     AssetCatalogItem("ethereum", "crypto", "ETH-USD", "Crypto", "GLOBAL", "rolling_24h", 910, "crypto", "usd", True, "bitcoin"),

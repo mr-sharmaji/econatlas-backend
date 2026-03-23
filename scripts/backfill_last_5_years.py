@@ -90,6 +90,19 @@ COMMODITY_SYMBOLS = {
     "CL=F": ("crude oil", "usd_per_barrel"),
     "NG=F": ("natural gas", "usd_per_mmbtu"),
     "HG=F": ("copper", "usd_per_pound"),
+    "ZW=F": ("wheat", "usd_per_bushel"),
+    "ZC=F": ("corn", "usd_per_bushel"),
+    "ZS=F": ("soybeans", "usd_per_bushel"),
+    "ZR=F": ("rice", "usd_per_hundredweight"),
+    "ZO=F": ("oats", "usd_per_bushel"),
+    "CT=F": ("cotton", "usd_per_pound"),
+    "SB=F": ("sugar", "usd_per_pound"),
+    "KC=F": ("coffee", "usd_per_pound"),
+    "CC=F": ("cocoa", "usd_per_metric_ton"),
+    "ALI=F": ("aluminum", "usd_per_pound"),
+    "BZ=F": ("brent crude", "usd_per_barrel"),
+    "RB=F": ("gasoline", "usd_per_gallon"),
+    "HO=F": ("heating oil", "usd_per_gallon"),
 }
 
 BOND_SERIES = [

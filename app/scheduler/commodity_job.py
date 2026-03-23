@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
+import time
 from datetime import date, datetime, timezone, timedelta
 from typing import Dict, List, Optional
+
+import requests
 
 from app.core.database import parse_ts
 from app.core.config import get_settings
@@ -28,6 +32,19 @@ SYMBOLS = {
     "CL=F": ("crude oil", "usd_per_barrel"),
     "NG=F": ("natural gas", "usd_per_mmbtu"),
     "HG=F": ("copper", "usd_per_pound"),
+    "ZW=F": ("wheat", "usd_per_bushel"),
+    "ZC=F": ("corn", "usd_per_bushel"),
+    "ZS=F": ("soybeans", "usd_per_bushel"),
+    "ZR=F": ("rice", "usd_per_hundredweight"),
+    "ZO=F": ("oats", "usd_per_bushel"),
+    "CT=F": ("cotton", "usd_per_pound"),
+    "SB=F": ("sugar", "usd_per_pound"),
+    "KC=F": ("coffee", "usd_per_pound"),
+    "CC=F": ("cocoa", "usd_per_metric_ton"),
+    "ALI=F": ("aluminum", "usd_per_pound"),
+    "BZ=F": ("brent crude", "usd_per_barrel"),
+    "RB=F": ("gasoline", "usd_per_gallon"),
+    "HO=F": ("heating oil", "usd_per_gallon"),
 }
 
 GOOGLE_COMMODITY_FALLBACKS = {
@@ -457,6 +474,85 @@ def build_commodity_intraday_rows_last_session_yahoo(
     return rows_out
 
 
+TE_FERTILIZERS = {
+    "/commodity/urea": ("urea", "usd_per_metric_ton"),
+    "/commodity/dap-fertilizer": ("dap fertilizer", "usd_per_metric_ton"),
+    "/commodity/potash": ("potash", "usd_per_metric_ton"),
+    "/commodity/tsp-fertilizer": ("tsp fertilizer", "usd_per_metric_ton"),
+    "/commodity/ammonia": ("ammonia", "usd_per_metric_ton"),
+}
+
+_TE_BASE_URL = "https://tradingeconomics.com"
+_TE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def _fetch_te_fertilizers() -> List[Dict]:
+    """Scrape fertilizer prices from Trading Economics commodity pages."""
+    items: List[Dict] = []
+    session = requests.Session()
+    session.headers.update(_TE_HEADERS)
+    for path, (asset, unit) in TE_FERTILIZERS.items():
+        try:
+            url = f"{_TE_BASE_URL}{path}"
+            resp = session.get(url, timeout=20)
+            resp.raise_for_status()
+            html = resp.text
+            price = None
+            # Try extracting price from <title> tag (format: "Urea - Price ... | 250.00")
+            title_match = re.search(r"<title>.*?\|\s*([\d,]+(?:\.\d+)?)\s*</title>", html, re.IGNORECASE)
+            if title_match:
+                try:
+                    price = float(title_match.group(1).replace(",", ""))
+                except (ValueError, TypeError):
+                    pass
+            # Fallback: try og:title or description meta tags
+            if price is None:
+                meta_match = re.search(
+                    r'<meta[^>]+(?:og:title|og:description|description)[^>]+content="[^"]*?\b([\d,]+(?:\.\d+)?)\s*(?:USD|usd)',
+                    html,
+                    re.IGNORECASE,
+                )
+                if meta_match:
+                    try:
+                        price = float(meta_match.group(1).replace(",", ""))
+                    except (ValueError, TypeError):
+                        pass
+            # Fallback: try the main content div with id="p"
+            if price is None:
+                div_match = re.search(r'id="p"[^>]*>([\d,]+(?:\.\d+)?)</[^>]+>', html)
+                if div_match:
+                    try:
+                        price = float(div_match.group(1).replace(",", ""))
+                    except (ValueError, TypeError):
+                        pass
+            if price is not None and price > 0:
+                items.append({
+                    "asset": asset,
+                    "price": price,
+                    "unit": unit,
+                    "instrument_type": "commodity",
+                    "source": "trading_economics_scrape",
+                    "source_timestamp": datetime.now(timezone.utc).isoformat(),
+                    "provider": "trading_economics",
+                    "provider_priority": 3,
+                    "confidence_level": 0.7,
+                    "is_fallback": False,
+                    "quality": "primary",
+                })
+                logger.info("TE fertilizer fetched: %s = %.2f %s", asset, price, unit)
+            else:
+                logger.warning("TE fertilizer price not found for %s", asset)
+        except Exception:
+            logger.warning("TE fertilizer fetch failed for %s", asset, exc_info=True)
+        # Rate limit: 2-4 seconds between requests
+        time.sleep(random.uniform(2.0, 4.0))
+    return items
+
+
 async def run_commodity_job() -> None:
     try:
         logger.debug("Commodity job cycle started")
@@ -492,6 +588,39 @@ async def run_commodity_job() -> None:
             logger.info("Commodity job: no daily or intraday rows written")
         else:
             logger.info("Commodity job complete: %d rows upserted (daily)", updated)
+        # Fetch fertilizer prices from Trading Economics
+        try:
+            te_rows_raw = await loop.run_in_executor(
+                get_job_executor("commodity"),
+                _fetch_te_fertilizers,
+            )
+            if te_rows_raw:
+                now = _scraper.utc_now()
+                trading_date = get_trading_date(now, NYSE)
+                ts = datetime(trading_date.year, trading_date.month, trading_date.day, 0, 0, 0, tzinfo=timezone.utc).isoformat()
+                te_rows = [
+                    {
+                        "asset": it["asset"],
+                        "price": it["price"],
+                        "timestamp": ts,
+                        "source": it.get("source"),
+                        "instrument_type": "commodity",
+                        "unit": it.get("unit"),
+                        "change_percent": None,
+                        "previous_close": None,
+                        "source_timestamp": it.get("source_timestamp"),
+                        "provider": it.get("provider"),
+                        "provider_priority": it.get("provider_priority"),
+                        "confidence_level": it.get("confidence_level"),
+                        "is_fallback": it.get("is_fallback"),
+                        "quality": it.get("quality"),
+                    }
+                    for it in te_rows_raw
+                ]
+                te_updated = await market_service.insert_prices_batch_upsert_daily(te_rows)
+                logger.info("Commodity job: %d TE fertilizer rows upserted", te_updated)
+        except Exception:
+            logger.warning("TE fertilizer scraping failed", exc_info=True)
         logger.debug("Commodity job cycle completed")
     except Exception:
         logger.exception("Commodity job failed")
