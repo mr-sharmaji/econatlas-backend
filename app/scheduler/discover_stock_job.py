@@ -4407,7 +4407,9 @@ class DiscoverStockScraper(BaseScraper):
         all_pct_1y: list[float] = []
         all_pct_3y: list[float] = []
         all_pct_5y: list[float] = []
+        pct_1m_by_sym: dict[str, float] = {}
         pct_3m_by_sym: dict[str, float] = {}
+        pct_6m_by_sym: dict[str, float] = {}
         pct_1y_by_sym: dict[str, float] = {}
         pct_3y_by_sym: dict[str, float] = {}
         pct_5y_by_sym: dict[str, float] = {}
@@ -4416,10 +4418,16 @@ class DiscoverStockScraper(BaseScraper):
             vd = vol_data.get(sym)
             if not vd:
                 continue
+            p1m = vd.get("pct_change_1m")
+            if p1m is not None:
+                pct_1m_by_sym[sym] = p1m
             p3m = vd.get("pct_change_3m")
             if p3m is not None:
                 pct_3m_by_sym[sym] = p3m
                 all_pct_3m.append(p3m)
+            p6m = vd.get("pct_change_6m")
+            if p6m is not None:
+                pct_6m_by_sym[sym] = p6m
             p1y = vd.get("pct_change_1y")
             if p1y is not None:
                 pct_1y_by_sym[sym] = p1y
@@ -4878,8 +4886,10 @@ class DiscoverStockScraper(BaseScraper):
                 "score_risk": round(risk_score, 2) if risk_score is not None else None,
                 "sector_percentile": None,  # filled in post-pass
                 "lynch_classification": lynch_class,
-                "percent_change_3m": pct_change_3m,
                 "percent_change_1w": pct_change_1w,
+                "percent_change_1m": pct_1m_by_sym.get(symbol),
+                "percent_change_3m": pct_change_3m,
+                "percent_change_6m": pct_6m_by_sym.get(symbol),
                 "percent_change_1y": pct_change_1y,
                 "percent_change_3y": pct_change_3y,
                 "percent_change_5y": pct_change_5y,

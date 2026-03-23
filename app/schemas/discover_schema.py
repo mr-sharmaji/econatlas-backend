@@ -122,8 +122,10 @@ class DiscoverStockItemResponse(BaseModel):
     # Industry sub-sector
     industry: str | None = None
     payout_ratio: float | None = None
-    percent_change_3m: float | None = None
     percent_change_1w: float | None = None
+    percent_change_1m: float | None = None
+    percent_change_3m: float | None = None
+    percent_change_6m: float | None = None
     percent_change_1y: float | None = None
     percent_change_3y: float | None = None
     percent_change_5y: float | None = None
@@ -206,6 +208,9 @@ class DiscoverMutualFundItemResponse(BaseModel):
     expense_ratio: float | None = None
     aum_cr: float | None = None
     risk_level: str | None = None
+    returns_1m: float | None = None
+    returns_3m: float | None = None
+    returns_6m: float | None = None
     returns_1y: float | None = None
     returns_3y: float | None = None
     returns_5y: float | None = None

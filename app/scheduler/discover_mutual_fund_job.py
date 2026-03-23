@@ -1660,32 +1660,50 @@ class DiscoverMutualFundScraper(BaseScraper):
                             latest_nav = nav_pairs[-1][1]
                             total_days = len(nav_pairs)
 
+                            def _cagr(lookback_days: int, min_days: int) -> float | None:
+                                if total_days < min_days:
+                                    return None
+                                idx = max(0, total_days - lookback_days)
+                                nav_then = nav_pairs[idx][1]
+                                years = (total_days - idx) / 252.0
+                                if nav_then > 0 and years > 0:
+                                    return round(((latest_nav / nav_then) ** (1.0 / years) - 1.0) * 100, 2)
+                                return None
+
+                            # Short-period returns (simple %, not CAGR)
+                            def _simple_return(lookback_days: int, min_days: int) -> float | None:
+                                if total_days < min_days:
+                                    return None
+                                idx = max(0, total_days - lookback_days)
+                                nav_then = nav_pairs[idx][1]
+                                if nav_then > 0:
+                                    return round(((latest_nav - nav_then) / nav_then) * 100, 2)
+                                return None
+
+                            # 1M return (≥15 trading days, simple %)
+                            v = _simple_return(21, 15)
+                            if v is not None:
+                                row["returns_1m"] = v
+                            # 3M return (≥40 trading days, simple %)
+                            v = _simple_return(63, 40)
+                            if v is not None:
+                                row["returns_3m"] = v
+                            # 6M return (≥100 trading days, simple %)
+                            v = _simple_return(126, 100)
+                            if v is not None:
+                                row["returns_6m"] = v
                             # 1Y CAGR (≥200 trading days)
-                            if total_days >= 200:
-                                idx_1y = max(0, total_days - 252)
-                                nav_1y = nav_pairs[idx_1y][1]
-                                years_1y = (total_days - idx_1y) / 252.0
-                                if nav_1y > 0 and years_1y > 0:
-                                    cagr_1y = round(((latest_nav / nav_1y) ** (1.0 / years_1y) - 1.0) * 100, 2)
-                                    row["returns_1y"] = cagr_1y
-
+                            v = _cagr(252, 200)
+                            if v is not None:
+                                row["returns_1y"] = v
                             # 3Y CAGR (≥600 trading days)
-                            if total_days >= 600:
-                                idx_3y = max(0, total_days - 756)
-                                nav_3y = nav_pairs[idx_3y][1]
-                                years_3y = (total_days - idx_3y) / 252.0
-                                if nav_3y > 0 and years_3y > 0:
-                                    cagr_3y = round(((latest_nav / nav_3y) ** (1.0 / years_3y) - 1.0) * 100, 2)
-                                    row["returns_3y"] = cagr_3y
-
+                            v = _cagr(756, 600)
+                            if v is not None:
+                                row["returns_3y"] = v
                             # 5Y CAGR (≥1000 trading days)
-                            if total_days >= 1000:
-                                idx_5y = max(0, total_days - 1260)
-                                nav_5y = nav_pairs[idx_5y][1]
-                                years_5y = (total_days - idx_5y) / 252.0
-                                if nav_5y > 0 and years_5y > 0:
-                                    cagr_5y = round(((latest_nav / nav_5y) ** (1.0 / years_5y) - 1.0) * 100, 2)
-                                    row["returns_5y"] = cagr_5y
+                            v = _cagr(1260, 1000)
+                            if v is not None:
+                                row["returns_5y"] = v
 
                         # ── Maximum Drawdown ──
                         all_navs = [p[1] for p in nav_pairs]
@@ -2081,7 +2099,7 @@ async def rescore_discover_mutual_funds() -> dict:
     )
 
     # ── Backfill CAGR returns from NAV history for funds missing them ──
-    missing_returns = [r for r in raw_rows if r.get("returns_1y") is None and r.get("scheme_code")]
+    missing_returns = [r for r in raw_rows if (r.get("returns_1y") is None or r.get("returns_1m") is None) and r.get("scheme_code")]
     if missing_returns:
         logger.info("MF Rescore: %d funds missing returns_1y — computing from NAV history", len(missing_returns))
         codes = [r["scheme_code"] for r in missing_returns]
@@ -2104,32 +2122,56 @@ async def rescore_discover_mutual_funds() -> dict:
 
             filled = 0
             for sc, pairs in nav_by_code.items():
-                if len(pairs) < 200:
+                if len(pairs) < 15:
                     continue
                 row = code_to_row.get(sc)
                 if row is None:
                     continue
                 latest_nav = pairs[-1][1]
                 total_days = len(pairs)
-                if total_days >= 200 and row.get("returns_1y") is None:
-                    idx_1y = max(0, total_days - 252)
-                    nav_1y = pairs[idx_1y][1]
-                    years_1y = (total_days - idx_1y) / 252.0
-                    if nav_1y > 0 and years_1y > 0:
-                        row["returns_1y"] = round(((latest_nav / nav_1y) ** (1.0 / years_1y) - 1.0) * 100, 2)
+
+                def _simple(lookback, min_d):
+                    if total_days < min_d:
+                        return None
+                    idx = max(0, total_days - lookback)
+                    n = pairs[idx][1]
+                    return round(((latest_nav - n) / n) * 100, 2) if n > 0 else None
+
+                def _cagr(lookback, min_d):
+                    if total_days < min_d:
+                        return None
+                    idx = max(0, total_days - lookback)
+                    n = pairs[idx][1]
+                    y = (total_days - idx) / 252.0
+                    return round(((latest_nav / n) ** (1.0 / y) - 1.0) * 100, 2) if n > 0 and y > 0 else None
+
+                # Short periods (simple %)
+                if row.get("returns_1m") is None:
+                    v = _simple(21, 15)
+                    if v is not None:
+                        row["returns_1m"] = v
+                if row.get("returns_3m") is None:
+                    v = _simple(63, 40)
+                    if v is not None:
+                        row["returns_3m"] = v
+                if row.get("returns_6m") is None:
+                    v = _simple(126, 100)
+                    if v is not None:
+                        row["returns_6m"] = v
+                # Long periods (CAGR)
+                if row.get("returns_1y") is None:
+                    v = _cagr(252, 200)
+                    if v is not None:
+                        row["returns_1y"] = v
                         filled += 1
-                if total_days >= 600 and row.get("returns_3y") is None:
-                    idx_3y = max(0, total_days - 756)
-                    nav_3y = pairs[idx_3y][1]
-                    years_3y = (total_days - idx_3y) / 252.0
-                    if nav_3y > 0 and years_3y > 0:
-                        row["returns_3y"] = round(((latest_nav / nav_3y) ** (1.0 / years_3y) - 1.0) * 100, 2)
-                if total_days >= 1000 and row.get("returns_5y") is None:
-                    idx_5y = max(0, total_days - 1260)
-                    nav_5y = pairs[idx_5y][1]
-                    years_5y = (total_days - idx_5y) / 252.0
-                    if nav_5y > 0 and years_5y > 0:
-                        row["returns_5y"] = round(((latest_nav / nav_5y) ** (1.0 / years_5y) - 1.0) * 100, 2)
+                if row.get("returns_3y") is None:
+                    v = _cagr(756, 600)
+                    if v is not None:
+                        row["returns_3y"] = v
+                if row.get("returns_5y") is None:
+                    v = _cagr(1260, 1000)
+                    if v is not None:
+                        row["returns_5y"] = v
             logger.info("MF Rescore: filled returns for %d funds from NAV history (%d had NAV data)", filled, len(nav_by_code))
         except Exception as exc:
             logger.warning("MF Rescore: NAV history CAGR backfill failed: %s", exc)

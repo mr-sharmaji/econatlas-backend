@@ -2173,7 +2173,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     score, score_momentum, score_liquidity, score_fundamentals,
                     score_volatility, score_growth,
                     score_ownership, score_financial_health, score_analyst,
-                    percent_change_3m, percent_change_1w,
+                    percent_change_1w, percent_change_1m, percent_change_3m, percent_change_6m,
                     percent_change_1y, percent_change_3y,
                     score_breakdown, source_status, source_timestamp, ingested_at,
                     primary_source, secondary_source,
@@ -2261,8 +2261,10 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     score_ownership = NULL,
                     score_financial_health = NULL,
                     score_analyst = NULL,
-                    percent_change_3m = EXCLUDED.percent_change_3m,
                     percent_change_1w = EXCLUDED.percent_change_1w,
+                    percent_change_1m = EXCLUDED.percent_change_1m,
+                    percent_change_3m = EXCLUDED.percent_change_3m,
+                    percent_change_6m = EXCLUDED.percent_change_6m,
                     percent_change_1y = EXCLUDED.percent_change_1y,
                     percent_change_3y = EXCLUDED.percent_change_3y,
                     score_breakdown = CASE WHEN EXCLUDED.score_breakdown IS NOT NULL THEN EXCLUDED.score_breakdown ELSE {STOCK_TABLE}.score_breakdown END,
@@ -2361,10 +2363,12 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("score")),                                       # $16
                 _to_float(row.get("score_momentum")),                              # $17
                 _to_float(row.get("score_growth")),                                # $18
-                _to_float(row.get("percent_change_3m")),                           # $19
-                _to_float(row.get("percent_change_1w")),                           # $20
-                _to_float(row.get("percent_change_1y")),                           # $21
-                _to_float(row.get("percent_change_3y")),                           # $22
+                _to_float(row.get("percent_change_1w")),                           # $19
+                _to_float(row.get("percent_change_1m")),                           # $20
+                _to_float(row.get("percent_change_3m")),                           # $21
+                _to_float(row.get("percent_change_6m")),                           # $22
+                _to_float(row.get("percent_change_1y")),                           # $23
+                _to_float(row.get("percent_change_3y")),                           # $24
                 _to_jsonb(row.get("score_breakdown"), _stock_breakdown_payload(row)) if row.get("score") is not None else None,  # $23
                 _normalize_source_status(row.get("source_status")),                # $24
                 parse_ts(row.get("source_timestamp")) or datetime.now(timezone.utc),  # $25
@@ -2521,6 +2525,7 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 (
                     scheme_code, scheme_name, amc, category, sub_category, plan_type, option_type,
                     nav, nav_date, expense_ratio, aum_cr, risk_level,
+                    returns_1m, returns_3m, returns_6m,
                     returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
                     score, score_return, score_risk, score_cost, score_consistency,
                     score_breakdown, source_status, source_timestamp, ingested_at,
@@ -2533,14 +2538,15 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
                     $8, $9, $10, $11, $12,
-                    $13, $14, $15, $16, $17, $18,
-                    $19, $20, $21, $22, $23,
-                    $24, $25, $26, NOW(),
-                    $27, $28, $29,
-                    $30, $31,
-                    $32, $33, $34, $35,
-                    $36, $37, $38, $39,
-                    $40, $41, $42
+                    $13, $14, $15,
+                    $16, $17, $18, $19, $20, $21,
+                    $22, $23, $24, $25, $26,
+                    $27, $28, $29, NOW(),
+                    $30, $31, $32,
+                    $33, $34,
+                    $35, $36, $37, $38,
+                    $39, $40, $41, $42,
+                    $43, $44, $45
                 )
                 ON CONFLICT (scheme_code)
                 DO UPDATE SET
@@ -2555,6 +2561,9 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     expense_ratio = COALESCE(EXCLUDED.expense_ratio, discover_mutual_fund_snapshots.expense_ratio),
                     aum_cr = COALESCE(EXCLUDED.aum_cr, discover_mutual_fund_snapshots.aum_cr),
                     risk_level = EXCLUDED.risk_level,
+                    returns_1m = COALESCE(EXCLUDED.returns_1m, discover_mutual_fund_snapshots.returns_1m),
+                    returns_3m = COALESCE(EXCLUDED.returns_3m, discover_mutual_fund_snapshots.returns_3m),
+                    returns_6m = COALESCE(EXCLUDED.returns_6m, discover_mutual_fund_snapshots.returns_6m),
                     returns_1y = EXCLUDED.returns_1y,
                     returns_3y = EXCLUDED.returns_3y,
                     returns_5y = EXCLUDED.returns_5y,
@@ -2599,6 +2608,9 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("expense_ratio")),
                 _to_float(row.get("aum_cr")),
                 row.get("risk_level"),
+                _to_float(row.get("returns_1m")),
+                _to_float(row.get("returns_3m")),
+                _to_float(row.get("returns_6m")),
                 _to_float(row.get("returns_1y")),
                 _to_float(row.get("returns_3y")),
                 _to_float(row.get("returns_5y")),
@@ -2858,7 +2870,7 @@ async def list_discover_stocks(
             num_shareholders_change_qoq, num_shareholders_change_yoy,
             synthetic_forward_pe,
             pl_annual, bs_annual, cf_annual, shareholding_quarterly, growth_ranges,
-            percent_change_3m, percent_change_1w,
+            percent_change_1w, percent_change_1m, percent_change_3m, percent_change_6m,
             percent_change_1y, percent_change_3y,
             score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
@@ -3160,6 +3172,7 @@ async def list_discover_mutual_funds(
             scheme_code, scheme_name, amc, category, sub_category,
             plan_type, option_type, nav, nav_date,
             expense_ratio, aum_cr, risk_level,
+            returns_1m, returns_3m, returns_6m,
             returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
             score, score_return, score_risk, score_cost, score_consistency,
             score_performance, score_category_fit,
@@ -3421,7 +3434,7 @@ async def get_discover_home_data() -> dict:
 
     _stock_cols = (
         "symbol, display_name, sector, industry, last_price, percent_change, "
-        "percent_change_3m, percent_change_1w, percent_change_1y, "
+        "percent_change_1w, percent_change_1m, percent_change_3m, percent_change_6m, percent_change_1y, "
         "score, score_quality, score_growth, score_valuation, "
         "high_52w, low_52w, market_cap, pe_ratio, roe, "
         "debt_to_equity, dividend_yield, action_tag"
@@ -3908,6 +3921,44 @@ async def get_bulk_stock_volatility_data() -> dict[str, dict]:
             FROM recent
             GROUP BY symbol
         ),
+        -- 1M return: first and last close over 30 days
+        range_1m AS (
+            SELECT symbol,
+                   FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS first_close_1m,
+                   LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS last_close_1m,
+                   COUNT(*) OVER (PARTITION BY symbol) AS cnt_1m
+            FROM discover_stock_price_history
+            WHERE trade_date >= CURRENT_DATE - INTERVAL '30 days'
+        ),
+        stats_1m AS (
+            SELECT symbol,
+                   MIN(first_close_1m) AS first_close_1m,
+                   MAX(last_close_1m) AS last_close_1m
+            FROM range_1m
+            GROUP BY symbol
+            HAVING MAX(cnt_1m) >= 10
+        ),
+        -- 6M return: first and last close over 180 days
+        range_6m AS (
+            SELECT symbol,
+                   FIRST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS first_close_6m,
+                   LAST_VALUE(close) OVER (PARTITION BY symbol ORDER BY trade_date ASC
+                       ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS last_close_6m,
+                   COUNT(*) OVER (PARTITION BY symbol) AS cnt_6m
+            FROM discover_stock_price_history
+            WHERE trade_date >= CURRENT_DATE - INTERVAL '180 days'
+        ),
+        stats_6m AS (
+            SELECT symbol,
+                   MIN(first_close_6m) AS first_close_6m,
+                   MAX(last_close_6m) AS last_close_6m
+            FROM range_6m
+            GROUP BY symbol
+            HAVING MAX(cnt_6m) >= 60
+        ),
         -- 1Y return: first and last close over 365 days
         range_1y AS (
             SELECT symbol,
@@ -3971,11 +4022,15 @@ async def get_bulk_stock_volatility_data() -> dict[str, dict]:
         SELECT s.symbol, s.std_dev, s.first_close, s.last_close, s.data_points,
                st.latest_close, st.close_5d_ago, st.close_20d_ago,
                st.avg_vol_5d, st.avg_vol_20d,
+               m1.first_close_1m, m1.last_close_1m,
+               m6.first_close_6m, m6.last_close_6m,
                y.first_close_1y, y.last_close_1y,
                y3.first_close_3y, y3.last_close_3y,
                y5.first_close_5y, y5.last_close_5y
         FROM stats_3m s
         LEFT JOIN short_term st ON s.symbol = st.symbol
+        LEFT JOIN stats_1m m1 ON s.symbol = m1.symbol
+        LEFT JOIN stats_6m m6 ON s.symbol = m6.symbol
         LEFT JOIN stats_1y y ON s.symbol = y.symbol
         LEFT JOIN stats_3y y3 ON s.symbol = y3.symbol
         LEFT JOIN stats_5y y5 ON s.symbol = y5.symbol
@@ -4008,6 +4063,19 @@ async def get_bulk_stock_volatility_data() -> dict[str, dict]:
         if latest and close_20d and close_20d > 0:
             momentum_20d = round(((latest - close_20d) / close_20d) * 100, 2)
 
+        # 1M and 6M returns
+        pct_1m = None
+        fc_1m = float(r["first_close_1m"]) if r.get("first_close_1m") else None
+        lc_1m = float(r["last_close_1m"]) if r.get("last_close_1m") else None
+        if fc_1m and fc_1m > 0 and lc_1m:
+            pct_1m = round(((lc_1m - fc_1m) / fc_1m) * 100, 2)
+
+        pct_6m = None
+        fc_6m = float(r["first_close_6m"]) if r.get("first_close_6m") else None
+        lc_6m = float(r["last_close_6m"]) if r.get("last_close_6m") else None
+        if fc_6m and fc_6m > 0 and lc_6m:
+            pct_6m = round(((lc_6m - fc_6m) / fc_6m) * 100, 2)
+
         # 1Y and 3Y returns
         pct_1y = None
         fc_1y = float(r["first_close_1y"]) if r.get("first_close_1y") else None
@@ -4033,8 +4101,10 @@ async def get_bulk_stock_volatility_data() -> dict[str, dict]:
 
         result[sym] = {
             "std_dev": annualized_std,
-            "pct_change_3m": pct_3m,
             "pct_change_1w": pct_1w,
+            "pct_change_1m": pct_1m,
+            "pct_change_3m": pct_3m,
+            "pct_change_6m": pct_6m,
             "pct_change_1y": pct_1y,
             "pct_change_3y": pct_3y,
             "pct_change_5y": pct_5y,
@@ -4093,7 +4163,7 @@ async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
             num_shareholders_change_qoq, num_shareholders_change_yoy,
             synthetic_forward_pe,
             pl_annual, bs_annual, cf_annual, shareholding_quarterly, growth_ranges,
-            percent_change_3m, percent_change_1w,
+            percent_change_1w, percent_change_1m, percent_change_3m, percent_change_6m,
             percent_change_1y, percent_change_3y,
             score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
             primary_source, secondary_source,
@@ -4169,6 +4239,7 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
             scheme_code, scheme_name, amc, category, sub_category,
             plan_type, option_type, nav, nav_date,
             expense_ratio, aum_cr, risk_level,
+            returns_1m, returns_3m, returns_6m,
             returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
             score, score_return, score_risk, score_cost, score_consistency,
             score_performance, score_category_fit,
