@@ -97,6 +97,10 @@ class RedisCacheMiddleware(BaseHTTPMiddleware):
         if request.method != "GET":
             return await call_next(request)
 
+        # Explicit cache bypass for pull-to-refresh calls from clients.
+        if request.query_params.get("_refresh_nonce") is not None:
+            return await call_next(request)
+
         path = request.url.path
         ttl = _cache_ttl(path)
         if ttl is None:

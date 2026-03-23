@@ -3,6 +3,7 @@
 Uses topic-based messaging (no device token storage needed for v1).
 All devices subscribe to 'market_alerts' topic via the Flutter app.
 """
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -20,14 +21,17 @@ def _get_firebase():
     try:
         import firebase_admin
         from firebase_admin import credentials
-        # Use Application Default Credentials (set GOOGLE_APPLICATION_CREDENTIALS env var)
-        # or initialize without credentials if running on GCP
         try:
             _firebase_app = firebase_admin.get_app()
         except ValueError:
-            cred_path = os.environ.get("FIREBASE_CREDENTIALS_JSON") or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-            if cred_path:
-                cred = credentials.Certificate(cred_path)
+            cred_value = os.environ.get("FIREBASE_CREDENTIALS_JSON") or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            if cred_value:
+                # Support both inline JSON string and file path
+                stripped = cred_value.strip()
+                if stripped.startswith("{"):
+                    cred = credentials.Certificate(json.loads(stripped))
+                else:
+                    cred = credentials.Certificate(stripped)
                 _firebase_app = firebase_admin.initialize_app(cred)
             else:
                 _firebase_app = firebase_admin.initialize_app()

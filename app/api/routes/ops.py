@@ -47,6 +47,7 @@ _TABLES: dict[str, str] = {
 _SAFE_COLUMN_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
 
 
+
 def _authorize(x_ops_token: str | None) -> None:
     settings = get_settings()
     if not settings.ops_logs_enabled:
@@ -1030,8 +1031,15 @@ async def data_health(
 @router.post("/test-notification")
 async def test_notification() -> dict:
     """Send a test push notification to all subscribed devices."""
-    from app.services import notification_service
-    success = await notification_service.send_topic_notification(
+    import os
+    from app.services.notification_service import _get_firebase, send_topic_notification
+    # Debug info
+    cred_env = os.environ.get("FIREBASE_CREDENTIALS_JSON", "NOT SET")
+    cred_preview = cred_env[:50] + "..." if len(cred_env) > 50 else cred_env
+    firebase_app = _get_firebase()
+    if firebase_app is None:
+        return {"sent": False, "reason": "Firebase init failed", "env_preview": cred_preview}
+    success = await send_topic_notification(
         topic="market_alerts",
         title="🔔 EconAtlas Test",
         body="Push notifications are working! You'll receive market open/close alerts.",
