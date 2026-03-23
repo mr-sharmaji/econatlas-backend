@@ -949,8 +949,9 @@ def _compute_momentum_score(prices: list[float]) -> float:
 
 def _generate_market_verdict(trend: float, volatility: float, momentum: float) -> tuple[str, str, str]:
     """Generate verdict, action_tag, and action_tag_reasoning from scores.
-    Returns (verdict, action_tag, action_tag_reasoning)."""
-    avg = (trend + volatility + momentum) / 3.0
+    Returns (verdict, action_tag, action_tag_reasoning).
+    Weighted: trend 40%, momentum 40%, volatility 20% — direction matters more than stability."""
+    avg = trend * 0.4 + momentum * 0.4 + volatility * 0.2
 
     if avg >= 70:
         verdict = "Strong positive signals across trend, momentum, and stability"
@@ -1087,13 +1088,13 @@ async def compute_and_store_market_score(asset: str, instrument_type: str) -> di
     """Compute scores for a single market instrument from its price history and store in DB."""
     pool = await get_pool()
 
-    # Fetch most recent 200 days of price history, then sort ASC for scoring
+    # Fetch most recent 365 days of price history, then sort ASC for scoring
     rows = await pool.fetch(
         f"""
         SELECT price, "timestamp" FROM {TABLE}
         WHERE asset = $1 AND instrument_type = $2
         ORDER BY "timestamp" DESC
-        LIMIT 200
+        LIMIT 365
         """,
         asset,
         instrument_type,
