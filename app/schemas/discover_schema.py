@@ -305,6 +305,7 @@ class SearchStockItem(BaseModel):
 class SearchMutualFundItem(BaseModel):
     scheme_code: str
     scheme_name: str
+    display_name: str | None = None
     category: str | None = None
     nav: float
     returns_1y: float | None = None

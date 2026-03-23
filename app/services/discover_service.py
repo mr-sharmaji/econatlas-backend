@@ -3354,7 +3354,7 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
 
     mf_rows = await pool.fetch(
         f"""
-        SELECT scheme_code, scheme_name, category, nav, returns_1y,
+        SELECT scheme_code, scheme_name, display_name, category, nav, returns_1y,
                COALESCE(score, 0) AS score
         FROM {MF_TABLE}
         WHERE (scheme_name ILIKE $1 OR scheme_code ILIKE $1)
