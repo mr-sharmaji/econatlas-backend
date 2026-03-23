@@ -1238,6 +1238,14 @@ def _generate_market_verdict(
     avg = trend * 0.4 + momentum * 0.4 + volatility * 0.2
     inst = instrument_type
 
+    # Override: strong trend signal caps the verdict
+    # If trend < 25 (well below all SMAs), cap at Bearish even if momentum is neutral
+    # If trend > 75 (well above all SMAs), floor at Moderately Bullish
+    if trend < 25 and avg >= 30:
+        avg = min(avg, 29.9)  # force Bearish
+    elif trend > 75 and avg < 55:
+        avg = max(avg, 55.0)  # force at least Moderately Bullish
+
     if avg >= 70:
         verdict = "Strong positive signals across trend and momentum"
         action_tag = "Bullish"
