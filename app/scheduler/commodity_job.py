@@ -497,14 +497,21 @@ _TE_HEADERS = {
 
 
 def _fetch_fertilizer_prices() -> List[Dict]:
-    """Scrape fertilizer prices from Index Mundi commodity index page via Playwright.
-    Single page load returns all fertilizer prices in a rendered table."""
+    """Scrape commodity prices from Index Mundi commodity index page via Playwright.
+    Single page load returns all prices — fertilizers + India-critical commodities."""
     # Map Index Mundi names → our asset names and units
     IM_MAP = {
+        # Fertilizers
         "Urea": ("urea", "usd_per_metric_ton"),
         "DAP fertilizer": ("dap fertilizer", "usd_per_metric_ton"),
         "Potassium Chloride": ("potash", "usd_per_metric_ton"),
         "Triple Superphosphate": ("tsp fertilizer", "usd_per_metric_ton"),
+        # India-critical commodities (not on Yahoo Finance)
+        "Iron Ore": ("iron ore", "usd_per_dry_metric_ton"),
+        "Coal, Australian thermal coal": ("coal", "usd_per_metric_ton"),
+        "Palm oil": ("palm oil", "usd_per_metric_ton"),
+        "Rubber": ("rubber", "usd_per_kg"),
+        "Zinc": ("zinc", "usd_per_metric_ton"),
     }
     items: List[Dict] = []
     try:

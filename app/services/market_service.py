@@ -1029,6 +1029,16 @@ def _commodity_context(asset: str, direction: str) -> str:
             return "Gasoline prices are rising — direct impact on consumer fuel costs"
         if a == "heating oil":
             return "Heating oil prices are rising — winter energy costs increasing"
+        if a == "iron ore":
+            return "Iron ore prices are rising — steel and infrastructure costs increasing"
+        if a == "coal":
+            return "Coal prices are rising — power generation costs increasing, especially for India"
+        if a == "palm oil":
+            return "Palm oil prices are climbing — cooking oil and FMCG costs may rise in India"
+        if a == "rubber":
+            return "Rubber prices are rising — auto and tyre industry costs increasing"
+        if a == "zinc":
+            return "Zinc prices are up — galvanizing and construction costs may increase"
         return f"{asset.capitalize()} prices are moving higher"
     if a in ("gold", "silver"):
         return f"{asset.capitalize()} prices are falling — risk appetite may be improving, or the dollar is strengthening"
@@ -1052,6 +1062,16 @@ def _commodity_context(asset: str, direction: str) -> str:
         return "Gasoline prices are falling — relief at the pump for consumers"
     if a == "heating oil":
         return "Heating oil prices are falling — lower winter energy bills"
+    if a == "iron ore":
+        return "Iron ore prices are falling — lower steel costs, but may signal weak construction demand"
+    if a == "coal":
+        return "Coal prices are dropping — easing power generation costs"
+    if a == "palm oil":
+        return "Palm oil prices are falling — cooking oil and FMCG costs easing"
+    if a == "rubber":
+        return "Rubber prices are falling — lower input costs for auto and tyre industry"
+    if a == "zinc":
+        return "Zinc prices are down — cheaper galvanizing and construction inputs"
     return f"{asset.capitalize()} prices are under pressure"
 
 
