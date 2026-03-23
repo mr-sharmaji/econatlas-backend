@@ -970,67 +970,170 @@ def _compute_momentum_score(prices: list[float]) -> float:
     return max(0.0, min(100.0, round(score, 1)))
 
 
-def _trend_desc(score: float) -> str:
-    if score >= 75: return "trading well above key moving averages"
-    if score >= 60: return "holding above most moving averages"
-    if score >= 40: return "hovering near its moving averages"
-    if score >= 25: return "trading below key moving averages"
-    return "well below all moving averages, in a sustained decline"
+def _fx_context(asset: str, score: float, direction: str) -> str:
+    """Context-aware description for currency pairs (all vs INR)."""
+    base = asset.split("/")[0] if "/" in asset else asset
+    base_names = {
+        "USD": "US Dollar", "EUR": "Euro", "GBP": "British Pound",
+        "JPY": "Japanese Yen", "AUD": "Australian Dollar", "CAD": "Canadian Dollar",
+        "CHF": "Swiss Franc", "CNY": "Chinese Yuan", "SGD": "Singapore Dollar",
+    }
+    name = base_names.get(base, base)
+    if direction == "up":
+        return f"the {name} is strengthening against the Rupee — imports and foreign expenses get costlier"
+    return f"the {name} is weakening against the Rupee — imports become cheaper, but export earnings shrink"
 
-def _momentum_desc(score: float) -> str:
-    if score >= 75: return "strong buying pressure with accelerating gains"
-    if score >= 60: return "positive momentum with steady buying interest"
-    if score >= 40: return "limited momentum in either direction"
-    if score >= 25: return "weakening momentum with selling pressure building"
-    return "heavy selling pressure and rapid loss of momentum"
 
-def _vol_desc(score: float) -> str:
-    if score >= 65: return "Price moves have been orderly and predictable."
+def _bond_context(asset: str, direction: str) -> str:
+    """Context-aware description for bond yields."""
+    is_india = "India" in asset
+    is_us = "US" in asset
+    if direction == "up":
+        base = "borrowing costs are rising"
+        if is_india:
+            return f"{base} in India — home loans and corporate debt get more expensive"
+        if is_us:
+            return f"{base} in the US — tighter financial conditions, pressure on equity valuations"
+        return base
+    base = "borrowing costs are easing"
+    if is_india:
+        return f"{base} in India — cheaper loans and supportive for equity markets"
+    if is_us:
+        return f"{base} in the US — looser financial conditions, supportive for risk assets"
+    return base
+
+
+def _commodity_context(asset: str, direction: str) -> str:
+    """Context-aware description for commodities."""
+    a = asset.lower()
+    if direction == "up":
+        if a in ("gold", "silver"):
+            return f"{asset.capitalize()} prices are rising — often a sign of inflation fears or safe-haven demand"
+        if a == "crude oil":
+            return "crude oil prices are climbing — fuel and transportation costs may rise"
+        if a == "natural gas":
+            return "natural gas prices are rising — energy and manufacturing costs may increase"
+        if a == "copper":
+            return "copper prices are up — often signals industrial demand and economic expansion"
+        return f"{asset.capitalize()} prices are moving higher"
+    if a in ("gold", "silver"):
+        return f"{asset.capitalize()} prices are falling — risk appetite may be improving, or the dollar is strengthening"
+    if a == "crude oil":
+        return "crude oil prices are dropping — lower fuel costs, but may signal weaker global demand"
+    if a == "natural gas":
+        return "natural gas prices are declining — easing energy cost pressures"
+    if a == "copper":
+        return "copper prices are falling — may indicate slowing industrial activity"
+    return f"{asset.capitalize()} prices are under pressure"
+
+
+def _trend_desc(score: float, inst: str, asset: str) -> str:
+    """Human-readable trend description, adapted by asset class."""
+    direction = "up" if score >= 50 else "down"
+    if inst == "bond_yield":
+        return _bond_context(asset, direction)
+    if inst == "currency":
+        return _fx_context(asset, score, direction)
+    if inst == "commodity":
+        return _commodity_context(asset, direction)
+    if inst == "crypto":
+        name = asset.capitalize()
+        if score >= 75: return f"{name} is rallying well above key moving averages"
+        if score >= 60: return f"{name} is holding above most moving averages"
+        if score >= 40: return f"{name} is consolidating near its averages"
+        if score >= 25: return f"{name} is slipping below key moving averages"
+        return f"{name} is in a sustained sell-off, well below all averages"
+    # index
+    if score >= 75: return "the index is trading well above key moving averages, in a strong uptrend"
+    if score >= 60: return "the index is holding above most moving averages"
+    if score >= 40: return "the index is hovering near its moving averages with no clear direction"
+    if score >= 25: return "the index is trading below key moving averages"
+    return "the index is well below all moving averages, in a sustained decline"
+
+
+def _momentum_desc(score: float, inst: str) -> str:
+    """Human-readable momentum description, adapted by asset class."""
+    if inst == "bond_yield":
+        if score >= 70: return "Rate expectations are shifting rapidly — yields gaining fast."
+        if score >= 55: return "Steady upward pressure on yields."
+        if score >= 45: return "Yield momentum is flat — markets await new catalysts."
+        if score >= 30: return "Yields losing steam as rate-cut expectations build."
+        return "Yields falling fast — market pricing in significant easing."
+    if inst == "currency":
+        if score >= 70: return "Strong capital flows driving rapid movement."
+        if score >= 55: return "Steady flows support the current direction."
+        if score >= 45: return "Flow dynamics are balanced — no dominant direction."
+        if score >= 30: return "Flows are reversing, putting pressure on the rate."
+        return "Heavy flows in the opposite direction — sharp move underway."
+    if inst == "commodity":
+        if score >= 70: return "Demand is outpacing supply, driving prices higher rapidly."
+        if score >= 55: return "Steady demand keeps prices firm."
+        if score >= 45: return "Supply and demand are broadly balanced."
+        if score >= 30: return "Demand is softening, putting pressure on prices."
+        return "Oversupply or demand weakness is driving prices down sharply."
+    # index / crypto
+    if score >= 70: return "Strong buying pressure with broad participation."
+    if score >= 55: return "Positive momentum with steady buying interest."
+    if score >= 45: return "Momentum is flat — neither buyers nor sellers in control."
+    if score >= 30: return "Selling pressure is building as buyers step back."
+    return "Heavy selling pressure across the board."
+
+
+def _vol_context(score: float, inst: str) -> str:
+    """One-sentence volatility context, adapted by asset class."""
+    if inst == "bond_yield":
+        if score >= 65: return "Rate markets are calm — low uncertainty around policy direction."
+        if score >= 35: return "Yield swings are normal for the current rate environment."
+        return "Bond markets are jittery — elevated swings suggest policy uncertainty."
+    if inst == "currency":
+        if score >= 65: return "FX volatility is low — stable macro conditions."
+        if score >= 35: return "Currency swings are within normal range."
+        return "FX volatility is elevated — expect wider daily swings."
+    if inst == "commodity":
+        if score >= 65: return "Commodity prices are moving in an orderly fashion."
+        if score >= 35: return "Price swings are typical for this market."
+        return "High volatility — supply shocks or geopolitical risk may be at play."
+    # index / crypto
+    if score >= 65: return "Market conditions are calm with orderly price action."
     if score >= 35: return "Volatility is in line with historical norms."
-    return "Elevated volatility suggests heightened uncertainty."
+    return "Elevated volatility — risk-off sentiment or event-driven uncertainty."
 
 
-def _generate_market_verdict(trend: float, volatility: float, momentum: float) -> tuple[str, str, str]:
+def _generate_market_verdict(
+    trend: float, volatility: float, momentum: float,
+    asset: str = "", instrument_type: str = "index",
+) -> tuple[str, str, str]:
     """Generate verdict, action_tag, and action_tag_reasoning from scores.
     Returns (verdict, action_tag, action_tag_reasoning).
-    Weighted: trend 40%, momentum 40%, volatility 20% — direction matters more than stability."""
+    Weighted: trend 40%, momentum 40%, volatility 20% — direction matters more than stability.
+    Reasoning is asset-class-aware with natural language."""
     avg = trend * 0.4 + momentum * 0.4 + volatility * 0.2
+    inst = instrument_type
 
     if avg >= 70:
         verdict = "Strong positive signals across trend and momentum"
         action_tag = "Bullish"
-        reasoning = (
-            f"Price is {_trend_desc(trend)}, with {_momentum_desc(momentum)}. "
-            f"{_vol_desc(volatility)}"
-        )
     elif avg >= 55:
         verdict = "Leaning positive with supportive price action"
         action_tag = "Moderately Bullish"
-        reasoning = (
-            f"Price is {_trend_desc(trend)}, showing {_momentum_desc(momentum)}. "
-            f"{_vol_desc(volatility)}"
-        )
     elif avg >= 45:
         verdict = "No clear direction — price action is mixed"
         action_tag = "Neutral"
-        reasoning = (
-            f"Price is {_trend_desc(trend)}, with {_momentum_desc(momentum)}. "
-            f"{_vol_desc(volatility)}"
-        )
     elif avg >= 30:
         verdict = "Leaning negative with weakening price action"
         action_tag = "Moderately Bearish"
-        reasoning = (
-            f"Price is {_trend_desc(trend)}, showing {_momentum_desc(momentum)}. "
-            f"{_vol_desc(volatility)}"
-        )
     else:
         verdict = "Broad weakness across trend and momentum"
         action_tag = "Bearish"
-        reasoning = (
-            f"Price is {_trend_desc(trend)}, with {_momentum_desc(momentum)}. "
-            f"{_vol_desc(volatility)}"
-        )
+
+    trend_text = _trend_desc(trend, inst, asset)
+    # Capitalize first letter
+    trend_text = trend_text[0].upper() + trend_text[1:] if trend_text else ""
+    reasoning = (
+        f"{trend_text}. "
+        f"{_momentum_desc(momentum, inst)} "
+        f"{_vol_context(volatility, inst)}"
+    )
 
     return verdict, action_tag, reasoning
 
@@ -1165,7 +1268,7 @@ async def compute_and_store_market_score(asset: str, instrument_type: str) -> di
     vol = _compute_volatility_score(prices)
     mom = _compute_momentum_score(prices)
 
-    verdict, action_tag, reasoning = _generate_market_verdict(trend, vol, mom)
+    verdict, action_tag, reasoning = _generate_market_verdict(trend, vol, mom, asset, instrument_type)
     driver_tags = _generate_driver_tags(trend, vol, mom, asset, instrument_type)
     type_extras = _generate_type_extras(asset, instrument_type, trend, vol, mom)
 
