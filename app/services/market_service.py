@@ -1075,12 +1075,12 @@ async def compute_and_store_market_score(asset: str, instrument_type: str) -> di
     """Compute scores for a single market instrument from its price history and store in DB."""
     pool = await get_pool()
 
-    # Fetch last 200 days of price history
+    # Fetch most recent 200 days of price history, then sort ASC for scoring
     rows = await pool.fetch(
         f"""
-        SELECT price FROM {TABLE}
+        SELECT price, "timestamp" FROM {TABLE}
         WHERE asset = $1 AND instrument_type = $2
-        ORDER BY timestamp ASC
+        ORDER BY "timestamp" DESC
         LIMIT 200
         """,
         asset,
@@ -1091,7 +1091,9 @@ async def compute_and_store_market_score(asset: str, instrument_type: str) -> di
         logger.debug("Not enough price history for scoring: asset=%s type=%s rows=%d", asset, instrument_type, len(rows))
         return None
 
-    prices = [float(r["price"]) for r in rows]
+    # Sort oldest-first for SMA/momentum calculations
+    rows_sorted = sorted(rows, key=lambda r: r["timestamp"])
+    prices = [float(r["price"]) for r in rows_sorted]
 
     trend = _compute_trend_score(prices)
     vol = _compute_volatility_score(prices)
