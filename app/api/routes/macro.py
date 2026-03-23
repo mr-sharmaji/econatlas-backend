@@ -4,7 +4,9 @@ import math
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.macro_schema import (
+    EconCalendarResponse,
     InstitutionalFlowsOverviewResponse,
+    MacroForecastListResponse,
     MacroIndicatorCreate,
     MacroIndicatorListResponse,
     MacroIndicatorResponse,
@@ -96,5 +98,31 @@ async def institutional_flows_overview(
     try:
         payload = await macro_service.get_institutional_flows_overview(sessions=sessions)
         return InstitutionalFlowsOverviewResponse(**payload)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/forecasts", response_model=MacroForecastListResponse)
+async def list_forecasts(
+    country: str | None = Query(default=None),
+    indicator: str | None = Query(default=None),
+) -> MacroForecastListResponse:
+    """Return IMF WEO forecast projections."""
+    try:
+        rows = await macro_service.get_forecasts(country=country, indicator=indicator)
+        return MacroForecastListResponse(forecasts=rows, count=len(rows))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/calendar", response_model=EconCalendarResponse)
+async def list_calendar(
+    days_ahead: int = Query(default=90, ge=1, le=365),
+    country: str | None = Query(default=None),
+) -> EconCalendarResponse:
+    """Return upcoming economic events."""
+    try:
+        events = await macro_service.get_upcoming_events(days_ahead=days_ahead, country=country)
+        return EconCalendarResponse(events=events, count=len(events))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

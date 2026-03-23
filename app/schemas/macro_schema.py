@@ -45,3 +45,36 @@ class InstitutionalFlowsOverviewResponse(BaseModel):
     dii_value: float | None = None
     combined_value: float | None = None
     trend: list[InstitutionalFlowTrendPoint] = Field(default_factory=list)
+
+
+# ── Forecasts ──
+
+class MacroForecastResponse(BaseModel):
+    indicator_name: str
+    country: str
+    forecast_year: int
+    value: float
+    source: str | None = None
+    fetched_at: datetime | None = None
+
+
+class MacroForecastListResponse(BaseModel):
+    forecasts: list[MacroForecastResponse]
+    count: int
+
+
+# ── Economic Calendar ──
+
+class EconCalendarEventResponse(BaseModel):
+    event_name: str
+    institution: str
+    event_date: date
+    country: str
+    event_type: str
+    description: str | None = None
+    source: str | None = None
+
+
+class EconCalendarResponse(BaseModel):
+    events: list[EconCalendarEventResponse]
+    count: int

@@ -143,6 +143,18 @@ async def task_ipo(ctx: dict) -> None:
     await _run_with_retry(ctx, "ipo", lambda: ipo_service.sync_ipo_cache(force=False))
 
 
+async def task_imf_forecast(ctx: dict) -> None:
+    from app.scheduler.imf_weo_scraper import run_imf_forecast_job
+
+    await _run_with_retry(ctx, "imf_forecast", run_imf_forecast_job)
+
+
+async def task_econ_calendar(ctx: dict) -> None:
+    from app.scheduler.econ_calendar import run_econ_calendar_job
+
+    await _run_with_retry(ctx, "econ_calendar", run_econ_calendar_job)
+
+
 async def task_tax(ctx: dict) -> None:
     from app.core.config import get_settings
     from app.scheduler.tax_job import run_tax_job

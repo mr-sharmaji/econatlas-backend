@@ -17,6 +17,8 @@ JOB_RETRY_POLICIES: dict[str, tuple[int, int]] = {
     # Lower-frequency
     "news": (1, 15),
     "tax": (3, 30),
+    "imf_forecast": (2, 30),
+    "econ_calendar": (2, 30),
     # Daily cron jobs — retries matter most
     "discover_stock": (3, 60),
     "discover_mutual_funds": (3, 60),
@@ -37,6 +39,8 @@ def get_arq_functions() -> list:
         task_discover_mutual_funds,
         task_discover_stock,
         task_discover_stock_price,
+        task_econ_calendar,
+        task_imf_forecast,
         task_ipo,
         task_macro,
         task_market,
@@ -52,6 +56,8 @@ def get_arq_functions() -> list:
         func(task_crypto, name="crypto"),
         func(task_brief, name="brief"),
         func(task_macro, name="macro"),
+        func(task_imf_forecast, name="imf_forecast"),
+        func(task_econ_calendar, name="econ_calendar"),
         func(task_news, name="news"),
         func(task_discover_stock, name="discover_stock", timeout=7200),
         func(task_discover_mutual_funds, name="discover_mutual_funds", timeout=7200),

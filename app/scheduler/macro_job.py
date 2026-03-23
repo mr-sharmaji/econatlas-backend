@@ -25,59 +25,38 @@ FRED_DIRECT: Dict[str, List[Tuple[str, str]]] = {
     "US": [
         ("gdp_growth", "A191RL1Q225SBEA"),
         ("unemployment", "UNRATE"),
+        ("fed_rate", "FEDFUNDS"),
     ],
     "IN": [
         ("gdp_growth", "INDGDPRQPSMEI"),
         ("repo_rate", "IRSTCI01INM156N"),
     ],
-    "EU": [
-        # Euro Area real GDP level; converted to YoY % via _compute_growth_from_level.
-        ("gdp_growth", "CLVMNACSCAB1GQEA19"),
-        ("unemployment", "LRHUTTTTEZM156S"),
-        ("repo_rate", "ECBDFR"),
-    ],
-    "JP": [
-        ("gdp_growth", "JPNGDPRQPSMEI"),
-        ("unemployment", "LRHUTTTTJPM156S"),
-        ("repo_rate", "IRSTCB01JPM156N"),
-    ],
 }
 
 # Series IDs that are levels (not growth rates) but should be exposed as growth.
 # Value is lag periods used for growth calc (quarterly YoY => 4).
-FRED_GROWTH_FROM_LEVEL: Dict[str, int] = {
-    "CLVMNACSCAB1GQEA19": 4,
-}
+FRED_GROWTH_FROM_LEVEL: Dict[str, int] = {}
 
 FRED_CPI: Dict[str, str] = {
     "US": "CPIAUCSL",
     "IN": "INDCPIALLMINMEI",
-    "EU": "CP0000EZ19M086NEST",
-    "JP": "CPALTT01JPM657N",
+}
+
+# Core CPI (excluding food & energy) — computed as YoY % change
+FRED_CORE_CPI: Dict[str, str] = {
+    "US": "CPILFESL",
 }
 
 WORLD_BANK_FALLBACK: Dict[str, List[Tuple[str, str]]] = {
     "IN": [
         ("unemployment", "SL.UEM.TOTL.ZS"),
     ],
-    "EU": [
-        ("inflation", "FP.CPI.TOTL.ZG"),
-        ("gdp_growth", "NY.GDP.MKTP.KD.ZG"),
-        ("unemployment", "SL.UEM.TOTL.ZS"),
-    ],
-    "JP": [
-        ("inflation", "FP.CPI.TOTL.ZG"),
-        ("gdp_growth", "NY.GDP.MKTP.KD.ZG"),
-        ("unemployment", "SL.UEM.TOTL.ZS"),
-    ],
 }
 
-COUNTRIES = ["US", "IN", "EU", "JP"]
+COUNTRIES = ["US", "IN"]
 WORLD_BANK_COUNTRY: Dict[str, str] = {
     "US": "US",
     "IN": "IN",
-    "EU": "EMU",
-    "JP": "JP",
 }
 
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
@@ -87,16 +66,28 @@ SOURCE_PRIORITY: Dict[str, int] = {
     "nse_fiidii_api": 0,
     "fred_api": 1,
     "world_bank": 2,
+    "trading_economics": 3,
 }
 
 # Lightweight sanity ranges to reject obvious bad provider values.
 VALUE_RANGES: Dict[str, Tuple[float, float]] = {
     "inflation": (-20.0, 40.0),
+    "core_inflation": (-10.0, 30.0),
     "gdp_growth": (-50.0, 50.0),
     "unemployment": (0.0, 100.0),
     "repo_rate": (-5.0, 50.0),
+    "fed_rate": (-1.0, 25.0),
     "fii_net_cash": (-1_000_000.0, 1_000_000.0),
     "dii_net_cash": (-1_000_000.0, 1_000_000.0),
+    "pmi_manufacturing": (20.0, 80.0),
+    "pmi_services": (20.0, 80.0),
+    "iip": (-30.0, 50.0),
+    "forex_reserves": (0.0, 5000.0),
+    "trade_balance": (-200_000.0, 200_000.0),
+    "current_account_deficit": (-500.0, 500.0),
+    "fiscal_deficit": (-20.0, 10.0),
+    "gst_collection": (0.0, 5.0),
+    "bank_credit_growth": (-20.0, 50.0),
 }
 
 
@@ -507,6 +498,24 @@ class MacroScraper(BaseScraper):
                 except Exception:
                     logger.exception("Inflation fetch failed for %s", country)
 
+            # Core CPI (ex food & energy)
+            core_cpi = FRED_CORE_CPI.get(country)
+            if core_cpi:
+                try:
+                    result = self._compute_yoy_inflation(core_cpi)
+                    if result:
+                        val, ts = result
+                        self._select_best(selected, {
+                            "indicator_name": "core_inflation",
+                            "value": val,
+                            "country": country,
+                            "timestamp": ts.isoformat(),
+                            "unit": "percent_yoy",
+                            "source": "fred_api",
+                        })
+                except Exception:
+                    logger.exception("Core inflation fetch failed for %s", country)
+
             for name, series in FRED_DIRECT.get(country, []):
                 try:
                     if series in FRED_GROWTH_FROM_LEVEL and name == "gdp_growth":
@@ -541,6 +550,16 @@ class MacroScraper(BaseScraper):
                         })
                 except Exception:
                     logger.exception("World Bank failed %s %s", country, wb_ind)
+        # Trading Economics indicators (PMI, IIP, trade, fiscal, etc.)
+        try:
+            from app.scheduler.trading_economics_scraper import TradingEconomicsScraper
+            te_scraper = TradingEconomicsScraper()
+            te_items = te_scraper.fetch_all()
+            for item in te_items:
+                self._select_best(selected, item)
+        except Exception:
+            logger.exception("Trading Economics scraper failed")
+
         for item in self._fetch_fii_dii_flows():
             self._select_best(selected, item)
         items = list(selected.values())

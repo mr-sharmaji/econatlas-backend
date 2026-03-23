@@ -263,3 +263,113 @@ async def get_institutional_flows_overview(*, sessions: int = 7) -> dict:
         "combined_value": combined_value,
         "trend": trend,
     }
+
+
+# ── Forecasts (IMF WEO) ──────────────────────────────────────────────
+
+async def upsert_forecasts(rows: list[dict]) -> int:
+    """Upsert IMF forecast rows into macro_forecasts table."""
+    pool = await get_pool()
+    count = 0
+    async with pool.acquire() as conn:
+        for row in rows:
+            await conn.execute(
+                """
+                INSERT INTO macro_forecasts
+                    (indicator_name, country, forecast_year, value, source, fetched_at)
+                VALUES ($1, $2, $3, $4, $5, NOW())
+                ON CONFLICT (indicator_name, country, forecast_year)
+                DO UPDATE SET value = EXCLUDED.value, source = EXCLUDED.source, fetched_at = NOW()
+                """,
+                row["indicator_name"],
+                row["country"],
+                row["forecast_year"],
+                row["value"],
+                row.get("source", "imf_weo"),
+            )
+            count += 1
+    return count
+
+
+async def get_forecasts(
+    country: str | None = None,
+    indicator: str | None = None,
+) -> list[dict]:
+    """Fetch forecasts, optionally filtered by country/indicator."""
+    pool = await get_pool()
+    conds = []
+    args = []
+    if country:
+        args.append(country)
+        conds.append(f"country = ${len(args)}")
+    if indicator:
+        args.append(indicator)
+        conds.append(f"indicator_name = ${len(args)}")
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+    rows = await pool.fetch(
+        f"SELECT * FROM macro_forecasts {where} ORDER BY indicator_name, country, forecast_year",
+        *args,
+    )
+    return [record_to_dict(r) for r in rows]
+
+
+# ── Economic Calendar ──────────────────────────────────────────────────
+
+async def upsert_calendar_events(events: list[dict]) -> int:
+    """Upsert economic calendar events."""
+    pool = await get_pool()
+    count = 0
+    async with pool.acquire() as conn:
+        for e in events:
+            await conn.execute(
+                """
+                INSERT INTO economic_calendar
+                    (event_name, institution, event_date, country, event_type, description, source)
+                VALUES ($1, $2, $3::date, $4, $5, $6, $7)
+                ON CONFLICT (event_name, event_date)
+                DO UPDATE SET institution = EXCLUDED.institution,
+                             country = EXCLUDED.country,
+                             event_type = EXCLUDED.event_type,
+                             description = EXCLUDED.description,
+                             source = EXCLUDED.source
+                """,
+                e["event_name"],
+                e["institution"],
+                e["event_date"],
+                e["country"],
+                e["event_type"],
+                e.get("description"),
+                e.get("source"),
+            )
+            count += 1
+    return count
+
+
+async def get_upcoming_events(
+    days_ahead: int = 90,
+    country: str | None = None,
+) -> list[dict]:
+    """Fetch upcoming calendar events."""
+    pool = await get_pool()
+    if country:
+        rows = await pool.fetch(
+            """
+            SELECT * FROM economic_calendar
+            WHERE event_date >= CURRENT_DATE
+              AND event_date <= CURRENT_DATE + make_interval(days => $1)
+              AND country = $2
+            ORDER BY event_date ASC
+            """,
+            days_ahead, country,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT * FROM economic_calendar
+            WHERE event_date >= CURRENT_DATE
+              AND event_date <= CURRENT_DATE + make_interval(days => $1)
+            ORDER BY event_date ASC
+            """,
+            days_ahead,
+        )
+    return [record_to_dict(r) for r in rows]

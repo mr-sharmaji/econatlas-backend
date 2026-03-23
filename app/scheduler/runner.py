@@ -78,6 +78,14 @@ async def _run_macro() -> None:
     await _enqueue("macro")
 
 
+async def _run_imf_forecast() -> None:
+    await _enqueue("imf_forecast")
+
+
+async def _run_econ_calendar() -> None:
+    await _enqueue("econ_calendar")
+
+
 async def _run_news() -> None:
     await _enqueue("news")
 
@@ -280,6 +288,8 @@ def start_scheduler() -> None:
         misfire_grace_time=120,
     )
     _scheduler.add_job(_run_macro, "interval", minutes=intervals["macro_minutes"], id="macro", replace_existing=True)
+    _scheduler.add_job(_run_imf_forecast, "interval", hours=24, id="imf_forecast", replace_existing=True)
+    _scheduler.add_job(_run_econ_calendar, "interval", hours=24, id="econ_calendar", replace_existing=True)
     _scheduler.add_job(_run_news, "interval", minutes=intervals["news_minutes"], id="news", replace_existing=True)
     if intervals["tax_enabled"]:
         _scheduler.add_job(_run_tax, "interval", minutes=intervals["tax_minutes"], id="tax", replace_existing=True)
