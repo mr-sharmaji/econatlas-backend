@@ -831,6 +831,7 @@ class DiscoverMutualFundScraper(BaseScraper):
         "Multi Cap":      {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
         "ELSS":           {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
         "Index":          {"performance": 0.18, "consistency": 0.18, "risk": 0.10, "cost": 0.28, "category_fit": 0.18, "beta": 0.08},
+        "Debt Index":     {"performance": 0.15, "consistency": 0.20, "risk": 0.20, "cost": 0.25, "category_fit": 0.20, "beta": 0.0},
         "Sectoral":       {"performance": 0.25, "consistency": 0.13, "risk": 0.18, "cost": 0.13, "category_fit": 0.18, "beta": 0.13},
         "Thematic":       {"performance": 0.25, "consistency": 0.13, "risk": 0.18, "cost": 0.13, "category_fit": 0.18, "beta": 0.13},
         "Focused":        {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.13, "category_fit": 0.15, "beta": 0.10},
@@ -900,6 +901,10 @@ class DiscoverMutualFundScraper(BaseScraper):
                 return "Retirement"
             if "child" in name:
                 return "Children"
+        # Debt index funds get their own weight profile
+        fund_type = (str(row.get("fund_type") or "")).strip().lower()
+        if cat == "index" and fund_type == "debt":
+            return "Debt Index"
         return "DEFAULT"
 
     def _peer_percentile(
@@ -1200,9 +1205,11 @@ class DiscoverMutualFundScraper(BaseScraper):
                     or any(k in name for k in (
                         "g-sec", "gsec", "gilt", " sdl ", "sdl ", " sdl",
                         "government sec", "govt sec",
-                        "bond index", "bond idx",
-                        "corporate bond", "crisil",
-                        "nifty bharat bond",
+                        "bond index", "bond idx", "psu bond",
+                        "corporate bond", "composite bond",
+                        "crisil", "nifty bharat bond",
+                        "money market", "liquid index",
+                        "overnight index", "short duration index",
                     ))):
                 return "debt"
             return "equity"

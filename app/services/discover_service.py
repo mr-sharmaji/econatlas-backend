@@ -2265,7 +2265,7 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     percent_change_1w = EXCLUDED.percent_change_1w,
                     percent_change_1y = EXCLUDED.percent_change_1y,
                     percent_change_3y = EXCLUDED.percent_change_3y,
-                    score_breakdown = COALESCE(EXCLUDED.score_breakdown, {STOCK_TABLE}.score_breakdown),
+                    score_breakdown = CASE WHEN EXCLUDED.score_breakdown IS NOT NULL THEN EXCLUDED.score_breakdown ELSE {STOCK_TABLE}.score_breakdown END,
                     source_status = EXCLUDED.source_status,
                     source_timestamp = EXCLUDED.source_timestamp,
                     ingested_at = NOW(),
@@ -3129,15 +3129,15 @@ async def list_discover_mutual_funds(
     if min_aum_cr is not None:
         _add("aum_cr >= ${idx}", float(min_aum_cr))
     if max_expense_ratio is not None:
-        _add("(expense_ratio <= ${idx} OR expense_ratio IS NULL)", float(max_expense_ratio))
+        _add("expense_ratio IS NOT NULL AND expense_ratio <= ${idx}", float(max_expense_ratio))
     if min_return_1y is not None:
-        _add("(returns_1y >= ${idx} OR returns_1y IS NULL)", float(min_return_1y))
+        _add("returns_1y IS NOT NULL AND returns_1y >= ${idx}", float(min_return_1y))
     if min_return_3y is not None:
-        _add("(returns_3y >= ${idx} OR returns_3y IS NULL)", float(min_return_3y))
+        _add("returns_3y IS NOT NULL AND returns_3y >= ${idx}", float(min_return_3y))
     if min_return_5y is not None:
-        _add("(returns_5y >= ${idx} OR returns_5y IS NULL)", float(min_return_5y))
+        _add("returns_5y IS NOT NULL AND returns_5y >= ${idx}", float(min_return_5y))
     if min_fund_age is not None:
-        _add("(fund_age_years >= ${idx} OR fund_age_years IS NULL)", float(min_fund_age))
+        _add("fund_age_years IS NOT NULL AND fund_age_years >= ${idx}", float(min_fund_age))
     if source_status and source_status.strip().lower() != "all":
         _add("source_status = ${idx}", _normalize_source_status(source_status))
     if tag and tag.strip():
@@ -3189,7 +3189,7 @@ async def list_discover_mutual_funds(
     items = []
     for r in rows:
         d = record_to_dict(r)
-        cat = str(d.get("category") or "Other")
+        cat = str(d.get("fund_classification") or d.get("category") or "Other")
         items.append(_decorate_mf_row(d, category_stats.get(cat)))
 
     return {
@@ -3626,7 +3626,9 @@ async def get_discover_home_data() -> dict:
                        ROW_NUMBER() OVER (PARTITION BY COALESCE(sub_category, category, 'Other') ORDER BY score DESC) AS rn
                 FROM {MF_TABLE}
                 WHERE plan_type = 'direct'
+                  AND score IS NOT NULL
                   AND (returns_1y IS NOT NULL OR returns_3y IS NOT NULL)
+                  AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
                   {where_extra}
             ) sub WHERE rn <= 2
             ORDER BY {order} LIMIT {limit}
