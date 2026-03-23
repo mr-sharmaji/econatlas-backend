@@ -868,6 +868,7 @@ class DiscoverMutualFundScraper(BaseScraper):
         # Special
         "FoF Domestic":   {"performance": 0.22, "consistency": 0.22, "risk": 0.18, "cost": 0.18, "category_fit": 0.10, "beta": 0.10},
         "FoF Overseas":   {"performance": 0.27, "consistency": 0.18, "risk": 0.18, "cost": 0.13, "category_fit": 0.14, "beta": 0.10},
+        "Gold & Silver":  {"performance": 0.25, "consistency": 0.20, "risk": 0.15, "cost": 0.25, "category_fit": 0.15, "beta": 0.0},
         "Retirement":     {"performance": 0.18, "consistency": 0.27, "risk": 0.18, "cost": 0.13, "category_fit": 0.14, "beta": 0.10},
         "Children":       {"performance": 0.18, "consistency": 0.27, "risk": 0.18, "cost": 0.13, "category_fit": 0.14, "beta": 0.10},
     }
@@ -905,6 +906,9 @@ class DiscoverMutualFundScraper(BaseScraper):
         fund_type = (str(row.get("fund_type") or "")).strip().lower()
         if cat == "index" and fund_type == "debt":
             return "Debt Index"
+        # Gold/Silver/Commodity funds
+        if any(k in name for k in ("gold", "silver", "mining", "precious", "commodity")):
+            return "Gold & Silver"
         return "DEFAULT"
 
     def _peer_percentile(
