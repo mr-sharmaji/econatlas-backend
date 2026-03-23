@@ -2143,7 +2143,12 @@ def _decorate_mf_row(row: dict, category_stats: dict | None = None) -> dict:
             item[jk] = None
         elif isinstance(v, str):
             try:
-                item[jk] = _json.loads(v)
+                parsed = _json.loads(v)
+                # _json.loads('"null"') → "null" string, not None
+                if parsed is None or parsed == "null" or (isinstance(parsed, str) and parsed.strip() == "null"):
+                    item[jk] = None
+                else:
+                    item[jk] = parsed
             except Exception:
                 item[jk] = None
     if sub_stats:
