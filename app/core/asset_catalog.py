@@ -117,7 +117,6 @@ ASSET_CATALOG: tuple[AssetCatalogItem, ...] = (
     AssetCatalogItem("dap fertilizer", "commodity", "TE:dap", "Commodities", "OTC", "rolling_24h", 1010, "commodity", "usd_per_metric_ton", False, "gold"),
     AssetCatalogItem("potash", "commodity", "TE:potash", "Commodities", "OTC", "rolling_24h", 1020, "commodity", "usd_per_metric_ton", False, "gold"),
     AssetCatalogItem("tsp fertilizer", "commodity", "TE:tsp", "Commodities", "OTC", "rolling_24h", 1030, "commodity", "usd_per_metric_ton", False, "gold"),
-    AssetCatalogItem("ammonia", "commodity", "TE:ammonia", "Commodities", "OTC", "rolling_24h", 1040, "commodity", "usd_per_metric_ton", False, "gold"),
     # Crypto
     AssetCatalogItem("bitcoin", "crypto", "BTC-USD", "Crypto", "GLOBAL", "rolling_24h", 900, "crypto", "usd", True, "bitcoin"),
     AssetCatalogItem("ethereum", "crypto", "ETH-USD", "Crypto", "GLOBAL", "rolling_24h", 910, "crypto", "usd", True, "bitcoin"),

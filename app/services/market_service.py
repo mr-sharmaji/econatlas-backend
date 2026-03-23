@@ -1019,7 +1019,7 @@ def _commodity_context(asset: str, direction: str) -> str:
             return f"{asset.capitalize()} prices are rising — food inflation and input costs may increase"
         if a in ("cotton", "sugar", "coffee", "cocoa"):
             return f"{asset.capitalize()} prices are climbing — consumer goods costs may rise"
-        if a in ("urea", "dap fertilizer", "potash", "tsp fertilizer", "ammonia"):
+        if a in ("urea", "dap fertilizer", "potash", "tsp fertilizer"):
             return f"{asset.capitalize()} prices are rising — farming costs increase, food inflation risk"
         if a == "aluminum":
             return "Aluminum prices are rising — packaging and construction costs may increase"
@@ -1042,7 +1042,7 @@ def _commodity_context(asset: str, direction: str) -> str:
         return f"{asset.capitalize()} prices are falling — easing food inflation pressures"
     if a in ("cotton", "sugar", "coffee", "cocoa"):
         return f"{asset.capitalize()} prices are dropping — input cost relief for manufacturers"
-    if a in ("urea", "dap fertilizer", "potash", "tsp fertilizer", "ammonia"):
+    if a in ("urea", "dap fertilizer", "potash", "tsp fertilizer"):
         return f"{asset.capitalize()} prices are falling — cheaper inputs for agriculture"
     if a == "aluminum":
         return "Aluminum prices are falling — easing industrial input costs"
