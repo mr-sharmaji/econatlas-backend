@@ -9,7 +9,7 @@ import logging
 import random
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -28,7 +28,8 @@ TE_INDICATORS: List[Tuple[str, str, str, str, bool]] = [
     ("iip", "IN", "/india/industrial-production", "percent_yoy", False),
     ("iip", "US", "/united-states/industrial-production", "percent_yoy", False),
     # Prices
-    ("core_inflation", "IN", "/india/core-inflation-rate", "percent_yoy", False),
+    # NOTE: India core inflation endpoint is currently unavailable on public TE pages.
+    # Keep core_inflation in metadata for UI, but skip scraping until source stabilizes.
     ("food_inflation", "IN", "/india/food-inflation", "percent_yoy", False),
     # Trade & Fiscal — negate deficits
     ("forex_reserves", "IN", "/india/foreign-exchange-reserves", "usd_mn", False),
@@ -88,12 +89,22 @@ def _parse_te_date(text: str) -> Optional[datetime]:
         month = _MONTH_MAP.get(month_str)
         if month:
             return datetime(year, month, 1, tzinfo=timezone.utc)
+    # Try "March 13" (assume current year)
+    m = re.match(r"([A-Za-z]+)\s+(\d{1,2})$", text)
+    if m:
+        now = datetime.now(timezone.utc)
+        month_str = m.group(1)[:3].lower()
+        month = _MONTH_MAP.get(month_str)
+        if month:
+            day = min(max(int(m.group(2)), 1), 28)
+            return datetime(now.year, month, day, tzinfo=timezone.utc)
     return None
 
 
 def _parse_value(text: str) -> Optional[float]:
     """Parse numeric value from TE page, handling commas and units."""
     text = text.strip().replace(",", "").replace("%", "")
+    text = text.rstrip(".,;:")
     # Remove trailing unit suffixes like 'B', 'M', 'K'
     multiplier = 1.0
     if text.endswith("B"):
@@ -150,22 +161,193 @@ class TradingEconomicsScraper:
             self._consecutive_failures += 1
             return None
 
-    def _extract_value_and_date(self, html: str) -> Optional[Tuple[float, datetime]]:
-        """Extract the current indicator value and date from TE HTML.
+    def _month_ref_to_date(
+        self,
+        month_ref: str,
+        latest_date: datetime,
+    ) -> Optional[datetime]:
+        ref = month_ref.strip().replace("’", "'")
+        if not ref:
+            return None
+        parsed = _parse_te_date(ref)
+        if parsed is not None:
+            # If month/day inferred to current year but would be after latest date,
+            # push one year back to preserve chronology.
+            if parsed > latest_date:
+                try:
+                    return parsed.replace(year=parsed.year - 1)
+                except ValueError:
+                    return parsed
+            return parsed
 
-        Primary strategy: parse the #historical-desc paragraph which contains
-        sentences like "rose to 56.9 in February 2026" or "decreased to 709760
-        USD Million in March 13".
-        """
+        m = re.match(r"([A-Za-z]+)$", ref)
+        if not m:
+            return None
+        month = _MONTH_MAP.get(m.group(1)[:3].lower())
+        if not month:
+            return None
+        year = latest_date.year
+        if month > latest_date.month:
+            year -= 1
+        return datetime(year, month, 1, tzinfo=timezone.utc)
+
+    def _relative_ref_to_date(
+        self,
+        relative_ref: str,
+        latest_date: datetime,
+    ) -> Optional[datetime]:
+        ref = relative_ref.lower().strip()
+        if "previous week" in ref:
+            return latest_date - timedelta(days=7)
+        if "previous month" in ref:
+            month = latest_date.month - 1
+            year = latest_date.year
+            if month == 0:
+                month = 12
+                year -= 1
+            return datetime(year, month, 1, tzinfo=timezone.utc)
+        if "previous quarter" in ref:
+            month = latest_date.month - 3
+            year = latest_date.year
+            while month <= 0:
+                month += 12
+                year -= 1
+            return datetime(year, month, 1, tzinfo=timezone.utc)
+        if "previous year" in ref:
+            return datetime(latest_date.year - 1, latest_date.month, 1, tzinfo=timezone.utc)
+        if "previous fiscal year" in ref:
+            return datetime(latest_date.year - 1, 3, 1, tzinfo=timezone.utc)
+        return None
+
+    def _extract_previous_point(
+        self,
+        desc_text: str,
+        latest_date: datetime,
+    ) -> Optional[Tuple[float, datetime]]:
+        text = desc_text.replace("’", "'")
+        patterns = [
+            # "... from the upwardly revised ... 8% increase in the previous month"
+            (
+                re.compile(
+                    r"from.{0,90}?(?:USD\s+)?(?:INR\s+)?(?:\$\s*)?([\d,\.]+)"
+                    r"(?:\s*(?:percent|%|USD\s+Million|billion|million|bn|index))?"
+                    r".{0,60}?\s+in\s+the\s+previous\s+(week|month|quarter|year|fiscal\s+year)",
+                    re.IGNORECASE,
+                ),
+                1,
+                2,
+            ),
+            # "... from the 8.4% increase in December"
+            (
+                re.compile(
+                    r"from\s+the\s+([\d,\.]+)\s*(?:percent|%)\s+\w+\s+in\s+([A-Za-z]+(?:\s+\d{4})?)",
+                    re.IGNORECASE,
+                ),
+                1,
+                2,
+            ),
+            # "... from 55.4 in January", "... from 716810 USD Million in the previous week"
+            (
+                re.compile(
+                    r"from\s+(?:an\s+initial\s+estimate\s+of\s+)?"
+                    r"(?:USD\s+)?(?:INR\s+)?(?:\$\s*)?([\d,\.]+)"
+                    r"(?:\s*(?:percent|%|USD\s+Million|billion|million|bn|index))?"
+                    r"\s+in\s+(the\s+previous\s+(?:week|month|quarter|year|fiscal\s+year)|[A-Za-z]+(?:\s+\d{4})?)",
+                    re.IGNORECASE,
+                ),
+                1,
+                2,
+            ),
+            # "... from $14.42 billion a year earlier"
+            (
+                re.compile(
+                    r"from\s+(?:\$\s*)?([\d,\.]+)"
+                    r"(?:\s*(?:percent|%|billion|million|bn|index))?"
+                    r"\s+(?:a\s+year\s+earlier|the\s+previous\s+year)",
+                    re.IGNORECASE,
+                ),
+                1,
+                None,
+            ),
+            # "... after a 2.13 percent rise in January"
+            (
+                re.compile(
+                    r"after\s+(?:a\s+)?(?:\$\s*)?([\d,\.]+)"
+                    r"(?:\s*(?:percent|%))?(?:\s+\w+){0,5}\s+in\s+([A-Za-z]+(?:\s+\d{4})?)",
+                    re.IGNORECASE,
+                ),
+                1,
+                2,
+            ),
+            # "January's reading of 58.5"
+            (
+                re.compile(
+                    r"([A-Za-z]+)'s\s+reading\s+of\s+(?:\$\s*)?([\d,\.]+)",
+                    re.IGNORECASE,
+                ),
+                2,
+                1,
+            ),
+            # "... following a revised $72.9 billion in December"
+            (
+                re.compile(
+                    r"following\s+(?:a\s+revised\s+)?(?:\$\s*)?([\d,\.]+)"
+                    r"(?:\s*(?:percent|%|billion|million|bn|index))?"
+                    r"\s+in\s+([A-Za-z]+(?:\s+\d{4})?)",
+                    re.IGNORECASE,
+                ),
+                1,
+                2,
+            ),
+            # "... from the $11.3 billion gap on the corresponding period of the previous year"
+            (
+                re.compile(
+                    r"from\s+(?:the\s+)?(?:\$\s*)?([\d,\.]+)"
+                    r"(?:\s*(?:percent|%|billion|million|bn|index))?"
+                    r"(?:\s+\w+){0,6}\s+on\s+the\s+corresponding\s+period\s+of\s+the\s+previous\s+year",
+                    re.IGNORECASE,
+                ),
+                1,
+                None,
+            ),
+        ]
+
+        for pattern, value_idx, date_idx in patterns:
+            for match in pattern.finditer(text):
+                value = _parse_value(match.group(value_idx))
+                if value is None:
+                    continue
+                if date_idx is None:
+                    ref_date = datetime(
+                        latest_date.year - 1,
+                        latest_date.month,
+                        1,
+                        tzinfo=timezone.utc,
+                    )
+                    return value, ref_date
+
+                date_ref = match.group(date_idx).strip()
+                if re.fullmatch(r"(week|month|quarter|year|fiscal\s+year)", date_ref, re.IGNORECASE):
+                    date_ref = f"previous {date_ref}"
+                ref_date = self._relative_ref_to_date(date_ref, latest_date)
+                if ref_date is None:
+                    ref_date = self._month_ref_to_date(date_ref, latest_date)
+                if ref_date is not None and ref_date < latest_date:
+                    return value, ref_date
+        return None
+
+    def _extract_points(self, html: str) -> List[Tuple[float, datetime]]:
+        """Extract latest (and when possible previous) points from TE HTML."""
         soup = BeautifulSoup(html, "html.parser")
-
-        value = None
-        date = None
+        points: List[Tuple[float, datetime]] = []
 
         # Strategy 1: Extract from #historical-desc (most reliable)
         desc_el = soup.find(id="historical-desc")
+        value = None
+        date = None
+        desc_text = ""
         if desc_el:
-            text = desc_el.get_text()
+            desc_text = desc_el.get_text(" ", strip=True)
 
             # Extract value from various TE description patterns:
             # "rose to 56.9", "fell to 4.2", "rose by 4.8%", "widened to $27.10",
@@ -179,18 +361,18 @@ class TradingEconomicsScraper:
                 r"widened to|narrowed to|revised\b.*?\bto|"
                 r"deficit (?:of|to)|surplus (?:of|to))\s*"
                 r"(?:USD\s+)?(?:INR\s+)?(?:\$\s*)?([\d,\.]+)",
-                text, re.IGNORECASE,
+                desc_text, re.IGNORECASE,
             )
             if val_match:
                 value = _parse_value(val_match.group(1))
 
             # Extract date: "in February 2026" or "in March 13" (TE uses day-of-month for weekly)
-            date_match = re.search(r"in\s+([A-Z][a-z]+)\s+(\d{4})", text)
+            date_match = re.search(r"in\s+([A-Z][a-z]+)\s+(\d{4})", desc_text)
             if date_match:
                 date = _parse_te_date(f"{date_match.group(1)} {date_match.group(2)}")
             else:
                 # Weekly data: "in March 13" means March 13 of current year
-                date_match2 = re.search(r"in\s+([A-Z][a-z]+)\s+(\d{1,2})(?:\s+from)", text)
+                date_match2 = re.search(r"in\s+([A-Z][a-z]+)\s+(\d{1,2})(?:\s+from)", desc_text)
                 if date_match2:
                     now = datetime.now(timezone.utc)
                     month_str = date_match2.group(1)[:3].lower()
@@ -209,14 +391,28 @@ class TradingEconomicsScraper:
                         break
 
         if value is None:
-            return None
+            return points
 
         # Fallback date: current month
         if date is None:
             now = datetime.now(timezone.utc)
             date = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        points.append((value, date))
 
-        return value, date
+        if desc_text:
+            previous = self._extract_previous_point(desc_text, date)
+            if previous is not None:
+                prev_val, prev_date = previous
+                if prev_date < date:
+                    points.append(previous)
+        return points
+
+    def _extract_value_and_date(self, html: str) -> Optional[Tuple[float, datetime]]:
+        """Backward-compatible wrapper returning latest point only."""
+        points = self._extract_points(html)
+        if not points:
+            return None
+        return points[0]
 
     def fetch_all(self) -> List[Dict]:
         """Fetch all TE indicators. Returns list of dicts compatible with MacroScraper._select_best."""
@@ -238,21 +434,37 @@ class TradingEconomicsScraper:
             fetched += 1
 
             if html:
-                parsed = self._extract_value_and_date(html)
-                if parsed:
-                    val, ts = parsed
-                    if negate and val > 0:
-                        val = -val
-                    results.append({
-                        "indicator_name": indicator_name,
-                        "value": round(val, 4),
-                        "country": country,
-                        "timestamp": ts.isoformat(),
-                        "unit": unit,
-                        "source": "trading_economics",
-                    })
+                points = self._extract_points(html)
+                if points:
+                    emitted = 0
+                    seen_dates = set()
+                    for val, ts in points:
+                        # Keep at most one point per day per indicator in the payload.
+                        key = ts.date().isoformat()
+                        if key in seen_dates:
+                            continue
+                        seen_dates.add(key)
+                        adj_val = -val if negate and val > 0 else val
+                        results.append({
+                            "indicator_name": indicator_name,
+                            "value": round(adj_val, 4),
+                            "country": country,
+                            "timestamp": ts.isoformat(),
+                            "unit": unit,
+                            "source": "trading_economics",
+                        })
+                        emitted += 1
                     succeeded += 1
-                    logger.info("TE OK %s/%s = %.4f (%s)", country, indicator_name, val, ts.date())
+                    latest_val, latest_ts = points[0]
+                    latest_adj = -latest_val if negate and latest_val > 0 else latest_val
+                    logger.info(
+                        "TE OK %s/%s = %.4f (%s) [points=%d]",
+                        country,
+                        indicator_name,
+                        latest_adj,
+                        latest_ts.date(),
+                        emitted,
+                    )
                 else:
                     logger.warning("TE parse failed for %s/%s", country, indicator_name)
 
