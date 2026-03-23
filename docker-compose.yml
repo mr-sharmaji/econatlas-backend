@@ -35,10 +35,15 @@ services:
     container_name: econatlas-backend
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgresql://econatlas:econatlas@postgres:5432/econatlas
       REDIS_URL: redis://redis:6379
       LOG_LEVEL: DEBUG
+      FIREBASE_CREDENTIALS_JSON: /app/firebase-key.json
+    volumes:
+      - ./firebase-key.json:/app/firebase-key.json:ro
     depends_on:
       postgres:
         condition: service_healthy
