@@ -26,6 +26,7 @@ _VALID_JOBS = {
     "discover_mf_holdings",
     "discover_mf_holdings_etmoney",
     "discover_mf_holdings_moneycontrol",
+    "rescore_stock", "rescore_mf",
     "ipo", "tax",
 }
 
@@ -350,15 +351,9 @@ async def clear_abort(
     return {"status": "cleared", "job_name": job_name, "deleted": bool(deleted)}
 
 
-_RESCORE_JOBS: dict[str, tuple[str, str]] = {
-    "discover_stock": (
-        "app.scheduler.discover_stock_job",
-        "rescore_discover_stocks",
-    ),
-    "discover_mf": (
-        "app.scheduler.discover_mutual_fund_job",
-        "rescore_discover_mutual_funds",
-    ),
+_RESCORE_JOBS: dict[str, str] = {
+    "discover_stock": "rescore_stock",
+    "discover_mf": "rescore_mf",
 }
 
 
@@ -381,24 +376,20 @@ async def rescore_job(
             "message": "Rescore is already running.",
         }
 
-    module_path, func_name = _RESCORE_JOBS[job_name]
+    arq_task_name = _RESCORE_JOBS[job_name]
 
-    async def _run():
-        try:
-            await _direct_run_wrapper(task_key, module_path, func_name)
-        except Exception:
-            logger.exception("Rescore background task failed: %s", task_key)
+    from app.queue.redis_pool import get_redis_pool
 
-    task = asyncio.ensure_future(_run())
-    _running_direct_jobs[task_key] = task
-    # prevent GC from collecting the task
-    task.add_done_callback(lambda t: _running_direct_jobs.pop(task_key, None))
-    logger.info("Rescore triggered: %s (background task)", job_name)
+    pool = await get_redis_pool()
+    job_id = f"{arq_task_name}_{int(datetime.now(timezone.utc).timestamp())}"
+    job = await pool.enqueue_job(arq_task_name, _job_id=job_id)
+    logger.info("Rescore enqueued via ARQ: %s (job_id=%s)", arq_task_name, job.job_id if job else "deduped")
     return {
-        "status": "started",
+        "status": "enqueued" if job else "already_queued",
         "job_name": job_name,
         "mode": "rescore",
-        "message": "Rescore started in background — check logs for progress.",
+        "job_id": job.job_id if job else job_id,
+        "message": "Rescore enqueued via ARQ worker — will execute reliably.",
     }
 
 

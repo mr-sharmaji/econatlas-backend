@@ -41,6 +41,8 @@ def get_arq_functions() -> list:
         task_macro,
         task_market,
         task_news,
+        task_rescore_mf,
+        task_rescore_stock,
         task_tax,
     )
 
@@ -56,6 +58,8 @@ def get_arq_functions() -> list:
         func(task_discover_stock_price, name="discover_stock_price", timeout=7200),
         func(task_discover_mf_nav, name="discover_mf_nav", timeout=7200),
         func(task_discover_mf_holdings, name="discover_mf_holdings", timeout=7200),
+        func(task_rescore_stock, name="rescore_stock", timeout=600),
+        func(task_rescore_mf, name="rescore_mf", timeout=600),
         func(task_ipo, name="ipo"),
         func(task_tax, name="tax"),
     ]

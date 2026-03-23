@@ -119,6 +119,18 @@ async def task_discover_mf_holdings(ctx: dict) -> None:
     await _run_with_retry(ctx, "discover_mf_holdings", run_discover_mf_holdings_job)
 
 
+async def task_rescore_stock(ctx: dict) -> None:
+    from app.scheduler.discover_stock_job import rescore_discover_stocks
+
+    await _run_with_retry(ctx, "rescore_stock", rescore_discover_stocks)
+
+
+async def task_rescore_mf(ctx: dict) -> None:
+    from app.scheduler.discover_mutual_fund_job import rescore_discover_mutual_funds
+
+    await _run_with_retry(ctx, "rescore_mf", rescore_discover_mutual_funds)
+
+
 async def task_ipo(ctx: dict) -> None:
     from app.services import ipo_service
 
