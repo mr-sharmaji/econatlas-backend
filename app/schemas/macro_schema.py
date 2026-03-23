@@ -91,6 +91,7 @@ class EconCalendarResponse(BaseModel):
 class MacroIndicatorMetadataResponse(BaseModel):
     indicator_name: str
     display_name: str
+    helper_text: str | None = None
     unit: str
     frequency: str
     source: str

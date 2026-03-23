@@ -73,6 +73,7 @@ SOURCE_PRIORITY: Dict[str, int] = {
 VALUE_RANGES: Dict[str, Tuple[float, float]] = {
     "inflation": (-20.0, 40.0),
     "core_inflation": (-10.0, 30.0),
+    "food_inflation": (-10.0, 40.0),
     "gdp_growth": (-50.0, 50.0),
     "unemployment": (0.0, 100.0),
     "repo_rate": (-5.0, 50.0),

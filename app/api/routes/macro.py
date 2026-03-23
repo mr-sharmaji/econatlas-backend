@@ -24,6 +24,8 @@ router = APIRouter(prefix="/macro", tags=["macro"])
 # Value ranges for sanity checking incoming macro data (same as macro_job.py).
 _VALUE_RANGES: dict[str, tuple[float, float]] = {
     "inflation": (-20.0, 40.0),
+    "core_inflation": (-10.0, 30.0),
+    "food_inflation": (-10.0, 40.0),
     "gdp_growth": (-50.0, 50.0),
     "unemployment": (0.0, 100.0),
     "repo_rate": (-5.0, 50.0),
@@ -138,10 +140,13 @@ async def list_calendar(
 
 
 @router.get("/metadata", response_model=MacroMetadataResponse)
-async def macro_metadata() -> MacroMetadataResponse:
+async def macro_metadata(
+    country: str | None = Query(default=None),
+) -> MacroMetadataResponse:
     """Indicator metadata for display names, units, cadence, and chart hints."""
     try:
-        items = await macro_service.get_metadata()
+        normalized_country = country.strip().upper() if country else None
+        items = await macro_service.get_metadata(country=normalized_country)
         return MacroMetadataResponse(items=items, count=len(items))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

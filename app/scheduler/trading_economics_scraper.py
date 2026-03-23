@@ -28,7 +28,8 @@ TE_INDICATORS: List[Tuple[str, str, str, str, bool]] = [
     ("iip", "IN", "/india/industrial-production", "percent_yoy", False),
     ("iip", "US", "/united-states/industrial-production", "percent_yoy", False),
     # Prices
-    ("core_inflation", "IN", "/india/food-inflation", "percent_yoy", False),
+    ("core_inflation", "IN", "/india/core-inflation-rate", "percent_yoy", False),
+    ("food_inflation", "IN", "/india/food-inflation", "percent_yoy", False),
     # Trade & Fiscal — negate deficits
     ("forex_reserves", "IN", "/india/foreign-exchange-reserves", "usd_mn", False),
     ("trade_balance", "IN", "/india/balance-of-trade", "usd_mn", True),

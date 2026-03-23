@@ -8,6 +8,12 @@ from app.core.database import get_pool, parse_ts, record_to_dict
 TABLE = "macro_indicators"
 
 COUNTRY_ORDER = ["IN", "US", "EU", "JP"]
+COUNTRY_LABELS: dict[str, str] = {
+    "IN": "India",
+    "US": "United States",
+    "EU": "Europe",
+    "JP": "Japan",
+}
 
 INFLATION_TARGETS: dict[str, float] = {
     "IN": 4.0,
@@ -23,10 +29,13 @@ NEUTRAL_POLICY_RATE: dict[str, float] = {
     "JP": 1.0,
 }
 
+PERCENT_UNITS = {"percent", "percent_yoy", "percent_gdp"}
+
 INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "gdp_growth",
         "display_name": "GDP Growth",
+        "helper_text": "GDP Growth shows how fast the economy is expanding versus last year. Higher, stable growth usually means stronger demand and business activity.",
         "unit": "percent",
         "frequency": "quarterly",
         "source": "fred_api/imf_weo",
@@ -37,6 +46,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "inflation",
         "display_name": "Inflation (CPI)",
+        "helper_text": "Inflation tracks changes in consumer prices. Sustained inflation above target can reduce purchasing power and keep policy rates elevated.",
         "unit": "percent_yoy",
         "frequency": "monthly",
         "source": "fred_api",
@@ -47,6 +57,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "core_inflation",
         "display_name": "Core Inflation",
+        "helper_text": "Core inflation excludes volatile food and energy items and is often used to judge persistent price pressure in the economy.",
         "unit": "percent_yoy",
         "frequency": "monthly",
         "source": "fred_api/trading_economics",
@@ -55,8 +66,20 @@ INDICATOR_METADATA: list[dict] = [
         "thresholds": {"elevated": 4.0, "sticky": 5.0},
     },
     {
+        "indicator_name": "food_inflation",
+        "display_name": "Food Inflation",
+        "helper_text": "Food inflation measures changes in food prices, which directly impact household budgets and near-term inflation expectations.",
+        "unit": "percent_yoy",
+        "frequency": "monthly",
+        "source": "trading_economics",
+        "update_cadence": "monthly",
+        "chart_type": "line",
+        "thresholds": {"elevated": 6.0, "high": 8.0},
+    },
+    {
         "indicator_name": "unemployment",
         "display_name": "Unemployment",
+        "helper_text": "Unemployment reflects labor market health. Lower unemployment typically indicates stronger hiring and consumer income support.",
         "unit": "percent",
         "frequency": "monthly",
         "source": "fred_api/world_bank",
@@ -67,6 +90,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "repo_rate",
         "display_name": "Policy Rate",
+        "helper_text": "Policy Rate is the central bank's benchmark interest rate. It influences borrowing costs, liquidity conditions, and market risk appetite.",
         "unit": "percent",
         "frequency": "monthly",
         "source": "fred_api",
@@ -77,6 +101,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "pmi_manufacturing",
         "display_name": "PMI Manufacturing",
+        "helper_text": "PMI Manufacturing is a forward-looking business survey. Readings above 50 indicate expansion, while below 50 indicate contraction.",
         "unit": "index",
         "frequency": "monthly",
         "source": "trading_economics",
@@ -87,6 +112,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "pmi_services",
         "display_name": "PMI Services",
+        "helper_text": "PMI Services tracks activity momentum in the services sector. Values above 50 signal expansion in demand and output.",
         "unit": "index",
         "frequency": "monthly",
         "source": "trading_economics",
@@ -97,6 +123,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "iip",
         "display_name": "Industrial Production",
+        "helper_text": "Industrial Production measures output from manufacturing, mining, and utilities. It is a key read on real economy momentum.",
         "unit": "percent_yoy",
         "frequency": "monthly",
         "source": "trading_economics/fred_api",
@@ -107,6 +134,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "trade_balance",
         "display_name": "Trade Balance",
+        "helper_text": "Trade Balance is exports minus imports. Persistent deficits can pressure the currency, while improving balance supports external stability.",
         "unit": "usd_mn",
         "frequency": "monthly",
         "source": "trading_economics",
@@ -117,6 +145,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "current_account_deficit",
         "display_name": "Current Account",
+        "helper_text": "Current Account summarizes trade, income, and transfer flows with the rest of the world. Large deficits can increase external funding risk.",
         "unit": "usd_bn",
         "frequency": "quarterly",
         "source": "trading_economics",
@@ -127,6 +156,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "fiscal_deficit",
         "display_name": "Fiscal Deficit",
+        "helper_text": "Fiscal Deficit shows how much government spending exceeds revenue. Wider deficits may raise borrowing needs and bond supply pressure.",
         "unit": "percent_gdp",
         "frequency": "quarterly",
         "source": "trading_economics",
@@ -137,6 +167,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "bank_credit_growth",
         "display_name": "Bank Credit Growth",
+        "helper_text": "Bank Credit Growth indicates lending momentum in the financial system. Rising growth often signals stronger investment and consumption demand.",
         "unit": "percent",
         "frequency": "monthly",
         "source": "trading_economics",
@@ -147,6 +178,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "forex_reserves",
         "display_name": "FX Reserves",
+        "helper_text": "FX Reserves are foreign currency assets held by the central bank. Higher reserves improve resilience against external shocks.",
         "unit": "usd_mn",
         "frequency": "weekly",
         "source": "trading_economics",
@@ -157,6 +189,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "fii_net_cash",
         "display_name": "FII Net Cash",
+        "helper_text": "FII Net Cash captures daily net equity flows from foreign institutional investors. It can influence short-term market liquidity and sentiment.",
         "unit": "inr_cr",
         "frequency": "daily",
         "source": "nse_fiidii_api",
@@ -167,6 +200,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "dii_net_cash",
         "display_name": "DII Net Cash",
+        "helper_text": "DII Net Cash captures daily net equity flows from domestic institutions. It often offsets or amplifies foreign flow impact.",
         "unit": "inr_cr",
         "frequency": "daily",
         "source": "nse_fiidii_api",
@@ -177,6 +211,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "bond_yield_10y",
         "display_name": "10Y Yield",
+        "helper_text": "10Y Yield is the benchmark long-term sovereign borrowing cost. It is a core reference for valuation and macro risk pricing.",
         "unit": "percent",
         "frequency": "intraday",
         "source": "market_feed",
@@ -187,6 +222,7 @@ INDICATOR_METADATA: list[dict] = [
     {
         "indicator_name": "bond_yield_2y",
         "display_name": "2Y Yield",
+        "helper_text": "2Y Yield reflects near-term policy expectations and front-end rate conditions in fixed-income markets.",
         "unit": "percent",
         "frequency": "intraday",
         "source": "market_feed",
@@ -220,6 +256,230 @@ def _clamp(value: float | None, low: float = -1.0, high: float = 1.0) -> float |
     if value is None or not math.isfinite(value):
         return None
     return max(low, min(high, value))
+
+
+def _to_float(value: object) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _country_name(code: str) -> str:
+    return COUNTRY_LABELS.get(code, code)
+
+
+def _format_metric_value(value: float, unit: str) -> str:
+    if unit in PERCENT_UNITS:
+        return f"{value:.2f}%"
+    if unit == "index":
+        return f"{value:.1f}"
+    if unit == "usd_mn":
+        return f"${value:,.0f}M"
+    if unit == "usd_bn":
+        return f"${value:,.2f}B"
+    if unit == "inr_cr":
+        return f"₹{value:,.0f} Cr"
+    return f"{value:.2f}"
+
+
+def _format_metric_change(delta: float, unit: str) -> str:
+    sign = "+" if delta >= 0 else ""
+    if unit in PERCENT_UNITS:
+        return f"{sign}{delta:.2f} pp"
+    return f"{sign}{delta:.2f}"
+
+
+def _metric_signal_text(
+    *,
+    indicator: str,
+    value: float,
+    country: str,
+    thresholds: dict[str, float],
+) -> str:
+    if indicator == "inflation":
+        target = thresholds.get("target_in", 4.0) if country == "IN" else thresholds.get("target_us_eu_jp", 2.0)
+        gap = value - target
+        if gap <= 0:
+            return f"At or below target ({target:.1f}%)."
+        if gap <= 1.5:
+            return f"Above target by {gap:.2f} pp."
+        return f"Well above target by {gap:.2f} pp; policy pressure can stay elevated."
+
+    if indicator == "core_inflation":
+        elevated = thresholds.get("elevated", 4.0)
+        sticky = thresholds.get("sticky", 5.0)
+        if value >= sticky:
+            return f"Sticky and elevated (≥{sticky:.1f}%)."
+        if value >= elevated:
+            return f"Elevated versus preferred range (≥{elevated:.1f}%)."
+        return "Relatively contained."
+
+    if indicator == "food_inflation":
+        elevated = thresholds.get("elevated", 6.0)
+        high = thresholds.get("high", 8.0)
+        if value >= high:
+            return f"High food price pressure (≥{high:.1f}%)."
+        if value >= elevated:
+            return f"Elevated food price pressure (≥{elevated:.1f}%)."
+        return "Food price pressure is manageable."
+
+    if indicator == "gdp_growth":
+        slowdown = thresholds.get("slowdown", 2.0)
+        strong = thresholds.get("strong", 6.0)
+        if value >= strong:
+            return f"Strong growth momentum (≥{strong:.1f}%)."
+        if value <= slowdown:
+            return f"Soft growth zone (≤{slowdown:.1f}%)."
+        return "Growth is in a moderate range."
+
+    if indicator == "unemployment":
+        moderate = thresholds.get("moderate", 4.5)
+        high = thresholds.get("high", 6.0)
+        if value >= high:
+            return f"Labor market is weak (≥{high:.1f}%)."
+        if value >= moderate:
+            return f"Labor market is moderately soft (≥{moderate:.1f}%)."
+        return "Labor market conditions look healthy."
+
+    if indicator == "repo_rate":
+        neutral = NEUTRAL_POLICY_RATE.get(country, 2.5)
+        restrictive_gap = thresholds.get("restrictive_gap", 1.5)
+        if value >= neutral + restrictive_gap:
+            return f"Policy looks restrictive vs neutral ({neutral:.1f}%)."
+        return f"Policy is near neutral zone ({neutral:.1f}%)."
+
+    if indicator.startswith("pmi_"):
+        expansion = thresholds.get("expansion", 50.0)
+        strong = thresholds.get("strong", 55.0)
+        if value >= strong:
+            return f"Strong expansion signal (≥{strong:.1f})."
+        if value >= expansion:
+            return f"Expansionary signal (≥{expansion:.1f})."
+        return f"Contractionary signal (<{expansion:.1f})."
+
+    if indicator in {"iip", "bank_credit_growth"}:
+        weak = thresholds.get("weak", 0.0)
+        strong = thresholds.get("strong", 5.0)
+        if value >= strong:
+            return "Momentum is strong."
+        if value >= weak:
+            return "Momentum is positive but moderate."
+        return "Momentum is weak."
+
+    if indicator in {"trade_balance", "current_account_deficit"}:
+        if value >= 0:
+            return "External balance is in surplus."
+        return "External balance is in deficit."
+
+    if indicator == "fiscal_deficit":
+        wide = thresholds.get("wide", 5.0)
+        if value > wide:
+            return f"Deficit is wider than preferred (>{wide:.1f}%)."
+        return "Deficit is within a manageable range."
+
+    return "Use this with trend and upcoming events for context."
+
+
+def _compose_dynamic_helper_text(
+    *,
+    country: str,
+    item: dict,
+    latest_row: dict | None,
+    previous_row: dict | None,
+) -> str:
+    base = str(item.get("helper_text") or "").strip()
+    indicator = str(item.get("indicator_name") or "")
+    display_name = str(item.get("display_name") or indicator or "Metric")
+    unit = str(item.get("unit") or "")
+    thresholds = item.get("thresholds") or {}
+    thresholds = thresholds if isinstance(thresholds, dict) else {}
+
+    latest_value = _to_float(None if latest_row is None else latest_row.get("value"))
+    if latest_value is None:
+        if base:
+            return (
+                f"{base}\n\n"
+                f"{_country_name(country)} latest: not available.\n"
+                f"Signal: Waiting for a fresh {display_name} release."
+            )
+        return (
+            f"{_country_name(country)} latest {display_name}: not available.\n"
+            f"Signal: Waiting for a fresh release."
+        )
+
+    latest_ts = _as_dt(None if latest_row is None else latest_row.get("timestamp"))
+    previous_value = _to_float(None if previous_row is None else previous_row.get("value"))
+    signal = _metric_signal_text(
+        indicator=indicator,
+        value=latest_value,
+        country=country,
+        thresholds=thresholds,
+    )
+
+    latest_line = f"{_country_name(country)} latest: {_format_metric_value(latest_value, unit)}"
+    if latest_ts is not None:
+        latest_line = f"{latest_line} ({latest_ts.date().isoformat()})"
+
+    change_line = "Change vs previous: No prior release."
+    if previous_value is not None:
+        delta = latest_value - previous_value
+        change_line = f"Change vs previous: {_format_metric_change(delta, unit)}"
+
+    body = "\n".join(
+        [
+            latest_line,
+            change_line,
+            f"Signal: {signal}",
+        ]
+    )
+    if not base:
+        return body
+    return f"{base}\n\n{body}"
+
+
+async def _latest_two_rows_by_indicator(
+    *,
+    country: str,
+    indicator_names: list[str],
+) -> dict[str, list[dict]]:
+    if not indicator_names:
+        return {}
+
+    pool = await get_pool()
+    rows = await pool.fetch(
+        f"""
+        SELECT indicator_name, value, "timestamp"
+        FROM (
+            SELECT
+                indicator_name,
+                value,
+                "timestamp",
+                ROW_NUMBER() OVER (
+                    PARTITION BY indicator_name
+                    ORDER BY "timestamp" DESC
+                ) AS rn
+            FROM {TABLE}
+            WHERE country = $1
+              AND indicator_name = ANY($2::text[])
+        ) ranked
+        WHERE rn <= 2
+        ORDER BY indicator_name ASC, rn ASC
+        """,
+        country,
+        indicator_names,
+    )
+
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        indicator = str(row["indicator_name"])
+        grouped.setdefault(indicator, []).append(
+            {
+                "value": row["value"],
+                "timestamp": row["timestamp"],
+            }
+        )
+    return grouped
 
 
 def _latest_by_indicator(rows: list[dict], country: str) -> dict[str, dict]:
@@ -689,8 +949,30 @@ async def get_upcoming_events(
     return out
 
 
-async def get_metadata() -> list[dict]:
-    return INDICATOR_METADATA
+async def get_metadata(country: str | None = None) -> list[dict]:
+    items = [dict(item) for item in INDICATOR_METADATA]
+    normalized_country = (country or "").strip().upper()
+    if not normalized_country:
+        return items
+
+    indicator_names = [str(item.get("indicator_name") or "") for item in items]
+    latest_rows = await _latest_two_rows_by_indicator(
+        country=normalized_country,
+        indicator_names=indicator_names,
+    )
+
+    for item in items:
+        indicator = str(item.get("indicator_name") or "")
+        points = latest_rows.get(indicator, [])
+        latest = points[0] if points else None
+        previous = points[1] if len(points) > 1 else None
+        item["helper_text"] = _compose_dynamic_helper_text(
+            country=normalized_country,
+            item=item,
+            latest_row=latest,
+            previous_row=previous,
+        )
+    return items
 
 
 async def get_regime(country: str | None = None) -> dict:
