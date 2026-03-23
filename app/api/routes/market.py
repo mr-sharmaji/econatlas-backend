@@ -8,6 +8,7 @@ from app.schemas.market_schema import (
     MarketPriceListResponse,
     MarketPriceResponse,
     MarketStatusResponse,
+    MarketStoryResponse,
 )
 from app.services import event_service, market_service
 from app.scheduler.trading_calendar import get_market_status
@@ -132,5 +133,34 @@ async def latest_market_prices(
         rows = await market_service.get_latest_prices(instrument_type=instrument_type)
         prices = [MarketPriceResponse(**r) for r in rows]
         return MarketPriceListResponse(prices=prices, count=len(prices))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/{asset}/story", response_model=MarketStoryResponse)
+async def get_market_story(
+    asset: str,
+    instrument_type: str = Query("index", description="Instrument type: index, bond_yield, currency, commodity"),
+) -> MarketStoryResponse:
+    """Get verdict, scores, and narrative for a market instrument."""
+    try:
+        data = await market_service.get_market_story(asset=asset, instrument_type=instrument_type)
+        if data is None:
+            raise HTTPException(status_code=404, detail=f"No story data for {asset} ({instrument_type})")
+        return MarketStoryResponse(
+            asset=data["asset"],
+            instrument_type=data["instrument_type"],
+            verdict=data.get("verdict"),
+            action_tag=data.get("action_tag"),
+            action_tag_reasoning=data.get("action_tag_reasoning"),
+            score_trend=data.get("score_trend"),
+            score_volatility=data.get("score_volatility"),
+            score_momentum=data.get("score_momentum"),
+            driver_tags=data.get("driver_tags", []),
+            type_extras=data.get("type_extras"),
+            computed_at=data.get("computed_at"),
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

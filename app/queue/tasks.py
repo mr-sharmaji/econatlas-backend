@@ -166,3 +166,9 @@ async def task_tax(ctx: dict) -> None:
         "tax",
         lambda: run_tax_job(timeout_seconds=settings.tax_sync_timeout_seconds),
     )
+
+
+async def task_market_score(ctx: dict) -> None:
+    from app.scheduler.market_score_job import run_market_score_job
+
+    await _run_with_retry(ctx, "market_score", run_market_score_job)

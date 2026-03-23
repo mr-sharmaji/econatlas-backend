@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class MarketPriceResponse(BaseModel):
@@ -67,3 +67,18 @@ class IntradayResponse(BaseModel):
     coverage_minutes: int | None = None
     expected_minutes: int | None = None
     data_mode: str | None = None
+
+
+class MarketStoryResponse(BaseModel):
+    """Verdict and score data for a market instrument."""
+    asset: str
+    instrument_type: str
+    verdict: str | None = None
+    action_tag: str | None = None
+    action_tag_reasoning: str | None = None
+    score_trend: float | None = None
+    score_volatility: float | None = None
+    score_momentum: float | None = None
+    driver_tags: list[str] = Field(default_factory=list)
+    type_extras: dict | None = None
+    computed_at: datetime | None = None

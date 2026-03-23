@@ -587,3 +587,21 @@ ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS top_holdings
 ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS sector_allocation JSONB;
 ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS asset_allocation JSONB;
 ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS holdings_as_of DATE;
+
+-- ================================================================
+-- v1.3: Market scores for story/verdict endpoint
+-- ================================================================
+CREATE TABLE IF NOT EXISTS market_scores (
+    asset TEXT NOT NULL,
+    instrument_type TEXT NOT NULL,
+    score_trend DOUBLE PRECISION,
+    score_volatility DOUBLE PRECISION,
+    score_momentum DOUBLE PRECISION,
+    verdict TEXT,
+    action_tag TEXT,
+    action_tag_reasoning TEXT,
+    driver_tags JSONB DEFAULT '[]'::JSONB,
+    type_extras JSONB,
+    computed_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (asset, instrument_type)
+);

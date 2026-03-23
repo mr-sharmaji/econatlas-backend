@@ -815,3 +815,375 @@ async def repair_intraday_ticks() -> int:
         return int(result.split()[-1])
     except (ValueError, IndexError):
         return 0
+
+
+# ---- Market Scores & Story ----
+
+import json
+import math
+
+TABLE_MARKET_SCORES = "market_scores"
+
+
+def _compute_trend_score(prices: list[float]) -> float:
+    """Score trend strength 0-100 based on SMA alignment.
+    Higher = stronger uptrend. Uses 20/50/200 day moving averages."""
+    n = len(prices)
+    if n < 20:
+        return 50.0  # neutral if not enough data
+
+    def sma(data: list[float], period: int) -> float | None:
+        if len(data) < period:
+            return None
+        return sum(data[-period:]) / period
+
+    current = prices[-1]
+    sma20 = sma(prices, 20)
+    sma50 = sma(prices, 50)
+    sma200 = sma(prices, 200)
+
+    score = 50.0  # baseline
+
+    # Price vs SMAs (each contributes up to ~16.7 points)
+    if sma20 and sma20 > 0:
+        ratio = (current - sma20) / sma20
+        score += min(max(ratio * 500, -16.7), 16.7)
+
+    if sma50 and sma50 > 0:
+        ratio = (current - sma50) / sma50
+        score += min(max(ratio * 300, -16.7), 16.7)
+
+    if sma200 and sma200 > 0:
+        ratio = (current - sma200) / sma200
+        score += min(max(ratio * 200, -16.7), 16.7)
+
+    return max(0.0, min(100.0, round(score, 1)))
+
+
+def _compute_volatility_score(prices: list[float]) -> float:
+    """Score volatility 0-100. Higher = calmer (less volatile).
+    Compares recent 20-day vol to 60-day historical vol."""
+    n = len(prices)
+    if n < 20:
+        return 50.0
+
+    def daily_returns(data: list[float]) -> list[float]:
+        return [(data[i] - data[i-1]) / data[i-1] for i in range(1, len(data)) if data[i-1] != 0]
+
+    returns = daily_returns(prices)
+    if len(returns) < 10:
+        return 50.0
+
+    recent_returns = returns[-20:] if len(returns) >= 20 else returns
+    recent_vol = (sum(r**2 for r in recent_returns) / len(recent_returns)) ** 0.5
+
+    # Longer-term vol for comparison
+    long_returns = returns[-60:] if len(returns) >= 60 else returns
+    long_vol = (sum(r**2 for r in long_returns) / len(long_returns)) ** 0.5
+
+    if long_vol == 0:
+        return 50.0
+
+    # If recent vol is lower than historical, score is higher (calmer)
+    vol_ratio = recent_vol / long_vol
+    # vol_ratio < 1 means calmer than average → score > 50
+    # vol_ratio > 1 means more volatile → score < 50
+    score = 50.0 + (1.0 - vol_ratio) * 50.0
+    return max(0.0, min(100.0, round(score, 1)))
+
+
+def _compute_momentum_score(prices: list[float]) -> float:
+    """Score momentum 0-100. Higher = stronger positive momentum.
+    Uses rate of change (ROC) + RSI-equivalent."""
+    n = len(prices)
+    if n < 14:
+        return 50.0
+
+    # RSI-14
+    gains = []
+    losses = []
+    for i in range(max(1, n - 14), n):
+        diff = prices[i] - prices[i - 1]
+        if diff > 0:
+            gains.append(diff)
+            losses.append(0.0)
+        else:
+            gains.append(0.0)
+            losses.append(abs(diff))
+
+    avg_gain = sum(gains) / len(gains) if gains else 0
+    avg_loss = sum(losses) / len(losses) if losses else 0
+
+    if avg_loss == 0:
+        rsi = 100.0
+    else:
+        rs = avg_gain / avg_loss
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+
+    # Rate of change (20-day)
+    roc_period = min(20, n - 1)
+    if roc_period > 0 and prices[-(roc_period + 1)] != 0:
+        roc = ((prices[-1] - prices[-(roc_period + 1)]) / prices[-(roc_period + 1)]) * 100
+    else:
+        roc = 0.0
+
+    # Combine RSI (0-100) and ROC
+    # RSI contributes 60%, ROC contributes 40%
+    roc_score = 50.0 + min(max(roc * 5, -50), 50)  # Scale ROC to 0-100
+    score = rsi * 0.6 + roc_score * 0.4
+
+    return max(0.0, min(100.0, round(score, 1)))
+
+
+def _generate_market_verdict(trend: float, volatility: float, momentum: float) -> tuple[str, str, str]:
+    """Generate verdict, action_tag, and action_tag_reasoning from scores.
+    Returns (verdict, action_tag, action_tag_reasoning)."""
+    avg = (trend + volatility + momentum) / 3.0
+
+    if avg >= 70:
+        verdict = "Strong positive signals across trend, momentum, and stability"
+        action_tag = "Bullish"
+        reasoning = (
+            f"Trend score {trend:.0f}/100 shows strong upward alignment, "
+            f"momentum at {momentum:.0f}/100 confirms buying pressure, "
+            f"and volatility score {volatility:.0f}/100 indicates stable conditions."
+        )
+    elif avg >= 55:
+        verdict = "Moderately positive with some supportive signals"
+        action_tag = "Moderately Bullish"
+        reasoning = (
+            f"Trend ({trend:.0f}) and momentum ({momentum:.0f}) lean positive, "
+            f"though not all dimensions are strongly aligned. "
+            f"Volatility score at {volatility:.0f} suggests {'calm' if volatility >= 50 else 'elevated risk'}."
+        )
+    elif avg >= 45:
+        verdict = "Mixed signals — no clear directional bias"
+        action_tag = "Neutral"
+        reasoning = (
+            f"Scores are near neutral: trend {trend:.0f}, momentum {momentum:.0f}, "
+            f"volatility {volatility:.0f}. No strong conviction in either direction."
+        )
+    elif avg >= 30:
+        verdict = "Moderately negative with some cautionary signals"
+        action_tag = "Moderately Bearish"
+        reasoning = (
+            f"Trend ({trend:.0f}) and momentum ({momentum:.0f}) lean negative. "
+            f"Volatility at {volatility:.0f} {'adds concern' if volatility < 40 else 'provides some stability'}."
+        )
+    else:
+        verdict = "Significant negative signals across multiple dimensions"
+        action_tag = "Bearish"
+        reasoning = (
+            f"Weak trend ({trend:.0f}), poor momentum ({momentum:.0f}), "
+            f"and {'high volatility' if volatility < 30 else 'mixed stability'} ({volatility:.0f}) "
+            f"paint a concerning picture."
+        )
+
+    return verdict, action_tag, reasoning
+
+
+def _generate_driver_tags(trend: float, volatility: float, momentum: float,
+                          asset: str, instrument_type: str) -> list[str]:
+    """Generate contextual driver tags based on scores."""
+    tags = []
+
+    # Trend tags
+    if trend >= 75:
+        tags.append("Strong Uptrend")
+    elif trend >= 60:
+        tags.append("Uptrend")
+    elif trend <= 25:
+        tags.append("Strong Downtrend")
+    elif trend <= 40:
+        tags.append("Downtrend")
+    else:
+        tags.append("Sideways")
+
+    # Momentum tags
+    if momentum >= 70:
+        tags.append("High Momentum")
+    elif momentum <= 30:
+        tags.append("Weak Momentum")
+
+    # Volatility tags
+    if volatility >= 70:
+        tags.append("Low Volatility")
+    elif volatility <= 30:
+        tags.append("High Volatility")
+
+    # Type-specific tags
+    if instrument_type == "bond_yield":
+        if trend >= 60:
+            tags.append("Rising Yields")
+        elif trend <= 40:
+            tags.append("Falling Yields")
+    elif instrument_type == "currency":
+        if momentum >= 60:
+            tags.append("Currency Strengthening")
+        elif momentum <= 40:
+            tags.append("Currency Weakening")
+    elif instrument_type == "commodity":
+        if trend >= 60 and momentum >= 60:
+            tags.append("Commodity Rally")
+        elif trend <= 40 and momentum <= 40:
+            tags.append("Commodity Slump")
+
+    return tags
+
+
+def _generate_type_extras(asset: str, instrument_type: str,
+                          trend: float, volatility: float, momentum: float) -> dict | None:
+    """Generate type-specific extra data."""
+    extras = {}
+
+    if instrument_type == "index":
+        if trend >= 60 and momentum >= 60:
+            extras["market_regime"] = "risk_on"
+        elif trend <= 40 and momentum <= 40:
+            extras["market_regime"] = "risk_off"
+        else:
+            extras["market_regime"] = "mixed"
+
+    elif instrument_type == "bond_yield":
+        if trend >= 55:
+            extras["yield_direction"] = "rising"
+        elif trend <= 45:
+            extras["yield_direction"] = "falling"
+        else:
+            extras["yield_direction"] = "stable"
+
+    elif instrument_type == "currency":
+        if momentum >= 55:
+            extras["rate_signal"] = "strengthening"
+        elif momentum <= 45:
+            extras["rate_signal"] = "weakening"
+        else:
+            extras["rate_signal"] = "stable"
+
+    elif instrument_type == "commodity":
+        if trend >= 55 and momentum >= 55:
+            extras["supply_demand"] = "demand_driven"
+        elif trend <= 45 and momentum <= 45:
+            extras["supply_demand"] = "oversupply"
+        else:
+            extras["supply_demand"] = "balanced"
+
+    return extras if extras else None
+
+
+async def compute_and_store_market_score(asset: str, instrument_type: str) -> dict | None:
+    """Compute scores for a single market instrument from its price history and store in DB."""
+    pool = await get_pool()
+
+    # Fetch last 200 days of price history
+    rows = await pool.fetch(
+        f"""
+        SELECT price FROM {TABLE}
+        WHERE asset = $1 AND instrument_type = $2
+        ORDER BY timestamp ASC
+        LIMIT 200
+        """,
+        asset,
+        instrument_type,
+    )
+
+    if len(rows) < 14:
+        logger.debug("Not enough price history for scoring: asset=%s type=%s rows=%d", asset, instrument_type, len(rows))
+        return None
+
+    prices = [float(r["price"]) for r in rows]
+
+    trend = _compute_trend_score(prices)
+    vol = _compute_volatility_score(prices)
+    mom = _compute_momentum_score(prices)
+
+    verdict, action_tag, reasoning = _generate_market_verdict(trend, vol, mom)
+    driver_tags = _generate_driver_tags(trend, vol, mom, asset, instrument_type)
+    type_extras = _generate_type_extras(asset, instrument_type, trend, vol, mom)
+
+    # Upsert into market_scores
+    await pool.execute(
+        f"""
+        INSERT INTO {TABLE_MARKET_SCORES}
+        (asset, instrument_type, score_trend, score_volatility, score_momentum,
+         verdict, action_tag, action_tag_reasoning, driver_tags, type_extras, computed_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, NOW())
+        ON CONFLICT (asset, instrument_type) DO UPDATE SET
+            score_trend = EXCLUDED.score_trend,
+            score_volatility = EXCLUDED.score_volatility,
+            score_momentum = EXCLUDED.score_momentum,
+            verdict = EXCLUDED.verdict,
+            action_tag = EXCLUDED.action_tag,
+            action_tag_reasoning = EXCLUDED.action_tag_reasoning,
+            driver_tags = EXCLUDED.driver_tags,
+            type_extras = EXCLUDED.type_extras,
+            computed_at = EXCLUDED.computed_at
+        """,
+        asset,
+        instrument_type,
+        trend,
+        vol,
+        mom,
+        verdict,
+        action_tag,
+        reasoning,
+        json.dumps(driver_tags),
+        json.dumps(type_extras) if type_extras else None,
+    )
+
+    result = {
+        "asset": asset,
+        "instrument_type": instrument_type,
+        "score_trend": trend,
+        "score_volatility": vol,
+        "score_momentum": mom,
+        "verdict": verdict,
+        "action_tag": action_tag,
+        "action_tag_reasoning": reasoning,
+        "driver_tags": driver_tags,
+        "type_extras": type_extras,
+    }
+    logger.info(
+        "Market score computed: asset=%s type=%s trend=%.1f vol=%.1f mom=%.1f tag=%s",
+        asset, instrument_type, trend, vol, mom, action_tag,
+    )
+    return result
+
+
+async def get_market_story(asset: str, instrument_type: str) -> dict | None:
+    """Read stored market scores and return story data. Generates verdict text on-the-fly."""
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        f"""
+        SELECT asset, instrument_type, score_trend, score_volatility, score_momentum,
+               verdict, action_tag, action_tag_reasoning, driver_tags, type_extras, computed_at
+        FROM {TABLE_MARKET_SCORES}
+        WHERE asset = $1 AND instrument_type = $2
+        """,
+        asset,
+        instrument_type,
+    )
+    if row is None:
+        return None
+
+    d = record_to_dict(row)
+    # Parse JSONB fields
+    tags = d.get("driver_tags")
+    if isinstance(tags, str):
+        try:
+            d["driver_tags"] = json.loads(tags)
+        except (json.JSONDecodeError, TypeError):
+            d["driver_tags"] = []
+    elif tags is None:
+        d["driver_tags"] = []
+
+    extras = d.get("type_extras")
+    if isinstance(extras, str):
+        try:
+            d["type_extras"] = json.loads(extras)
+        except (json.JSONDecodeError, TypeError):
+            d["type_extras"] = None
+    elif extras is None:
+        d["type_extras"] = None
+
+    return d

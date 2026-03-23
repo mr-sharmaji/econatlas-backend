@@ -25,6 +25,7 @@ JOB_RETRY_POLICIES: dict[str, tuple[int, int]] = {
     "discover_stock_price": (3, 60),
     "discover_mf_nav": (3, 60),
     "discover_mf_holdings": (3, 60),
+    "market_score": (2, 60),
 }
 
 
@@ -47,6 +48,7 @@ def get_arq_functions() -> list:
         task_news,
         task_rescore_mf,
         task_rescore_stock,
+        task_market_score,
         task_tax,
     )
 
@@ -68,4 +70,5 @@ def get_arq_functions() -> list:
         func(task_rescore_mf, name="rescore_mf", timeout=600),
         func(task_ipo, name="ipo"),
         func(task_tax, name="tax"),
+        func(task_market_score, name="market_score", timeout=600),
     ]

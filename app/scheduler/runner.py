@@ -126,6 +126,10 @@ async def _run_tax() -> None:
     await _enqueue("tax")
 
 
+async def _run_market_score() -> None:
+    await _enqueue("market_score")
+
+
 # ── Startup collection ───────────────────────────────────────────────
 
 
@@ -293,6 +297,17 @@ def start_scheduler() -> None:
     _scheduler.add_job(_run_news, "interval", minutes=intervals["news_minutes"], id="news", replace_existing=True)
     if intervals["tax_enabled"]:
         _scheduler.add_job(_run_tax, "interval", minutes=intervals["tax_minutes"], id="tax", replace_existing=True)
+    _scheduler.add_job(
+        _run_market_score,
+        "interval",
+        hours=6,
+        id="market_score",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    logger.info("Scheduler: market_score every 6h")
     logger.info(
         "Scheduler: brief=%dm discover_stock=%s %02d:%02d IST retry=%s %02d:%02d IST discover_mf=%s %02d:%02d IST ipo=%dm macro=%dm news=%dm tax=%s",
         intervals["brief_minutes"],
