@@ -496,87 +496,59 @@ _TE_HEADERS = {
 }
 
 
-def _fetch_te_fertilizers() -> List[Dict]:
-    """Scrape fertilizer prices from Trading Economics commodity pages.
-    Uses session cookies and longer delays to avoid 403 blocks."""
+def _fetch_fertilizer_prices() -> List[Dict]:
+    """Scrape fertilizer prices from Index Mundi commodity index page via Playwright.
+    Single page load returns all fertilizer prices in a rendered table."""
+    # Map Index Mundi names → our asset names and units
+    IM_MAP = {
+        "Urea": ("urea", "usd_per_metric_ton"),
+        "DAP fertilizer": ("dap fertilizer", "usd_per_metric_ton"),
+        "Potassium Chloride": ("potash", "usd_per_metric_ton"),
+        "Triple Superphosphate": ("tsp fertilizer", "usd_per_metric_ton"),
+    }
     items: List[Dict] = []
-    session = requests.Session()
-    session.headers.update(_TE_HEADERS)
-    # Establish cookies by visiting homepage first (same approach as macro TE scraper)
     try:
-        session.get(_TE_BASE_URL, timeout=15)
-        time.sleep(random.uniform(1.5, 3.0))
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        logger.warning("Playwright not installed; skipping fertilizer scraping")
+        return items
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto("https://www.indexmundi.com/commodities/", timeout=40000)
+            page.wait_for_timeout(8000)
+            table_data = page.evaluate("""() => {
+                const rows = [];
+                document.querySelectorAll('table tr').forEach(r => {
+                    const cells = Array.from(r.querySelectorAll('td'));
+                    if (cells.length >= 2) rows.push([cells[0].innerText.trim(), cells[1].innerText.trim()]);
+                });
+                return rows;
+            }""")
+            browser.close()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for name, price_str in table_data:
+            if name not in IM_MAP:
+                continue
+            try:
+                price = float(price_str.replace(",", ""))
+            except (ValueError, TypeError):
+                continue
+            if price <= 0:
+                continue
+            asset, unit = IM_MAP[name]
+            items.append({
+                "asset": asset,
+                "price": price,
+                "unit": unit,
+                "instrument_type": "commodity",
+                "source": "indexmundi_scrape",
+                "source_timestamp": now_iso,
+            })
+            logger.info("IndexMundi fertilizer: %s = %.2f", asset, price)
     except Exception:
-        logger.warning("TE homepage visit failed; proceeding without cookies")
-
-    consecutive_failures = 0
-    for path, (asset, unit) in TE_FERTILIZERS.items():
-        if consecutive_failures >= 3:
-            logger.warning("TE fertilizer: %d consecutive failures, stopping", consecutive_failures)
-            break
-        try:
-            url = f"{_TE_BASE_URL}{path}"
-            resp = session.get(url, timeout=20)
-            if resp.status_code == 403:
-                consecutive_failures += 1
-                logger.warning("TE 403 for %s (consecutive: %d)", path, consecutive_failures)
-                time.sleep(random.uniform(5.0, 8.0))
-                continue
-            if resp.status_code != 200:
-                logger.warning("TE HTTP %d for %s", resp.status_code, path)
-                continue
-            consecutive_failures = 0
-            html = resp.text
-            price = None
-            # Try extracting price from <title> tag (format: "Urea - Price ... | 250.00")
-            title_match = re.search(r"<title>.*?\|\s*([\d,]+(?:\.\d+)?)\s*</title>", html, re.IGNORECASE)
-            if title_match:
-                try:
-                    price = float(title_match.group(1).replace(",", ""))
-                except (ValueError, TypeError):
-                    pass
-            # Fallback: try og:title or description meta tags
-            if price is None:
-                meta_match = re.search(
-                    r'<meta[^>]+(?:og:title|og:description|description)[^>]+content="[^"]*?\b([\d,]+(?:\.\d+)?)\s*(?:USD|usd)',
-                    html,
-                    re.IGNORECASE,
-                )
-                if meta_match:
-                    try:
-                        price = float(meta_match.group(1).replace(",", ""))
-                    except (ValueError, TypeError):
-                        pass
-            # Fallback: try the main content div with id="p"
-            if price is None:
-                div_match = re.search(r'id="p"[^>]*>([\d,]+(?:\.\d+)?)</[^>]+>', html)
-                if div_match:
-                    try:
-                        price = float(div_match.group(1).replace(",", ""))
-                    except (ValueError, TypeError):
-                        pass
-            if price is not None and price > 0:
-                items.append({
-                    "asset": asset,
-                    "price": price,
-                    "unit": unit,
-                    "instrument_type": "commodity",
-                    "source": "trading_economics_scrape",
-                    "source_timestamp": datetime.now(timezone.utc).isoformat(),
-                    "provider": "trading_economics",
-                    "provider_priority": 3,
-                    "confidence_level": 0.7,
-                    "is_fallback": False,
-                    "quality": "primary",
-                })
-                logger.info("TE fertilizer fetched: %s = %.2f %s", asset, price, unit)
-            else:
-                logger.warning("TE fertilizer price not found in HTML for %s", asset)
-        except Exception:
-            logger.warning("TE fertilizer fetch failed for %s", asset, exc_info=True)
-            consecutive_failures += 1
-        # Rate limit: 3-6 seconds between requests (longer than Yahoo to avoid TE blocks)
-        time.sleep(random.uniform(3.0, 6.0))
+        logger.warning("IndexMundi fertilizer scraping failed", exc_info=True)
     return items
 
 
@@ -627,7 +599,7 @@ async def run_fertilizer_job() -> None:
         loop = asyncio.get_event_loop()
         te_rows_raw = await loop.run_in_executor(
             get_job_executor("fertilizer"),
-            _fetch_te_fertilizers,
+            _fetch_fertilizer_prices,
         )
         if not te_rows_raw:
             logger.info("Fertilizer job: no rows fetched")
