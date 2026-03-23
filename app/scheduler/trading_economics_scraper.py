@@ -27,15 +27,14 @@ TE_INDICATORS: List[Tuple[str, str, str, str]] = [
     ("iip", "IN", "/india/industrial-production", "percent_yoy"),
     ("iip", "US", "/united-states/industrial-production", "percent_yoy"),
     # Prices
-    ("core_inflation", "IN", "/india/core-inflation-rate", "percent_yoy"),
+    ("core_inflation", "IN", "/india/food-inflation", "percent_yoy"),  # food inflation as proxy (core CPI page redirects)
     # Trade & Fiscal
-    ("forex_reserves", "IN", "/india/foreign-exchange-reserves", "usd_bn"),
+    ("forex_reserves", "IN", "/india/foreign-exchange-reserves", "usd_mn"),
     ("trade_balance", "IN", "/india/balance-of-trade", "usd_mn"),
     ("trade_balance", "US", "/united-states/balance-of-trade", "usd_mn"),
     ("current_account_deficit", "IN", "/india/current-account", "usd_bn"),
     ("fiscal_deficit", "IN", "/india/government-budget", "percent_gdp"),
-    ("gst_collection", "IN", "/india/gst-revenue", "inr_lakh_cr"),
-    ("bank_credit_growth", "IN", "/india/loans-to-private-sector", "percent_yoy"),
+    ("bank_credit_growth", "IN", "/india/bank-lending-rate", "percent"),
 ]
 
 _BASE_URL = "https://tradingeconomics.com"
@@ -166,12 +165,18 @@ class TradingEconomicsScraper:
         if desc_el:
             text = desc_el.get_text()
 
-            # Extract value: "rose to 56.9", "fell to 4.2", "decreased to 709760", etc.
+            # Extract value from various TE description patterns:
+            # "rose to 56.9", "fell to 4.2", "rose by 4.8%", "widened to $27.10",
+            # "revised...to 58.1", "deficit to 4.8%", "remained unchanged at 9.06"
             val_match = re.search(
                 r"(?:rose to|fell to|decreased to|increased to|was|stood at|"
-                r"came in at|remained at|edged (?:up|down) to|went up to|"
-                r"went down to|dropped to|climbed to|hit|reached)\s+"
-                r"(?:USD\s+)?(?:INR\s+)?([\d,\.]+)",
+                r"came in at|remained (?:unchanged )?at|edged (?:up|down) to|"
+                r"went up to|went down to|dropped to|climbed to|hit|reached|"
+                r"rose by|fell by|increased by|decreased by|grew by|shrank by|"
+                r"rose |fell |increased |decreased |"
+                r"widened to|narrowed to|revised\b.*?\bto|"
+                r"deficit (?:of|to)|surplus (?:of|to))\s*"
+                r"(?:USD\s+)?(?:INR\s+)?(?:\$\s*)?([\d,\.]+)",
                 text, re.IGNORECASE,
             )
             if val_match:
