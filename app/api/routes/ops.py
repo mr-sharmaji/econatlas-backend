@@ -382,11 +382,17 @@ async def rescore_job(
         }
 
     module_path, func_name = _RESCORE_JOBS[job_name]
-    task = asyncio.create_task(
-        _direct_run_wrapper(task_key, module_path, func_name),
-        name=f"direct-run-rescore-{job_name}",
-    )
+
+    async def _run():
+        try:
+            await _direct_run_wrapper(task_key, module_path, func_name)
+        except Exception:
+            logger.exception("Rescore background task failed: %s", task_key)
+
+    task = asyncio.ensure_future(_run())
     _running_direct_jobs[task_key] = task
+    # prevent GC from collecting the task
+    task.add_done_callback(lambda t: _running_direct_jobs.pop(task_key, None))
     logger.info("Rescore triggered: %s (background task)", job_name)
     return {
         "status": "started",
