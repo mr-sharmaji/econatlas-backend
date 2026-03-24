@@ -289,12 +289,12 @@ def _build_japan_open(d: dict) -> tuple[str, str]:
     avg_pct = sum(own_pcts) / len(own_pcts)
     sentences: list[str] = [f"{_open_tone(avg_pct)} for Japanese markets."]
 
-    # USD/JPY context
-    usd_jpy = d.get("usd_jpy_price")
-    usd_jpy_pct = d.get("usd_jpy_pct")
-    if usd_jpy is not None:
-        yen_dir = "yen weakened overnight" if (usd_jpy_pct is not None and usd_jpy_pct > 0) else "yen strengthened"
-        sentences.append(f"USD/JPY at {usd_jpy:.1f} \u2014 {yen_dir}.")
+    # JPY/INR context (JPY/INR up = yen strengthened vs INR)
+    jpy_inr = d.get("jpy_inr_price")
+    jpy_inr_pct = d.get("jpy_inr_pct")
+    if jpy_inr is not None:
+        yen_dir = "yen strengthened" if (jpy_inr_pct is not None and jpy_inr_pct > 0) else "yen weakened overnight"
+        sentences.append(f"JPY/INR at {jpy_inr:.4f} \u2014 {yen_dir}.")
 
     # Overnight US (Wall Street)
     us_sp = d.get("us_sp500_pct")
@@ -1071,11 +1071,11 @@ def _build_japan_close(d: dict) -> tuple[str, str]:
 
     # Sentence 1: Tone + yen context
     base_tone = _close_tone(avg_pct)
-    usd_jpy = d.get("usd_jpy_price")
-    usd_jpy_pct = d.get("usd_jpy_change_pct")
-    if usd_jpy_pct is not None:
-        # USD/JPY up = yen weakened; USD/JPY down = yen strengthened
-        yen_dir = "yen strengthened" if usd_jpy_pct < 0 else "yen weakened"
+    jpy_inr = d.get("jpy_inr_price")
+    jpy_inr_pct = d.get("jpy_inr_change_pct")
+    if jpy_inr_pct is not None:
+        # JPY/INR up = yen strengthened vs INR; JPY/INR down = yen weakened
+        yen_dir = "yen strengthened" if jpy_inr_pct > 0 else "yen weakened"
         if avg_pct >= 0.3:
             sentences.append(f"Strong rally in Japanese markets as {yen_dir}." if avg_pct >= 1.5 else f"{base_tone} in Japanese markets as {yen_dir}.")
         elif avg_pct <= -0.3:
@@ -1085,9 +1085,9 @@ def _build_japan_close(d: dict) -> tuple[str, str]:
     else:
         sentences.append(f"{base_tone} for Japanese markets.")
 
-    # Sentence 2: USD/JPY level
-    if usd_jpy is not None and usd_jpy_pct is not None:
-        sentences.append(f"USD/JPY at {usd_jpy:.1f} ({_sign(usd_jpy_pct)}{usd_jpy_pct:.1f}%).")
+    # Sentence 2: JPY/INR level
+    if jpy_inr is not None and jpy_inr_pct is not None:
+        sentences.append(f"JPY/INR at {jpy_inr:.4f} ({_sign(jpy_inr_pct)}{jpy_inr_pct:.1f}%).")
 
     # Sentence 3: Relative context + 52-week
     ctx = d.get("relative_context")

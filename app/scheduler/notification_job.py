@@ -390,18 +390,18 @@ async def _fetch_japan_close_data() -> dict | None:
         )
         data["week52_context"] = await _get_52week_context(pool, "Nikkei 225", nikkei_close)
 
-        # USD/JPY for yen context
+        # JPY/INR for yen context
         jpy_row = await pool.fetchrow(
             """
             SELECT price, change_percent FROM market_prices
-            WHERE asset = 'USD/JPY' AND change_percent IS NOT NULL
+            WHERE asset = 'JPY/INR' AND change_percent IS NOT NULL
             ORDER BY timestamp DESC
             LIMIT 1
             """
         )
         if jpy_row:
-            data["usd_jpy_price"] = float(jpy_row["price"])
-            data["usd_jpy_change_pct"] = float(jpy_row["change_percent"])
+            data["jpy_inr_price"] = float(jpy_row["price"])
+            data["jpy_inr_change_pct"] = float(jpy_row["change_percent"])
 
         return data
     except Exception:
@@ -485,7 +485,7 @@ async def _fetch_india_open_data() -> dict | None:
 
 
 async def _fetch_japan_open_data() -> dict | None:
-    """Fetch data for Japan market open: Nikkei/TOPIX + overnight US + FTSE + USD/JPY + gold."""
+    """Fetch data for Japan market open: Nikkei/TOPIX + overnight US + FTSE + JPY/INR + gold."""
     try:
         from app.core.database import get_pool
         pool = await get_pool()
@@ -542,19 +542,19 @@ async def _fetch_japan_open_data() -> dict | None:
             elif a == "gold":
                 data["gold_pct"] = pct
 
-        # USD/JPY
+        # JPY/INR
         jpy_row = await pool.fetchrow(
             """
             SELECT price, change_percent FROM market_prices
-            WHERE asset = 'USD/JPY'
+            WHERE asset = 'JPY/INR'
             ORDER BY timestamp DESC
             LIMIT 1
             """,
         )
         if jpy_row and jpy_row["price"] is not None:
-            data["usd_jpy_price"] = float(jpy_row["price"])
+            data["jpy_inr_price"] = float(jpy_row["price"])
             if jpy_row["change_percent"] is not None:
-                data["usd_jpy_pct"] = float(jpy_row["change_percent"])
+                data["jpy_inr_pct"] = float(jpy_row["change_percent"])
 
         return data
     except Exception:
