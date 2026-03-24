@@ -369,7 +369,7 @@ async def notify_commodity_spike(
     price: float,
     unit: str | None = None,
 ) -> bool:
-    """Send notification when a commodity moves ±3% from previous close."""
+    """Send notification when a commodity moves ±2% from previous close."""
     emoji = _COMMODITY_EMOJIS.get(asset, "\U0001f4e6")  # 📦 fallback
     direction = "surges" if change_pct > 0 else "drops"
     sign = "+" if change_pct >= 0 else ""

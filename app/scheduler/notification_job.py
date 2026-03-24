@@ -33,7 +33,7 @@ _pre_market_state: dict = {
 # Commodity spike state — track alerted assets per day
 _commodity_spike_state: dict = {
     "last_date": None,
-    "alerted": {},  # asset -> last alerted band (3% bands)
+    "alerted": {},  # asset -> last alerted band (2% bands)
 }
 
 # Post-market summary state
@@ -694,7 +694,7 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
 
 
 async def _check_commodity_spikes(now: datetime) -> None:
-    """Check for commodity price spikes (±3% from previous close)."""
+    """Check for commodity price spikes (±2% from previous close)."""
     now_ist = now.astimezone(_IST)
     today = now_ist.date()
 
@@ -714,7 +714,7 @@ async def _check_commodity_spikes(now: datetime) -> None:
             FROM market_prices
             WHERE instrument_type = 'commodity'
               AND change_percent IS NOT NULL
-              AND ABS(change_percent) >= 3.0
+              AND ABS(change_percent) >= 2.0
             ORDER BY asset, date DESC
             """
         )
@@ -730,8 +730,8 @@ async def _check_commodity_spikes(now: datetime) -> None:
             price = float(row["price"])
             unit = row.get("unit")
 
-            # Track in 3% bands to avoid spamming
-            band = int(change_pct / 3) * 3
+            # Track in 2% bands to avoid spamming
+            band = int(change_pct / 2) * 2
             if alerted.get(asset) == band:
                 continue
 
