@@ -487,16 +487,67 @@ async def notify_fii_dii_data(
     """Send notification with FII/DII activity update."""
     title = "\U0001f4ca FII/DII Activity Update"
 
-    fii_action = "bought" if fii_net >= 0 else "sold"
-    dii_action = "bought" if dii_net >= 0 else "sold"
     net = fii_net + dii_net
-    net_sign = "+" if net >= 0 else "-"
+    abs_fii = abs(fii_net)
+    abs_dii = abs(dii_net)
+    fii_buying = fii_net >= 0
+    dii_buying = dii_net >= 0
 
-    body = (
-        f"FIIs {fii_action} \u20b9{_format_inr(fii_net)} Cr"
-        f" | DIIs {dii_action} \u20b9{_format_inr(dii_net)} Cr"
-        f" | Net: {net_sign}\u20b9{_format_inr(net)} Cr"
-    )
+    sentences: list[str] = []
+
+    # Sentence 1: Lead narrative based on pattern
+    if fii_buying and dii_buying:
+        # Both buying
+        sentences.append(
+            f"Both FIIs and DIIs turned buyers today. "
+            f"FIIs bought \u20b9{_format_inr(fii_net)} Cr, "
+            f"DIIs added \u20b9{_format_inr(dii_net)} Cr"
+        )
+    elif not fii_buying and not dii_buying:
+        # Both selling
+        sentences.append(
+            f"Both FIIs and DIIs were net sellers today. "
+            f"FIIs sold \u20b9{_format_inr(fii_net)} Cr, "
+            f"DIIs offloaded \u20b9{_format_inr(dii_net)} Cr"
+        )
+    elif not fii_buying and dii_buying:
+        # FII selling, DII buying (typical)
+        if abs_fii >= 3000:
+            sentences.append(
+                f"Heavy FII selling at \u20b9{_format_inr(fii_net)} Cr. "
+                f"DIIs stepped in with \u20b9{_format_inr(dii_net)} Cr"
+            )
+        else:
+            sentences.append(
+                f"FIIs continued selling, offloading \u20b9{_format_inr(fii_net)} Cr "
+                f"while DIIs absorbed \u20b9{_format_inr(dii_net)} Cr"
+            )
+    else:
+        # FII buying, DII selling (rotation)
+        sentences.append(
+            f"FIIs turned buyers at \u20b9{_format_inr(fii_net)} Cr "
+            f"while DIIs booked profits, selling \u20b9{_format_inr(dii_net)} Cr"
+        )
+
+    # Sentence 2: Net flow + insight
+    net_label = "inflow" if net >= 0 else "outflow"
+    net_str = f"Net {net_label} of \u20b9{_format_inr(net)} Cr"
+
+    if fii_buying and dii_buying:
+        sentences.append(f"{net_str} \u2014 strong institutional support")
+    elif not fii_buying and not dii_buying:
+        sentences.append(f"{net_str} \u2014 broad institutional retreat")
+    elif not fii_buying and dii_buying:
+        if abs_dii >= abs_fii * 0.9:
+            sentences.append(f"{net_str} \u2014 DIIs nearly matched foreign exit")
+        elif abs_dii >= abs_fii * 0.5:
+            sentences.append(f"{net_str} \u2014 domestic institutions cushioned foreign exit")
+        else:
+            sentences.append(f"{net_str} \u2014 DII buying insufficient to offset FII selling")
+    else:
+        sentences.append(f"{net_str} \u2014 foreign money returning as domestic institutions take a breather")
+
+    body = ". ".join(sentences) + "."
 
     return await send_topic_notification(
         topic="market_alerts",
