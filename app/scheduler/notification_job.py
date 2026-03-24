@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from app.services import notification_service
-from app.scheduler.trading_calendar import get_market_status
+from app.scheduler.trading_calendar import get_market_status, is_exchange_holiday
 
 logger = logging.getLogger(__name__)
 
@@ -106,18 +106,6 @@ async def _get_52week_context(pool, asset: str, current_close: float | None) -> 
     if current_close is None:
         return None
     try:
-        row = await pool.fetchrow(
-            """
-            SELECT MAX(price) AS max_price, MIN(price) AS min_price
-            FROM market_prices
-            WHERE asset = $1
-            ORDER BY date DESC
-            LIMIT 252
-            """,
-            asset,
-        )
-        # The query above is wrong — LIMIT on an aggregate doesn't restrict the window.
-        # Use a sub-select instead:
         row = await pool.fetchrow(
             """
             SELECT MAX(price) AS max_price, MIN(price) AS min_price
@@ -518,7 +506,7 @@ async def _check_gift_nifty(status: dict, now: datetime) -> None:
         # Previous Nifty 50 daily close
         nifty_row = await pool.fetchrow(
             """
-            SELECT close FROM market_prices
+            SELECT price FROM market_prices
             WHERE asset = 'Nifty 50'
             ORDER BY date DESC
             LIMIT 1
@@ -528,7 +516,7 @@ async def _check_gift_nifty(status: dict, now: datetime) -> None:
             return
 
         gift_price = float(gift_row["price"])
-        nifty_close = float(nifty_row["close"])
+        nifty_close = float(nifty_row["price"])
         if nifty_close == 0:
             return
 
@@ -561,12 +549,11 @@ async def _check_fii_dii(now: datetime) -> tuple[float | None, float | None]:
 
         rows = await pool.fetch(
             """
-            SELECT indicator_name, value, timestamp
+            SELECT DISTINCT ON (indicator_name) indicator_name, value, timestamp
             FROM macro_indicators
             WHERE indicator_name IN ('fii_net_cash', 'dii_net_cash')
               AND unit = 'inr_cr'
-            ORDER BY timestamp DESC
-            LIMIT 2
+            ORDER BY indicator_name, timestamp DESC
             """
         )
         if len(rows) < 2:
@@ -601,7 +588,7 @@ async def _check_fii_dii(now: datetime) -> tuple[float | None, float | None]:
 
 
 async def _check_pre_market_summary(status: dict, now: datetime) -> None:
-    """Send pre-market summary at ~9:10 AM IST on trading days."""
+    """Send pre-market summary between 8:58-9:05 AM IST on trading days."""
     now_ist = now.astimezone(_IST)
     today = now_ist.date()
 
@@ -625,7 +612,7 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
         # Previous Nifty 50 daily close
         nifty_close_row = await pool.fetchrow(
             """
-            SELECT close FROM market_prices
+            SELECT price FROM market_prices
             WHERE asset = 'Nifty 50'
             ORDER BY date DESC
             LIMIT 1
@@ -633,7 +620,7 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
         )
         if not nifty_close_row:
             return
-        nifty_close = float(nifty_close_row["close"])
+        nifty_close = float(nifty_close_row["price"])
         if nifty_close == 0:
             return
 
@@ -657,7 +644,7 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
         global_rows = await pool.fetch(
             """
             SELECT asset, change_percent FROM market_prices
-            WHERE asset IN ('S&P 500', 'Dow Jones', 'NASDAQ', 'Nikkei 225', 'Hang Seng')
+            WHERE asset IN ('S&P500', 'Dow Jones', 'NASDAQ', 'Nikkei 225', 'Hang Seng')
               AND change_percent IS NOT NULL
             ORDER BY date DESC
             LIMIT 10
@@ -670,7 +657,7 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
                 continue
             seen.add(a)
             pct = float(row["change_percent"])
-            if a in ("S&P 500", "Dow Jones", "NASDAQ"):
+            if a in ("S&P500", "Dow Jones", "NASDAQ"):
                 us_change[a] = pct
             else:
                 asia_change[a] = pct
@@ -707,7 +694,7 @@ async def _check_commodity_spikes(now: datetime) -> None:
         from app.core.database import get_pool
         pool = await get_pool()
 
-        # Get latest commodity prices with significant moves
+        # Get latest commodity prices with significant moves (today only)
         rows = await pool.fetch(
             """
             SELECT DISTINCT ON (asset) asset, price, change_percent, unit
@@ -715,8 +702,10 @@ async def _check_commodity_spikes(now: datetime) -> None:
             WHERE instrument_type = 'commodity'
               AND change_percent IS NOT NULL
               AND ABS(change_percent) >= 2.0
+              AND date >= $1
             ORDER BY asset, date DESC
-            """
+            """,
+            today,
         )
 
         if not rows:
@@ -787,7 +776,11 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
         if status.get("india_open"):
             return  # Market still open
 
-        # Only attempt between close time and 1 hour after
+        # Only fire within 1 hour after market close (~15:30-16:30 IST)
+        total_minutes = now_ist.hour * 60 + now_ist.minute
+        if total_minutes > 990:  # 16:30 IST = 990 minutes
+            return
+
         # Check if today had a trading session by looking for today's data
         try:
             from app.core.database import get_pool
@@ -895,32 +888,44 @@ async def run_notification_job() -> None:
             if is_open and not was_open:
                 # Transition: closed -> open
                 logger.info("Market transition: %s OPENED", market)
-                open_data = None
-                fetcher = _open_data_fetchers.get(market)
-                if fetcher:
-                    try:
-                        open_data = await fetcher()
-                    except Exception:
-                        logger.warning("Open data fetch failed for %s", market, exc_info=True)
-                await notification_service.notify_market_open(market, market_data=open_data)
+                # Skip Europe/Japan notifications on exchange holidays
+                if market == "europe" and is_exchange_holiday("LSE", now):
+                    logger.info("Skipping Europe open notification — LSE holiday")
+                elif market == "japan" and is_exchange_holiday("TSE", now):
+                    logger.info("Skipping Japan open notification — TSE holiday")
+                else:
+                    open_data = None
+                    fetcher = _open_data_fetchers.get(market)
+                    if fetcher:
+                        try:
+                            open_data = await fetcher()
+                        except Exception:
+                            logger.warning("Open data fetch failed for %s", market, exc_info=True)
+                    await notification_service.notify_market_open(market, market_data=open_data)
             elif not is_open and was_open:
                 # Transition: open -> closed
                 logger.info("Market transition: %s CLOSED", market)
-                close_data = None
-                fetcher = _close_data_fetchers.get(market)
-                if fetcher:
-                    try:
-                        close_data = await fetcher()
-                    except Exception:
-                        logger.warning("Close data fetch failed for %s", market, exc_info=True)
-                if market == "india":
-                    # Skip generic close — post-market summary handles India
-                    india_closed_transition = True
+                # Skip Europe/Japan notifications on exchange holidays
+                if market == "europe" and is_exchange_holiday("LSE", now):
+                    logger.info("Skipping Europe close notification — LSE holiday")
+                elif market == "japan" and is_exchange_holiday("TSE", now):
+                    logger.info("Skipping Japan close notification — TSE holiday")
                 else:
-                    await notification_service.notify_market_close(market, market_data=close_data)
+                    close_data = None
+                    fetcher = _close_data_fetchers.get(market)
+                    if fetcher:
+                        try:
+                            close_data = await fetcher()
+                        except Exception:
+                            logger.warning("Close data fetch failed for %s", market, exc_info=True)
+                    if market == "india":
+                        # Skip generic close — post-market summary handles India
+                        india_closed_transition = True
+                    else:
+                        await notification_service.notify_market_close(market, market_data=close_data)
             _prev_state[market] = is_open
 
-        # --- Pre-market summary (9:10 AM IST) ---
+        # --- Pre-market summary (8:58-9:05 AM IST) ---
         await _check_pre_market_summary(status, now)
 
         # --- Gift Nifty alert ---

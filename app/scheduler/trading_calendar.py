@@ -25,6 +25,8 @@ _india_session_cache_until: float = 0.0
 # Lazy-loaded calendars (avoid import cost at module load)
 _nse_calendar = None
 _nyse_calendar = None
+_lse_calendar = None
+_tse_calendar = None
 
 # Exchange identifier for get_trading_date
 NSE = "NSE"
@@ -42,6 +44,8 @@ SESSION_CLOSED = "closed"
 # Package has no XNSE; XBOM is the India exchange calendar in gerrymanoim/exchange_calendars.
 _NSE_CALENDAR_NAME = "XBOM"
 _NYSE_CALENDAR_NAME = "XNYS"
+_LSE_CALENDAR_NAME = "XLON"
+_TSE_CALENDAR_NAME = "XTKS"
 
 _NSE_TZ = ZoneInfo("Asia/Kolkata")
 _NYSE_TZ = ZoneInfo("America/New_York")
@@ -79,6 +83,50 @@ def _get_nyse():
         except Exception as e:
             logger.warning("NYSE calendar (%s) unavailable: %s. Using weekday/date fallback for US.", _NYSE_CALENDAR_NAME, e)
     return _nyse_calendar
+
+
+def _get_lse():
+    global _lse_calendar
+    if _lse_calendar is None:
+        try:
+            import exchange_calendars as xcals
+            _lse_calendar = xcals.get_calendar(_LSE_CALENDAR_NAME)
+        except Exception as e:
+            logger.warning("LSE calendar (%s) unavailable: %s. Holiday check disabled for Europe.", _LSE_CALENDAR_NAME, e)
+    return _lse_calendar
+
+
+def _get_tse():
+    global _tse_calendar
+    if _tse_calendar is None:
+        try:
+            import exchange_calendars as xcals
+            _tse_calendar = xcals.get_calendar(_TSE_CALENDAR_NAME)
+        except Exception as e:
+            logger.warning("TSE calendar (%s) unavailable: %s. Holiday check disabled for Japan.", _TSE_CALENDAR_NAME, e)
+    return _tse_calendar
+
+
+def is_exchange_holiday(exchange: str, utc_now: datetime) -> bool:
+    """Return True if the exchange is on a holiday today (not a regular trading session).
+
+    Returns False (not a holiday) if the calendar is unavailable, so notifications
+    still fire in degraded mode.
+    """
+    now = utc_now if utc_now.tzinfo is not None else utc_now.replace(tzinfo=timezone.utc)
+    if exchange == LSE:
+        cal = _get_lse()
+        if cal is None:
+            return False
+        local_date = now.astimezone(_LSE_TZ).date()
+        return not cal.is_session(local_date)
+    if exchange == TSE:
+        cal = _get_tse()
+        if cal is None:
+            return False
+        local_date = now.astimezone(_TSE_TZ).date()
+        return not cal.is_session(local_date)
+    return False
 
 
 def is_trading_day_markets(utc_now: datetime) -> bool:
