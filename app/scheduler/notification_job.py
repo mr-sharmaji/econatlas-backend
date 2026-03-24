@@ -67,7 +67,7 @@ async def _get_relative_context(pool, asset: str, change_pct: float, days: int =
             """
             SELECT change_percent FROM market_prices
             WHERE asset = $1 AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT $2
             """,
             asset, days,
@@ -119,7 +119,7 @@ async def _get_52week_context(pool, asset: str, current_close: float | None) -> 
             FROM (
                 SELECT price FROM market_prices
                 WHERE asset = $1
-                ORDER BY date DESC
+                ORDER BY timestamp DESC
                 LIMIT 252
             ) sub
             """,
@@ -158,7 +158,7 @@ async def _fetch_india_close_data() -> dict | None:
             """
             SELECT asset, change_percent, price FROM market_prices
             WHERE asset IN ('Nifty 50', 'Sensex')
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 2
             """
         )
@@ -195,7 +195,7 @@ async def _fetch_india_close_data() -> dict | None:
             SELECT asset, change_percent FROM market_prices
             WHERE asset IN ('Nifty Bank', 'Nifty IT', 'Nifty Pharma', 'Nifty Auto', 'Nifty Metal')
               AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 10
             """
         )
@@ -231,7 +231,7 @@ async def _fetch_us_close_data() -> dict | None:
             """
             SELECT asset, change_percent, price FROM market_prices
             WHERE asset IN ('S&P500', 'NASDAQ', 'Dow Jones')
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 6
             """
         )
@@ -273,7 +273,7 @@ async def _fetch_us_close_data() -> dict | None:
             """
             SELECT price FROM market_prices
             WHERE asset = 'Nifty 50'
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 1
             """
         )
@@ -300,7 +300,7 @@ async def _fetch_europe_close_data() -> dict | None:
             """
             SELECT asset, change_percent, price FROM market_prices
             WHERE asset IN ('FTSE 100', 'DAX', 'CAC 40')
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 6
             """
         )
@@ -337,7 +337,7 @@ async def _fetch_europe_close_data() -> dict | None:
             """
             SELECT change_percent FROM market_prices
             WHERE asset = 'brent crude' AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 1
             """
         )
@@ -360,7 +360,7 @@ async def _fetch_japan_close_data() -> dict | None:
             """
             SELECT asset, change_percent, price FROM market_prices
             WHERE asset IN ('Nikkei 225', 'TOPIX')
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 4
             """
         )
@@ -392,7 +392,7 @@ async def _fetch_japan_close_data() -> dict | None:
             """
             SELECT price, change_percent FROM market_prices
             WHERE asset = 'JPY/INR' AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 1
             """
         )
@@ -421,7 +421,7 @@ async def _fetch_india_open_data() -> dict | None:
             """
             SELECT price FROM market_prices
             WHERE asset = 'Nifty 50'
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 1
             """
         )
@@ -455,7 +455,7 @@ async def _fetch_india_open_data() -> dict | None:
             SELECT asset, change_percent FROM market_prices
             WHERE asset IN ('S&P500', 'NASDAQ', 'Nikkei 225', 'gold')
               AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 8
             """
         )
@@ -493,7 +493,7 @@ async def _fetch_japan_open_data() -> dict | None:
             SELECT asset, change_percent, price FROM market_prices
             WHERE asset IN ('Nikkei 225', 'TOPIX')
               AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 4
             """,
         )
@@ -519,7 +519,7 @@ async def _fetch_japan_open_data() -> dict | None:
             SELECT asset, change_percent FROM market_prices
             WHERE asset IN ('S&P500', 'NASDAQ', 'FTSE 100', 'gold')
               AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 8
             """,
         )
@@ -544,7 +544,7 @@ async def _fetch_japan_open_data() -> dict | None:
             """
             SELECT price, change_percent FROM market_prices
             WHERE asset = 'USD/JPY'
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 1
             """,
         )
@@ -569,7 +569,7 @@ async def _fetch_europe_open_data() -> dict | None:
             SELECT asset, change_percent, price FROM market_prices
             WHERE asset IN ('FTSE 100', 'DAX', 'CAC 40')
               AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 6
             """,
         )
@@ -597,7 +597,7 @@ async def _fetch_europe_open_data() -> dict | None:
             SELECT asset, change_percent FROM market_prices
             WHERE asset IN ('Nikkei 225', 'Nifty 50')
               AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 4
             """,
         )
@@ -618,7 +618,7 @@ async def _fetch_europe_open_data() -> dict | None:
             """
             SELECT change_percent FROM market_prices
             WHERE asset = 'brent crude' AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 1
             """,
         )
@@ -643,7 +643,7 @@ async def _fetch_us_open_data() -> dict | None:
             SELECT asset, change_percent, price FROM market_prices
             WHERE asset IN ('S&P500', 'NASDAQ', 'Dow Jones')
               AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 6
             """,
         )
@@ -671,7 +671,7 @@ async def _fetch_us_open_data() -> dict | None:
             SELECT asset, change_percent FROM market_prices
             WHERE asset IN ('FTSE 100', 'DAX')
               AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 4
             """,
         )
@@ -692,7 +692,7 @@ async def _fetch_us_open_data() -> dict | None:
             """
             SELECT change_percent FROM market_prices
             WHERE asset = 'crude oil' AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 1
             """,
         )
@@ -712,7 +712,7 @@ async def _fetch_us_open_data() -> dict | None:
             """
             SELECT price FROM market_prices
             WHERE asset = 'Nifty 50'
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 1
             """,
         )
@@ -765,7 +765,7 @@ async def _check_gift_nifty(status: dict, now: datetime) -> None:
             """
             SELECT price FROM market_prices
             WHERE asset = 'Nifty 50'
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 1
             """
         )
@@ -876,7 +876,7 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
             """
             SELECT price FROM market_prices
             WHERE asset = 'Nifty 50'
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 1
             """
         )
@@ -908,7 +908,7 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
             SELECT asset, change_percent FROM market_prices
             WHERE asset IN ('S&P500', 'Dow Jones', 'NASDAQ', 'Nikkei 225', 'Hang Seng')
               AND change_percent IS NOT NULL
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 10
             """
         )
@@ -1073,7 +1073,7 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
             """
             SELECT asset, change_percent FROM market_prices
             WHERE asset IN ('Nifty 50', 'Sensex')
-            ORDER BY date DESC
+            ORDER BY timestamp DESC
             LIMIT 2
             """
         )
