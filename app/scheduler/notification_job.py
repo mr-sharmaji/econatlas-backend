@@ -755,28 +755,57 @@ async def _check_commodity_spikes(now: datetime) -> None:
 
 
 async def _check_post_market_summary(now: datetime, india_closed_transition: bool) -> None:
-    """Send post-market summary 5 minutes after NSE close."""
+    """Send post-market summary ~5 min after NSE close (survives restarts).
+
+    Uses transition detection when available. Falls back to DB-based detection:
+    if India is closed, today is a trading day, and we haven't sent yet, fire.
+    """
+    now_ist = now.astimezone(_IST)
+    today = now_ist.date()
+
+    # Already sent today
+    if _post_market_state.get("last_date") == today:
+        return
+
     if india_closed_transition:
+        # We caught the live transition — wait 5 minutes for data to settle
         _post_market_state["pending"] = True
         _post_market_state["close_time"] = now
         logger.info("Post-market summary pending — will send after 5 minutes")
         return
 
-    if not _post_market_state.get("pending"):
-        return
+    if _post_market_state.get("pending"):
+        # Waiting for 5-minute delay after live transition
+        close_time = _post_market_state.get("close_time")
+        if close_time and (now - close_time).total_seconds() < 300:
+            return
+    else:
+        # No live transition detected (e.g., server restarted after close).
+        # Fallback: check if India is closed and today's close data exists in DB.
+        from app.scheduler.trading_calendar import get_market_status
+        status = get_market_status(now)
+        if status.get("india_open"):
+            return  # Market still open
 
-    close_time = _post_market_state.get("close_time")
-    if close_time is None:
-        return
-
-    elapsed = (now - close_time).total_seconds()
-    if elapsed < 300:  # 5 minutes
-        return
-
-    today = now.astimezone(_IST).date()
-    if _post_market_state.get("last_date") == today:
-        _post_market_state["pending"] = False
-        return
+        # Only attempt between close time and 1 hour after
+        # Check if today had a trading session by looking for today's data
+        try:
+            from app.core.database import get_pool
+            pool = await get_pool()
+            has_today = await pool.fetchval(
+                """
+                SELECT EXISTS(
+                    SELECT 1 FROM market_prices
+                    WHERE asset = 'Nifty 50' AND date = $1
+                )
+                """,
+                today,
+            )
+            if not has_today:
+                return  # Not a trading day or data not yet available
+        except Exception:
+            logger.exception("Post-market fallback check failed")
+            return
 
     try:
         from app.core.database import get_pool
@@ -884,9 +913,11 @@ async def run_notification_job() -> None:
                         close_data = await fetcher()
                     except Exception:
                         logger.warning("Close data fetch failed for %s", market, exc_info=True)
-                await notification_service.notify_market_close(market, market_data=close_data)
                 if market == "india":
+                    # Skip generic close — post-market summary handles India
                     india_closed_transition = True
+                else:
+                    await notification_service.notify_market_close(market, market_data=close_data)
             _prev_state[market] = is_open
 
         # --- Pre-market summary (9:10 AM IST) ---
