@@ -14,8 +14,9 @@ _IST = ZoneInfo("Asia/Kolkata")
 # Track previous state to detect transitions
 _prev_state: dict[str, bool] = {}
 
-# Track which close notifications we've sent today (survives missed transitions)
+# Track which close/open notifications we've sent today (survives missed transitions)
 _close_sent_today: dict[str, str | None] = {}  # market -> date string
+_open_sent_today: dict[str, str | None] = {}   # market -> date string
 
 # Gift Nifty alert state
 _gift_nifty_state: dict = {
@@ -861,6 +862,64 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
         logger.exception("Post-market summary check failed")
 
 
+# Expected open hours in IST for each market (approximate)
+_OPEN_WINDOWS_IST: dict[str, tuple[int, int]] = {
+    # (earliest_open_hour, latest_check_hour) in IST
+    "india": (9, 10),     # NSE opens 9:15, check until 10:00
+    "us": (19, 21),       # NYSE opens ~19:00 IST (9:30 AM ET), check until 21:00
+    "europe": (13, 15),   # LSE opens ~13:30 IST (8:00 AM GMT), check until 15:00
+    "japan": (5, 7),      # TSE opens ~5:30 IST (9:00 AM JST), check until 7:00
+}
+
+
+async def _check_missed_open_notifications(
+    markets: dict[str, bool],
+    now: datetime,
+    open_data_fetchers: dict,
+) -> None:
+    """After a restart, check if we missed a market open today and send it."""
+    now_ist = now.astimezone(_IST)
+    today_str = now_ist.strftime("%Y-%m-%d")
+
+    for market, is_open in markets.items():
+        # Only check if market is currently open
+        if not is_open:
+            continue
+        # Already sent today
+        if _open_sent_today.get(market) == today_str:
+            continue
+        # Check if we're in the window after open
+        window = _OPEN_WINDOWS_IST.get(market)
+        if not window:
+            continue
+        earliest, latest = window
+        if earliest <= latest:
+            in_window = earliest <= now_ist.hour <= latest
+        else:
+            in_window = now_ist.hour >= earliest or now_ist.hour <= latest
+
+        if not in_window:
+            continue
+
+        # Skip holidays
+        if market == "europe" and is_exchange_holiday("LSE", now):
+            continue
+        if market == "japan" and is_exchange_holiday("TSE", now):
+            continue
+
+        logger.info("Missed open for %s — sending fallback notification", market)
+        open_data = None
+        fetcher = open_data_fetchers.get(market)
+        if fetcher:
+            try:
+                open_data = await fetcher()
+            except Exception:
+                logger.warning("Fallback open data fetch failed for %s", market, exc_info=True)
+
+        await notification_service.notify_market_open(market, market_data=open_data)
+        _open_sent_today[market] = today_str
+
+
 # Expected close hours in IST for each market (approximate)
 _CLOSE_WINDOWS_IST: dict[str, tuple[int, int]] = {
     # (earliest_close_hour, latest_check_hour) in IST
@@ -981,6 +1040,7 @@ async def run_notification_job() -> None:
                         except Exception:
                             logger.warning("Open data fetch failed for %s", market, exc_info=True)
                     await notification_service.notify_market_open(market, market_data=open_data)
+                    _open_sent_today[market] = now.astimezone(_IST).strftime("%Y-%m-%d")
             elif not is_open and was_open:
                 # Transition: open -> closed
                 logger.info("Market transition: %s CLOSED", market)
@@ -1005,7 +1065,8 @@ async def run_notification_job() -> None:
                     _close_sent_today[market] = now.astimezone(_IST).strftime("%Y-%m-%d")
             _prev_state[market] = is_open
 
-        # --- DB fallback: send missed close notifications after restart ---
+        # --- DB fallback: send missed open/close notifications after restart ---
+        await _check_missed_open_notifications(markets, now, _open_data_fetchers)
         await _check_missed_close_notifications(markets, now, _close_data_fetchers)
 
         # --- Pre-market summary (8:58-9:05 AM IST) ---
