@@ -618,31 +618,99 @@ def _build_india_close(d: dict) -> tuple[str, str]:
         title_parts.append(f"Smallcap {_sign(smallcap_pct)}{smallcap_pct:.1f}%")
     title = f"{emoji} {' | '.join(title_parts)}"
 
-    parts: list[str] = []
-    # Relative context
-    ctx = d.get("relative_context")
-    if ctx:
-        parts.append(ctx.capitalize())
-    # 52-week context
-    w52 = d.get("week52_context")
-    if w52:
-        parts.append(w52)
-    # Breadth
-    adv = d.get("advancers")
-    dec = d.get("decliners")
-    if adv is not None and dec is not None:
-        parts.append(f"{adv} advancers vs {dec} decliners")
-    # Top / bottom sector
+    # --- Build narrative body ---
+    sentences: list[str] = []
+
+    adv = d.get("advancers", 0)
+    dec = d.get("decliners", 0)
+    total = adv + dec
+    adv_ratio = adv / total if total > 0 else 0.5
+    abs_nifty = abs(nifty_pct)
+
+    # Sentence 1: Tone + outperformance context
+    sc_pct = smallcap_pct if smallcap_pct is not None else 0
+    mc_pct = midcap_pct if midcap_pct is not None else 0
+
+    if abs_nifty < 0.2:
+        tone = "Flat session with muted activity"
+    elif nifty_pct >= 2.0:
+        tone = "Strong rally with broad-based buying" if adv_ratio >= 0.6 else "Strong rally led by heavyweights"
+    elif nifty_pct >= 0.3:
+        if sc_pct > nifty_pct + 0.5:
+            tone = "Smallcaps outperformed in a broad-based rally" if adv_ratio >= 0.6 else "Smallcaps outperformed despite narrow breadth"
+        elif adv_ratio >= 0.7:
+            tone = "Broad-based rally across segments"
+        else:
+            tone = "Positive session with selective buying"
+    elif nifty_pct > -0.3:
+        if sc_pct < nifty_pct - 0.5:
+            tone = "Largecaps held while broader market weakened"
+        elif mc_pct > 0 and sc_pct > 0 and nifty_pct < 0:
+            tone = "Broader market outperformed a weak Nifty"
+        else:
+            tone = "Mixed session with muted activity" if adv_ratio > 0.4 else "Flat session leaning negative"
+    elif nifty_pct >= -2.0:
+        if sc_pct < nifty_pct - 1.0:
+            tone = "Broad-based selloff with smallcaps hit hardest"
+        elif adv_ratio <= 0.3:
+            tone = "Broad-based selloff across segments"
+        else:
+            tone = "Weak session with selective selling"
+    else:
+        # Sharp crash
+        if sc_pct < nifty_pct - 1.0:
+            tone = "Sharp selloff across the board \u2014 smallcaps plunged"
+        else:
+            tone = "Sharp selloff across the board"
+
+    sentences.append(tone)
+
+    # Sentence 2: Breadth
+    if total > 0:
+        sentences.append(f"{adv:,} stocks advanced vs {dec:,} declined")
+
+    # Sentence 3: Sector leaders / laggards
     top_sec = d.get("top_sector")
     top_sec_pct = d.get("top_sector_pct")
     bottom_sec = d.get("bottom_sector")
     bottom_sec_pct = d.get("bottom_sector_pct")
-    if top_sec and top_sec_pct is not None:
-        parts.append(f"{top_sec} {_sign(top_sec_pct)}{top_sec_pct:.1f}% led")
-    if bottom_sec and bottom_sec_pct is not None:
-        parts.append(f"{bottom_sec} {_sign(bottom_sec_pct)}{bottom_sec_pct:.1f}% lagged")
 
-    body = ". ".join(parts[:4]) + "." if parts else "NSE & BSE session ended."
+    # Check if all sectors same direction
+    all_red = (top_sec_pct is not None and top_sec_pct < 0)
+    all_green = (bottom_sec_pct is not None and bottom_sec_pct > 0)
+
+    if all_red and abs_nifty >= 1.0:
+        if bottom_sec and bottom_sec_pct is not None:
+            sentences.append(
+                f"All sectors in red, {bottom_sec} worst at {_sign(bottom_sec_pct)}{bottom_sec_pct:.1f}%"
+            )
+    elif all_green and abs_nifty >= 1.0:
+        if top_sec and top_sec_pct is not None:
+            sentences.append(
+                f"All sectors in green, {top_sec} best at {_sign(top_sec_pct)}{top_sec_pct:.1f}%"
+            )
+    else:
+        sec_parts = []
+        if top_sec and top_sec_pct is not None:
+            verb = "surged" if top_sec_pct >= 2.0 else "rose" if top_sec_pct > 0 else "fell"
+            sec_parts.append(f"{top_sec} {verb} {_sign(top_sec_pct)}{top_sec_pct:.1f}%")
+        if bottom_sec and bottom_sec_pct is not None:
+            verb = "dragged" if bottom_sec_pct <= -1.0 else "slipped" if bottom_sec_pct < 0 else "held up"
+            sec_parts.append(f"{bottom_sec} {verb} {'' if verb == 'held up' else _sign(bottom_sec_pct)}{bottom_sec_pct:.1f}%" if verb != "held up" else f"{bottom_sec} held up at {_sign(bottom_sec_pct)}{bottom_sec_pct:.1f}%")
+        if sec_parts:
+            sentences.append(" while ".join(sec_parts))
+
+    # Sentence 4: Relative context + 52-week (combined as closing punch)
+    ctx = d.get("relative_context")
+    w52 = d.get("week52_context")
+    if ctx and w52:
+        sentences.append(f"{ctx.capitalize()} \u2014 Nifty {w52}")
+    elif ctx:
+        sentences.append(ctx.capitalize())
+    elif w52:
+        sentences.append(f"Nifty {w52}")
+
+    body = ". ".join(sentences) + "." if sentences else "NSE & BSE session ended."
     return title, body
 
 
