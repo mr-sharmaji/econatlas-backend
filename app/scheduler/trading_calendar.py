@@ -270,6 +270,10 @@ def _fetch_india_session_from_nse(now_utc: datetime) -> dict | None:
     today_ist = local_now.date()
     status = str(cap.get("marketStatus") or "").strip().lower()
     is_open = status == "open"
+    # Sanity check: NSE doesn't open before 9:00 AM IST — reject stale/bad API responses
+    if is_open:
+        if local_now.hour < 9:
+            is_open = False
     trade_dt = _parse_nse_trade_date(cap.get("tradeDate"))
     message = str(cap.get("marketStatusMessage") or "").strip() or None
 
@@ -692,7 +696,7 @@ def get_market_status(utc_now: datetime | None = None) -> dict:
     xetra_open = is_exchange_expected_open(XETRA, now)
     euronext_open = is_exchange_expected_open(EURONEXT, now)
     europe_open = lse_open or xetra_open or euronext_open
-    japan_open = is_exchange_expected_open(TSE, now)
+    japan_open = get_exchange_session_state(TSE, now) != SESSION_CLOSED
     fx_open = is_fx_session_expected_open(now)
     commodities_open = is_commodity_session_expected_open(now)
     india_open = nse_open

@@ -92,6 +92,237 @@ async def notify_market_open(market: str) -> bool:
     )
 
 
+def _format_inr(value: float) -> str:
+    """Format a number with Indian comma style, e.g. 2100 -> '2,100'."""
+    abs_val = abs(value)
+    int_part = int(abs_val)
+    s = f"{int_part:,}"
+    return s
+
+
+async def notify_gift_nifty_move(change_pct: float, price: float) -> bool:
+    """Send notification when Gift Nifty moves >0.5% from previous NSE close."""
+    emoji = "\U0001f7e2" if change_pct >= 0 else "\U0001f534"
+    sign = "+" if change_pct >= 0 else ""
+    title = f"{emoji} Gift Nifty {sign}{change_pct:.1f}%"
+
+    formatted_price = f"{price:,.0f}"
+    magnitude = "significant " if abs(change_pct) >= 1.5 else ""
+    direction = "bullish" if change_pct >= 0 else "bearish"
+    body = f"Trading at {formatted_price} — {magnitude}{direction} signal for market open"
+
+    return await send_topic_notification(
+        topic="market_alerts",
+        title=title,
+        body=body,
+        data={
+            "type": "gift_nifty_alert",
+            "change_pct": f"{change_pct:.1f}",
+            "price": f"{price:.0f}",
+        },
+    )
+
+
+async def notify_fii_dii_data(fii_net: float, dii_net: float) -> bool:
+    """Send notification with FII/DII activity update."""
+    title = "\U0001f4ca FII/DII Activity Update"
+
+    fii_action = "bought" if fii_net >= 0 else "sold"
+    dii_action = "bought" if dii_net >= 0 else "sold"
+    net = fii_net + dii_net
+    net_sign = "+" if net >= 0 else "-"
+
+    body = (
+        f"FIIs {fii_action} \u20b9{_format_inr(fii_net)} Cr"
+        f" | DIIs {dii_action} \u20b9{_format_inr(dii_net)} Cr"
+        f" | Net: {net_sign}\u20b9{_format_inr(net)} Cr"
+    )
+
+    return await send_topic_notification(
+        topic="market_alerts",
+        title=title,
+        body=body,
+        data={
+            "type": "fii_dii_data",
+            "fii_net": f"{fii_net:.0f}",
+            "dii_net": f"{dii_net:.0f}",
+        },
+    )
+
+
+async def notify_post_market_summary(
+    nifty_change_pct: float,
+    sensex_change_pct: float,
+    advancers: int,
+    decliners: int,
+    top_sector: str | None,
+    bottom_sector: str | None,
+) -> bool:
+    """Send post-market summary notification."""
+    n_sign = "+" if nifty_change_pct >= 0 else ""
+    s_sign = "+" if sensex_change_pct >= 0 else ""
+    emoji = "\U0001f4c8" if nifty_change_pct >= 0 else "\U0001f4c9"
+    title = f"{emoji} Nifty {n_sign}{nifty_change_pct:.1f}% | Sensex {s_sign}{sensex_change_pct:.1f}%"
+
+    # One-line market commentary
+    total = advancers + decliners
+    breadth_ratio = advancers / total if total > 0 else 0.5
+    abs_nifty = abs(nifty_change_pct)
+
+    if abs_nifty < 0.2:
+        tone = "Flat session"
+    elif nifty_change_pct > 0:
+        tone = "Strong rally" if abs_nifty >= 1.5 else "Positive session"
+    else:
+        tone = "Sharp selloff" if abs_nifty >= 1.5 else "Weak session"
+
+    # Breadth context
+    if breadth_ratio >= 0.7:
+        breadth = "broad-based buying"
+    elif breadth_ratio <= 0.3:
+        breadth = "broad-based selling"
+    else:
+        breadth = "mixed breadth"
+
+    # Sector leaders/laggards
+    sector_parts = []
+    if top_sector and nifty_change_pct >= 0:
+        sector_parts.append(f"{top_sector} led gains")
+    elif bottom_sector and nifty_change_pct < 0:
+        sector_parts.append(f"{bottom_sector} dragged")
+    if top_sector and bottom_sector and top_sector != bottom_sector:
+        if nifty_change_pct >= 0 and bottom_sector:
+            sector_parts.append(f"{bottom_sector} lagged")
+        elif nifty_change_pct < 0 and top_sector:
+            sector_parts.append(f"{top_sector} held up")
+
+    sector_text = ", ".join(sector_parts[:2])
+    commentary = f"{tone} with {breadth}. {advancers} advancers, {decliners} decliners."
+    if sector_text:
+        commentary += f" {sector_text}."
+
+    return await send_topic_notification(
+        topic="market_alerts",
+        title=title,
+        body=commentary,
+        data={"type": "post_market_summary"},
+    )
+
+
+async def notify_pre_market_summary(
+    gift_nifty_price: float,
+    gift_nifty_change_pct: float,
+    us_change: dict | None = None,
+    europe_change: dict | None = None,
+    asia_change: dict | None = None,
+) -> bool:
+    """Send pre-market summary at ~9:00 AM IST with Gift Nifty + global cues."""
+    sign = "+" if gift_nifty_change_pct >= 0 else ""
+    emoji = "\U0001f7e2" if gift_nifty_change_pct >= 0 else "\U0001f534"
+    title = f"{emoji} Gift Nifty {sign}{gift_nifty_change_pct:.1f}% at {gift_nifty_price:,.0f}"
+
+    # Build global cues
+    cues = []
+    if us_change:
+        for idx, pct in us_change.items():
+            s = "+" if pct >= 0 else ""
+            cues.append(f"{idx} {s}{pct:.1f}%")
+    if europe_change:
+        for idx, pct in europe_change.items():
+            s = "+" if pct >= 0 else ""
+            cues.append(f"{idx} {s}{pct:.1f}%")
+    if asia_change:
+        for idx, pct in asia_change.items():
+            s = "+" if pct >= 0 else ""
+            cues.append(f"{idx} {s}{pct:.1f}%")
+
+    # Opening signal based on Gift Nifty
+    if gift_nifty_change_pct >= 1.0:
+        outlook = "Gap-up opening expected"
+    elif gift_nifty_change_pct >= 0.3:
+        outlook = "Positive opening expected"
+    elif gift_nifty_change_pct > -0.3:
+        outlook = "Flat opening expected"
+    elif gift_nifty_change_pct > -1.0:
+        outlook = "Negative opening expected"
+    else:
+        outlook = "Gap-down opening expected"
+
+    parts = [f"{outlook}."]
+    if cues:
+        parts.append(f"Overnight: {', '.join(cues[:3])}.")
+
+    body = " ".join(parts)
+
+    return await send_topic_notification(
+        topic="market_alerts",
+        title=title,
+        body=body,
+        data={"type": "pre_market_summary", "gift_nifty_price": f"{gift_nifty_price:.0f}"},
+    )
+
+
+_COMMODITY_EMOJIS: dict[str, str] = {
+    "gold": "\U0001f947",         # 🥇
+    "silver": "\U0001f948",       # 🥈
+    "crude_oil": "\U0001f6e2\ufe0f",  # 🛢️
+    "brent_crude": "\U0001f6e2\ufe0f",
+    "natural_gas": "\U0001f525",  # 🔥
+    "copper": "\U0001f7e0",       # 🟠
+    "platinum": "\u2b50",         # ⭐
+    "palladium": "\u2b50",
+    "iron_ore": "\u26cf\ufe0f",   # ⛏️
+    "coal": "\u26ab",             # ⚫
+    "wheat": "\U0001f33e",        # 🌾
+    "corn": "\U0001f33d",         # 🌽
+    "cotton": "\u2601\ufe0f",     # ☁️
+    "sugar": "\U0001f36c",        # 🍬
+    "coffee": "\u2615",           # ☕
+    "palm_oil": "\U0001f334",     # 🌴
+    "rubber": "\U0001f6de",       # 🛞
+}
+
+
+async def notify_commodity_spike(
+    asset: str,
+    display_name: str,
+    change_pct: float,
+    price: float,
+    unit: str | None = None,
+) -> bool:
+    """Send notification when a commodity moves ±3% from previous close."""
+    emoji = _COMMODITY_EMOJIS.get(asset, "\U0001f4e6")  # 📦 fallback
+    direction = "surges" if change_pct > 0 else "drops"
+    sign = "+" if change_pct >= 0 else ""
+
+    title = f"{emoji} {display_name} {direction} {sign}{change_pct:.1f}%"
+
+    unit_label = f"/{unit}" if unit else ""
+    price_str = f"${price:,.2f}{unit_label}" if price < 10000 else f"${price:,.0f}{unit_label}"
+
+    # Context based on magnitude
+    if abs(change_pct) >= 5:
+        magnitude = "Major move"
+    elif abs(change_pct) >= 3:
+        magnitude = "Significant move"
+    else:
+        magnitude = "Notable move"
+
+    body = f"{magnitude} — trading at {price_str}"
+
+    return await send_topic_notification(
+        topic="market_alerts",
+        title=title,
+        body=body,
+        data={
+            "type": "commodity_spike",
+            "asset": asset,
+            "change_pct": f"{change_pct:.1f}",
+            "price": f"{price:.2f}",
+        },
+    )
+
+
 async def notify_market_close(market: str) -> bool:
     """Send notification when a market closes."""
     titles = {
