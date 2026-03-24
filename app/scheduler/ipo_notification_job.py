@@ -26,21 +26,26 @@ async def run_ipo_notification_job() -> None:
     today = now_ist.date()
     tomorrow = today + timedelta(days=1)
 
+    # --- Per-device alerts (bell icon) ---
     events = await _collect_ipo_events(pool, today, tomorrow)
-    if not events:
-        logger.debug("IPO notification check: no events to notify")
-        return
-
     total_sent = 0
     for event in events:
         sent = await _send_event_notifications(pool, event)
         total_sent += sent
 
-    logger.info(
-        "IPO notification job: %d events, %d notifications sent",
-        len(events),
-        total_sent,
-    )
+    # --- Generic topic alerts for strong IPOs closing tomorrow ---
+    generic_sent = await _check_strong_ipo_closing_tomorrow(pool, tomorrow)
+    total_sent += generic_sent
+
+    if total_sent > 0 or events:
+        logger.info(
+            "IPO notification job: %d device events, %d generic, %d total sent",
+            len(events),
+            generic_sent,
+            total_sent,
+        )
+    else:
+        logger.debug("IPO notification check: no events to notify")
 
 
 async def _collect_ipo_events(pool, today: date, tomorrow: date) -> list[dict]:
@@ -204,3 +209,96 @@ async def _send_event_notifications(pool, event: dict) -> int:
         )
 
     return sent
+
+
+async def _check_strong_ipo_closing_tomorrow(pool, tomorrow: date) -> int:
+    """Send topic notification for strong IPOs closing tomorrow.
+
+    Criteria: subscription_multiple >= 3 OR gmp_percent >= 10.
+    Goes to ALL users via market_alerts topic, not just bell subscribers.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT symbol, company_name, price_band, subscription_multiple,
+               gmp_percent, ipo_type, issue_size_cr
+        FROM ipo_snapshots
+        WHERE close_date = $1
+          AND archived_at IS NULL
+          AND (subscription_multiple >= 3 OR gmp_percent >= 10)
+        """,
+        tomorrow,
+    )
+    if not rows:
+        return 0
+
+    total_sent = 0
+    today_str = datetime.now(_IST).strftime("%Y-%m-%d")
+
+    for r in rows:
+        symbol = r["symbol"]
+        dedup_key = f"ipo_strong_closing_{symbol}_{today_str}"
+
+        if await notification_service._was_already_sent(dedup_key):
+            continue
+
+        company = r["company_name"]
+        sub = r["subscription_multiple"]
+        gmp = r["gmp_percent"]
+        price_band = r["price_band"] or "N/A"
+        issue_size = r["issue_size_cr"]
+        ipo_type = r["ipo_type"] or "mainboard"
+
+        # Build title
+        title = f"\U0001f525 {company} IPO closes tomorrow"
+
+        # Build narrative body
+        parts = []
+
+        # Subscription info
+        if sub and sub >= 1:
+            if sub >= 10:
+                parts.append(f"Massively oversubscribed at {sub:.1f}x")
+            elif sub >= 5:
+                parts.append(f"Strong demand at {sub:.1f}x subscribed")
+            elif sub >= 3:
+                parts.append(f"Well subscribed at {sub:.1f}x")
+            else:
+                parts.append(f"{sub:.1f}x subscribed")
+
+        # GMP info
+        if gmp is not None and gmp > 0:
+            parts.append(f"GMP +{gmp:.0f}%")
+
+        # Price band
+        parts.append(f"Price band {price_band}")
+
+        # Issue size context
+        if issue_size:
+            if ipo_type == "sme":
+                parts.append(f"SME issue \u20b9{issue_size:,.0f} Cr")
+            elif issue_size >= 1000:
+                parts.append(f"Large issue \u20b9{issue_size:,.0f} Cr")
+
+        body = ". ".join(parts) + "."
+
+        logger.info("Strong IPO closing tomorrow: %s — %s", symbol, body)
+
+        success = await notification_service.send_topic_notification(
+            topic="market_alerts",
+            title=title,
+            body=body,
+            data={
+                "type": "ipo_strong_closing",
+                "symbol": symbol,
+            },
+        )
+
+        if success:
+            await notification_service._log_sent(
+                notification_type="ipo_strong_closing",
+                dedup_key=dedup_key,
+                title=title,
+            )
+            total_sent += 1
+
+    return total_sent
