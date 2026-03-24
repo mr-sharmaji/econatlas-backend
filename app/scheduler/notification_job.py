@@ -14,6 +14,9 @@ _IST = ZoneInfo("Asia/Kolkata")
 # Track previous state to detect transitions
 _prev_state: dict[str, bool] = {}
 
+# Track which close notifications we've sent today (survives missed transitions)
+_close_sent_today: dict[str, str | None] = {}  # market -> date string
+
 # Gift Nifty alert state
 _gift_nifty_state: dict = {
     "last_band": None,
@@ -852,9 +855,80 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
 
         _post_market_state["pending"] = False
         _post_market_state["last_date"] = today
+        _close_sent_today["india"] = str(today)
 
     except Exception:
         logger.exception("Post-market summary check failed")
+
+
+# Expected close hours in IST for each market (approximate)
+_CLOSE_WINDOWS_IST: dict[str, tuple[int, int]] = {
+    # (earliest_close_hour, latest_check_hour) in IST
+    "india": (15, 16),    # NSE closes 15:30, check until 16:00
+    "us": (1, 6),         # US closes ~1:30 AM IST (next day), check until 6:00
+    "europe": (20, 22),   # Europe closes ~20:30-21:00 IST, check until 22:00
+    "japan": (11, 13),    # TSE closes ~11:30 IST, check until 13:00
+}
+
+
+async def _check_missed_close_notifications(
+    markets: dict[str, bool],
+    now: datetime,
+    close_data_fetchers: dict,
+) -> None:
+    """After a restart, check if we missed a market close today and send it."""
+    now_ist = now.astimezone(_IST)
+    today_str = now_ist.strftime("%Y-%m-%d")
+
+    for market, is_open in markets.items():
+        # Only check if market is currently closed
+        if is_open:
+            continue
+        # Already sent today
+        if _close_sent_today.get(market) == today_str:
+            continue
+        # Check if we're in the window after close
+        window = _CLOSE_WINDOWS_IST.get(market)
+        if not window:
+            continue
+        earliest, latest = window
+        # Handle US which crosses midnight (1-6 AM IST)
+        if earliest <= latest:
+            in_window = earliest <= now_ist.hour <= latest
+        else:
+            in_window = now_ist.hour >= earliest or now_ist.hour <= latest
+
+        if not in_window:
+            continue
+
+        # Fetch data and send
+        logger.info("Missed close for %s — sending fallback notification", market)
+        close_data = None
+        fetcher = close_data_fetchers.get(market)
+        if fetcher:
+            try:
+                close_data = await fetcher()
+            except Exception:
+                logger.warning("Fallback close data fetch failed for %s", market, exc_info=True)
+
+        if market == "india":
+            # Use post-market summary path
+            if close_data:
+                try:
+                    await notification_service.notify_post_market_summary(
+                        nifty_change_pct=close_data.get("nifty_change_pct", 0),
+                        sensex_change_pct=close_data.get("sensex_change_pct", 0),
+                        advancers=close_data.get("advancers", 0),
+                        decliners=close_data.get("decliners", 0),
+                        top_sector=close_data.get("top_sector"),
+                        bottom_sector=close_data.get("bottom_sector"),
+                    )
+                except Exception:
+                    logger.warning("Fallback India post-market failed", exc_info=True)
+        else:
+            await notification_service.notify_market_close(market, market_data=close_data)
+
+        _close_sent_today[market] = today_str
 
 
 async def run_notification_job() -> None:
@@ -928,7 +1002,11 @@ async def run_notification_job() -> None:
                         india_closed_transition = True
                     else:
                         await notification_service.notify_market_close(market, market_data=close_data)
+                    _close_sent_today[market] = now.astimezone(_IST).strftime("%Y-%m-%d")
             _prev_state[market] = is_open
+
+        # --- DB fallback: send missed close notifications after restart ---
+        await _check_missed_close_notifications(markets, now, _close_data_fetchers)
 
         # --- Pre-market summary (8:58-9:05 AM IST) ---
         await _check_pre_market_summary(status, now)
