@@ -9,6 +9,8 @@ from app.schemas.market_intel_schema import (
     IpoAlertsUpdateRequest,
     IpoItemResponse,
     IpoListResponse,
+    RegisterDeviceRequest,
+    RegisterDeviceResponse,
 )
 from app.services import ipo_service
 
@@ -56,5 +58,30 @@ async def put_ipo_alerts(
         return IpoAlertsResponse(device_id=device_id.strip(), symbols=symbols, count=len(symbols))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/register-device", response_model=RegisterDeviceResponse)
+async def register_device(payload: RegisterDeviceRequest) -> RegisterDeviceResponse:
+    """Upsert a device FCM token for per-device push notifications."""
+    try:
+        from app.core.database import get_pool
+
+        pool = await get_pool()
+        await pool.execute(
+            """
+            INSERT INTO device_tokens (device_id, fcm_token, platform, updated_at)
+            VALUES ($1, $2, $3, NOW())
+            ON CONFLICT (device_id)
+            DO UPDATE SET fcm_token = EXCLUDED.fcm_token,
+                          platform  = EXCLUDED.platform,
+                          updated_at = NOW()
+            """,
+            payload.device_id.strip(),
+            payload.fcm_token.strip(),
+            payload.platform.strip(),
+        )
+        return RegisterDeviceResponse(status="ok", device_id=payload.device_id.strip())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

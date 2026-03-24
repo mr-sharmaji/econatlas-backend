@@ -138,6 +138,10 @@ async def _run_notification_check() -> None:
     await _enqueue("notification_check")
 
 
+async def _run_ipo_notification() -> None:
+    await _enqueue("ipo_notification")
+
+
 # ── Startup collection ───────────────────────────────────────────────
 
 
@@ -334,6 +338,18 @@ def start_scheduler() -> None:
     else:
         _scheduler.add_job(_run_notification_check, "interval", minutes=intervals["market_minutes"], id="notification_check", replace_existing=True)
         logger.info("Scheduler: notification_check every %dm", intervals["market_minutes"])
+    # IPO notification check every 30 minutes
+    _scheduler.add_job(
+        _run_ipo_notification,
+        "interval",
+        minutes=30,
+        id="ipo_notification",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600,
+    )
+    logger.info("Scheduler: ipo_notification every 30m")
     logger.info(
         "Scheduler: brief=%dm discover_stock=%s %02d:%02d IST retry=%s %02d:%02d IST discover_mf=%s %02d:%02d IST ipo=%dm macro=%dm news=%dm tax=%s",
         intervals["brief_minutes"],

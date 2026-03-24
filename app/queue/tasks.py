@@ -184,3 +184,9 @@ async def task_notification_check(ctx: dict) -> None:
     from app.scheduler.notification_job import run_notification_job
 
     await _run_with_retry(ctx, "notification_check", run_notification_job)
+
+
+async def task_ipo_notification(ctx: dict) -> None:
+    from app.scheduler.ipo_notification_job import run_ipo_notification_job
+
+    await _run_with_retry(ctx, "ipo_notification", run_ipo_notification_job)

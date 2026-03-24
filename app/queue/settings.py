@@ -29,6 +29,8 @@ JOB_RETRY_POLICIES: dict[str, tuple[int, int]] = {
     "fertilizer": (2, 60),
     # High-frequency (30s interval) — re-enqueued soon, no retry needed
     "notification_check": (0, 0),
+    # IPO notifications — every 30m, moderate retry
+    "ipo_notification": (2, 30),
 }
 
 
@@ -46,6 +48,7 @@ def get_arq_functions() -> list:
         task_econ_calendar,
         task_imf_forecast,
         task_ipo,
+        task_ipo_notification,
         task_macro,
         task_market,
         task_news,
@@ -78,4 +81,5 @@ def get_arq_functions() -> list:
         func(task_fertilizer, name="fertilizer", timeout=300),
         func(task_market_score, name="market_score", timeout=600),
         func(task_notification_check, name="notification_check"),
+        func(task_ipo_notification, name="ipo_notification"),
     ]

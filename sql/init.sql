@@ -601,6 +601,18 @@ CREATE TABLE IF NOT EXISTS notification_log (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_log_dedup ON notification_log (dedup_key);
 
 -- ================================================================
+-- Device FCM tokens for per-device push notifications
+-- ================================================================
+CREATE TABLE IF NOT EXISTS device_tokens (
+    device_id TEXT NOT NULL,
+    fcm_token TEXT NOT NULL,
+    platform TEXT DEFAULT 'android',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (device_id)
+);
+CREATE INDEX IF NOT EXISTS idx_device_tokens_fcm ON device_tokens(fcm_token);
+
+-- ================================================================
 -- v1.3: Market scores for story/verdict endpoint
 -- ================================================================
 CREATE TABLE IF NOT EXISTS market_scores (

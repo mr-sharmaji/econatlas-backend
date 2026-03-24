@@ -118,3 +118,14 @@ class IpoAlertsResponse(BaseModel):
     device_id: str
     symbols: list[str]
     count: int
+
+
+class RegisterDeviceRequest(BaseModel):
+    device_id: str = Field(..., min_length=6)
+    fcm_token: str = Field(..., min_length=10)
+    platform: str = Field(default="android")
+
+
+class RegisterDeviceResponse(BaseModel):
+    status: str
+    device_id: str

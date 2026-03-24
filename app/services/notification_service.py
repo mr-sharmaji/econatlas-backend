@@ -1101,3 +1101,117 @@ def _build_japan_close(d: dict) -> tuple[str, str]:
 
     body = " ".join(sentences[:3]) if sentences else "Japanese market session has ended."
     return title, body
+
+
+# ---------------------------------------------------------------------------
+# Per-device FCM notifications (device-token-based)
+# ---------------------------------------------------------------------------
+
+
+async def send_device_notification(
+    fcm_token: str,
+    title: str,
+    body: str,
+    data: dict | None = None,
+) -> bool:
+    """Send a push notification to a specific device token.
+
+    Returns True on success, False on failure.
+    Raises nothing — failures are logged.
+    """
+    app = _get_firebase()
+    if app is None:
+        logger.debug("Skipping device notification — Firebase not configured")
+        return False
+    try:
+        from firebase_admin import messaging
+
+        message = messaging.Message(
+            notification=messaging.Notification(title=title, body=body),
+            data=data or {},
+            token=fcm_token,
+        )
+        response = messaging.send(message)
+        logger.debug("FCM sent to token=%s…: %s", fcm_token[:20], response)
+        return True
+    except Exception as exc:
+        # Check for unregistered / invalid token
+        exc_str = str(exc)
+        if "Requested entity was not found" in exc_str or "not a valid FCM" in exc_str:
+            logger.info("Stale FCM token detected, deleting: %s…", fcm_token[:20])
+            await _delete_stale_token(fcm_token)
+        else:
+            logger.warning("FCM device send failed for token=%s…: %s", fcm_token[:20], exc)
+        return False
+
+
+async def send_to_devices(
+    fcm_tokens: list[str],
+    title: str,
+    body: str,
+    data: dict | None = None,
+) -> int:
+    """Send a notification to multiple device tokens using send_each().
+
+    Returns the count of successful sends.
+    Automatically deletes stale/unregistered tokens.
+    """
+    if not fcm_tokens:
+        return 0
+
+    app = _get_firebase()
+    if app is None:
+        logger.debug("Skipping batch device notification — Firebase not configured")
+        return 0
+
+    try:
+        from firebase_admin import messaging
+
+        messages = [
+            messaging.Message(
+                notification=messaging.Notification(title=title, body=body),
+                data=data or {},
+                token=token,
+            )
+            for token in fcm_tokens
+        ]
+        response = messaging.send_each(messages)
+
+        success_count = response.success_count
+        stale_tokens: list[str] = []
+
+        for i, send_response in enumerate(response.responses):
+            if send_response.exception is not None:
+                exc_str = str(send_response.exception)
+                if "Requested entity was not found" in exc_str or "not a valid FCM" in exc_str:
+                    stale_tokens.append(fcm_tokens[i])
+
+        if stale_tokens:
+            logger.info("Deleting %d stale FCM tokens", len(stale_tokens))
+            for token in stale_tokens:
+                await _delete_stale_token(token)
+
+        logger.info(
+            "FCM batch send: %d/%d successful, %d stale removed",
+            success_count,
+            len(fcm_tokens),
+            len(stale_tokens),
+        )
+        return success_count
+    except Exception:
+        logger.warning("FCM batch send failed", exc_info=True)
+        return 0
+
+
+async def _delete_stale_token(fcm_token: str) -> None:
+    """Remove a stale FCM token from the device_tokens table."""
+    try:
+        from app.core.database import get_pool
+
+        pool = await get_pool()
+        await pool.execute(
+            "DELETE FROM device_tokens WHERE fcm_token = $1",
+            fcm_token,
+        )
+    except Exception:
+        logger.warning("Failed to delete stale token: %s…", fcm_token[:20], exc_info=True)
