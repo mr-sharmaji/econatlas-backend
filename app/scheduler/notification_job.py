@@ -1117,11 +1117,11 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
 
 # Expected open hours in IST for each market (approximate)
 _OPEN_WINDOWS_IST: dict[str, tuple[int, int]] = {
-    # (earliest_open_hour, latest_check_hour) in IST
+    # (earliest_open_hour, latest_check_hour) in IST — narrow windows to avoid duplicates
     "india": (9, 10),     # NSE opens 9:15, check until 10:00
-    "us": (19, 21),       # NYSE opens ~19:00 IST (9:30 AM ET), check until 21:00
-    "europe": (13, 15),   # LSE opens ~13:30 IST (8:00 AM GMT), check until 15:00
-    "japan": (5, 7),      # TSE opens ~5:30 IST (9:00 AM JST), check until 7:00
+    "us": (19, 20),       # NYSE opens ~19:00 IST, check until 20:00 only
+    "europe": (13, 14),   # LSE opens ~13:30 IST, check until 14:00 only
+    "japan": (5, 6),      # TSE opens ~5:30 IST, check until 6:00 only
 }
 
 
@@ -1175,11 +1175,11 @@ async def _check_missed_open_notifications(
 
 # Expected close hours in IST for each market (approximate)
 _CLOSE_WINDOWS_IST: dict[str, tuple[int, int]] = {
-    # (earliest_close_hour, latest_check_hour) in IST
+    # (earliest_close_hour, latest_check_hour) in IST — narrow windows to avoid duplicates
     "india": (15, 16),    # NSE closes 15:30, check until 16:00
-    "us": (1, 6),         # US closes ~1:30 AM IST (next day), check until 6:00
-    "europe": (20, 22),   # Europe closes ~20:30-21:00 IST, check until 22:00
-    "japan": (11, 13),    # TSE closes ~11:30 IST, check until 13:00
+    "us": (1, 2),         # US closes ~1:30 AM IST, check until 2:00 only
+    "europe": (20, 21),   # Europe closes ~20:30 IST, check until 21:00 only
+    "japan": (11, 12),    # TSE closes ~11:30 IST, check until 12:00 only
 }
 
 
