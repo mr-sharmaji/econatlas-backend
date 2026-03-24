@@ -234,7 +234,9 @@ class HistoricalBackfiller(BaseScraper):
         return [items[i : i + size] for i in range(0, len(items), size)]
 
     def _to_dt(self, epoch: int) -> datetime:
-        return datetime.fromtimestamp(epoch, tz=UTC)
+        dt = datetime.fromtimestamp(epoch, tz=UTC)
+        # Normalize to midnight so backfill rows match daily scraper rows
+        return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
     def _fetch_yahoo_series(
         self,
