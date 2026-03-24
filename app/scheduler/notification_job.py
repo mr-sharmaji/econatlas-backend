@@ -617,7 +617,7 @@ async def _fetch_europe_open_data() -> dict | None:
         brent_row = await pool.fetchrow(
             """
             SELECT change_percent FROM market_prices
-            WHERE asset = 'brent_crude' AND change_percent IS NOT NULL
+            WHERE asset = 'brent crude' AND change_percent IS NOT NULL
             ORDER BY date DESC
             LIMIT 1
             """,
@@ -691,7 +691,7 @@ async def _fetch_us_open_data() -> dict | None:
         crude_row = await pool.fetchrow(
             """
             SELECT change_percent FROM market_prices
-            WHERE asset = 'crude_oil' AND change_percent IS NOT NULL
+            WHERE asset = 'crude oil' AND change_percent IS NOT NULL
             ORDER BY date DESC
             LIMIT 1
             """,
