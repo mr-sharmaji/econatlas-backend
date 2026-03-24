@@ -40,6 +40,9 @@ _commodity_spike_state: dict = {
     "alerted": {},  # asset -> last alerted band (2% bands)
 }
 
+# Open notification delay state — wait ~2 min after open for data to arrive
+_open_pending: dict[str, datetime | None] = {}  # market -> transition timestamp
+
 # Post-market summary state
 _post_market_state: dict = {
     "last_date": None,
@@ -446,14 +449,14 @@ async def _fetch_india_open_data() -> dict | None:
             "gift_nifty_change_pct": (gift_price - nifty_close) / nifty_close * 100,
         }
 
-        # Overnight US/Asia
+        # Overnight US/Asia + Gold
         global_rows = await pool.fetch(
             """
             SELECT asset, change_percent FROM market_prices
-            WHERE asset IN ('S&P500', 'NASDAQ', 'Nikkei 225')
+            WHERE asset IN ('S&P500', 'NASDAQ', 'Nikkei 225', 'gold')
               AND change_percent IS NOT NULL
             ORDER BY date DESC
-            LIMIT 6
+            LIMIT 8
             """
         )
         seen: set[str] = set()
@@ -469,10 +472,260 @@ async def _fetch_india_open_data() -> dict | None:
                 data["us_nasdaq_pct"] = pct
             elif a == "Nikkei 225":
                 data["nikkei_pct"] = pct
+            elif a == "gold":
+                data["gold_pct"] = pct
 
         return data
     except Exception:
         logger.exception("Failed to fetch India open data")
+        return None
+
+
+async def _fetch_japan_open_data() -> dict | None:
+    """Fetch data for Japan market open: Nikkei/TOPIX + overnight US + FTSE + USD/JPY + gold."""
+    try:
+        from app.core.database import get_pool
+        pool = await get_pool()
+
+        # Nikkei 225 and TOPIX latest
+        index_rows = await pool.fetch(
+            """
+            SELECT asset, change_percent, price FROM market_prices
+            WHERE asset IN ('Nikkei 225', 'TOPIX')
+              AND change_percent IS NOT NULL
+            ORDER BY date DESC
+            LIMIT 4
+            """,
+        )
+        data: dict = {}
+        seen: set[str] = set()
+        for row in index_rows:
+            a = row["asset"]
+            if a in seen:
+                continue
+            seen.add(a)
+            pct = float(row["change_percent"])
+            if a == "Nikkei 225":
+                data["nikkei_pct"] = pct
+            elif a == "TOPIX":
+                data["topix_pct"] = pct
+
+        if "nikkei_pct" not in data:
+            return None
+
+        # Overnight US + FTSE (previous close) + gold
+        global_rows = await pool.fetch(
+            """
+            SELECT asset, change_percent FROM market_prices
+            WHERE asset IN ('S&P500', 'NASDAQ', 'FTSE 100', 'gold')
+              AND change_percent IS NOT NULL
+            ORDER BY date DESC
+            LIMIT 8
+            """,
+        )
+        seen2: set[str] = set()
+        for row in global_rows:
+            a = row["asset"]
+            if a in seen2:
+                continue
+            seen2.add(a)
+            pct = float(row["change_percent"])
+            if a == "S&P500":
+                data["us_sp500_pct"] = pct
+            elif a == "NASDAQ":
+                data["us_nasdaq_pct"] = pct
+            elif a == "FTSE 100":
+                data["ftse_pct"] = pct
+            elif a == "gold":
+                data["gold_pct"] = pct
+
+        # USD/JPY
+        jpy_row = await pool.fetchrow(
+            """
+            SELECT price, change_percent FROM market_prices
+            WHERE asset = 'USD/JPY'
+            ORDER BY date DESC
+            LIMIT 1
+            """,
+        )
+        if jpy_row and jpy_row["price"] is not None:
+            data["usd_jpy_price"] = float(jpy_row["price"])
+
+        return data
+    except Exception:
+        logger.exception("Failed to fetch Japan open data")
+        return None
+
+
+async def _fetch_europe_open_data() -> dict | None:
+    """Fetch data for Europe market open: FTSE/DAX/CAC + Asia + Brent crude."""
+    try:
+        from app.core.database import get_pool
+        pool = await get_pool()
+
+        # FTSE 100, DAX, CAC 40 latest
+        index_rows = await pool.fetch(
+            """
+            SELECT asset, change_percent, price FROM market_prices
+            WHERE asset IN ('FTSE 100', 'DAX', 'CAC 40')
+              AND change_percent IS NOT NULL
+            ORDER BY date DESC
+            LIMIT 6
+            """,
+        )
+        data: dict = {}
+        seen: set[str] = set()
+        for row in index_rows:
+            a = row["asset"]
+            if a in seen:
+                continue
+            seen.add(a)
+            pct = float(row["change_percent"])
+            if a == "FTSE 100":
+                data["ftse_pct"] = pct
+            elif a == "DAX":
+                data["dax_pct"] = pct
+            elif a == "CAC 40":
+                data["cac_pct"] = pct
+
+        if "ftse_pct" not in data and "dax_pct" not in data:
+            return None
+
+        # Asia cues: Nikkei + Nifty 50
+        asia_rows = await pool.fetch(
+            """
+            SELECT asset, change_percent FROM market_prices
+            WHERE asset IN ('Nikkei 225', 'Nifty 50')
+              AND change_percent IS NOT NULL
+            ORDER BY date DESC
+            LIMIT 4
+            """,
+        )
+        seen2: set[str] = set()
+        for row in asia_rows:
+            a = row["asset"]
+            if a in seen2:
+                continue
+            seen2.add(a)
+            pct = float(row["change_percent"])
+            if a == "Nikkei 225":
+                data["nikkei_pct"] = pct
+            elif a == "Nifty 50":
+                data["nifty_pct"] = pct
+
+        # Brent crude
+        brent_row = await pool.fetchrow(
+            """
+            SELECT change_percent FROM market_prices
+            WHERE asset = 'brent_crude' AND change_percent IS NOT NULL
+            ORDER BY date DESC
+            LIMIT 1
+            """,
+        )
+        if brent_row:
+            data["brent_pct"] = float(brent_row["change_percent"])
+
+        return data
+    except Exception:
+        logger.exception("Failed to fetch Europe open data")
+        return None
+
+
+async def _fetch_us_open_data() -> dict | None:
+    """Fetch data for US market open: S&P500/NASDAQ/Dow + Europe + crude + Gift Nifty."""
+    try:
+        from app.core.database import get_pool
+        pool = await get_pool()
+
+        # S&P500, NASDAQ, Dow Jones latest
+        index_rows = await pool.fetch(
+            """
+            SELECT asset, change_percent, price FROM market_prices
+            WHERE asset IN ('S&P500', 'NASDAQ', 'Dow Jones')
+              AND change_percent IS NOT NULL
+            ORDER BY date DESC
+            LIMIT 6
+            """,
+        )
+        data: dict = {}
+        seen: set[str] = set()
+        for row in index_rows:
+            a = row["asset"]
+            if a in seen:
+                continue
+            seen.add(a)
+            pct = float(row["change_percent"])
+            if a == "S&P500":
+                data["sp500_pct"] = pct
+            elif a == "NASDAQ":
+                data["nasdaq_pct"] = pct
+            elif a == "Dow Jones":
+                data["dow_pct"] = pct
+
+        if "sp500_pct" not in data:
+            return None
+
+        # Europe cues: FTSE + DAX
+        europe_rows = await pool.fetch(
+            """
+            SELECT asset, change_percent FROM market_prices
+            WHERE asset IN ('FTSE 100', 'DAX')
+              AND change_percent IS NOT NULL
+            ORDER BY date DESC
+            LIMIT 4
+            """,
+        )
+        seen2: set[str] = set()
+        for row in europe_rows:
+            a = row["asset"]
+            if a in seen2:
+                continue
+            seen2.add(a)
+            pct = float(row["change_percent"])
+            if a == "FTSE 100":
+                data["ftse_pct"] = pct
+            elif a == "DAX":
+                data["dax_pct"] = pct
+
+        # Crude oil
+        crude_row = await pool.fetchrow(
+            """
+            SELECT change_percent FROM market_prices
+            WHERE asset = 'crude_oil' AND change_percent IS NOT NULL
+            ORDER BY date DESC
+            LIMIT 1
+            """,
+        )
+        if crude_row:
+            data["crude_pct"] = float(crude_row["change_percent"])
+
+        # Gift Nifty latest price + change from Nifty close
+        gift_row = await pool.fetchrow(
+            """
+            SELECT price FROM market_prices_intraday
+            WHERE asset = 'Gift Nifty'
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """,
+        )
+        nifty_row = await pool.fetchrow(
+            """
+            SELECT price FROM market_prices
+            WHERE asset = 'Nifty 50'
+            ORDER BY date DESC
+            LIMIT 1
+            """,
+        )
+        if gift_row and nifty_row:
+            gift_price = float(gift_row["price"])
+            nifty_close = float(nifty_row["price"])
+            if nifty_close > 0:
+                data["gift_nifty_price"] = gift_price
+                data["gift_nifty_change_pct"] = (gift_price - nifty_close) / nifty_close * 100
+
+        return data
+    except Exception:
+        logger.exception("Failed to fetch US open data")
         return None
 
 
@@ -1015,6 +1268,9 @@ async def run_notification_job() -> None:
         }
         _open_data_fetchers = {
             "india": _fetch_india_open_data,
+            "japan": _fetch_japan_open_data,
+            "europe": _fetch_europe_open_data,
+            "us": _fetch_us_open_data,
         }
 
         for market, is_open in markets.items():
@@ -1024,22 +1280,15 @@ async def run_notification_job() -> None:
                 _prev_state[market] = is_open
                 continue
             if is_open and not was_open:
-                # Transition: closed -> open
-                logger.info("Market transition: %s OPENED", market)
+                # Transition: closed -> open — delay 2 min so early data is available
+                logger.info("Market transition: %s OPENED — queuing open notification", market)
                 # Skip Europe/Japan notifications on exchange holidays
                 if market == "europe" and is_exchange_holiday("LSE", now):
                     logger.info("Skipping Europe open notification — LSE holiday")
                 elif market == "japan" and is_exchange_holiday("TSE", now):
                     logger.info("Skipping Japan open notification — TSE holiday")
                 else:
-                    open_data = None
-                    fetcher = _open_data_fetchers.get(market)
-                    if fetcher:
-                        try:
-                            open_data = await fetcher()
-                        except Exception:
-                            logger.warning("Open data fetch failed for %s", market, exc_info=True)
-                    await notification_service.notify_market_open(market, market_data=open_data)
+                    _open_pending[market] = now
                     _open_sent_today[market] = now.astimezone(_IST).strftime("%Y-%m-%d")
             elif not is_open and was_open:
                 # Transition: open -> closed
@@ -1064,6 +1313,21 @@ async def run_notification_job() -> None:
                         await notification_service.notify_market_close(market, market_data=close_data)
                     _close_sent_today[market] = now.astimezone(_IST).strftime("%Y-%m-%d")
             _prev_state[market] = is_open
+
+        # --- Flush pending open notifications after 2-minute delay ---
+        for market in list(_open_pending):
+            pending_time = _open_pending[market]
+            if pending_time and (now - pending_time).total_seconds() >= 120:
+                logger.info("Open notification delay elapsed for %s — sending now", market)
+                open_data = None
+                fetcher = _open_data_fetchers.get(market)
+                if fetcher:
+                    try:
+                        open_data = await fetcher()
+                    except Exception:
+                        logger.warning("Open data fetch failed for %s", market, exc_info=True)
+                await notification_service.notify_market_open(market, market_data=open_data)
+                del _open_pending[market]
 
         # --- DB fallback: send missed open/close notifications after restart ---
         await _check_missed_open_notifications(markets, now, _open_data_fetchers)

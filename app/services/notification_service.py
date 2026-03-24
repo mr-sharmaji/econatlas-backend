@@ -115,10 +115,26 @@ def _build_rich_open(market: str, d: dict) -> tuple[str, str]:
     """Build data-driven open notification."""
     if market == "india":
         return _build_india_open(d)
+    if market == "japan":
+        return _build_japan_open(d)
+    if market == "europe":
+        return _build_europe_open(d)
     if market == "us":
         return _build_us_open(d)
-    # Europe and Japan keep simple open notifications
     return _simple_open(market)
+
+
+def _open_tone(avg_pct: float, is_india: bool = False) -> str:
+    """Return an opening-tone phrase based on the average change of own indices."""
+    if avg_pct >= 1.0:
+        return "Gap-up opening" if is_india else "Strong opening"
+    if avg_pct >= 0.3:
+        return "Positive opening"
+    if avg_pct > -0.3:
+        return "Flat opening"
+    if avg_pct > -1.0:
+        return "Weak opening"
+    return "Gap-down opening" if is_india else "Sharp selloff at open"
 
 
 def _build_india_open(d: dict) -> tuple[str, str]:
@@ -127,47 +143,167 @@ def _build_india_open(d: dict) -> tuple[str, str]:
     if gift_price is None or gift_pct is None:
         return _simple_open("india")
 
-    sign = "+" if gift_pct >= 0 else ""
     emoji = "\U0001f7e2" if gift_pct >= 0 else "\U0001f534"
-    title = f"{emoji} India Open | Gift Nifty {sign}{gift_pct:.1f}% at {gift_price:,.0f}"
+    title = f"{emoji} Nifty opens {_sign(gift_pct)}{gift_pct:.1f}% at {gift_price:,.0f}"
 
-    parts: list[str] = []
+    parts: list[str] = [_open_tone(gift_pct, is_india=True)]
+
+    # Gift Nifty context
+    parts.append(f"Gift Nifty was at {_sign(gift_pct)}{gift_pct:.1f}%")
+
     # Overnight US
     us_sp = d.get("us_sp500_pct")
     us_nas = d.get("us_nasdaq_pct")
+    overnight_parts: list[str] = []
     if us_sp is not None:
-        us_parts = [f"S&P500 {_sign(us_sp)}{us_sp:.1f}%"]
-        if us_nas is not None:
-            us_parts.append(f"NASDAQ {_sign(us_nas)}{us_nas:.1f}%")
-        parts.append(f"Overnight US: {', '.join(us_parts)}")
+        overnight_parts.append(f"S&P 500 {_sign(us_sp)}{us_sp:.1f}%")
+    if us_nas is not None:
+        overnight_parts.append(f"NASDAQ {_sign(us_nas)}{us_nas:.1f}%")
     # Asia cues
     nikkei_pct = d.get("nikkei_pct")
     if nikkei_pct is not None:
-        parts.append(f"Nikkei {_sign(nikkei_pct)}{nikkei_pct:.1f}%")
+        overnight_parts.append(f"Nikkei {_sign(nikkei_pct)}{nikkei_pct:.1f}%")
+    if overnight_parts:
+        parts.append(f"Overnight: {', '.join(overnight_parts)}")
 
-    if gift_pct >= 1.0:
-        outlook = "Gap-up opening expected"
-    elif gift_pct >= 0.3:
-        outlook = "Positive opening expected"
-    elif gift_pct > -0.3:
-        outlook = "Flat opening expected"
-    elif gift_pct > -1.0:
-        outlook = "Negative opening expected"
-    else:
-        outlook = "Gap-down opening expected"
-    parts.insert(0, outlook)
+    # Gold
+    gold_pct = d.get("gold_pct")
+    if gold_pct is not None:
+        parts.append(f"Gold {_sign(gold_pct)}{gold_pct:.1f}%")
+
+    body = ". ".join(parts[:4]) + "."
+    return title, body
+
+
+def _build_japan_open(d: dict) -> tuple[str, str]:
+    nikkei_pct = d.get("nikkei_pct")
+    if nikkei_pct is None:
+        return _simple_open("japan")
+
+    emoji = _emoji_arrow(nikkei_pct)
+    idx_parts = [f"Nikkei {_sign(nikkei_pct)}{nikkei_pct:.1f}%"]
+    topix_pct = d.get("topix_pct")
+    if topix_pct is not None:
+        idx_parts.append(f"TOPIX {_sign(topix_pct)}{topix_pct:.1f}%")
+    title = f"{emoji} {' | '.join(idx_parts)}"
+
+    # Tone based on own indices
+    own_pcts = [p for p in [nikkei_pct, topix_pct] if p is not None]
+    avg_pct = sum(own_pcts) / len(own_pcts)
+    parts: list[str] = [_open_tone(avg_pct)]
+
+    # Yen
+    usd_jpy = d.get("usd_jpy_price")
+    if usd_jpy is not None:
+        parts.append(f"Yen at {usd_jpy:.1f}/USD")
+
+    # Overnight US
+    us_sp = d.get("us_sp500_pct")
+    us_nas = d.get("us_nasdaq_pct")
+    overnight_parts: list[str] = []
+    if us_sp is not None:
+        overnight_parts.append(f"S&P 500 {_sign(us_sp)}{us_sp:.1f}%")
+    if us_nas is not None:
+        overnight_parts.append(f"NASDAQ {_sign(us_nas)}{us_nas:.1f}%")
+    if overnight_parts:
+        parts.append(f"Overnight: {', '.join(overnight_parts)}")
+
+    # Gold
+    gold_pct = d.get("gold_pct")
+    if gold_pct is not None:
+        parts.append(f"Gold {_sign(gold_pct)}{gold_pct:.1f}%")
+
+    body = ". ".join(parts[:4]) + "."
+    return title, body
+
+
+def _build_europe_open(d: dict) -> tuple[str, str]:
+    ftse_pct = d.get("ftse_pct")
+    dax_pct = d.get("dax_pct")
+    cac_pct = d.get("cac_pct")
+    if ftse_pct is None and dax_pct is None:
+        return _simple_open("europe")
+
+    primary = ftse_pct if ftse_pct is not None else dax_pct
+    emoji = _emoji_arrow(primary)
+    idx_parts: list[str] = []
+    if ftse_pct is not None:
+        idx_parts.append(f"FTSE {_sign(ftse_pct)}{ftse_pct:.1f}%")
+    if dax_pct is not None:
+        idx_parts.append(f"DAX {_sign(dax_pct)}{dax_pct:.1f}%")
+    if cac_pct is not None:
+        idx_parts.append(f"CAC {_sign(cac_pct)}{cac_pct:.1f}%")
+    title = f"{emoji} {' | '.join(idx_parts)}"
+
+    # Tone based on own indices
+    own_pcts = [p for p in [ftse_pct, dax_pct, cac_pct] if p is not None]
+    avg_pct = sum(own_pcts) / len(own_pcts)
+    parts: list[str] = [_open_tone(avg_pct)]
+
+    # Brent crude
+    brent_pct = d.get("brent_pct")
+    if brent_pct is not None:
+        parts.append(f"Brent crude {_sign(brent_pct)}{brent_pct:.1f}%")
+
+    # Asia cues
+    asia_parts: list[str] = []
+    nikkei_pct = d.get("nikkei_pct")
+    nifty_pct = d.get("nifty_pct")
+    if nikkei_pct is not None:
+        asia_parts.append(f"Nikkei {_sign(nikkei_pct)}{nikkei_pct:.1f}%")
+    if nifty_pct is not None:
+        asia_parts.append(f"Nifty {_sign(nifty_pct)}{nifty_pct:.1f}%")
+    if asia_parts:
+        parts.append(f"Asia: {', '.join(asia_parts)}")
 
     body = ". ".join(parts[:3]) + "."
     return title, body
 
 
 def _build_us_open(d: dict) -> tuple[str, str]:
-    title = "\U0001f1fa\U0001f1f8 US Markets Open"
-    parts: list[str] = ["NYSE & NASDAQ trading has begun"]
-    sp_futures = d.get("sp500_futures_pct")
-    if sp_futures is not None:
-        parts.append(f"S&P 500 futures {_sign(sp_futures)}{sp_futures:.1f}%")
-    body = ". ".join(parts) + "."
+    sp_pct = d.get("sp500_pct")
+    if sp_pct is None:
+        return _simple_open("us")
+
+    nas_pct = d.get("nasdaq_pct")
+    dow_pct = d.get("dow_pct")
+
+    emoji = _emoji_arrow(sp_pct)
+    idx_parts = [f"S&P 500 {_sign(sp_pct)}{sp_pct:.1f}%"]
+    if nas_pct is not None:
+        idx_parts.append(f"NASDAQ {_sign(nas_pct)}{nas_pct:.1f}%")
+    if dow_pct is not None:
+        idx_parts.append(f"Dow {_sign(dow_pct)}{dow_pct:.1f}%")
+    title = f"{emoji} {' | '.join(idx_parts)}"
+
+    # Tone based on own indices
+    own_pcts = [p for p in [sp_pct, nas_pct, dow_pct] if p is not None]
+    avg_pct = sum(own_pcts) / len(own_pcts)
+    parts: list[str] = [_open_tone(avg_pct)]
+
+    # Europe cues
+    europe_parts: list[str] = []
+    ftse_pct = d.get("ftse_pct")
+    dax_pct = d.get("dax_pct")
+    if ftse_pct is not None:
+        europe_parts.append(f"FTSE {_sign(ftse_pct)}{ftse_pct:.1f}%")
+    if dax_pct is not None:
+        europe_parts.append(f"DAX {_sign(dax_pct)}{dax_pct:.1f}%")
+    if europe_parts:
+        parts.append(f"Europe: {', '.join(europe_parts)}")
+
+    # Crude oil
+    crude_pct = d.get("crude_pct")
+    if crude_pct is not None:
+        parts.append(f"Crude {_sign(crude_pct)}{crude_pct:.1f}%")
+
+    # Gift Nifty
+    gift_price = d.get("gift_nifty_price")
+    gift_pct = d.get("gift_nifty_change_pct")
+    if gift_price is not None and gift_pct is not None:
+        parts.append(f"Gift Nifty at {gift_price:,.0f} ({_sign(gift_pct)}{gift_pct:.1f}%)")
+
+    body = ". ".join(parts[:4]) + "."
     return title, body
 
 
