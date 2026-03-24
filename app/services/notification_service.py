@@ -68,8 +68,31 @@ async def send_topic_notification(
         return False
 
 
-async def notify_market_open(market: str) -> bool:
-    """Send notification when a market opens."""
+async def notify_market_open(market: str, market_data: dict | None = None) -> bool:
+    """Send notification when a market opens.
+
+    If *market_data* is provided, include richer context (e.g. Gift Nifty
+    level for India open, overnight performance for US open).
+    """
+    if market_data:
+        try:
+            title, body = _build_rich_open(market, market_data)
+        except Exception:
+            logger.warning("Rich open build failed for %s, falling back", market, exc_info=True)
+            title, body = _simple_open(market)
+    else:
+        title, body = _simple_open(market)
+
+    return await send_topic_notification(
+        topic="market_alerts",
+        title=title,
+        body=body,
+        data={"type": "market_open", "market": market},
+    )
+
+
+def _simple_open(market: str) -> tuple[str, str]:
+    """Fallback simple open title & body."""
     titles = {
         "india": "\U0001f1ee\U0001f1f3 Indian Markets Open",
         "us": "\U0001f1fa\U0001f1f8 US Markets Open",
@@ -82,14 +105,70 @@ async def notify_market_open(market: str) -> bool:
         "europe": "FTSE, DAX, and CAC 40 are now live.",
         "japan": "Nikkei 225 and TOPIX are now live.",
     }
-    title = titles.get(market, f"{market.title()} Markets Open")
-    body = bodies.get(market, f"{market.title()} market session has started.")
-    return await send_topic_notification(
-        topic="market_alerts",
-        title=title,
-        body=body,
-        data={"type": "market_open", "market": market},
+    return (
+        titles.get(market, f"{market.title()} Markets Open"),
+        bodies.get(market, f"{market.title()} market session has started."),
     )
+
+
+def _build_rich_open(market: str, d: dict) -> tuple[str, str]:
+    """Build data-driven open notification."""
+    if market == "india":
+        return _build_india_open(d)
+    if market == "us":
+        return _build_us_open(d)
+    # Europe and Japan keep simple open notifications
+    return _simple_open(market)
+
+
+def _build_india_open(d: dict) -> tuple[str, str]:
+    gift_price = d.get("gift_nifty_price")
+    gift_pct = d.get("gift_nifty_change_pct")
+    if gift_price is None or gift_pct is None:
+        return _simple_open("india")
+
+    sign = "+" if gift_pct >= 0 else ""
+    emoji = "\U0001f7e2" if gift_pct >= 0 else "\U0001f534"
+    title = f"{emoji} India Open | Gift Nifty {sign}{gift_pct:.1f}% at {gift_price:,.0f}"
+
+    parts: list[str] = []
+    # Overnight US
+    us_sp = d.get("us_sp500_pct")
+    us_nas = d.get("us_nasdaq_pct")
+    if us_sp is not None:
+        us_parts = [f"S&P500 {_sign(us_sp)}{us_sp:.1f}%"]
+        if us_nas is not None:
+            us_parts.append(f"NASDAQ {_sign(us_nas)}{us_nas:.1f}%")
+        parts.append(f"Overnight US: {', '.join(us_parts)}")
+    # Asia cues
+    nikkei_pct = d.get("nikkei_pct")
+    if nikkei_pct is not None:
+        parts.append(f"Nikkei {_sign(nikkei_pct)}{nikkei_pct:.1f}%")
+
+    if gift_pct >= 1.0:
+        outlook = "Gap-up opening expected"
+    elif gift_pct >= 0.3:
+        outlook = "Positive opening expected"
+    elif gift_pct > -0.3:
+        outlook = "Flat opening expected"
+    elif gift_pct > -1.0:
+        outlook = "Negative opening expected"
+    else:
+        outlook = "Gap-down opening expected"
+    parts.insert(0, outlook)
+
+    body = ". ".join(parts[:3]) + "."
+    return title, body
+
+
+def _build_us_open(d: dict) -> tuple[str, str]:
+    title = "\U0001f1fa\U0001f1f8 US Markets Open"
+    parts: list[str] = ["NYSE & NASDAQ trading has begun"]
+    sp_futures = d.get("sp500_futures_pct")
+    if sp_futures is not None:
+        parts.append(f"S&P 500 futures {_sign(sp_futures)}{sp_futures:.1f}%")
+    body = ". ".join(parts) + "."
+    return title, body
 
 
 def _format_inr(value: float) -> str:
@@ -323,8 +402,32 @@ async def notify_commodity_spike(
     )
 
 
-async def notify_market_close(market: str) -> bool:
-    """Send notification when a market closes."""
+async def notify_market_close(market: str, market_data: dict | None = None) -> bool:
+    """Send notification when a market closes.
+
+    If *market_data* is provided it should contain pre-fetched numbers so
+    the notification can include a data-driven title and commentary.
+    Falls back to a simple message when data is unavailable.
+    """
+    if market_data:
+        try:
+            title, body = _build_rich_close(market, market_data)
+        except Exception:
+            logger.warning("Rich close build failed for %s, falling back", market, exc_info=True)
+            title, body = _simple_close(market)
+    else:
+        title, body = _simple_close(market)
+
+    return await send_topic_notification(
+        topic="market_alerts",
+        title=title,
+        body=body,
+        data={"type": "market_close", "market": market},
+    )
+
+
+def _simple_close(market: str) -> tuple[str, str]:
+    """Fallback simple close title & body."""
     titles = {
         "india": "\U0001f1ee\U0001f1f3 Indian Markets Closed",
         "us": "\U0001f1fa\U0001f1f8 US Markets Closed",
@@ -337,11 +440,161 @@ async def notify_market_close(market: str) -> bool:
         "europe": "European market session has ended.",
         "japan": "Japanese market session has ended.",
     }
-    title = titles.get(market, f"{market.title()} Markets Closed")
-    body = bodies.get(market, f"{market.title()} market session has ended.")
-    return await send_topic_notification(
-        topic="market_alerts",
-        title=title,
-        body=body,
-        data={"type": "market_close", "market": market},
+    return (
+        titles.get(market, f"{market.title()} Markets Closed"),
+        bodies.get(market, f"{market.title()} market session has ended."),
     )
+
+
+def _sign(v: float) -> str:
+    return "+" if v >= 0 else ""
+
+
+def _emoji_arrow(v: float) -> str:
+    return "\U0001f4c8" if v >= 0 else "\U0001f4c9"
+
+
+def _build_rich_close(market: str, d: dict) -> tuple[str, str]:
+    """Build data-driven title & body for a market close notification."""
+    if market == "india":
+        return _build_india_close(d)
+    if market == "us":
+        return _build_us_close(d)
+    if market == "europe":
+        return _build_europe_close(d)
+    if market == "japan":
+        return _build_japan_close(d)
+    return _simple_close(market)
+
+
+def _build_india_close(d: dict) -> tuple[str, str]:
+    nifty_pct = d.get("nifty_change_pct")
+    sensex_pct = d.get("sensex_change_pct")
+    if nifty_pct is None or sensex_pct is None:
+        return _simple_close("india")
+
+    emoji = _emoji_arrow(nifty_pct)
+    title = f"{emoji} Nifty {_sign(nifty_pct)}{nifty_pct:.1f}% | Sensex {_sign(sensex_pct)}{sensex_pct:.1f}%"
+
+    parts: list[str] = []
+    # Relative context
+    ctx = d.get("relative_context")
+    if ctx:
+        parts.append(ctx.capitalize())
+    # 52-week context
+    w52 = d.get("week52_context")
+    if w52:
+        parts.append(w52)
+    # Breadth
+    adv = d.get("advancers")
+    dec = d.get("decliners")
+    if adv is not None and dec is not None:
+        parts.append(f"{adv} advancers vs {dec} decliners")
+    # Top / bottom sector
+    top_sec = d.get("top_sector")
+    top_sec_pct = d.get("top_sector_pct")
+    bottom_sec = d.get("bottom_sector")
+    bottom_sec_pct = d.get("bottom_sector_pct")
+    if top_sec and top_sec_pct is not None:
+        parts.append(f"{top_sec} {_sign(top_sec_pct)}{top_sec_pct:.1f}% led")
+    if bottom_sec and bottom_sec_pct is not None:
+        parts.append(f"{bottom_sec} {_sign(bottom_sec_pct)}{bottom_sec_pct:.1f}% lagged")
+
+    body = ". ".join(parts[:4]) + "." if parts else "NSE & BSE session ended."
+    return title, body
+
+
+def _build_us_close(d: dict) -> tuple[str, str]:
+    sp_pct = d.get("sp500_change_pct")
+    nas_pct = d.get("nasdaq_change_pct")
+    dow_pct = d.get("dow_change_pct")
+    if sp_pct is None:
+        return _simple_close("us")
+
+    emoji = _emoji_arrow(sp_pct)
+    idx_parts = [f"S&P 500 {_sign(sp_pct)}{sp_pct:.1f}%"]
+    if nas_pct is not None:
+        idx_parts.append(f"NASDAQ {_sign(nas_pct)}{nas_pct:.1f}%")
+    if dow_pct is not None:
+        idx_parts.append(f"Dow {_sign(dow_pct)}{dow_pct:.1f}%")
+    title = f"{emoji} {' | '.join(idx_parts)}"
+
+    parts: list[str] = []
+    ctx = d.get("relative_context")
+    if ctx:
+        parts.append(ctx.capitalize())
+    w52 = d.get("week52_context")
+    if w52:
+        parts.append(w52)
+    # Gift Nifty signal
+    gift_price = d.get("gift_nifty_price")
+    gift_pct = d.get("gift_nifty_change_pct")
+    if gift_price is not None and gift_pct is not None:
+        parts.append(f"Gift Nifty at {gift_price:,.0f} ({_sign(gift_pct)}{gift_pct:.1f}% from Nifty close)")
+
+    body = ". ".join(parts[:3]) + "." if parts else "NYSE & NASDAQ session ended."
+    return title, body
+
+
+def _build_europe_close(d: dict) -> tuple[str, str]:
+    ftse_pct = d.get("ftse_change_pct")
+    dax_pct = d.get("dax_change_pct")
+    cac_pct = d.get("cac_change_pct")
+    if ftse_pct is None and dax_pct is None:
+        return _simple_close("europe")
+
+    primary = ftse_pct if ftse_pct is not None else dax_pct
+    emoji = _emoji_arrow(primary)
+    idx_parts = []
+    if ftse_pct is not None:
+        idx_parts.append(f"FTSE {_sign(ftse_pct)}{ftse_pct:.1f}%")
+    if dax_pct is not None:
+        idx_parts.append(f"DAX {_sign(dax_pct)}{dax_pct:.1f}%")
+    if cac_pct is not None:
+        idx_parts.append(f"CAC {_sign(cac_pct)}{cac_pct:.1f}%")
+    title = f"{emoji} {' | '.join(idx_parts)}"
+
+    parts: list[str] = []
+    ctx = d.get("relative_context")
+    if ctx:
+        parts.append(ctx.capitalize())
+    w52 = d.get("week52_context")
+    if w52:
+        parts.append(w52)
+    # Brent crude if significant
+    brent_pct = d.get("brent_change_pct")
+    if brent_pct is not None and abs(brent_pct) >= 1.0:
+        direction = "up" if brent_pct > 0 else "down"
+        parts.append(f"Brent crude {direction} {_sign(brent_pct)}{brent_pct:.1f}%")
+
+    body = ". ".join(parts[:3]) + "." if parts else "European market session has ended."
+    return title, body
+
+
+def _build_japan_close(d: dict) -> tuple[str, str]:
+    nikkei_pct = d.get("nikkei_change_pct")
+    topix_pct = d.get("topix_change_pct")
+    if nikkei_pct is None:
+        return _simple_close("japan")
+
+    emoji = _emoji_arrow(nikkei_pct)
+    idx_parts = [f"Nikkei {_sign(nikkei_pct)}{nikkei_pct:.1f}%"]
+    if topix_pct is not None:
+        idx_parts.append(f"TOPIX {_sign(topix_pct)}{topix_pct:.1f}%")
+    title = f"{emoji} {' | '.join(idx_parts)}"
+
+    parts: list[str] = []
+    ctx = d.get("relative_context")
+    if ctx:
+        parts.append(ctx.capitalize())
+    w52 = d.get("week52_context")
+    if w52:
+        parts.append(w52)
+    # JPY/INR
+    jpy_price = d.get("jpy_inr_price")
+    jpy_pct = d.get("jpy_inr_change_pct")
+    if jpy_price is not None and jpy_pct is not None:
+        parts.append(f"JPY/INR at {jpy_price:.2f} ({_sign(jpy_pct)}{jpy_pct:.1f}%)")
+
+    body = ". ".join(parts[:3]) + "." if parts else "Japanese market session has ended."
+    return title, body

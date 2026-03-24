@@ -44,6 +44,446 @@ _post_market_state: dict = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Helper: relative context ("best day in 2 weeks", "largest drop in 3 weeks")
+# ---------------------------------------------------------------------------
+
+async def _get_relative_context(pool, asset: str, change_pct: float, days: int = 30) -> str | None:
+    """Compare today's change to recent history and return a short phrase.
+
+    Returns e.g. "best day in 2 weeks" or "largest drop in 3 weeks", or None.
+    """
+    if change_pct == 0:
+        return None
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT change_percent FROM market_prices
+            WHERE asset = $1 AND change_percent IS NOT NULL
+            ORDER BY date DESC
+            LIMIT $2
+            """,
+            asset, days,
+        )
+        if len(rows) < 2:
+            return None
+
+        direction_positive = change_pct > 0
+        # Count how many trading days since a bigger move in the same direction
+        streak = 0
+        for row in rows[1:]:  # skip today (index 0)
+            prev_pct = float(row["change_percent"])
+            if direction_positive and prev_pct >= change_pct:
+                break
+            if not direction_positive and prev_pct <= change_pct:
+                break
+            streak += 1
+
+        if streak < 2:
+            return None
+
+        # Convert trading days to human-readable period
+        if streak >= 20:
+            period = f"{streak // 5} weeks"
+        elif streak >= 10:
+            period = f"{streak // 5} weeks"
+        elif streak >= 5:
+            period = "1 week" if streak < 10 else f"{streak // 5} weeks"
+        else:
+            period = f"{streak} trading days"
+
+        if direction_positive:
+            return f"best day in {period}"
+        else:
+            return f"largest drop in {period}"
+    except Exception:
+        logger.debug("Relative context lookup failed for %s", asset, exc_info=True)
+        return None
+
+
+async def _get_52week_context(pool, asset: str, current_close: float | None) -> str | None:
+    """Return 'near 52-week high' if within 2% of the max close in last 252 trading days."""
+    if current_close is None:
+        return None
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT MAX(price) AS max_price, MIN(price) AS min_price
+            FROM market_prices
+            WHERE asset = $1
+            ORDER BY date DESC
+            LIMIT 252
+            """,
+            asset,
+        )
+        # The query above is wrong — LIMIT on an aggregate doesn't restrict the window.
+        # Use a sub-select instead:
+        row = await pool.fetchrow(
+            """
+            SELECT MAX(price) AS max_price, MIN(price) AS min_price
+            FROM (
+                SELECT price FROM market_prices
+                WHERE asset = $1
+                ORDER BY date DESC
+                LIMIT 252
+            ) sub
+            """,
+            asset,
+        )
+        if not row or row["max_price"] is None:
+            return None
+        max_price = float(row["max_price"])
+        min_price = float(row["min_price"])
+        if max_price == 0:
+            return None
+        pct_from_high = (max_price - current_close) / max_price * 100
+        if pct_from_high <= 2.0:
+            return "near 52-week high"
+        pct_from_low = (current_close - min_price) / min_price * 100 if min_price > 0 else None
+        if pct_from_low is not None and pct_from_low <= 2.0:
+            return "near 52-week low"
+        return None
+    except Exception:
+        logger.debug("52-week context lookup failed for %s", asset, exc_info=True)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Data fetchers for each market close notification
+# ---------------------------------------------------------------------------
+
+async def _fetch_india_close_data() -> dict | None:
+    """Fetch data needed for India market close notification."""
+    try:
+        from app.core.database import get_pool
+        pool = await get_pool()
+
+        # Nifty 50 and Sensex latest
+        index_rows = await pool.fetch(
+            """
+            SELECT asset, change_percent, price FROM market_prices
+            WHERE asset IN ('Nifty 50', 'Sensex')
+            ORDER BY date DESC
+            LIMIT 2
+            """
+        )
+        data: dict = {}
+        nifty_close = None
+        for row in index_rows:
+            if row["asset"] == "Nifty 50" and row["change_percent"] is not None:
+                data["nifty_change_pct"] = float(row["change_percent"])
+                nifty_close = float(row["price"])
+            elif row["asset"] == "Sensex" and row["change_percent"] is not None:
+                data["sensex_change_pct"] = float(row["change_percent"])
+
+        if "nifty_change_pct" not in data:
+            return None
+
+        # Relative context for Nifty 50
+        data["relative_context"] = await _get_relative_context(
+            pool, "Nifty 50", data["nifty_change_pct"]
+        )
+        data["week52_context"] = await _get_52week_context(pool, "Nifty 50", nifty_close)
+
+        # Breadth from brief_service
+        try:
+            from app.services.brief_service import get_post_market_overview
+            overview = await get_post_market_overview(market="IN")
+            data["advancers"] = overview.get("advancers", 0)
+            data["decliners"] = overview.get("decliners", 0)
+        except Exception:
+            logger.debug("Breadth data unavailable for India close")
+
+        # Sector indices
+        sector_rows = await pool.fetch(
+            """
+            SELECT asset, change_percent FROM market_prices
+            WHERE asset IN ('Nifty Bank', 'Nifty IT', 'Nifty Pharma', 'Nifty Auto', 'Nifty Metal')
+              AND change_percent IS NOT NULL
+            ORDER BY date DESC
+            LIMIT 10
+            """
+        )
+        seen: set[str] = set()
+        sectors: list[tuple[str, float]] = []
+        for row in sector_rows:
+            a = row["asset"]
+            if a in seen:
+                continue
+            seen.add(a)
+            sectors.append((a, float(row["change_percent"])))
+
+        if sectors:
+            sectors.sort(key=lambda x: x[1], reverse=True)
+            data["top_sector"] = sectors[0][0]
+            data["top_sector_pct"] = sectors[0][1]
+            data["bottom_sector"] = sectors[-1][0]
+            data["bottom_sector_pct"] = sectors[-1][1]
+
+        return data
+    except Exception:
+        logger.exception("Failed to fetch India close data")
+        return None
+
+
+async def _fetch_us_close_data() -> dict | None:
+    """Fetch data needed for US market close notification."""
+    try:
+        from app.core.database import get_pool
+        pool = await get_pool()
+
+        index_rows = await pool.fetch(
+            """
+            SELECT asset, change_percent, price FROM market_prices
+            WHERE asset IN ('S&P500', 'NASDAQ', 'Dow Jones')
+            ORDER BY date DESC
+            LIMIT 6
+            """
+        )
+        data: dict = {}
+        sp_close = None
+        seen: set[str] = set()
+        for row in index_rows:
+            a = row["asset"]
+            if a in seen:
+                continue
+            seen.add(a)
+            pct = float(row["change_percent"]) if row["change_percent"] is not None else None
+            if a == "S&P500":
+                data["sp500_change_pct"] = pct
+                sp_close = float(row["price"]) if row["price"] else None
+            elif a == "NASDAQ":
+                data["nasdaq_change_pct"] = pct
+            elif a == "Dow Jones":
+                data["dow_change_pct"] = pct
+
+        if "sp500_change_pct" not in data or data["sp500_change_pct"] is None:
+            return None
+
+        data["relative_context"] = await _get_relative_context(
+            pool, "S&P500", data["sp500_change_pct"]
+        )
+        data["week52_context"] = await _get_52week_context(pool, "S&P500", sp_close)
+
+        # Gift Nifty latest price for India next-day signal
+        gift_row = await pool.fetchrow(
+            """
+            SELECT price FROM market_prices_intraday
+            WHERE asset = 'Gift Nifty'
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """
+        )
+        nifty_row = await pool.fetchrow(
+            """
+            SELECT price FROM market_prices
+            WHERE asset = 'Nifty 50'
+            ORDER BY date DESC
+            LIMIT 1
+            """
+        )
+        if gift_row and nifty_row:
+            gift_price = float(gift_row["price"])
+            nifty_close = float(nifty_row["price"])
+            if nifty_close > 0:
+                data["gift_nifty_price"] = gift_price
+                data["gift_nifty_change_pct"] = (gift_price - nifty_close) / nifty_close * 100
+
+        return data
+    except Exception:
+        logger.exception("Failed to fetch US close data")
+        return None
+
+
+async def _fetch_europe_close_data() -> dict | None:
+    """Fetch data needed for Europe market close notification."""
+    try:
+        from app.core.database import get_pool
+        pool = await get_pool()
+
+        index_rows = await pool.fetch(
+            """
+            SELECT asset, change_percent, price FROM market_prices
+            WHERE asset IN ('FTSE 100', 'DAX', 'CAC 40')
+            ORDER BY date DESC
+            LIMIT 6
+            """
+        )
+        data: dict = {}
+        ftse_close = None
+        seen: set[str] = set()
+        for row in index_rows:
+            a = row["asset"]
+            if a in seen:
+                continue
+            seen.add(a)
+            pct = float(row["change_percent"]) if row["change_percent"] is not None else None
+            if a == "FTSE 100":
+                data["ftse_change_pct"] = pct
+                ftse_close = float(row["price"]) if row["price"] else None
+            elif a == "DAX":
+                data["dax_change_pct"] = pct
+            elif a == "CAC 40":
+                data["cac_change_pct"] = pct
+
+        if "ftse_change_pct" not in data and "dax_change_pct" not in data:
+            return None
+
+        # Relative context for FTSE 100 (primary European index)
+        primary_asset = "FTSE 100" if "ftse_change_pct" in data else "DAX"
+        primary_pct = data.get("ftse_change_pct") or data.get("dax_change_pct")
+        primary_close = ftse_close
+        if primary_pct is not None:
+            data["relative_context"] = await _get_relative_context(pool, primary_asset, primary_pct)
+        data["week52_context"] = await _get_52week_context(pool, primary_asset, primary_close)
+
+        # Brent crude
+        brent_row = await pool.fetchrow(
+            """
+            SELECT change_percent FROM market_prices
+            WHERE asset = 'brent crude' AND change_percent IS NOT NULL
+            ORDER BY date DESC
+            LIMIT 1
+            """
+        )
+        if brent_row:
+            data["brent_change_pct"] = float(brent_row["change_percent"])
+
+        return data
+    except Exception:
+        logger.exception("Failed to fetch Europe close data")
+        return None
+
+
+async def _fetch_japan_close_data() -> dict | None:
+    """Fetch data needed for Japan market close notification."""
+    try:
+        from app.core.database import get_pool
+        pool = await get_pool()
+
+        index_rows = await pool.fetch(
+            """
+            SELECT asset, change_percent, price FROM market_prices
+            WHERE asset IN ('Nikkei 225', 'TOPIX')
+            ORDER BY date DESC
+            LIMIT 4
+            """
+        )
+        data: dict = {}
+        nikkei_close = None
+        seen: set[str] = set()
+        for row in index_rows:
+            a = row["asset"]
+            if a in seen:
+                continue
+            seen.add(a)
+            pct = float(row["change_percent"]) if row["change_percent"] is not None else None
+            if a == "Nikkei 225":
+                data["nikkei_change_pct"] = pct
+                nikkei_close = float(row["price"]) if row["price"] else None
+            elif a == "TOPIX":
+                data["topix_change_pct"] = pct
+
+        if "nikkei_change_pct" not in data or data["nikkei_change_pct"] is None:
+            return None
+
+        data["relative_context"] = await _get_relative_context(
+            pool, "Nikkei 225", data["nikkei_change_pct"]
+        )
+        data["week52_context"] = await _get_52week_context(pool, "Nikkei 225", nikkei_close)
+
+        # JPY/INR
+        jpy_row = await pool.fetchrow(
+            """
+            SELECT price, change_percent FROM market_prices
+            WHERE asset = 'JPY/INR' AND change_percent IS NOT NULL
+            ORDER BY date DESC
+            LIMIT 1
+            """
+        )
+        if jpy_row:
+            data["jpy_inr_price"] = float(jpy_row["price"])
+            data["jpy_inr_change_pct"] = float(jpy_row["change_percent"])
+
+        return data
+    except Exception:
+        logger.exception("Failed to fetch Japan close data")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Data fetcher for market open notifications
+# ---------------------------------------------------------------------------
+
+async def _fetch_india_open_data() -> dict | None:
+    """Fetch data for India market open: Gift Nifty + overnight US/Asia."""
+    try:
+        from app.core.database import get_pool
+        pool = await get_pool()
+
+        # Nifty 50 last close
+        nifty_row = await pool.fetchrow(
+            """
+            SELECT price FROM market_prices
+            WHERE asset = 'Nifty 50'
+            ORDER BY date DESC
+            LIMIT 1
+            """
+        )
+        if not nifty_row:
+            return None
+        nifty_close = float(nifty_row["price"])
+        if nifty_close == 0:
+            return None
+
+        # Gift Nifty latest
+        gift_row = await pool.fetchrow(
+            """
+            SELECT price FROM market_prices_intraday
+            WHERE asset = 'Gift Nifty'
+            ORDER BY timestamp DESC
+            LIMIT 1
+            """
+        )
+        if not gift_row:
+            return None
+
+        gift_price = float(gift_row["price"])
+        data: dict = {
+            "gift_nifty_price": gift_price,
+            "gift_nifty_change_pct": (gift_price - nifty_close) / nifty_close * 100,
+        }
+
+        # Overnight US/Asia
+        global_rows = await pool.fetch(
+            """
+            SELECT asset, change_percent FROM market_prices
+            WHERE asset IN ('S&P500', 'NASDAQ', 'Nikkei 225')
+              AND change_percent IS NOT NULL
+            ORDER BY date DESC
+            LIMIT 6
+            """
+        )
+        seen: set[str] = set()
+        for row in global_rows:
+            a = row["asset"]
+            if a in seen:
+                continue
+            seen.add(a)
+            pct = float(row["change_percent"])
+            if a == "S&P500":
+                data["us_sp500_pct"] = pct
+            elif a == "NASDAQ":
+                data["us_nasdaq_pct"] = pct
+            elif a == "Nikkei 225":
+                data["nikkei_pct"] = pct
+
+        return data
+    except Exception:
+        logger.exception("Failed to fetch India open data")
+        return None
+
+
 async def _check_gift_nifty(status: dict, now: datetime) -> None:
     """Check Gift Nifty movement and send alert if threshold crossed."""
     gift_open = bool(status.get("gift_nifty_open"))
@@ -407,6 +847,16 @@ async def run_notification_job() -> None:
 
         india_closed_transition = False
 
+        _close_data_fetchers = {
+            "india": _fetch_india_close_data,
+            "us": _fetch_us_close_data,
+            "europe": _fetch_europe_close_data,
+            "japan": _fetch_japan_close_data,
+        }
+        _open_data_fetchers = {
+            "india": _fetch_india_open_data,
+        }
+
         for market, is_open in markets.items():
             was_open = _prev_state.get(market)
             if was_open is None:
@@ -416,11 +866,25 @@ async def run_notification_job() -> None:
             if is_open and not was_open:
                 # Transition: closed -> open
                 logger.info("Market transition: %s OPENED", market)
-                await notification_service.notify_market_open(market)
+                open_data = None
+                fetcher = _open_data_fetchers.get(market)
+                if fetcher:
+                    try:
+                        open_data = await fetcher()
+                    except Exception:
+                        logger.warning("Open data fetch failed for %s", market, exc_info=True)
+                await notification_service.notify_market_open(market, market_data=open_data)
             elif not is_open and was_open:
                 # Transition: open -> closed
                 logger.info("Market transition: %s CLOSED", market)
-                await notification_service.notify_market_close(market)
+                close_data = None
+                fetcher = _close_data_fetchers.get(market)
+                if fetcher:
+                    try:
+                        close_data = await fetcher()
+                    except Exception:
+                        logger.warning("Close data fetch failed for %s", market, exc_info=True)
+                await notification_service.notify_market_close(market, market_data=close_data)
                 if market == "india":
                     india_closed_transition = True
             _prev_state[market] = is_open
