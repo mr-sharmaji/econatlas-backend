@@ -13,6 +13,35 @@ logger = logging.getLogger(__name__)
 _firebase_app = None
 
 
+# ---------------------------------------------------------------------------
+# Notification dedup helpers (DB-backed, survives restarts/deploys)
+# ---------------------------------------------------------------------------
+
+async def _was_already_sent(dedup_key: str) -> bool:
+    """Check if a notification with this dedup key was already sent."""
+    from app.core.database import get_pool
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT 1 FROM notification_log WHERE dedup_key = $1",
+        dedup_key,
+    )
+    return row is not None
+
+
+async def _log_sent(notification_type: str, dedup_key: str, title: str) -> None:
+    """Log that a notification was sent."""
+    from app.core.database import get_pool
+    pool = await get_pool()
+    await pool.execute(
+        """
+        INSERT INTO notification_log (notification_type, dedup_key, title)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (dedup_key) DO NOTHING
+        """,
+        notification_type, dedup_key, title,
+    )
+
+
 def _get_firebase():
     """Lazy-init Firebase Admin SDK."""
     global _firebase_app
@@ -47,8 +76,30 @@ async def send_topic_notification(
     title: str,
     body: str,
     data: dict | None = None,
+    *,
+    dedup_key: str | None = None,
+    notification_type: str | None = None,
 ) -> bool:
-    """Send a push notification to all devices subscribed to a topic."""
+    """Send a push notification to all devices subscribed to a topic.
+
+    If *dedup_key* is provided, the notification is checked against the
+    ``notification_log`` table first.  If an entry with the same key already
+    exists the send is skipped (returns ``False``).  After a successful send
+    the key is logged so subsequent calls (even after a restart) are no-ops.
+    """
+    # --- DB dedup gate ---
+    if dedup_key:
+        try:
+            if await _was_already_sent(dedup_key):
+                logger.debug(
+                    "Notification already sent (dedup_key=%s) — skipping",
+                    dedup_key,
+                )
+                return False
+        except Exception:
+            # If DB check fails, proceed with send to avoid silencing alerts
+            logger.warning("Dedup check failed for %s — proceeding", dedup_key, exc_info=True)
+
     app = _get_firebase()
     if app is None:
         logger.debug("Skipping push notification — Firebase not configured")
@@ -62,13 +113,30 @@ async def send_topic_notification(
         )
         response = messaging.send(message)
         logger.info("FCM sent to topic=%s: %s", topic, response)
+
+        # --- Log successful send for dedup ---
+        if dedup_key:
+            try:
+                await _log_sent(
+                    notification_type or "unknown",
+                    dedup_key,
+                    title,
+                )
+            except Exception:
+                logger.warning("Failed to log sent notification (dedup_key=%s)", dedup_key, exc_info=True)
+
         return True
     except Exception:
         logger.warning("FCM send failed for topic=%s", topic, exc_info=True)
         return False
 
 
-async def notify_market_open(market: str, market_data: dict | None = None) -> bool:
+async def notify_market_open(
+    market: str,
+    market_data: dict | None = None,
+    *,
+    dedup_key: str | None = None,
+) -> bool:
     """Send notification when a market opens.
 
     If *market_data* is provided, include richer context (e.g. Gift Nifty
@@ -88,6 +156,8 @@ async def notify_market_open(market: str, market_data: dict | None = None) -> bo
         title=title,
         body=body,
         data={"type": "market_open", "market": market},
+        dedup_key=dedup_key,
+        notification_type=f"market_open_{market}",
     )
 
 
@@ -315,7 +385,12 @@ def _format_inr(value: float) -> str:
     return s
 
 
-async def notify_gift_nifty_move(change_pct: float, price: float) -> bool:
+async def notify_gift_nifty_move(
+    change_pct: float,
+    price: float,
+    *,
+    dedup_key: str | None = None,
+) -> bool:
     """Send notification when Gift Nifty moves >0.5% from previous NSE close."""
     emoji = "\U0001f7e2" if change_pct >= 0 else "\U0001f534"
     sign = "+" if change_pct >= 0 else ""
@@ -335,10 +410,17 @@ async def notify_gift_nifty_move(change_pct: float, price: float) -> bool:
             "change_pct": f"{change_pct:.1f}",
             "price": f"{price:.0f}",
         },
+        dedup_key=dedup_key,
+        notification_type="gift_nifty_alert",
     )
 
 
-async def notify_fii_dii_data(fii_net: float, dii_net: float) -> bool:
+async def notify_fii_dii_data(
+    fii_net: float,
+    dii_net: float,
+    *,
+    dedup_key: str | None = None,
+) -> bool:
     """Send notification with FII/DII activity update."""
     title = "\U0001f4ca FII/DII Activity Update"
 
@@ -362,6 +444,8 @@ async def notify_fii_dii_data(fii_net: float, dii_net: float) -> bool:
             "fii_net": f"{fii_net:.0f}",
             "dii_net": f"{dii_net:.0f}",
         },
+        dedup_key=dedup_key,
+        notification_type="fii_dii",
     )
 
 
@@ -372,6 +456,8 @@ async def notify_post_market_summary(
     decliners: int,
     top_sector: str | None,
     bottom_sector: str | None,
+    *,
+    dedup_key: str | None = None,
 ) -> bool:
     """Send post-market summary notification."""
     n_sign = "+" if nifty_change_pct >= 0 else ""
@@ -421,6 +507,8 @@ async def notify_post_market_summary(
         title=title,
         body=commentary,
         data={"type": "post_market_summary"},
+        dedup_key=dedup_key,
+        notification_type="post_market",
     )
 
 
@@ -430,6 +518,8 @@ async def notify_pre_market_summary(
     us_change: dict | None = None,
     europe_change: dict | None = None,
     asia_change: dict | None = None,
+    *,
+    dedup_key: str | None = None,
 ) -> bool:
     """Send pre-market summary at ~9:00 AM IST with Gift Nifty + global cues."""
     sign = "+" if gift_nifty_change_pct >= 0 else ""
@@ -474,6 +564,8 @@ async def notify_pre_market_summary(
         title=title,
         body=body,
         data={"type": "pre_market_summary", "gift_nifty_price": f"{gift_nifty_price:.0f}"},
+        dedup_key=dedup_key,
+        notification_type="pre_market",
     )
 
 
@@ -504,6 +596,8 @@ async def notify_commodity_spike(
     change_pct: float,
     price: float,
     unit: str | None = None,
+    *,
+    dedup_key: str | None = None,
 ) -> bool:
     """Send notification when a commodity moves ±2% from previous close."""
     emoji = _COMMODITY_EMOJIS.get(asset, "\U0001f4e6")  # 📦 fallback
@@ -535,10 +629,17 @@ async def notify_commodity_spike(
             "change_pct": f"{change_pct:.1f}",
             "price": f"{price:.2f}",
         },
+        dedup_key=dedup_key,
+        notification_type=f"commodity_spike_{asset}",
     )
 
 
-async def notify_market_close(market: str, market_data: dict | None = None) -> bool:
+async def notify_market_close(
+    market: str,
+    market_data: dict | None = None,
+    *,
+    dedup_key: str | None = None,
+) -> bool:
     """Send notification when a market closes.
 
     If *market_data* is provided it should contain pre-fetched numbers so
@@ -559,6 +660,8 @@ async def notify_market_close(market: str, market_data: dict | None = None) -> b
         title=title,
         body=body,
         data={"type": "market_close", "market": market},
+        dedup_key=dedup_key,
+        notification_type=f"market_close_{market}",
     )
 
 

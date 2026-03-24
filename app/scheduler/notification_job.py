@@ -14,10 +14,6 @@ _IST = ZoneInfo("Asia/Kolkata")
 # Track previous state to detect transitions
 _prev_state: dict[str, bool] = {}
 
-# Track which close/open notifications we've sent today (survives missed transitions)
-_close_sent_today: dict[str, str | None] = {}  # market -> date string
-_open_sent_today: dict[str, str | None] = {}   # market -> date string
-
 # Gift Nifty alert state
 _gift_nifty_state: dict = {
     "last_band": None,
@@ -787,12 +783,18 @@ async def _check_gift_nifty(status: dict, now: datetime) -> None:
         change_pct = (gift_price - nifty_close) / nifty_close * 100
         current_band = int(change_pct * 2) / 2  # 0.5% bands
 
+        today = now.astimezone(_IST).strftime("%Y-%m-%d")
+        band_key = f"{current_band:.1f}"
+        dedup_key = f"{today}_gift_nifty_{band_key}"
+
         if abs(change_pct) > 0.5 and current_band != _gift_nifty_state.get("last_band"):
             logger.info(
                 "Gift Nifty alert: %.1f%% (price=%.0f, nifty_close=%.0f, band=%.1f)",
                 change_pct, gift_price, nifty_close, current_band,
             )
-            await notification_service.notify_gift_nifty_move(change_pct, gift_price)
+            await notification_service.notify_gift_nifty_move(
+                change_pct, gift_price, dedup_key=dedup_key,
+            )
             _gift_nifty_state["last_band"] = current_band
 
     except Exception:
@@ -844,9 +846,14 @@ async def _check_fii_dii(now: datetime) -> tuple[float | None, float | None]:
         if latest_date != today:
             return None, None
 
+        today_str = today.strftime("%Y-%m-%d")
+        dedup_key = f"{today_str}_fii_dii"
+
         if latest_date != _fii_dii_state.get("last_date"):
             logger.info("FII/DII alert: fii=%.0f, dii=%.0f, date=%s", fii_net, dii_net, latest_date)
-            await notification_service.notify_fii_dii_data(fii_net, dii_net)
+            await notification_service.notify_fii_dii_data(
+                fii_net, dii_net, dedup_key=dedup_key,
+            )
             _fii_dii_state["last_date"] = latest_date
 
         return fii_net, dii_net
@@ -936,11 +943,15 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
             gift_price, gift_change_pct, us_change, asia_change,
         )
 
+        today_str = today.strftime("%Y-%m-%d")
+        dedup_key = f"{today_str}_pre_market"
+
         await notification_service.notify_pre_market_summary(
             gift_nifty_price=gift_price,
             gift_nifty_change_pct=gift_change_pct,
             us_change=us_change or None,
             asia_change=asia_change or None,
+            dedup_key=dedup_key,
         )
 
         _pre_market_state["last_date"] = today
@@ -995,6 +1006,9 @@ async def _check_commodity_spikes(now: datetime) -> None:
 
             display_name = asset.replace("_", " ").title()
 
+            today_str = today.strftime("%Y-%m-%d")
+            dedup_key = f"{today_str}_commodity_spike_{asset}_{band}"
+
             logger.info(
                 "Commodity spike: %s %.1f%% at %.2f",
                 asset, change_pct, price,
@@ -1005,6 +1019,7 @@ async def _check_commodity_spikes(now: datetime) -> None:
                 change_pct=change_pct,
                 price=price,
                 unit=unit,
+                dedup_key=dedup_key,
             )
             alerted[asset] = band
 
@@ -1105,6 +1120,9 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
             nifty_change, sensex_change, advancers, decliners, top_sector, bottom_sector,
         )
 
+        today_str = today.strftime("%Y-%m-%d")
+        dedup_key = f"{today_str}_post_market"
+
         await notification_service.notify_post_market_summary(
             nifty_change_pct=nifty_change,
             sensex_change_pct=sensex_change,
@@ -1112,11 +1130,11 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
             decliners=decliners,
             top_sector=top_sector,
             bottom_sector=bottom_sector,
+            dedup_key=dedup_key,
         )
 
         _post_market_state["pending"] = False
         _post_market_state["last_date"] = today
-        _close_sent_today["india"] = str(today)
 
     except Exception:
         logger.exception("Post-market summary check failed")
@@ -1145,9 +1163,6 @@ async def _check_missed_open_notifications(
         # Only check if market is currently open
         if not is_open:
             continue
-        # Already sent today
-        if _open_sent_today.get(market) == today_str:
-            continue
         # Check if we're in the window after open
         window = _OPEN_WINDOWS_IST.get(market)
         if not window:
@@ -1167,6 +1182,8 @@ async def _check_missed_open_notifications(
         if market == "japan" and is_exchange_holiday("TSE", now):
             continue
 
+        dedup_key = f"{today_str}_market_open_{market}"
+
         logger.info("Missed open for %s — sending fallback notification", market)
         open_data = None
         fetcher = open_data_fetchers.get(market)
@@ -1176,8 +1193,9 @@ async def _check_missed_open_notifications(
             except Exception:
                 logger.warning("Fallback open data fetch failed for %s", market, exc_info=True)
 
-        await notification_service.notify_market_open(market, market_data=open_data)
-        _open_sent_today[market] = today_str
+        await notification_service.notify_market_open(
+            market, market_data=open_data, dedup_key=dedup_key,
+        )
 
 
 # Expected close hours in IST for each market (approximate)
@@ -1202,9 +1220,6 @@ async def _check_missed_close_notifications(
     for market, is_open in markets.items():
         # Only check if market is currently closed
         if is_open:
-            continue
-        # Already sent today
-        if _close_sent_today.get(market) == today_str:
             continue
         # Check if we're in the window after close
         window = _CLOSE_WINDOWS_IST.get(market)
@@ -1232,6 +1247,7 @@ async def _check_missed_close_notifications(
 
         if market == "india":
             # Use post-market summary path
+            dedup_key = f"{today_str}_post_market"
             if close_data:
                 try:
                     await notification_service.notify_post_market_summary(
@@ -1241,13 +1257,15 @@ async def _check_missed_close_notifications(
                         decliners=close_data.get("decliners", 0),
                         top_sector=close_data.get("top_sector"),
                         bottom_sector=close_data.get("bottom_sector"),
+                        dedup_key=dedup_key,
                     )
                 except Exception:
                     logger.warning("Fallback India post-market failed", exc_info=True)
         else:
-            await notification_service.notify_market_close(market, market_data=close_data)
-
-        _close_sent_today[market] = today_str
+            dedup_key = f"{today_str}_market_close_{market}"
+            await notification_service.notify_market_close(
+                market, market_data=close_data, dedup_key=dedup_key,
+            )
 
 
 async def run_notification_job() -> None:
@@ -1256,7 +1274,18 @@ async def run_notification_job() -> None:
     global _prev_state
     try:
         now = datetime.now(timezone.utc)
+        today_str = now.astimezone(_IST).strftime("%Y-%m-%d")
         status = get_market_status(now)
+
+        # --- Cleanup old notification_log entries (older than 7 days) ---
+        try:
+            from app.core.database import get_pool
+            pool = await get_pool()
+            await pool.execute(
+                "DELETE FROM notification_log WHERE sent_at < NOW() - INTERVAL '7 days'"
+            )
+        except Exception:
+            logger.debug("notification_log cleanup failed", exc_info=True)
 
         markets = {
             "india": bool(status.get("nse_open")),
@@ -1296,7 +1325,6 @@ async def run_notification_job() -> None:
                     logger.info("Skipping Japan open notification — TSE holiday")
                 else:
                     _open_pending[market] = now
-                    _open_sent_today[market] = now.astimezone(_IST).strftime("%Y-%m-%d")
             elif not is_open and was_open:
                 # Transition: open -> closed
                 logger.info("Market transition: %s CLOSED", market)
@@ -1317,8 +1345,10 @@ async def run_notification_job() -> None:
                         # Skip generic close — post-market summary handles India
                         india_closed_transition = True
                     else:
-                        await notification_service.notify_market_close(market, market_data=close_data)
-                    _close_sent_today[market] = now.astimezone(_IST).strftime("%Y-%m-%d")
+                        dedup_key = f"{today_str}_market_close_{market}"
+                        await notification_service.notify_market_close(
+                            market, market_data=close_data, dedup_key=dedup_key,
+                        )
             _prev_state[market] = is_open
 
         # --- Flush pending open notifications after 2-minute delay ---
@@ -1333,7 +1363,10 @@ async def run_notification_job() -> None:
                         open_data = await fetcher()
                     except Exception:
                         logger.warning("Open data fetch failed for %s", market, exc_info=True)
-                await notification_service.notify_market_open(market, market_data=open_data)
+                dedup_key = f"{today_str}_market_open_{market}"
+                await notification_service.notify_market_open(
+                    market, market_data=open_data, dedup_key=dedup_key,
+                )
                 del _open_pending[market]
 
         # --- DB fallback: send missed open/close notifications after restart ---

@@ -589,6 +589,18 @@ ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS asset_alloca
 ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS holdings_as_of DATE;
 
 -- ================================================================
+-- Notification dedup log (prevents duplicate notifications after deploys/restarts)
+-- ================================================================
+CREATE TABLE IF NOT EXISTS notification_log (
+    id SERIAL PRIMARY KEY,
+    notification_type TEXT NOT NULL,      -- e.g. 'market_close_us', 'market_open_india', 'gift_nifty_alert', 'fii_dii', 'pre_market', 'post_market', 'commodity_spike_gold'
+    sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    title TEXT,
+    dedup_key TEXT NOT NULL               -- e.g. '2026-03-25_market_close_us' for daily dedup, or '2026-03-25_commodity_spike_gold_4' for band-based dedup
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_log_dedup ON notification_log (dedup_key);
+
+-- ================================================================
 -- v1.3: Market scores for story/verdict endpoint
 -- ================================================================
 CREATE TABLE IF NOT EXISTS market_scores (
