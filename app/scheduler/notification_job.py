@@ -153,23 +153,30 @@ async def _fetch_india_close_data() -> dict | None:
         from app.core.database import get_pool
         pool = await get_pool()
 
-        # Nifty 50 and Sensex latest
+        # Nifty 50, Midcap 150, Smallcap 250 latest
         index_rows = await pool.fetch(
             """
             SELECT asset, change_percent, price FROM market_prices
-            WHERE asset IN ('Nifty 50', 'Sensex')
+            WHERE asset IN ('Nifty 50', 'Nifty Midcap 150', 'Nifty Smallcap 250')
             ORDER BY timestamp DESC
-            LIMIT 2
+            LIMIT 6
             """
         )
         data: dict = {}
         nifty_close = None
+        seen_idx: set[str] = set()
         for row in index_rows:
-            if row["asset"] == "Nifty 50" and row["change_percent"] is not None:
+            a = row["asset"]
+            if a in seen_idx:
+                continue
+            seen_idx.add(a)
+            if a == "Nifty 50" and row["change_percent"] is not None:
                 data["nifty_change_pct"] = float(row["change_percent"])
                 nifty_close = float(row["price"])
-            elif row["asset"] == "Sensex" and row["change_percent"] is not None:
-                data["sensex_change_pct"] = float(row["change_percent"])
+            elif a == "Nifty Midcap 150" and row["change_percent"] is not None:
+                data["midcap_change_pct"] = float(row["change_percent"])
+            elif a == "Nifty Smallcap 250" and row["change_percent"] is not None:
+                data["smallcap_change_pct"] = float(row["change_percent"])
 
         if "nifty_change_pct" not in data:
             return None

@@ -605,12 +605,18 @@ def _build_rich_close(market: str, d: dict) -> tuple[str, str]:
 
 def _build_india_close(d: dict) -> tuple[str, str]:
     nifty_pct = d.get("nifty_change_pct")
-    sensex_pct = d.get("sensex_change_pct")
-    if nifty_pct is None or sensex_pct is None:
+    if nifty_pct is None:
         return _simple_close("india")
 
     emoji = _emoji_arrow(nifty_pct)
-    title = f"{emoji} Nifty {_sign(nifty_pct)}{nifty_pct:.1f}% | Sensex {_sign(sensex_pct)}{sensex_pct:.1f}%"
+    title_parts = [f"Nifty {_sign(nifty_pct)}{nifty_pct:.1f}%"]
+    midcap_pct = d.get("midcap_change_pct")
+    smallcap_pct = d.get("smallcap_change_pct")
+    if midcap_pct is not None:
+        title_parts.append(f"Midcap {_sign(midcap_pct)}{midcap_pct:.1f}%")
+    if smallcap_pct is not None:
+        title_parts.append(f"Smallcap {_sign(smallcap_pct)}{smallcap_pct:.1f}%")
+    title = f"{emoji} {' | '.join(title_parts)}"
 
     parts: list[str] = []
     # Relative context
