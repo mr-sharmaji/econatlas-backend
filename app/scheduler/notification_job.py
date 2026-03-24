@@ -575,6 +575,11 @@ async def _check_fii_dii(now: datetime) -> tuple[float | None, float | None]:
         if fii_net is None or dii_net is None or latest_date is None:
             return None, None
 
+        # Only notify for today's data — ignore stale/yesterday's data
+        today = now_ist.date()
+        if latest_date != today:
+            return None, None
+
         if latest_date != _fii_dii_state.get("last_date"):
             logger.info("FII/DII alert: fii=%.0f, dii=%.0f, date=%s", fii_net, dii_net, latest_date)
             await notification_service.notify_fii_dii_data(fii_net, dii_net)
