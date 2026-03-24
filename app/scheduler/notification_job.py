@@ -390,18 +390,18 @@ async def _fetch_japan_close_data() -> dict | None:
         )
         data["week52_context"] = await _get_52week_context(pool, "Nikkei 225", nikkei_close)
 
-        # JPY/INR
+        # USD/JPY for yen context
         jpy_row = await pool.fetchrow(
             """
             SELECT price, change_percent FROM market_prices
-            WHERE asset = 'JPY/INR' AND change_percent IS NOT NULL
+            WHERE asset = 'USD/JPY' AND change_percent IS NOT NULL
             ORDER BY timestamp DESC
             LIMIT 1
             """
         )
         if jpy_row:
-            data["jpy_inr_price"] = float(jpy_row["price"])
-            data["jpy_inr_change_pct"] = float(jpy_row["change_percent"])
+            data["usd_jpy_price"] = float(jpy_row["price"])
+            data["usd_jpy_change_pct"] = float(jpy_row["change_percent"])
 
         return data
     except Exception:
@@ -553,6 +553,8 @@ async def _fetch_japan_open_data() -> dict | None:
         )
         if jpy_row and jpy_row["price"] is not None:
             data["usd_jpy_price"] = float(jpy_row["price"])
+            if jpy_row["change_percent"] is not None:
+                data["usd_jpy_pct"] = float(jpy_row["change_percent"])
 
         return data
     except Exception:

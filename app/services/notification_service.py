@@ -207,6 +207,28 @@ def _open_tone(avg_pct: float, is_india: bool = False) -> str:
     return "Gap-down opening" if is_india else "Sharp selloff at open"
 
 
+def _close_tone(avg_pct: float) -> str:
+    """Return a closing-tone phrase based on the average change of own indices."""
+    if avg_pct >= 1.5:
+        return "Broad rally"
+    if avg_pct >= 0.3:
+        return "Positive session"
+    if avg_pct > -0.3:
+        return "Flat session"
+    if avg_pct > -1.5:
+        return "Markets closed lower"
+    return "Sharp selloff"
+
+
+def _nse_outlook(gift_pct: float) -> str:
+    """Return NSE outlook phrase based on Gift Nifty change from Nifty close."""
+    if gift_pct >= 0.5:
+        return "positive opening expected for NSE"
+    if gift_pct > -0.5:
+        return "flat opening expected for NSE"
+    return "negative opening expected for NSE"
+
+
 def _build_india_open(d: dict) -> tuple[str, str]:
     gift_price = d.get("gift_nifty_price")
     gift_pct = d.get("gift_nifty_change_pct")
@@ -214,12 +236,12 @@ def _build_india_open(d: dict) -> tuple[str, str]:
         return _simple_open("india")
 
     emoji = "\U0001f7e2" if gift_pct >= 0 else "\U0001f534"
-    title = f"{emoji} Nifty opens {_sign(gift_pct)}{gift_pct:.1f}% at {gift_price:,.0f}"
+    title = f"{emoji} Nifty opens at {gift_price:,.0f} ({_sign(gift_pct)}{gift_pct:.1f}%)"
 
-    parts: list[str] = [_open_tone(gift_pct, is_india=True)]
+    sentences: list[str] = [f"{_open_tone(gift_pct, is_india=True)}."]
 
-    # Gift Nifty context
-    parts.append(f"Gift Nifty was at {_sign(gift_pct)}{gift_pct:.1f}%")
+    # Gift Nifty indicated
+    sentences.append(f"Gift Nifty indicated {_sign(gift_pct)}{gift_pct:.1f}% before open.")
 
     # Overnight US
     us_sp = d.get("us_sp500_pct")
@@ -229,19 +251,24 @@ def _build_india_open(d: dict) -> tuple[str, str]:
         overnight_parts.append(f"S&P 500 {_sign(us_sp)}{us_sp:.1f}%")
     if us_nas is not None:
         overnight_parts.append(f"NASDAQ {_sign(us_nas)}{us_nas:.1f}%")
-    # Asia cues
+    if overnight_parts:
+        sentences.append(f"Overnight: {', '.join(overnight_parts)}.")
+
+    # Asia cues (Nikkei trading live)
     nikkei_pct = d.get("nikkei_pct")
     if nikkei_pct is not None:
-        overnight_parts.append(f"Nikkei {_sign(nikkei_pct)}{nikkei_pct:.1f}%")
-    if overnight_parts:
-        parts.append(f"Overnight: {', '.join(overnight_parts)}")
+        sentences.append(f"Nikkei trading {_sign(nikkei_pct)}{nikkei_pct:.1f}%.")
 
     # Gold
     gold_pct = d.get("gold_pct")
     if gold_pct is not None:
-        parts.append(f"Gold {_sign(gold_pct)}{gold_pct:.1f}%")
+        label = "steady at" if abs(gold_pct) < 0.5 else ""
+        if label:
+            sentences.append(f"Gold {label} {_sign(gold_pct)}{gold_pct:.1f}%.")
+        else:
+            sentences.append(f"Gold {_sign(gold_pct)}{gold_pct:.1f}%.")
 
-    body = ". ".join(parts[:4]) + "."
+    body = " ".join(sentences[:5])
     return title, body
 
 
@@ -260,30 +287,41 @@ def _build_japan_open(d: dict) -> tuple[str, str]:
     # Tone based on own indices
     own_pcts = [p for p in [nikkei_pct, topix_pct] if p is not None]
     avg_pct = sum(own_pcts) / len(own_pcts)
-    parts: list[str] = [_open_tone(avg_pct)]
+    sentences: list[str] = [f"{_open_tone(avg_pct)} for Japanese markets."]
 
-    # Yen
+    # USD/JPY context
     usd_jpy = d.get("usd_jpy_price")
+    usd_jpy_pct = d.get("usd_jpy_pct")
     if usd_jpy is not None:
-        parts.append(f"Yen at {usd_jpy:.1f}/USD")
+        yen_dir = "yen weakened overnight" if (usd_jpy_pct is not None and usd_jpy_pct > 0) else "yen strengthened"
+        sentences.append(f"USD/JPY at {usd_jpy:.1f} \u2014 {yen_dir}.")
 
-    # Overnight US
+    # Overnight US (Wall Street)
     us_sp = d.get("us_sp500_pct")
     us_nas = d.get("us_nasdaq_pct")
-    overnight_parts: list[str] = []
+    ws_parts: list[str] = []
     if us_sp is not None:
-        overnight_parts.append(f"S&P 500 {_sign(us_sp)}{us_sp:.1f}%")
+        ws_parts.append(f"S&P 500 {_sign(us_sp)}{us_sp:.1f}%")
     if us_nas is not None:
-        overnight_parts.append(f"NASDAQ {_sign(us_nas)}{us_nas:.1f}%")
-    if overnight_parts:
-        parts.append(f"Overnight: {', '.join(overnight_parts)}")
+        ws_parts.append(f"NASDAQ {_sign(us_nas)}{us_nas:.1f}%")
+    if ws_parts:
+        # Determine if Wall Street closed positive or negative
+        ws_avg = sum(p for p in [us_sp, us_nas] if p is not None) / len(ws_parts)
+        if ws_avg < -0.2:
+            sentences.append(f"Wall Street closed lower: {', '.join(ws_parts)}.")
+        else:
+            sentences.append(f"Wall Street: {', '.join(ws_parts)}.")
 
     # Gold
     gold_pct = d.get("gold_pct")
     if gold_pct is not None:
-        parts.append(f"Gold {_sign(gold_pct)}{gold_pct:.1f}%")
+        label = "steady at" if abs(gold_pct) < 0.5 else ""
+        if label:
+            sentences.append(f"Gold {label} {_sign(gold_pct)}{gold_pct:.1f}%.")
+        else:
+            sentences.append(f"Gold {_sign(gold_pct)}{gold_pct:.1f}%.")
 
-    body = ". ".join(parts[:4]) + "."
+    body = " ".join(sentences[:4])
     return title, body
 
 
@@ -308,12 +346,7 @@ def _build_europe_open(d: dict) -> tuple[str, str]:
     # Tone based on own indices
     own_pcts = [p for p in [ftse_pct, dax_pct, cac_pct] if p is not None]
     avg_pct = sum(own_pcts) / len(own_pcts)
-    parts: list[str] = [_open_tone(avg_pct)]
-
-    # Brent crude
-    brent_pct = d.get("brent_pct")
-    if brent_pct is not None:
-        parts.append(f"Brent crude {_sign(brent_pct)}{brent_pct:.1f}%")
+    sentences: list[str] = [f"{_open_tone(avg_pct)} for European markets."]
 
     # Asia cues
     asia_parts: list[str] = []
@@ -324,9 +357,25 @@ def _build_europe_open(d: dict) -> tuple[str, str]:
     if nifty_pct is not None:
         asia_parts.append(f"Nifty {_sign(nifty_pct)}{nifty_pct:.1f}%")
     if asia_parts:
-        parts.append(f"Asia: {', '.join(asia_parts)}")
+        # Determine Asia tone
+        asia_avg = sum(p for p in [nikkei_pct, nifty_pct] if p is not None) / len(asia_parts)
+        if asia_avg >= 0.5:
+            sentences.append(f"Asia rally provided tailwinds \u2014 {', '.join(asia_parts)}.")
+        elif asia_avg <= -0.5:
+            sentences.append(f"Asia sold off \u2014 {', '.join(asia_parts)}.")
+        else:
+            sentences.append(f"Asia mixed \u2014 {', '.join(asia_parts)}.")
 
-    body = ". ".join(parts[:3]) + "."
+    # Brent crude
+    brent_pct = d.get("brent_pct")
+    if brent_pct is not None:
+        if abs(brent_pct) >= 1.0:
+            verb = "rose" if brent_pct > 0 else "fell"
+            sentences.append(f"Brent crude {verb} {_sign(brent_pct)}{brent_pct:.1f}%.")
+        else:
+            sentences.append(f"Brent crude steady at {_sign(brent_pct)}{brent_pct:.1f}%.")
+
+    body = " ".join(sentences[:3])
     return title, body
 
 
@@ -349,7 +398,7 @@ def _build_us_open(d: dict) -> tuple[str, str]:
     # Tone based on own indices
     own_pcts = [p for p in [sp_pct, nas_pct, dow_pct] if p is not None]
     avg_pct = sum(own_pcts) / len(own_pcts)
-    parts: list[str] = [_open_tone(avg_pct)]
+    sentences: list[str] = [f"{_open_tone(avg_pct)} for US markets."]
 
     # Europe cues
     europe_parts: list[str] = []
@@ -360,20 +409,34 @@ def _build_us_open(d: dict) -> tuple[str, str]:
     if dax_pct is not None:
         europe_parts.append(f"DAX {_sign(dax_pct)}{dax_pct:.1f}%")
     if europe_parts:
-        parts.append(f"Europe: {', '.join(europe_parts)}")
+        # Determine Europe tone
+        eu_avg = sum(p for p in [ftse_pct, dax_pct] if p is not None) / len(europe_parts)
+        if eu_avg >= 0.2:
+            sentences.append(f"Europe closed positive \u2014 {', '.join(europe_parts)}.")
+        elif eu_avg <= -0.2:
+            sentences.append(f"Europe closed lower \u2014 {', '.join(europe_parts)}.")
+        else:
+            sentences.append(f"Europe closed mixed \u2014 {', '.join(europe_parts)}.")
 
     # Crude oil
     crude_pct = d.get("crude_pct")
     if crude_pct is not None:
-        parts.append(f"Crude {_sign(crude_pct)}{crude_pct:.1f}%")
+        if abs(crude_pct) >= 1.0:
+            verb = "rose" if crude_pct > 0 else "fell"
+            sentences.append(f"Crude oil {verb} {_sign(crude_pct)}{crude_pct:.1f}%.")
+        else:
+            sentences.append(f"Crude oil steady at {_sign(crude_pct)}{crude_pct:.1f}%.")
 
     # Gift Nifty
     gift_price = d.get("gift_nifty_price")
     gift_pct = d.get("gift_nifty_change_pct")
     if gift_price is not None and gift_pct is not None:
-        parts.append(f"Gift Nifty at {gift_price:,.0f} ({_sign(gift_pct)}{gift_pct:.1f}%)")
+        outlook = _nse_outlook(gift_pct)
+        sentences.append(
+            f"Gift Nifty at {gift_price:,.0f} ({_sign(gift_pct)}{gift_pct:.1f}% from Nifty close) \u2014 {outlook}."
+        )
 
-    body = ". ".join(parts[:4]) + "."
+    body = " ".join(sentences[:4])
     return title, body
 
 
@@ -832,20 +895,50 @@ def _build_us_close(d: dict) -> tuple[str, str]:
         idx_parts.append(f"Dow {_sign(dow_pct)}{dow_pct:.1f}%")
     title = f"{emoji} {' | '.join(idx_parts)}"
 
-    parts: list[str] = []
+    # --- Build narrative body ---
+    sentences: list[str] = []
+
+    own_pcts = [p for p in [sp_pct, nas_pct, dow_pct] if p is not None]
+    avg_pct = sum(own_pcts) / len(own_pcts) if own_pcts else sp_pct
+
+    # Sentence 1: Tone with sector/index flavor
+    base_tone = _close_tone(avg_pct)
+    if nas_pct is not None and sp_pct is not None:
+        if nas_pct < sp_pct - 0.3:
+            sentences.append(f"Tech-led weakness dragged markets lower. NASDAQ underperformed with tech stocks under pressure.")
+        elif nas_pct > sp_pct + 0.3:
+            sentences.append(f"{base_tone} with tech leading gains.")
+        elif avg_pct >= 0.3:
+            sentences.append(f"{base_tone} across US markets.")
+        elif avg_pct <= -0.3:
+            sentences.append(f"{base_tone} amid selling pressure.")
+        else:
+            sentences.append(f"{base_tone} for US markets.")
+    else:
+        sentences.append(f"{base_tone} for US markets.")
+
+    # Sentence 2: Relative context + 52-week
     ctx = d.get("relative_context")
-    if ctx:
-        parts.append(ctx.capitalize())
     w52 = d.get("week52_context")
-    if w52:
-        parts.append(w52)
-    # Gift Nifty signal
+    if ctx and w52:
+        # Map primary index name for 52-week context
+        idx_name = "NASDAQ" if (nas_pct is not None and abs(nas_pct) > abs(sp_pct)) else "S&P 500"
+        sentences.append(f"{ctx.capitalize()} \u2014 {idx_name} {w52}.")
+    elif ctx:
+        sentences.append(f"{ctx.capitalize()}.")
+    elif w52:
+        sentences.append(f"S&P 500 {w52}.")
+
+    # Sentence 3: Gift Nifty signal for India
     gift_price = d.get("gift_nifty_price")
     gift_pct = d.get("gift_nifty_change_pct")
     if gift_price is not None and gift_pct is not None:
-        parts.append(f"Gift Nifty at {gift_price:,.0f} ({_sign(gift_pct)}{gift_pct:.1f}% from Nifty close)")
+        outlook = _nse_outlook(gift_pct)
+        sentences.append(
+            f"Gift Nifty at {gift_price:,.0f} ({_sign(gift_pct)}{gift_pct:.1f}% from Nifty close) \u2014 {outlook}."
+        )
 
-    body = ". ".join(parts[:3]) + "." if parts else "NYSE & NASDAQ session ended."
+    body = " ".join(sentences[:3]) if sentences else "NYSE & NASDAQ session ended."
     return title, body
 
 
@@ -867,20 +960,43 @@ def _build_europe_close(d: dict) -> tuple[str, str]:
         idx_parts.append(f"CAC {_sign(cac_pct)}{cac_pct:.1f}%")
     title = f"{emoji} {' | '.join(idx_parts)}"
 
-    parts: list[str] = []
-    ctx = d.get("relative_context")
-    if ctx:
-        parts.append(ctx.capitalize())
-    w52 = d.get("week52_context")
-    if w52:
-        parts.append(w52)
-    # Brent crude if significant
-    brent_pct = d.get("brent_change_pct")
-    if brent_pct is not None and abs(brent_pct) >= 1.0:
-        direction = "up" if brent_pct > 0 else "down"
-        parts.append(f"Brent crude {direction} {_sign(brent_pct)}{brent_pct:.1f}%")
+    # --- Build narrative body ---
+    sentences: list[str] = []
 
-    body = ". ".join(parts[:3]) + "." if parts else "European market session has ended."
+    own_pcts = [p for p in [ftse_pct, dax_pct, cac_pct] if p is not None]
+    avg_pct = sum(own_pcts) / len(own_pcts) if own_pcts else primary
+
+    # Sentence 1: Tone
+    base_tone = _close_tone(avg_pct)
+    if avg_pct >= 0.3:
+        sentences.append(f"{base_tone} across European bourses.")
+    elif avg_pct <= -0.3:
+        sentences.append(f"European markets closed lower amid global uncertainty.")
+    else:
+        sentences.append(f"{base_tone} for European markets.")
+
+    # Sentence 2: Brent crude context
+    brent_pct = d.get("brent_change_pct")
+    if brent_pct is not None:
+        if abs(brent_pct) >= 1.0:
+            verb = "rose" if brent_pct > 0 else "fell"
+            impact = "lifting energy stocks" if brent_pct > 0 else "weighing on energy stocks"
+            sentences.append(f"Brent crude {verb} {_sign(brent_pct)}{brent_pct:.1f}%, {impact}.")
+        else:
+            sentences.append(f"Brent crude steady at {_sign(brent_pct)}{brent_pct:.1f}%.")
+
+    # Sentence 3: Relative context + 52-week
+    ctx = d.get("relative_context")
+    w52 = d.get("week52_context")
+    primary_name = "FTSE" if ftse_pct is not None else "DAX"
+    if ctx and w52:
+        sentences.append(f"{ctx.capitalize()} \u2014 {primary_name} {w52}.")
+    elif ctx:
+        sentences.append(f"{ctx.capitalize()}.")
+    elif w52:
+        sentences.append(f"{primary_name} {w52}.")
+
+    body = " ".join(sentences[:3]) if sentences else "European market session has ended."
     return title, body
 
 
@@ -896,18 +1012,41 @@ def _build_japan_close(d: dict) -> tuple[str, str]:
         idx_parts.append(f"TOPIX {_sign(topix_pct)}{topix_pct:.1f}%")
     title = f"{emoji} {' | '.join(idx_parts)}"
 
-    parts: list[str] = []
-    ctx = d.get("relative_context")
-    if ctx:
-        parts.append(ctx.capitalize())
-    w52 = d.get("week52_context")
-    if w52:
-        parts.append(w52)
-    # JPY/INR
-    jpy_price = d.get("jpy_inr_price")
-    jpy_pct = d.get("jpy_inr_change_pct")
-    if jpy_price is not None and jpy_pct is not None:
-        parts.append(f"JPY/INR at {jpy_price:.2f} ({_sign(jpy_pct)}{jpy_pct:.1f}%)")
+    # --- Build narrative body ---
+    sentences: list[str] = []
 
-    body = ". ".join(parts[:3]) + "." if parts else "Japanese market session has ended."
+    own_pcts = [p for p in [nikkei_pct, topix_pct] if p is not None]
+    avg_pct = sum(own_pcts) / len(own_pcts) if own_pcts else nikkei_pct
+
+    # Sentence 1: Tone + yen context
+    base_tone = _close_tone(avg_pct)
+    usd_jpy = d.get("usd_jpy_price")
+    usd_jpy_pct = d.get("usd_jpy_change_pct")
+    if usd_jpy_pct is not None:
+        # USD/JPY up = yen weakened; USD/JPY down = yen strengthened
+        yen_dir = "yen strengthened" if usd_jpy_pct < 0 else "yen weakened"
+        if avg_pct >= 0.3:
+            sentences.append(f"Strong rally in Japanese markets as {yen_dir}." if avg_pct >= 1.5 else f"{base_tone} in Japanese markets as {yen_dir}.")
+        elif avg_pct <= -0.3:
+            sentences.append(f"Japanese markets sold off as {yen_dir}." if avg_pct <= -1.5 else f"{base_tone} as {yen_dir}.")
+        else:
+            sentences.append(f"{base_tone} for Japanese markets as {yen_dir}.")
+    else:
+        sentences.append(f"{base_tone} for Japanese markets.")
+
+    # Sentence 2: USD/JPY level
+    if usd_jpy is not None and usd_jpy_pct is not None:
+        sentences.append(f"USD/JPY at {usd_jpy:.1f} ({_sign(usd_jpy_pct)}{usd_jpy_pct:.1f}%).")
+
+    # Sentence 3: Relative context + 52-week
+    ctx = d.get("relative_context")
+    w52 = d.get("week52_context")
+    if ctx and w52:
+        sentences.append(f"{ctx.capitalize()} \u2014 Nikkei {w52}.")
+    elif ctx:
+        sentences.append(f"{ctx.capitalize()}.")
+    elif w52:
+        sentences.append(f"Nikkei {w52}.")
+
+    body = " ".join(sentences[:3]) if sentences else "Japanese market session has ended."
     return title, body
