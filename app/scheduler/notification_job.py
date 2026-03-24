@@ -976,18 +976,23 @@ async def _check_commodity_spikes(now: datetime) -> None:
         from app.core.database import get_pool
         pool = await get_pool()
 
-        # Get latest commodity prices with significant moves (today only)
+        # Only alert on essential commodities for Indian users
+        _SPIKE_ASSETS = ('gold', 'silver', 'crude_oil', 'natural_gas')
+
+        # Get latest prices with significant moves (today only)
         rows = await pool.fetch(
             """
             SELECT DISTINCT ON (asset) asset, price, change_percent, unit
             FROM market_prices
             WHERE instrument_type = 'commodity'
+              AND asset = ANY($2)
               AND change_percent IS NOT NULL
               AND ABS(change_percent) >= 2.0
-              AND date >= $1
-            ORDER BY asset, date DESC
+              AND "timestamp" >= $1
+            ORDER BY asset, "timestamp" DESC
             """,
             today,
+            list(_SPIKE_ASSETS),
         )
 
         if not rows:
@@ -1075,7 +1080,7 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
                 """
                 SELECT EXISTS(
                     SELECT 1 FROM market_prices
-                    WHERE asset = 'Nifty 50' AND date = $1
+                    WHERE asset = 'Nifty 50' AND "timestamp"::date = $1
                 )
                 """,
                 today,
