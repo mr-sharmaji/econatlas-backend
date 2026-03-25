@@ -142,7 +142,10 @@ class RedisCacheMiddleware(BaseHTTPMiddleware):
                 return Response(
                     content=cached,
                     media_type="application/json",
-                    headers={"X-Cache": "HIT"},
+                    headers={
+                        "X-Cache": "HIT",
+                        "Cache-Control": f"public, max-age={ttl}, s-maxage={ttl}",
+                    },
                 )
         except Exception:
             pass  # Redis error — fall through to origin
@@ -162,10 +165,13 @@ class RedisCacheMiddleware(BaseHTTPMiddleware):
                 await r.setex(key, ttl, body.decode("utf-8", errors="replace"))
 
                 # Return new response with the body we consumed
+                resp_headers = dict(response.headers)
+                resp_headers["Cache-Control"] = f"public, max-age={ttl}, s-maxage={ttl}"
+                resp_headers["X-Cache"] = "MISS"
                 return Response(
                     content=body,
                     status_code=response.status_code,
-                    headers=dict(response.headers),
+                    headers=resp_headers,
                     media_type=response.media_type,
                 )
             except Exception as exc:
