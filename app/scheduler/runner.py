@@ -53,12 +53,32 @@ def _get_intervals() -> dict:
 
 
 async def _enqueue(job_name: str, *, job_id: str | None = None) -> None:
-    """Enqueue a named job into ARQ.  Uses job_name as default dedup key."""
+    """Enqueue a named job into ARQ.  Uses job_name as default dedup key.
+
+    Before enqueueing, checks a Redis lock key to prevent pileup when the
+    same job is already running or queued.  The lock auto-expires (TTL) so
+    a crashed worker cannot permanently block future runs.
+    """
+    effective_id = job_id or job_name
+    lock_key = f"job_lock:{effective_id}"
     try:
         pool = await get_redis_pool()
-        await pool.enqueue_job(job_name, _job_id=job_id or job_name)
+        # ArqRedis extends redis.asyncio.Redis, so SET/DELETE work directly.
+        # SET NX with TTL: only set if not already present.
+        # TTL of 300s (5 min) ensures the lock expires even if the worker crashes.
+        acquired = await pool.set(lock_key, "1", nx=True, ex=300)
+        if not acquired:
+            logger.debug("Scheduler tick: skipping %s — already running/queued", effective_id)
+            return
+        await pool.enqueue_job(job_name, _job_id=effective_id)
         logger.debug("Scheduler tick: enqueued %s", job_name)
     except Exception:
+        # On any error, release the lock so the next tick can try again.
+        try:
+            pool_for_cleanup = await get_redis_pool()
+            await pool_for_cleanup.delete(lock_key)
+        except Exception:
+            pass
         logger.exception("Failed to enqueue job %s", job_name)
 
 

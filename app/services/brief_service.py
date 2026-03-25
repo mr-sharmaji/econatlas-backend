@@ -17,42 +17,45 @@ async def upsert_stock_snapshots(rows: list[dict]) -> int:
     if not rows:
         return 0
     pool = await get_pool()
-    count = 0
+    # Prepare all rows as tuples for a single batch upsert.
+    prepared: list[tuple] = []
+    for r in rows:
+        prepared.append((
+            _normalize_market(r.get("market")),
+            str(r.get("symbol") or ""),
+            str(r.get("display_name") or r.get("symbol") or ""),
+            r.get("sector"),
+            float(r.get("last_price") or 0.0),
+            float(r.get("point_change")) if r.get("point_change") is not None else None,
+            float(r.get("percent_change")) if r.get("percent_change") is not None else None,
+            int(r.get("volume")) if r.get("volume") is not None else None,
+            float(r.get("traded_value")) if r.get("traded_value") is not None else None,
+            parse_ts(r.get("source_timestamp")) or datetime.now(timezone.utc),
+            r.get("source"),
+        ))
     async with pool.acquire() as conn:
-        for r in rows:
-            await conn.execute(
-                f"""
-                INSERT INTO {TABLE}
-                (market, symbol, display_name, sector, last_price, point_change, percent_change,
-                 volume, traded_value, source_timestamp, ingested_at, source)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11)
-                ON CONFLICT (market, symbol)
-                DO UPDATE SET
-                    display_name = EXCLUDED.display_name,
-                    sector = EXCLUDED.sector,
-                    last_price = EXCLUDED.last_price,
-                    point_change = EXCLUDED.point_change,
-                    percent_change = EXCLUDED.percent_change,
-                    volume = EXCLUDED.volume,
-                    traded_value = EXCLUDED.traded_value,
-                    source_timestamp = EXCLUDED.source_timestamp,
-                    ingested_at = NOW(),
-                    source = EXCLUDED.source
-                """,
-                _normalize_market(r.get("market")),
-                str(r.get("symbol") or ""),
-                str(r.get("display_name") or r.get("symbol") or ""),
-                r.get("sector"),
-                float(r.get("last_price") or 0.0),
-                float(r.get("point_change")) if r.get("point_change") is not None else None,
-                float(r.get("percent_change")) if r.get("percent_change") is not None else None,
-                int(r.get("volume")) if r.get("volume") is not None else None,
-                float(r.get("traded_value")) if r.get("traded_value") is not None else None,
-                parse_ts(r.get("source_timestamp")) or datetime.now(timezone.utc),
-                r.get("source"),
-            )
-            count += 1
-    return count
+        await conn.executemany(
+            f"""
+            INSERT INTO {TABLE}
+            (market, symbol, display_name, sector, last_price, point_change, percent_change,
+             volume, traded_value, source_timestamp, ingested_at, source)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11)
+            ON CONFLICT (market, symbol)
+            DO UPDATE SET
+                display_name = EXCLUDED.display_name,
+                sector = EXCLUDED.sector,
+                last_price = EXCLUDED.last_price,
+                point_change = EXCLUDED.point_change,
+                percent_change = EXCLUDED.percent_change,
+                volume = EXCLUDED.volume,
+                traded_value = EXCLUDED.traded_value,
+                source_timestamp = EXCLUDED.source_timestamp,
+                ingested_at = NOW(),
+                source = EXCLUDED.source
+            """,
+            prepared,
+        )
+    return len(prepared)
 
 
 async def _as_of(market: str) -> datetime | None:

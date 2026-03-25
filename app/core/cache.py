@@ -64,6 +64,22 @@ async def _get_redis() -> aioredis.Redis | None:
         return None
 
 
+def _is_any_market_open() -> bool:
+    """Check if any major market is currently open. Lazy-imports trading_calendar."""
+    try:
+        from app.scheduler.trading_calendar import get_market_status
+        status = get_market_status()
+        return bool(status.get("live", False))
+    except Exception:
+        # If the calendar lookup fails, assume markets are open (use shorter TTL)
+        # to avoid serving stale prices.
+        return True
+
+
+# Live-price path prefixes whose TTL should vary with market hours.
+_MARKET_HOUR_PREFIXES = ("/market/", "/commodities", "/crypto/")
+
+
 def _cache_ttl(path: str) -> int | None:
     """Return TTL for a path, or None if not cacheable."""
     def _matches(prefix: str, candidate_path: str) -> bool:
@@ -78,6 +94,13 @@ def _cache_ttl(path: str) -> int | None:
             return None
     for prefix, ttl in _CACHE_TTLS.items():
         if _matches(prefix, path):
+            # For live-price endpoints, use shorter TTL during market hours
+            # and longer TTL outside market hours to reduce load.
+            for mp in _MARKET_HOUR_PREFIXES:
+                if _matches(mp, path):
+                    if _is_any_market_open():
+                        return 15   # 15s during market hours — fresh prices
+                    return 120      # 2min outside market hours — prices static
             return ttl
     return None
 
