@@ -190,3 +190,9 @@ async def task_ipo_notification(ctx: dict) -> None:
     from app.scheduler.ipo_notification_job import run_ipo_notification_job
 
     await _run_with_retry(ctx, "ipo_notification", run_ipo_notification_job)
+
+
+async def task_gap_backfill(ctx: dict) -> None:
+    from app.scheduler.gap_backfill_job import run_gap_backfill_job
+
+    await _run_with_retry(ctx, "gap_backfill", run_gap_backfill_job)

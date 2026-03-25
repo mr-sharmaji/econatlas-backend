@@ -29,6 +29,7 @@ _VALID_JOBS = {
     "rescore_stock", "rescore_mf",
     "ipo", "tax", "market_score", "fertilizer",
     "notification_check", "ipo_notification",
+    "gap_backfill",
 }
 
 # Tables exposed for CRUD operations.

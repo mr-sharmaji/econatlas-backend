@@ -31,6 +31,8 @@ JOB_RETRY_POLICIES: dict[str, tuple[int, int]] = {
     "notification_check": (0, 0),
     # IPO notifications — every 30m, moderate retry
     "ipo_notification": (2, 30),
+    # Gap backfill — runs once at startup, retry matters
+    "gap_backfill": (2, 60),
 }
 
 
@@ -46,6 +48,7 @@ def get_arq_functions() -> list:
         task_discover_stock,
         task_discover_stock_price,
         task_econ_calendar,
+        task_gap_backfill,
         task_imf_forecast,
         task_ipo,
         task_ipo_notification,
@@ -82,4 +85,5 @@ def get_arq_functions() -> list:
         func(task_market_score, name="market_score", timeout=600),
         func(task_notification_check, name="notification_check"),
         func(task_ipo_notification, name="ipo_notification"),
+        func(task_gap_backfill, name="gap_backfill", timeout=600),
     ]

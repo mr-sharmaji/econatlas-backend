@@ -162,6 +162,10 @@ async def _run_ipo_notification() -> None:
     await _enqueue("ipo_notification")
 
 
+async def _run_gap_backfill() -> None:
+    await _enqueue("gap_backfill")
+
+
 # ── Startup collection ───────────────────────────────────────────────
 
 
@@ -395,7 +399,13 @@ def start_scheduler() -> None:
         await asyncio.sleep(2)
         await _startup_collection()
 
+    async def _deferred_gap_backfill() -> None:
+        logger.debug("Deferred gap backfill queued (30s delay)")
+        await asyncio.sleep(30)
+        await _run_gap_backfill()
+
     asyncio.create_task(_deferred_startup())
+    asyncio.create_task(_deferred_gap_backfill())
 
 
 def stop_scheduler() -> None:
