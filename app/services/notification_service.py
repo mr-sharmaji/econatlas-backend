@@ -153,6 +153,19 @@ async def notify_market_open(
     else:
         title, body = _simple_open(market)
 
+    # AI-enhanced body
+    if market_data:
+        try:
+            from app.services.ai_service import generate_notification_narrative
+
+            ai_body = await generate_notification_narrative(
+                f"{market}_open", market_data,
+            )
+            if ai_body:
+                body = ai_body
+        except Exception:
+            pass
+
     return await send_topic_notification(
         topic="market_alerts",
         title=title,
@@ -470,6 +483,19 @@ async def notify_gift_nifty_move(
     direction = "bullish" if change_pct >= 0 else "bearish"
     body = f"Trading at {formatted_price} — {magnitude}{direction} signal for market open"
 
+    # AI-enhanced body
+    try:
+        from app.services.ai_service import generate_notification_narrative
+
+        ai_body = await generate_notification_narrative(
+            "gift_nifty_move",
+            {"change_pct": change_pct, "price": price, "direction": direction},
+        )
+        if ai_body:
+            body = ai_body
+    except Exception:
+        pass
+
     return await send_topic_notification(
         topic="market_alerts",
         title=title,
@@ -555,6 +581,25 @@ async def notify_fii_dii_data(
 
     body = ". ".join(sentences) + "."
 
+    # AI-enhanced body
+    try:
+        from app.services.ai_service import generate_notification_narrative
+
+        ai_body = await generate_notification_narrative(
+            "fii_dii",
+            {
+                "fii_net_cr": fii_net,
+                "dii_net_cr": dii_net,
+                "net_cr": fii_net + dii_net,
+                "fii_buying": fii_net >= 0,
+                "dii_buying": dii_net >= 0,
+            },
+        )
+        if ai_body:
+            body = ai_body
+    except Exception:
+        pass
+
     return await send_topic_notification(
         topic="market_alerts",
         title=title,
@@ -628,6 +673,27 @@ async def notify_post_market_summary(
     if sector_text:
         commentary += f" {sector_text}."
 
+    # Try AI-enhanced commentary (non-blocking, falls back to rule-based)
+    try:
+        from app.services.ai_service import generate_notification_narrative
+
+        ai_body = await generate_notification_narrative(
+            "india_close",
+            {
+                "nifty_pct": nifty_change_pct,
+                "sensex_pct": sensex_change_pct,
+                "advancers": advancers,
+                "decliners": decliners,
+                "breadth_ratio": round(breadth_ratio, 2),
+                "top_sector": top_sector,
+                "bottom_sector": bottom_sector,
+            },
+        )
+        if ai_body:
+            commentary = ai_body
+    except Exception:
+        pass  # AI is optional
+
     return await send_topic_notification(
         topic="market_alerts",
         title=title,
@@ -684,6 +750,26 @@ async def notify_pre_market_summary(
         parts.append(f"Global cues: {', '.join(cues[:3])}.")
 
     body = " ".join(parts)
+
+    # Try AI-enhanced body
+    try:
+        from app.services.ai_service import generate_notification_narrative
+
+        ai_body = await generate_notification_narrative(
+            "pre_market",
+            {
+                "gift_nifty_pct": gift_nifty_change_pct,
+                "gift_nifty_price": gift_nifty_price,
+                "us_change": us_change,
+                "europe_change": europe_change,
+                "asia_change": asia_change,
+                "outlook": outlook,
+            },
+        )
+        if ai_body:
+            body = ai_body
+    except Exception:
+        pass
 
     return await send_topic_notification(
         topic="market_alerts",
@@ -755,6 +841,26 @@ async def notify_commodity_spike(
 
     body = f"{magnitude} — now at {price_str}"
 
+    # AI-enhanced body
+    try:
+        from app.services.ai_service import generate_notification_narrative
+
+        ai_body = await generate_notification_narrative(
+            "commodity_spike",
+            {
+                "asset": display_name,
+                "change_pct": change_pct,
+                "price_usd": price,
+                "unit": unit,
+                "price_inr": inr_price,
+                "inr_unit": inr_unit,
+            },
+        )
+        if ai_body:
+            body = ai_body
+    except Exception:
+        pass
+
     data: dict[str, str] = {
         "type": "commodity_spike",
         "asset": asset,
@@ -796,6 +902,19 @@ async def notify_market_close(
             title, body = _simple_close(market)
     else:
         title, body = _simple_close(market)
+
+    # AI-enhanced body
+    if market_data:
+        try:
+            from app.services.ai_service import generate_notification_narrative
+
+            ai_body = await generate_notification_narrative(
+                f"{market}_close", market_data,
+            )
+            if ai_body:
+                body = ai_body
+        except Exception:
+            pass
 
     return await send_topic_notification(
         topic="market_alerts",

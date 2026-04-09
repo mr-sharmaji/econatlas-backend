@@ -4400,7 +4400,13 @@ async def get_stock_story(*, symbol: str) -> dict | None:
         SELECT symbol, display_name, sector, score,
                score_quality, score_valuation, score_growth,
                score_momentum, score_institutional, score_risk,
-               score_breakdown, tags_v2
+               score_breakdown, tags_v2,
+               pe_ratio, price_to_book, roe, roce,
+               operating_margins, profit_margins,
+               debt_to_equity, market_cap,
+               revenue_growth, earnings_growth,
+               compounded_sales_growth_3y, compounded_profit_growth_3y,
+               dividend_yield, growth_ranges
         FROM {STOCK_TABLE}
         WHERE symbol = $1
         """,
@@ -4489,9 +4495,27 @@ async def get_stock_story(*, symbol: str) -> dict | None:
     else:
         verdict = None
 
+    # Generate AI narrative (non-blocking, graceful fallback)
+    ai_narrative = None
+    try:
+        from app.services.ai_service import generate_stock_narrative
+
+        # Parse growth_ranges for the AI prompt
+        gr = d.get("growth_ranges")
+        if isinstance(gr, str):
+            try:
+                gr = _json.loads(gr)
+            except (ValueError, TypeError):
+                gr = None
+        ai_data = {**d, "tags_v2": tags_v2, "growth_ranges": gr}
+        ai_narrative = await generate_stock_narrative(ai_data)
+    except Exception:
+        pass  # AI is optional — never break the endpoint
+
     return {
         "symbol": symbol,
         "verdict": verdict,
+        "ai_narrative": ai_narrative,
         "action_tag": sb.get("action_tag"),
         "action_tag_reasoning": sb.get("action_tag_reasoning"),
         "trend_alignment": sb.get("trend_alignment"),
@@ -4559,7 +4583,20 @@ async def compare_stocks(*, symbols: list[str]) -> dict:
             "winner_index": winner_index,
         })
 
-    return {"items": items, "comparison_dimensions": dimensions}
+    # AI comparison insight
+    ai_insight = None
+    try:
+        from app.services.ai_service import generate_compare_insight
+
+        ai_insight = await generate_compare_insight(items)
+    except Exception:
+        pass
+
+    return {
+        "items": items,
+        "comparison_dimensions": dimensions,
+        "ai_insight": ai_insight,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -4588,16 +4625,37 @@ async def get_market_mood() -> dict:
     total = int(row["total"])
     excellent = int(row["excellent"])
     good = int(row["good"])
+    average = int(row["average"])
+    poor = int(row["poor"])
     avg_score = round(float(row["avg_score"]), 1)
     above_good_pct = round((excellent + good) / total * 100) if total > 0 else 0
+
+    fallback_summary = f"{above_good_pct}% of tracked stocks are rated Good or above"
+
+    # Try AI-enhanced summary
+    ai_summary = None
+    try:
+        from app.services.ai_service import generate_market_mood_summary
+
+        ai_summary = await generate_market_mood_summary({
+            "avg_score": avg_score,
+            "total": total,
+            "excellent": excellent,
+            "good": good,
+            "average": average,
+            "poor": poor,
+            "above_good_pct": above_good_pct,
+        })
+    except Exception:
+        pass
 
     return {
         "avg_score": avg_score,
         "score_distribution": {
             "excellent": excellent,
             "good": good,
-            "average": int(row["average"]),
-            "poor": int(row["poor"]),
+            "average": average,
+            "poor": poor,
         },
-        "summary": f"{above_good_pct}% of tracked stocks are rated Good or above",
+        "summary": ai_summary or fallback_summary,
     }

@@ -391,6 +391,7 @@ async def get_stock_story(symbol: str) -> StockStoryResponse:
         return StockStoryResponse(
             symbol=data["symbol"],
             verdict=data.get("verdict"),
+            ai_narrative=data.get("ai_narrative"),
             action_tag=data.get("action_tag"),
             action_tag_reasoning=data.get("action_tag_reasoning"),
             trend_alignment=data.get("trend_alignment"),
@@ -421,6 +422,7 @@ async def compare_stocks(
             comparison_dimensions=[
                 ComparisonDimension(**dim) for dim in data["comparison_dimensions"]
             ],
+            ai_insight=data.get("ai_insight"),
         )
     except HTTPException:
         raise

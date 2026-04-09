@@ -418,6 +418,7 @@ class ScoreChange(BaseModel):
 class StockStoryResponse(BaseModel):
     symbol: str
     verdict: str | None = None
+    ai_narrative: str | None = None
     action_tag: str | None = None
     action_tag_reasoning: str | None = None
     trend_alignment: str | None = None
@@ -440,6 +441,7 @@ class ComparisonDimension(BaseModel):
 class StockCompareResponse(BaseModel):
     items: list[DiscoverStockItemResponse] = Field(default_factory=list)
     comparison_dimensions: list[ComparisonDimension] = Field(default_factory=list)
+    ai_insight: str | None = None
 
 
 # --- Market Mood ---
