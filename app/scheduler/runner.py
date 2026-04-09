@@ -357,10 +357,10 @@ def start_scheduler() -> None:
     logger.info("Scheduler: fertilizer every 6h")
     # Notification check runs alongside market job to detect open/close transitions
     if intervals["market_seconds"] and intervals["market_seconds"] > 0:
-        _scheduler.add_job(_run_notification_check, "interval", seconds=intervals["market_seconds"], id="notification_check", replace_existing=True)
+        _scheduler.add_job(_run_notification_check, "interval", seconds=intervals["market_seconds"], id="notification_check", replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=60)
         logger.info("Scheduler: notification_check every %ds", intervals["market_seconds"])
     else:
-        _scheduler.add_job(_run_notification_check, "interval", minutes=intervals["market_minutes"], id="notification_check", replace_existing=True)
+        _scheduler.add_job(_run_notification_check, "interval", minutes=intervals["market_minutes"], id="notification_check", replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=60)
         logger.info("Scheduler: notification_check every %dm", intervals["market_minutes"])
     # IPO notification check every 30 minutes
     _scheduler.add_job(

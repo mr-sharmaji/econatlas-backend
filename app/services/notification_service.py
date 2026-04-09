@@ -3,6 +3,7 @@
 Uses topic-based messaging (no device token storage needed for v1).
 All devices subscribe to 'market_alerts' topic via the Flutter app.
 """
+import asyncio
 import json
 import logging
 import os
@@ -111,7 +112,8 @@ async def send_topic_notification(
             data=data or {},
             topic=topic,
         )
-        response = messaging.send(message)
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, messaging.send, message)
         logger.info("FCM sent to topic=%s: %s", topic, response)
 
         # --- Log successful send for dedup ---
@@ -1131,7 +1133,8 @@ async def send_device_notification(
             data=data or {},
             token=fcm_token,
         )
-        response = messaging.send(message)
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, messaging.send, message)
         logger.debug("FCM sent to token=%s…: %s", fcm_token[:20], response)
         return True
     except Exception as exc:
@@ -1175,7 +1178,8 @@ async def send_to_devices(
             )
             for token in fcm_tokens
         ]
-        response = messaging.send_each(messages)
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, messaging.send_each, messages)
 
         success_count = response.success_count
         stale_tokens: list[str] = []
