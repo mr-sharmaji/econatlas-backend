@@ -937,10 +937,12 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
                 continue
             seen.add(a)
             pct = float(row["change_percent"])
+            # Use clean display names for notifications
+            _display = {"S&P500": "S&P 500"}.get(a, a)
             if a in ("S&P500", "Dow Jones", "NASDAQ"):
-                us_change[a] = pct
+                us_change[_display] = pct
             else:
-                asia_change[a] = pct
+                asia_change[_display] = pct
 
         logger.info(
             "Pre-market summary: gift_nifty=%.0f (%.1f%%), us=%s, asia=%s",

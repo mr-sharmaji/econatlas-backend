@@ -202,7 +202,7 @@ def _open_tone(avg_pct: float, is_india: bool = False) -> str:
         return "Gap-up opening" if is_india else "Strong opening"
     if avg_pct >= 0.3:
         return "Positive opening"
-    if avg_pct > -0.3:
+    if avg_pct >= -0.3:
         return "Flat opening"
     if avg_pct > -1.0:
         return "Weak opening"
@@ -215,7 +215,7 @@ def _close_tone(avg_pct: float) -> str:
         return "Broad rally"
     if avg_pct >= 0.3:
         return "Positive session"
-    if avg_pct > -0.3:
+    if avg_pct >= -0.3:
         return "Flat session"
     if avg_pct > -1.5:
         return "Markets closed lower"
@@ -242,9 +242,6 @@ def _build_india_open(d: dict) -> tuple[str, str]:
 
     sentences: list[str] = [f"{_open_tone(gift_pct, is_india=True)}."]
 
-    # Gift Nifty indicated
-    sentences.append(f"Gift Nifty indicated {_sign(gift_pct)}{gift_pct:.1f}% before open.")
-
     # Overnight US
     us_sp = d.get("us_sp500_pct")
     us_nas = d.get("us_nasdaq_pct")
@@ -264,11 +261,12 @@ def _build_india_open(d: dict) -> tuple[str, str]:
     # Gold
     gold_pct = d.get("gold_pct")
     if gold_pct is not None:
-        label = "steady at" if abs(gold_pct) < 0.5 else ""
-        if label:
-            sentences.append(f"Gold {label} {_sign(gold_pct)}{gold_pct:.1f}%.")
+        if abs(gold_pct) < 0.5:
+            sentences.append(f"Gold steady at {_sign(gold_pct)}{gold_pct:.1f}%.")
+        elif gold_pct > 0:
+            sentences.append(f"Gold up {gold_pct:.1f}%.")
         else:
-            sentences.append(f"Gold {_sign(gold_pct)}{gold_pct:.1f}%.")
+            sentences.append(f"Gold down {abs(gold_pct):.1f}%.")
 
     body = " ".join(sentences[:5])
     return title, body
@@ -294,8 +292,13 @@ def _build_japan_open(d: dict) -> tuple[str, str]:
     # JPY/INR context (JPY/INR up = yen strengthened vs INR)
     jpy_inr = d.get("jpy_inr_price")
     jpy_inr_pct = d.get("jpy_inr_pct")
-    if jpy_inr is not None:
-        yen_dir = "yen strengthened" if (jpy_inr_pct is not None and jpy_inr_pct > 0) else "yen weakened overnight"
+    if jpy_inr is not None and jpy_inr_pct is not None:
+        if jpy_inr_pct > 0.1:
+            yen_dir = "yen strengthened overnight"
+        elif jpy_inr_pct < -0.1:
+            yen_dir = "yen weakened overnight"
+        else:
+            yen_dir = "yen flat"
         sentences.append(f"JPY/INR at {jpy_inr:.4f} \u2014 {yen_dir}.")
 
     # Overnight US (Wall Street)
@@ -317,11 +320,12 @@ def _build_japan_open(d: dict) -> tuple[str, str]:
     # Gold
     gold_pct = d.get("gold_pct")
     if gold_pct is not None:
-        label = "steady at" if abs(gold_pct) < 0.5 else ""
-        if label:
-            sentences.append(f"Gold {label} {_sign(gold_pct)}{gold_pct:.1f}%.")
+        if abs(gold_pct) < 0.5:
+            sentences.append(f"Gold steady at {_sign(gold_pct)}{gold_pct:.1f}%.")
+        elif gold_pct > 0:
+            sentences.append(f"Gold up {gold_pct:.1f}%.")
         else:
-            sentences.append(f"Gold {_sign(gold_pct)}{gold_pct:.1f}%.")
+            sentences.append(f"Gold down {abs(gold_pct):.1f}%.")
 
     body = " ".join(sentences[:4])
     return title, body
@@ -372,8 +376,8 @@ def _build_europe_open(d: dict) -> tuple[str, str]:
     brent_pct = d.get("brent_pct")
     if brent_pct is not None:
         if abs(brent_pct) >= 1.0:
-            verb = "rose" if brent_pct > 0 else "fell"
-            sentences.append(f"Brent crude {verb} {_sign(brent_pct)}{brent_pct:.1f}%.")
+            verb = "up" if brent_pct > 0 else "down"
+            sentences.append(f"Brent crude {verb} {abs(brent_pct):.1f}%.")
         else:
             sentences.append(f"Brent crude steady at {_sign(brent_pct)}{brent_pct:.1f}%.")
 
@@ -424,8 +428,8 @@ def _build_us_open(d: dict) -> tuple[str, str]:
     crude_pct = d.get("crude_pct")
     if crude_pct is not None:
         if abs(crude_pct) >= 1.0:
-            verb = "rose" if crude_pct > 0 else "fell"
-            sentences.append(f"Crude oil {verb} {_sign(crude_pct)}{crude_pct:.1f}%.")
+            verb = "up" if crude_pct > 0 else "down"
+            sentences.append(f"Crude oil {verb} {abs(crude_pct):.1f}%.")
         else:
             sentences.append(f"Crude oil steady at {_sign(crude_pct)}{crude_pct:.1f}%.")
 
@@ -617,7 +621,10 @@ async def notify_post_market_summary(
             sector_parts.append(f"{top_sector} held up")
 
     sector_text = ", ".join(sector_parts[:2])
-    commentary = f"{tone} with {breadth}. {advancers} advancers, {decliners} decliners."
+    if total > 0:
+        commentary = f"{tone} with {breadth}. {advancers:,} advancers, {decliners:,} decliners."
+    else:
+        commentary = f"{tone} with {breadth}."
     if sector_text:
         commentary += f" {sector_text}."
 
@@ -674,7 +681,7 @@ async def notify_pre_market_summary(
 
     parts = [f"{outlook}."]
     if cues:
-        parts.append(f"Overnight: {', '.join(cues[:3])}.")
+        parts.append(f"Global cues: {', '.join(cues[:3])}.")
 
     body = " ".join(parts)
 
@@ -746,7 +753,7 @@ async def notify_commodity_spike(
     else:
         magnitude = "Notable move"
 
-    body = f"{display_name} {magnitude.lower()} — now at {price_str}"
+    body = f"{magnitude} — now at {price_str}"
 
     data: dict[str, str] = {
         "type": "commodity_spike",
@@ -866,29 +873,32 @@ def _build_india_close(d: dict) -> tuple[str, str]:
     abs_nifty = abs(nifty_pct)
 
     # Sentence 1: Tone + outperformance context
-    sc_pct = smallcap_pct if smallcap_pct is not None else 0
-    mc_pct = midcap_pct if midcap_pct is not None else 0
+    # Use None-safe checks to avoid false narratives when data is missing
+    _has_sc = smallcap_pct is not None
+    _has_mc = midcap_pct is not None
+    sc_pct = smallcap_pct or 0.0
+    mc_pct = midcap_pct or 0.0
 
     if abs_nifty < 0.2:
         tone = "Flat session with muted activity"
     elif nifty_pct >= 2.0:
         tone = "Strong rally with broad-based buying" if adv_ratio >= 0.6 else "Strong rally led by heavyweights"
     elif nifty_pct >= 0.3:
-        if sc_pct > nifty_pct + 0.5:
+        if _has_sc and sc_pct > nifty_pct + 0.5:
             tone = "Smallcaps outperformed in a broad-based rally" if adv_ratio >= 0.6 else "Smallcaps outperformed despite narrow breadth"
         elif adv_ratio >= 0.7:
             tone = "Broad-based rally across segments"
         else:
             tone = "Positive session with selective buying"
-    elif nifty_pct > -0.3:
-        if sc_pct < nifty_pct - 0.5:
+    elif nifty_pct >= -0.3:
+        if _has_sc and sc_pct < nifty_pct - 0.5:
             tone = "Largecaps held while broader market weakened"
-        elif mc_pct > 0 and sc_pct > 0 and nifty_pct < 0:
+        elif _has_mc and _has_sc and mc_pct > 0 and sc_pct > 0 and nifty_pct < 0:
             tone = "Broader market outperformed a weak Nifty"
         else:
             tone = "Mixed session with muted activity" if adv_ratio > 0.4 else "Flat session leaning negative"
     elif nifty_pct >= -2.0:
-        if sc_pct < nifty_pct - 1.0:
+        if _has_sc and sc_pct < nifty_pct - 1.0:
             tone = "Broad-based selloff with smallcaps hit hardest"
         elif adv_ratio <= 0.3:
             tone = "Broad-based selloff across segments"
@@ -896,7 +906,7 @@ def _build_india_close(d: dict) -> tuple[str, str]:
             tone = "Weak session with selective selling"
     else:
         # Sharp crash
-        if sc_pct < nifty_pct - 1.0:
+        if _has_sc and sc_pct < nifty_pct - 1.0:
             tone = "Sharp selloff across the board \u2014 smallcaps plunged"
         else:
             tone = "Sharp selloff across the board"
@@ -930,11 +940,19 @@ def _build_india_close(d: dict) -> tuple[str, str]:
     else:
         sec_parts = []
         if top_sec and top_sec_pct is not None:
-            verb = "surged" if top_sec_pct >= 2.0 else "rose" if top_sec_pct > 0 else "fell"
-            sec_parts.append(f"{top_sec} {verb} {_sign(top_sec_pct)}{top_sec_pct:.1f}%")
+            if top_sec_pct >= 2.0:
+                sec_parts.append(f"{top_sec} surged {top_sec_pct:.1f}%")
+            elif top_sec_pct > 0:
+                sec_parts.append(f"{top_sec} up {top_sec_pct:.1f}%")
+            else:
+                sec_parts.append(f"{top_sec} down {abs(top_sec_pct):.1f}%")
         if bottom_sec and bottom_sec_pct is not None:
-            verb = "dragged" if bottom_sec_pct <= -1.0 else "slipped" if bottom_sec_pct < 0 else "held up"
-            sec_parts.append(f"{bottom_sec} {verb} {'' if verb == 'held up' else _sign(bottom_sec_pct)}{bottom_sec_pct:.1f}%" if verb != "held up" else f"{bottom_sec} held up at {_sign(bottom_sec_pct)}{bottom_sec_pct:.1f}%")
+            if bottom_sec_pct <= -1.0:
+                sec_parts.append(f"{bottom_sec} down {abs(bottom_sec_pct):.1f}%")
+            elif bottom_sec_pct < 0:
+                sec_parts.append(f"{bottom_sec} slipped {abs(bottom_sec_pct):.1f}%")
+            else:
+                sec_parts.append(f"{bottom_sec} held up at {_sign(bottom_sec_pct)}{bottom_sec_pct:.1f}%")
         if sec_parts:
             sentences.append(" while ".join(sec_parts))
 
@@ -977,7 +995,7 @@ def _build_us_close(d: dict) -> tuple[str, str]:
     base_tone = _close_tone(avg_pct)
     if nas_pct is not None and sp_pct is not None:
         if nas_pct < sp_pct - 0.3:
-            sentences.append(f"Tech-led weakness dragged markets lower. NASDAQ underperformed with tech stocks under pressure.")
+            sentences.append(f"Tech-led weakness dragged US markets lower, NASDAQ underperformed.")
         elif nas_pct > sp_pct + 0.3:
             sentences.append(f"{base_tone} with tech leading gains.")
         elif avg_pct >= 0.3:
@@ -1043,7 +1061,7 @@ def _build_europe_close(d: dict) -> tuple[str, str]:
     if avg_pct >= 0.3:
         sentences.append(f"{base_tone} across European bourses.")
     elif avg_pct <= -0.3:
-        sentences.append(f"European markets closed lower amid global uncertainty.")
+        sentences.append(f"{base_tone} across European bourses.")
     else:
         sentences.append(f"{base_tone} for European markets.")
 
@@ -1051,9 +1069,9 @@ def _build_europe_close(d: dict) -> tuple[str, str]:
     brent_pct = d.get("brent_change_pct")
     if brent_pct is not None:
         if abs(brent_pct) >= 1.0:
-            verb = "rose" if brent_pct > 0 else "fell"
+            verb = "up" if brent_pct > 0 else "down"
             impact = "lifting energy stocks" if brent_pct > 0 else "weighing on energy stocks"
-            sentences.append(f"Brent crude {verb} {_sign(brent_pct)}{brent_pct:.1f}%, {impact}.")
+            sentences.append(f"Brent crude {verb} {abs(brent_pct):.1f}%, {impact}.")
         else:
             sentences.append(f"Brent crude steady at {_sign(brent_pct)}{brent_pct:.1f}%.")
 
@@ -1096,7 +1114,12 @@ def _build_japan_close(d: dict) -> tuple[str, str]:
     jpy_inr_pct = d.get("jpy_inr_change_pct")
     if jpy_inr_pct is not None:
         # JPY/INR up = yen strengthened vs INR; JPY/INR down = yen weakened
-        yen_dir = "yen strengthened" if jpy_inr_pct > 0 else "yen weakened"
+        if jpy_inr_pct > 0.1:
+            yen_dir = "yen strengthened"
+        elif jpy_inr_pct < -0.1:
+            yen_dir = "yen weakened"
+        else:
+            yen_dir = "yen flat"
         if avg_pct >= 0.3:
             sentences.append(f"Strong rally in Japanese markets as {yen_dir}." if avg_pct >= 1.5 else f"{base_tone} in Japanese markets as {yen_dir}.")
         elif avg_pct <= -0.3:
