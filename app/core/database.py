@@ -415,6 +415,49 @@ async def init_pool() -> asyncpg.Pool:
         await conn.execute(
             "ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS holdings_as_of DATE"
         )
+        # --- Artha AI Chat tables ---
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id TEXT PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                title TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_sessions_device ON chat_sessions (device_id)"
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tool_calls JSONB,
+                stock_cards JSONB,
+                mf_cards JSONB,
+                feedback INTEGER,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages (session_id)"
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_rate_limits (
+                device_id TEXT NOT NULL,
+                date DATE NOT NULL DEFAULT CURRENT_DATE,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (device_id, date)
+            )
+            """
+        )
         logger.info("Idempotent indexes ensured")
     return _pool
 
