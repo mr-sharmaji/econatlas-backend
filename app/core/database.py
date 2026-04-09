@@ -366,7 +366,8 @@ async def init_pool() -> asyncpg.Pool:
               AND a.source_timestamp = b.source_timestamp
               AND a.provider = b.provider
               AND a.ctid < b.ctid
-            """
+            """,
+            timeout=300,
         )
         await conn.execute(
             'CREATE INDEX IF NOT EXISTS idx_market_prices_intraday_asset_type_source_ts '
