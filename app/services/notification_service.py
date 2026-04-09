@@ -577,9 +577,12 @@ async def notify_post_market_summary(
 ) -> bool:
     """Send post-market summary notification."""
     n_sign = "+" if nifty_change_pct >= 0 else ""
-    s_sign = "+" if sensex_change_pct >= 0 else ""
     emoji = "\U0001f4c8" if nifty_change_pct >= 0 else "\U0001f4c9"
-    title = f"{emoji} Nifty {n_sign}{nifty_change_pct:.1f}% | Sensex {s_sign}{sensex_change_pct:.1f}%"
+    if sensex_change_pct and sensex_change_pct != 0:
+        s_sign = "+" if sensex_change_pct >= 0 else ""
+        title = f"{emoji} Nifty {n_sign}{nifty_change_pct:.1f}% | Sensex {s_sign}{sensex_change_pct:.1f}%"
+    else:
+        title = f"{emoji} Nifty 50 {n_sign}{nifty_change_pct:.1f}% — Market Closed"
 
     # One-line market commentary
     total = advancers + decliners
@@ -712,6 +715,8 @@ async def notify_commodity_spike(
     change_pct: float,
     price: float,
     unit: str | None = None,
+    inr_price: float | None = None,
+    inr_unit: str | None = None,
     *,
     dedup_key: str | None = None,
 ) -> bool:
@@ -722,8 +727,16 @@ async def notify_commodity_spike(
 
     title = f"{emoji} {display_name} {direction} {abs_pct:.1f}%"
 
-    unit_label = f"/{unit}" if unit else ""
-    price_str = f"${price:,.2f}{unit_label}" if price < 10000 else f"${price:,.0f}{unit_label}"
+    # Build price string — prefer INR for Indian users, show both
+    usd_label = f"/{unit}" if unit else ""
+    usd_str = f"${price:,.2f}{usd_label}" if price < 10000 else f"${price:,.0f}{usd_label}"
+
+    if inr_price is not None:
+        inr_label = f"/{inr_unit}" if inr_unit else ""
+        inr_str = f"\u20b9{inr_price:,.0f}{inr_label}"
+        price_str = f"{inr_str} ({usd_str})"
+    else:
+        price_str = usd_str
 
     # Context based on magnitude
     if abs_pct >= 5:
@@ -733,18 +746,24 @@ async def notify_commodity_spike(
     else:
         magnitude = "Notable move"
 
-    body = f"{display_name} {magnitude.lower()} — now trading at {price_str}"
+    body = f"{display_name} {magnitude.lower()} — now at {price_str}"
+
+    data: dict[str, str] = {
+        "type": "commodity_spike",
+        "asset": asset,
+        "change_pct": f"{change_pct:.1f}",
+        "price_usd": f"{price:.2f}",
+        "currency_usd": unit or "",
+    }
+    if inr_price is not None:
+        data["price_inr"] = f"{inr_price:.0f}"
+        data["currency_inr"] = inr_unit or ""
 
     return await send_topic_notification(
         topic="market_alerts",
         title=title,
         body=body,
-        data={
-            "type": "commodity_spike",
-            "asset": asset,
-            "change_pct": f"{change_pct:.1f}",
-            "price": f"{price:.2f}",
-        },
+        data=data,
         dedup_key=dedup_key,
         notification_type=f"commodity_spike_{asset}",
     )

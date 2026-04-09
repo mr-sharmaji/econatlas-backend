@@ -1000,6 +1000,21 @@ async def _check_commodity_spikes(now: datetime) -> None:
         if not rows:
             return
 
+        # Fetch USD/INR rate for Indian-friendly commodity prices
+        usd_inr: float | None = None
+        try:
+            _fx_row = await pool.fetchrow(
+                """
+                SELECT price FROM market_prices
+                WHERE asset = 'USD/INR' AND price > 0
+                ORDER BY "timestamp" DESC LIMIT 1
+                """
+            )
+            if _fx_row:
+                usd_inr = float(_fx_row["price"])
+        except Exception:
+            logger.debug("USD/INR rate unavailable for commodity notification")
+
         alerted = _commodity_spike_state["alerted"]
 
         for row in rows:
@@ -1018,9 +1033,27 @@ async def _check_commodity_spikes(now: datetime) -> None:
             today_str = today.strftime("%Y-%m-%d")
             dedup_key = f"{today_str}_commodity_spike_{asset}_{band}"
 
+            # Compute INR price if USD/INR available
+            inr_price: float | None = None
+            inr_unit: str | None = None
+            if usd_inr:
+                if asset == "gold":
+                    # Gold: USD/oz → INR/10g (1 troy oz ≈ 31.1035g)
+                    inr_price = price * usd_inr / 31.1035 * 10
+                    inr_unit = "10g"
+                elif asset == "silver":
+                    # Silver: USD/oz → INR/kg (1 troy oz ≈ 31.1035g)
+                    inr_price = price * usd_inr / 31.1035 * 1000
+                    inr_unit = "kg"
+                elif asset in ("crude_oil", "natural_gas"):
+                    # Crude/Gas: USD/bbl or USD/MMBtu → INR equivalent
+                    inr_price = price * usd_inr
+                    inr_unit = unit
+
             logger.info(
-                "Commodity spike: %s %.1f%% at %.2f",
+                "Commodity spike: %s %.1f%% at $%.2f (INR: %s)",
                 asset, change_pct, price,
+                f"₹{inr_price:,.0f}/{inr_unit}" if inr_price else "N/A",
             )
             await notification_service.notify_commodity_spike(
                 asset=asset,
@@ -1028,6 +1061,8 @@ async def _check_commodity_spikes(now: datetime) -> None:
                 change_pct=change_pct,
                 price=price,
                 unit=unit,
+                inr_price=inr_price,
+                inr_unit=inr_unit,
                 dedup_key=dedup_key,
             )
             alerted[asset] = band
