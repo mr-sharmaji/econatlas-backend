@@ -717,23 +717,23 @@ async def notify_commodity_spike(
 ) -> bool:
     """Send notification when a commodity moves ±2% from previous close."""
     emoji = _COMMODITY_EMOJIS.get(asset, "\U0001f4e6")  # 📦 fallback
+    abs_pct = abs(change_pct)
     direction = "surges" if change_pct > 0 else "drops"
-    sign = "+" if change_pct >= 0 else ""
 
-    title = f"{emoji} {display_name} {direction} {sign}{change_pct:.1f}%"
+    title = f"{emoji} {display_name} {direction} {abs_pct:.1f}%"
 
     unit_label = f"/{unit}" if unit else ""
     price_str = f"${price:,.2f}{unit_label}" if price < 10000 else f"${price:,.0f}{unit_label}"
 
     # Context based on magnitude
-    if abs(change_pct) >= 5:
+    if abs_pct >= 5:
         magnitude = "Major move"
-    elif abs(change_pct) >= 3:
+    elif abs_pct >= 3:
         magnitude = "Significant move"
     else:
         magnitude = "Notable move"
 
-    body = f"{magnitude} — trading at {price_str}"
+    body = f"{display_name} {magnitude.lower()} — now trading at {price_str}"
 
     return await send_topic_notification(
         topic="market_alerts",
