@@ -1131,71 +1131,37 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
             return
 
     try:
-        from app.core.database import get_pool
-        from app.services.brief_service import get_post_market_overview
-
-        pool = await get_pool()
-
-        # Nifty 50 + Sensex (context) + Nifty Midcap 150 + Nifty Smallcap 250
-        # change percent. The two cap-tier indices drive the new 3-index
-        # notification title (Nifty | Midcap | Smallcap); Sensex is kept for
-        # AI body context only.
-        index_rows = await pool.fetch(
-            """
-            SELECT asset, change_percent FROM market_prices
-            WHERE asset IN ('Nifty 50', 'Sensex', 'Nifty Midcap 150', 'Nifty Smallcap 250')
-            ORDER BY timestamp DESC
-            LIMIT 8
-            """
-        )
-
-        nifty_change = 0.0
-        sensex_change = 0.0
-        midcap_change: float | None = None
-        smallcap_change: float | None = None
-        _seen_pm: set[str] = set()
-        for row in index_rows:
-            a = row["asset"]
-            if a in _seen_pm:
-                continue
-            _seen_pm.add(a)
-            if a == "Nifty 50" and row["change_percent"] is not None:
-                nifty_change = float(row["change_percent"])
-            elif a == "Sensex" and row["change_percent"] is not None:
-                sensex_change = float(row["change_percent"])
-            elif a == "Nifty Midcap 150" and row["change_percent"] is not None:
-                midcap_change = float(row["change_percent"])
-            elif a == "Nifty Smallcap 250" and row["change_percent"] is not None:
-                smallcap_change = float(row["change_percent"])
-
-        # Get breadth data
-        overview = await get_post_market_overview(market="IN")
-        advancers = overview.get("advancers", 0)
-        decliners = overview.get("decliners", 0)
-        top_sector = overview.get("top_sector")
-        bottom_sector = overview.get("bottom_sector")
+        # Use the same rich fetcher as the regular close path so all
+        # indices (Nifty 50, Midcap 150, Smallcap 250), sector leaders,
+        # relative context, and 52-week context flow through to the
+        # `_build_india_close` title/body builder in notification_service.
+        close_data = await _fetch_india_close_data()
+        if not close_data:
+            logger.warning("Post-market summary: _fetch_india_close_data returned None")
+            return
 
         logger.info(
-            "Post-market summary: nifty=%.1f%%, sensex=%.1f%%, midcap150=%s, smallcap250=%s, "
-            "adv=%d, dec=%d, top=%s, bottom=%s",
-            nifty_change, sensex_change,
-            f"{midcap_change:.1f}%" if midcap_change is not None else "n/a",
-            f"{smallcap_change:.1f}%" if smallcap_change is not None else "n/a",
-            advancers, decliners, top_sector, bottom_sector,
+            "Post-market summary: nifty=%.2f%% midcap150=%s smallcap250=%s "
+            "adv=%d dec=%d top=%s bottom=%s",
+            close_data.get("nifty_change_pct", 0.0),
+            f"{close_data.get('midcap_change_pct'):.2f}%"
+            if close_data.get("midcap_change_pct") is not None else "n/a",
+            f"{close_data.get('smallcap_change_pct'):.2f}%"
+            if close_data.get("smallcap_change_pct") is not None else "n/a",
+            close_data.get("advancers", 0),
+            close_data.get("decliners", 0),
+            close_data.get("top_sector"),
+            close_data.get("bottom_sector"),
         )
 
         today_str = today.strftime("%Y-%m-%d")
-        dedup_key = f"{today_str}_post_market"
+        # Single shared dedup key across both paths (post-market and
+        # missed-close fallback) to prevent duplicate notifications.
+        dedup_key = f"{today_str}_market_close_india"
 
-        await notification_service.notify_post_market_summary(
-            nifty_change_pct=nifty_change,
-            sensex_change_pct=sensex_change,
-            advancers=advancers,
-            decliners=decliners,
-            top_sector=top_sector,
-            bottom_sector=bottom_sector,
-            midcap150_change_pct=midcap_change,
-            smallcap250_change_pct=smallcap_change,
+        await notification_service.notify_market_close(
+            "india",
+            market_data=close_data,
             dedup_key=dedup_key,
         )
 
@@ -1311,26 +1277,22 @@ async def _check_missed_close_notifications(
             except Exception:
                 logger.warning("Fallback close data fetch failed for %s", market, exc_info=True)
 
+        dedup_key = f"{today_str}_market_close_{market}"
         if market == "india":
-            # Use post-market summary path
-            dedup_key = f"{today_str}_post_market"
+            # Route India through the same rich close builder as every
+            # other market. _build_india_close() produces the
+            # Nifty | Midcap | Smallcap title + smallcap-divergence
+            # narrative + sector leaders + 52-week context.
             if close_data:
                 try:
-                    await notification_service.notify_post_market_summary(
-                        nifty_change_pct=close_data.get("nifty_change_pct", 0),
-                        sensex_change_pct=close_data.get("sensex_change_pct", 0),
-                        advancers=close_data.get("advancers", 0),
-                        decliners=close_data.get("decliners", 0),
-                        top_sector=close_data.get("top_sector"),
-                        bottom_sector=close_data.get("bottom_sector"),
-                        midcap150_change_pct=close_data.get("midcap_change_pct"),
-                        smallcap250_change_pct=close_data.get("smallcap_change_pct"),
+                    await notification_service.notify_market_close(
+                        "india",
+                        market_data=close_data,
                         dedup_key=dedup_key,
                     )
                 except Exception:
-                    logger.warning("Fallback India post-market failed", exc_info=True)
+                    logger.warning("Fallback India close failed", exc_info=True)
         else:
-            dedup_key = f"{today_str}_market_close_{market}"
             await notification_service.notify_market_close(
                 market, market_data=close_data, dedup_key=dedup_key,
             )
@@ -1410,7 +1372,11 @@ async def run_notification_job() -> None:
                         except Exception:
                             logger.warning("Close data fetch failed for %s", market, exc_info=True)
                     if market == "india":
-                        # Skip generic close — post-market summary handles India
+                        # India close fires from _check_post_market_summary
+                        # on a 5-minute delay so the data (breadth, sectors)
+                        # has time to settle. Both paths eventually go
+                        # through notify_market_close("india", close_data)
+                        # → _build_india_close.
                         india_closed_transition = True
                     else:
                         dedup_key = f"{today_str}_market_close_{market}"

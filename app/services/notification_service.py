@@ -631,120 +631,13 @@ async def notify_fii_dii_data(
     )
 
 
-async def notify_post_market_summary(
-    nifty_change_pct: float,
-    sensex_change_pct: float,
-    advancers: int,
-    decliners: int,
-    top_sector: str | None,
-    bottom_sector: str | None,
-    *,
-    midcap150_change_pct: float | None = None,
-    smallcap250_change_pct: float | None = None,
-    dedup_key: str | None = None,
-) -> bool:
-    """Send post-market summary notification.
-
-    Title shows Nifty 50 + Nifty Midcap 150 + Nifty Smallcap 250 (the
-    three market-cap tiers) so users see the full breadth of the session
-    at a glance. Sensex is intentionally dropped from the title — it
-    duplicates Nifty 50 and adds no new information. `sensex_change_pct`
-    remains in the signature only for the AI body-generation context.
-    """
-    def _sign(pct: float) -> str:
-        return "+" if pct >= 0 else ""
-
-    emoji = "\U0001f4c8" if nifty_change_pct >= 0 else "\U0001f4c9"
-
-    # Build title from the 3 broad indices (Nifty / Midcap / Smallcap).
-    # Fall back to a Nifty-only title if the two cap-tier values are missing.
-    title_parts = [
-        f"{emoji} Nifty {_sign(nifty_change_pct)}{nifty_change_pct:.1f}%"
-    ]
-    if midcap150_change_pct is not None:
-        title_parts.append(
-            f"Midcap {_sign(midcap150_change_pct)}{midcap150_change_pct:.1f}%"
-        )
-    if smallcap250_change_pct is not None:
-        title_parts.append(
-            f"Smallcap {_sign(smallcap250_change_pct)}{smallcap250_change_pct:.1f}%"
-        )
-    if len(title_parts) == 1:
-        # No cap-tier data — keep the legacy "Market Closed" shape.
-        title = f"{title_parts[0]} — Market Closed"
-    else:
-        title = " | ".join(title_parts)
-
-    # One-line market commentary
-    total = advancers + decliners
-    breadth_ratio = advancers / total if total > 0 else 0.5
-    abs_nifty = abs(nifty_change_pct)
-
-    if abs_nifty < 0.2:
-        tone = "Flat session"
-    elif nifty_change_pct > 0:
-        tone = "Strong rally" if abs_nifty >= 1.5 else "Positive session"
-    else:
-        tone = "Sharp selloff" if abs_nifty >= 1.5 else "Weak session"
-
-    # Breadth context
-    if breadth_ratio >= 0.7:
-        breadth = "broad-based buying"
-    elif breadth_ratio <= 0.3:
-        breadth = "broad-based selling"
-    else:
-        breadth = "mixed breadth"
-
-    # Sector leaders/laggards
-    sector_parts = []
-    if top_sector and nifty_change_pct >= 0:
-        sector_parts.append(f"{top_sector} led gains")
-    elif bottom_sector and nifty_change_pct < 0:
-        sector_parts.append(f"{bottom_sector} dragged")
-    if top_sector and bottom_sector and top_sector != bottom_sector:
-        if nifty_change_pct >= 0 and bottom_sector:
-            sector_parts.append(f"{bottom_sector} lagged")
-        elif nifty_change_pct < 0 and top_sector:
-            sector_parts.append(f"{top_sector} held up")
-
-    sector_text = ", ".join(sector_parts[:2])
-    if total > 0:
-        commentary = f"{tone} with {breadth}. {advancers:,} advancers, {decliners:,} decliners."
-    else:
-        commentary = f"{tone} with {breadth}."
-    if sector_text:
-        commentary += f" {sector_text}."
-
-    # Try AI-enhanced commentary (non-blocking, falls back to rule-based)
-    try:
-        from app.services.ai_service import generate_notification_narrative
-
-        ai_body = await generate_notification_narrative(
-            "india_close",
-            {
-                "nifty_pct": nifty_change_pct,
-                "midcap150_pct": midcap150_change_pct,
-                "smallcap250_pct": smallcap250_change_pct,
-                "advancers": advancers,
-                "decliners": decliners,
-                "breadth_ratio": round(breadth_ratio, 2),
-                "top_sector": top_sector,
-                "bottom_sector": bottom_sector,
-            },
-        )
-        if ai_body:
-            commentary = ai_body
-    except Exception:
-        pass  # AI is optional
-
-    return await send_topic_notification(
-        topic="market_alerts",
-        title=title,
-        body=commentary,
-        data={"type": "post_market_summary"},
-        dedup_key=dedup_key,
-        notification_type="post_market",
-    )
+# NOTE: `notify_post_market_summary` was removed. India close notifications
+# now go through the same path as every other market:
+#   notify_market_close("india", close_data) → _build_india_close()
+# which produces the "Nifty +X% | Midcap +Y% | Smallcap +Z%" title and the
+# rich narrative body (smallcap divergence, sector leaders, 52-week context).
+# Both the regular post-market delay path (_check_post_market_summary) and
+# the missed-close fallback now call notify_market_close("india", ...).
 
 
 async def notify_pre_market_summary(
