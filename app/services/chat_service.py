@@ -2335,14 +2335,24 @@ async def stream_chat_response(
         messages.append({
             "role": "user",
             "content": (
-                "Here are the tool results. Now write your response using this data. "
-                "Do NOT include any [TOOL:...] markers in your response. "
-                "Be specific with the numbers. "
-                "If a tool returned an error or empty data, be honest with the user: "
-                "say 'I couldn't fetch X right now, want me to try again?' instead of "
-                "inventing numbers. "
-                "Remember to append the [SUGGESTIONS]...[/SUGGESTIONS] block with "
-                "exactly 5 follow-up questions (max 12 words each)."
+                "Here are the tool results. Compose your final response now. "
+                "FORMAT REQUIREMENTS (mandatory, non-negotiable):\n"
+                "1. START with a `### Thinking` section (2-4 sentences explaining "
+                "which data you're pulling from the tool results and how you'll "
+                "structure the answer). This is visible to the user.\n"
+                "2. Then write the actual answer using the format rules for this "
+                "query type (bullets / table / prose).\n"
+                "3. END with a [SUGGESTIONS]...[/SUGGESTIONS] block containing "
+                "EXACTLY 5 short follow-up questions (max 12 words each, "
+                "first-person, no instructional verbs). Include the closing "
+                "[/SUGGESTIONS] tag.\n"
+                "4. Do NOT include any [TOOL:...] markers in your response.\n"
+                "5. Be specific with the numbers from the tool results above.\n"
+                "6. If a tool returned an error or empty data, be honest: say "
+                "'I couldn't fetch X right now, want me to try again?' instead "
+                "of inventing numbers.\n"
+                "7. For commodity prices (gold/silver/crude/brent), use USD ($) "
+                "NOT INR (₹). For Indian stocks/MFs/indices use ₹."
                 f"{tool_context}"
             ),
         })
@@ -2486,6 +2496,58 @@ async def stream_chat_response(
                 "chat_stream: follow_ups extracted count=%d preview=%r",
                 len(follow_ups), follow_ups,
             )
+
+    # Fallback: if the LLM forgot to emit [SUGGESTIONS], generate follow-ups
+    # with a tiny secondary fast-model call. Happens most often on phase-1
+    # no-tool responses where the small model forgets the tail instructions.
+    if not follow_ups and final_response and len(final_response) > 40:
+        try:
+            fallback_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You generate exactly 5 short follow-up questions that a "
+                        "user would ask after reading an Indian-market chatbot "
+                        "response. Rules:\n"
+                        "- Max 12 words each\n"
+                        "- First-person (what the user types), e.g. 'Compare TCS "
+                        "with Infosys'\n"
+                        "- Reference specific names/numbers from the response\n"
+                        "- No instructional verbs ('Ask for', 'Check', 'Get', 'See')\n"
+                        "- Output ONLY the 5 questions, one per line, no numbering, "
+                        "no bullets, no extra text"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"User asked: {user_message}\n\n"
+                        f"Chatbot replied:\n{final_response[:1500]}\n\n"
+                        "Generate 5 follow-up questions now:"
+                    ),
+                },
+            ]
+            fallback_result = await _call_llm_blocking(
+                api_key, fallback_messages, max_tokens=200, chain=_FAST_MODELS,
+            )
+            if fallback_result:
+                for line in fallback_result.strip().split("\n"):
+                    cleaned = line.lstrip("- *•0123456789.)").strip().strip('"').strip()
+                    if not cleaned or len(cleaned) < 5:
+                        continue
+                    words = cleaned.split()
+                    if len(words) > 12:
+                        cleaned = " ".join(words[:12]).rstrip(",.;:") + "…"
+                    follow_ups.append(cleaned)
+                    if len(follow_ups) >= 5:
+                        break
+                if follow_ups:
+                    logger.info(
+                        "chat_stream: follow_ups generated via fallback count=%d",
+                        len(follow_ups),
+                    )
+        except Exception:
+            logger.debug("chat_stream: follow-up fallback failed", exc_info=True)
 
     # Send stock cards
     for card in stock_cards[:5]:
