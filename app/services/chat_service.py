@@ -2481,6 +2481,7 @@ async def _execute_tool(
     tool_name: str,
     params: dict,
     device_id: str,
+    starred_items: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Execute a tool and return results. Never raises — returns error dict on failure."""
     tool_start = time.monotonic()
@@ -2919,9 +2920,82 @@ async def _execute_tool(
                 "ORDER BY dw.position ASC",
                 device_id,
             )
+            stock_favorites = [
+                item for item in (starred_items or []) if item.get("type") == "stock"
+            ]
+            mf_favorites = [
+                item for item in (starred_items or []) if item.get("type") == "mf"
+            ]
+
+            stock_ids = [
+                str(item.get("id") or "").strip().upper()
+                for item in stock_favorites
+                if str(item.get("id") or "").strip()
+            ]
+            mf_ids = [
+                str(item.get("id") or "").strip()
+                for item in mf_favorites
+                if str(item.get("id") or "").strip()
+            ]
+
+            stock_rows = [record_to_dict(r) for r in rows]
+            existing_stock_ids = {
+                str(row.get("symbol") or "").strip().upper()
+                for row in stock_rows
+                if row.get("symbol")
+            }
+            missing_stock_ids = [
+                symbol for symbol in stock_ids if symbol and symbol not in existing_stock_ids
+            ]
+            if missing_stock_ids:
+                placeholders = ", ".join(
+                    f"${i + 1}" for i in range(len(missing_stock_ids))
+                )
+                extra_rows = await pool.fetch(
+                    f"SELECT symbol, display_name, sector, last_price, "
+                    f"percent_change, score, market_cap "
+                    f"FROM discover_stock_snapshots "
+                    f"WHERE symbol IN ({placeholders})",
+                    *missing_stock_ids,
+                )
+                stock_rows.extend(record_to_dict(r) for r in extra_rows)
+
+            stock_rank = {
+                symbol: index for index, symbol in enumerate(stock_ids)
+            }
+            stock_rows.sort(
+                key=lambda row: (
+                    stock_rank.get(
+                        str(row.get("symbol") or "").strip().upper(),
+                        len(stock_rank),
+                    ),
+                    str(row.get("display_name") or row.get("symbol") or "").lower(),
+                )
+            )
+
+            mf_rows: list[dict[str, Any]] = []
+            if mf_ids:
+                placeholders = ", ".join(f"${i + 1}" for i in range(len(mf_ids)))
+                mf_records = await pool.fetch(
+                    f"SELECT scheme_code, scheme_name, display_name, category, "
+                    f"nav, returns_1y, score "
+                    f"FROM discover_mutual_fund_snapshots "
+                    f"WHERE scheme_code IN ({placeholders})",
+                    *mf_ids,
+                )
+                mf_rows = [record_to_dict(r) for r in mf_records]
+                mf_rank = {scheme_code: index for index, scheme_code in enumerate(mf_ids)}
+                mf_rows.sort(
+                    key=lambda row: (
+                        mf_rank.get(str(row.get("scheme_code") or "").strip(), len(mf_rank)),
+                        str(row.get("display_name") or row.get("scheme_name") or "").lower(),
+                    )
+                )
+
             return {
-                "count": len(rows),
-                "stocks": [record_to_dict(r) for r in rows],
+                "count": len(stock_rows) + len(mf_rows),
+                "stocks": stock_rows,
+                "mutual_funds": mf_rows,
             }
 
         elif tool_name == "market_status":
@@ -4329,11 +4403,30 @@ async def _execute_tool(
                 """,
                 device_id_param,
             )
+            extra_rows = await _fetch_starred_stock_rows(
+                pool,
+                starred_items,
+                """
+                symbol, display_name, sector, last_price, percent_change,
+                pe_ratio, roe, debt_to_equity, market_cap, score,
+                action_tag, dividend_yield, score_breakdown
+                """,
+            )
+            existing_symbols = {
+                str(r.get("symbol") or "").strip().upper() for r in rows if r.get("symbol")
+            }
+            rows = list(rows) + [
+                row
+                for row in extra_rows
+                if str(row.get("symbol") or "").strip().upper() not in existing_symbols
+            ]
+            mf_count = sum(1 for item in (starred_items or []) if item.get("type") == "mf")
             if not rows:
                 return {
                     "device_id": device_id_param,
                     "count": 0,
                     "note": "Watchlist is empty. Add stocks via the Watchlist tab first.",
+                    "mutual_fund_count": mf_count,
                 }
             stocks = [record_to_dict(r) for r in rows]
             # Aggregates
@@ -4353,6 +4446,12 @@ async def _execute_tool(
                     "avg_score": round(sum(scores) / len(scores), 2) if scores else None,
                     "avg_dividend_yield": round(sum(divs) / len(divs), 2) if divs else None,
                 },
+                "mutual_fund_count": mf_count,
+                "note": (
+                    f"{mf_count} starred mutual fund(s) were excluded from stock-specific watchlist analysis."
+                    if mf_count
+                    else None
+                ),
             }
 
         elif tool_name == "watchlist_diversification":
@@ -4368,8 +4467,27 @@ async def _execute_tool(
                 """,
                 device_id_param,
             )
+            extra_rows = await _fetch_starred_stock_rows(
+                pool,
+                starred_items,
+                "sector, market_cap_category, market_cap, symbol, display_name",
+            )
+            existing_symbols = {
+                str(r.get("symbol") or "").strip().upper() for r in rows if r.get("symbol")
+            }
+            rows = list(rows) + [
+                row
+                for row in extra_rows
+                if str(row.get("symbol") or "").strip().upper() not in existing_symbols
+            ]
+            mf_count = sum(1 for item in (starred_items or []) if item.get("type") == "mf")
             if not rows:
-                return {"device_id": device_id_param, "count": 0, "note": "Watchlist is empty."}
+                return {
+                    "device_id": device_id_param,
+                    "count": 0,
+                    "note": "Watchlist is empty.",
+                    "mutual_fund_count": mf_count,
+                }
             sector_mix: dict[str, int] = {}
             cap_mix: dict[str, int] = {}
             total = len(rows)
@@ -4399,6 +4517,7 @@ async def _execute_tool(
                 "concentration_risk": risk,
                 "largest_sector": max_sector[0],
                 "largest_sector_pct": max_sector_pct,
+                "mutual_fund_count": mf_count,
                 "recommendation": (
                     "Diversify across sectors (target no sector > 25% of watchlist)."
                     if risk != "LOW"
@@ -4421,8 +4540,32 @@ async def _execute_tool(
                 """,
                 device_id_param,
             )
+            extra_rows = await _fetch_starred_stock_rows(
+                pool,
+                starred_items,
+                """
+                symbol, display_name, last_price, high_52w, low_52w,
+                percent_change, pe_ratio, debt_to_equity, opm_change,
+                pledged_promoter_pct, free_cash_flow,
+                promoter_holding_change, score_breakdown
+                """,
+            )
+            existing_symbols = {
+                str(r.get("symbol") or "").strip().upper() for r in rows if r.get("symbol")
+            }
+            rows = list(rows) + [
+                row
+                for row in extra_rows
+                if str(row.get("symbol") or "").strip().upper() not in existing_symbols
+            ]
+            mf_count = sum(1 for item in (starred_items or []) if item.get("type") == "mf")
             if not rows:
-                return {"device_id": device_id_param, "count": 0, "alerts": []}
+                return {
+                    "device_id": device_id_param,
+                    "count": 0,
+                    "alerts": [],
+                    "mutual_fund_count": mf_count,
+                }
             alerts = []
             for r in rows:
                 d = record_to_dict(r)
@@ -4461,6 +4604,7 @@ async def _execute_tool(
                 "device_id": device_id_param,
                 "count": len(alerts),
                 "alerts": alerts,
+                "mutual_fund_count": mf_count,
                 "note": "Alerts with red_flags indicate fundamental concerns; position notes flag 52w extremes.",
             }
 
@@ -5456,6 +5600,7 @@ async def stream_chat_response(
     device_id: str,
     session_id: str,
     user_message: str,
+    starred_items: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict, None]:
     """Stream chat response as SSE events.
 
@@ -5593,7 +5738,12 @@ async def stream_chat_response(
         return
 
     # Build conversation context (passes user message for k-NN tool routing)
-    messages = await _build_context(session_id, device_id, user_message)
+    messages = await _build_context(
+        session_id,
+        device_id,
+        user_message,
+        starred_items=starred_items,
+    )
     # Inject Hinglish hint if detected so the composer switches voice.
     if query_meta.get("is_hinglish"):
         messages.insert(
@@ -5734,7 +5884,12 @@ async def stream_chat_response(
                 params = {}
             params = _canonicalize_tool_params(tool_name, params)
             _tool_t0 = time.monotonic()
-            result = await _execute_tool(tool_name, params, device_id)
+            result = await _execute_tool(
+                tool_name,
+                params,
+                device_id,
+                starred_items=starred_items,
+            )
             _tool_latency_ms = int((time.monotonic() - _tool_t0) * 1000)
             _tool_success = isinstance(result, dict) and "error" not in result
             _tool_err = (
@@ -6608,7 +6763,10 @@ def start_prefetch_task() -> None:
         logger.warning("prefetch: no running loop, cannot start task")
 
 
-async def _build_user_profile_context(device_id: str) -> str | None:
+async def _build_user_profile_context(
+    device_id: str,
+    starred_items: list[dict[str, Any]] | None = None,
+) -> str | None:
     """Build lightweight non-chat context for the device."""
     try:
         pool = await get_pool()
@@ -6618,16 +6776,61 @@ async def _build_user_profile_context(device_id: str) -> str | None:
             device_id,
         )
         watchlist = [r["asset"] for r in wl_rows if r.get("asset")]
-        if not watchlist:
+        stock_favorites = [
+            item for item in (starred_items or []) if item.get("type") == "stock"
+        ]
+        mf_favorites = [
+            item for item in (starred_items or []) if item.get("type") == "mf"
+        ]
+
+        if not watchlist and not stock_favorites and not mf_favorites:
             return None
 
         parts = ["**USER CONTEXT:**"]
         if watchlist:
             parts.append(f"Watchlist: {', '.join(watchlist[:10])}")
+        if stock_favorites:
+            names = [
+                str(item.get("name") or item.get("id") or "").strip()
+                for item in stock_favorites
+                if str(item.get("name") or item.get("id") or "").strip()
+            ]
+            if names:
+                parts.append(f"Starred stocks: {', '.join(names[:10])}")
+        if mf_favorites:
+            names = [
+                str(item.get("name") or item.get("id") or "").strip()
+                for item in mf_favorites
+                if str(item.get("name") or item.get("id") or "").strip()
+            ]
+            if names:
+                parts.append(f"Starred mutual funds: {', '.join(names[:10])}")
         return "\n".join(parts)
     except Exception:
         logger.debug("profile: build failed", exc_info=True)
         return None
+
+
+async def _fetch_starred_stock_rows(
+    pool,
+    starred_items: list[dict[str, Any]] | None,
+    selected_columns: str,
+) -> list[Any]:
+    stock_ids = [
+        str(item.get("id") or "").strip().upper()
+        for item in (starred_items or [])
+        if item.get("type") == "stock" and str(item.get("id") or "").strip()
+    ]
+    if not stock_ids:
+        return []
+
+    placeholders = ", ".join(f"${i + 1}" for i in range(len(stock_ids)))
+    return await pool.fetch(
+        f"SELECT {selected_columns} "
+        f"FROM discover_stock_snapshots "
+        f"WHERE symbol IN ({placeholders})",
+        *stock_ids,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -6778,6 +6981,7 @@ async def _build_context(
     session_id: str,
     device_id: str,
     user_message: str | None = None,
+    starred_items: list[dict[str, Any]] | None = None,
 ) -> list[dict]:
     """Build LLM message context from session history with dynamic injections.
 
@@ -6788,7 +6992,7 @@ async def _build_context(
     """
     # Dynamic system prompt with live data
     live_snapshot = _prefetch_cache.get("snapshot")
-    user_profile = await _build_user_profile_context(device_id)
+    user_profile = await _build_user_profile_context(device_id, starred_items)
     # Soft k-NN tool hints based on the current user query. Never blocks
     # the response path — returns an empty list on any failure.
     tool_hints: list[str] = []

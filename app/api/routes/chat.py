@@ -67,6 +67,7 @@ async def stream_chat(req: ChatMessageRequest):
                 device_id=device_id,
                 session_id=session_id,
                 user_message=req.message,
+                starred_items=[item.model_dump() for item in req.starred_items],
             ):
                 yield _sse_event(event["event"], event["data"])
         except Exception as e:

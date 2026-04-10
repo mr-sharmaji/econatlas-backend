@@ -13,6 +13,14 @@ class ChatMessageRequest(BaseModel):
     device_id: str = Field(..., min_length=6)
     session_id: str | None = None  # None → create new session
     message: str = Field(..., min_length=1, max_length=2000)
+    starred_items: list["StarredItemRequest"] = Field(default_factory=list)
+
+
+class StarredItemRequest(BaseModel):
+    type: Literal["stock", "mf"]
+    id: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1)
+    percent_change: float | None = None
 
 
 class ChatFeedbackRequest(BaseModel):
