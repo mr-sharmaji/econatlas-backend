@@ -35,11 +35,24 @@ STREAM_TIMEOUT = 60.0  # 60s ceiling per LLM call (was 30s — too tight for too
 HEARTBEAT_INTERVAL = 5.0  # Send a "thinking" keepalive every 5s during long calls
 MAX_TOKENS_CHAT = 800  # Larger than narrative — chat needs room
 
-# Two model chains: fast for intent/tool detection, slow for the final
-# answer that composes tool results into a polished response.
-# Fast chain prioritises latency over quality — a 20B param model can
-# easily decide "is this a stock lookup or a macro question?". Slow chain
-# prioritises quality — 120B handles the nuanced composition better.
+# Two model chains: FAST is the default for almost everything, SLOW is
+# only invoked when the query needs deep analysis or multi-step
+# reasoning (per user directive: "use faster models mostly, only use
+# slower model when require deep thinking").
+#
+# Fast chain: 20B model runs in ~2-3s per call, handles intent
+# detection, tool dispatch, simple Q&A, and most final-answer
+# composition for one-shot queries. Falls through to larger models
+# only if the small one fails or rate-limits.
+#
+# Slow chain: 120B model runs in ~8-12s per call, reserved for:
+#   - multi-stock comparisons (3+ stocks)
+#   - explain-style questions ("explain why…", "analyse the impact…")
+#   - long user messages (>200 chars) signalling a nuanced ask
+#   - responses that depend on >1 tool result
+#
+# The _is_deep_thinking_needed() helper classifies queries at phase 3
+# dispatch time — see the stream_chat_response() call site.
 _FAST_MODELS = [
     "openai/gpt-oss-20b:free",
     "google/gemma-4-31b-it:free",
@@ -50,6 +63,220 @@ _SLOW_MODELS = [
     "nvidia/nemotron-3-super-120b-a12b:free",
     "openai/gpt-oss-20b:free",  # fallback if the big ones fail
 ]
+
+# ──────────────────────────────────────────────────────────────────
+# Deep-thinking detection for smart model routing
+# ──────────────────────────────────────────────────────────────────
+#
+# STRATEGY: a trigger fires if EITHER of two matchers hit:
+#   1. Exact phrase contains (for multi-word triggers like "what would happen")
+#   2. Word-level prefix/fuzzy match (for single words with typo tolerance)
+#
+# The prefix matcher catches typos automatically:
+#   "anal"     matches  analyse, analyze, analysis, analytical
+#   "compar"   matches  compare, comparison, comparative, comparing
+#   "valuat"   matches  valuation, valuate, evaluate, evaluator
+#
+# difflib adds Levenshtein-like fuzzy match for anything that doesn't
+# hit by prefix (catches "analze", "analys", "copmare", "straetgy").
+
+# Single-word roots — any word starting with these prefixes counts.
+# Typos that preserve the prefix are handled for free. Typos that
+# mangle the prefix are caught by the fuzzy matcher below.
+_DEEP_WORD_PREFIXES = frozenset({
+    # Analysis / reasoning
+    "analy",      # analyse, analyze, analysis, analytical, analyst
+    "evaluat",    # evaluate, evaluation, evaluating
+    "assess",     # assess, assessment, assessing
+    "review",     # review, reviewing, reviewer
+    "breakdown",  # breakdown
+    "dissect",    # dissect, dissecting
+    "interpret",  # interpret, interpretation, interpreting
+
+    # Comparison
+    "compar",     # compare, comparison, comparative, comparing
+    "contrast",   # contrast, contrasting
+    "differ",     # differ, difference, differentiate
+    "versus", "vs",
+
+    # Valuation / financial reasoning
+    "valuat",     # valuation, valuate
+    "price-t",    # price-to-earnings, price-to-book
+    "intrinsic",  # intrinsic value
+    "discount",   # discounted cash flow, DCF
+    "forecast",   # forecast, forecasting
+    "project",    # projection, projected
+
+    # Strategic / planning
+    "strateg",    # strategy, strategic, strategize
+    "recomm",     # recommend, recommendation
+    "allocat",    # allocate, allocation
+    "diversif",   # diversify, diversification
+    "rebalanc",   # rebalance, rebalancing
+    "hedg",       # hedge, hedging
+
+    # Explanation
+    "explain",    # explain, explanation, explaining
+    "elaborat",   # elaborate, elaborating
+    "clarif",     # clarify, clarification
+    "reason",     # reason, reasoning
+
+    # Opinion / judgment
+    "opinion",
+    "thought",    # thoughts, thinking
+    "perspective",
+    "outlook",
+    "thesis",
+    "argument",
+
+    # Risk / trade-off
+    "risk",
+    "tradeoff", "trade-off",
+    "upside",
+    "downside",
+    "advantage",
+    "disadvantage",
+    "pros",
+    "cons",
+
+    # Deep horizon signals
+    "long-term", "longterm",
+    "short-term",
+    "medium-term",
+    "fundamental",   # fundamental analysis
+    "technical",     # technical analysis
+    "historical",
+    "retrospect",
+    "backtest",
+
+    # Decision framing
+    "should", "would", "could",
+    "worth",       # worth buying
+    "bullish", "bearish",
+    "overvalued", "undervalued",
+    "oversold", "overbought",
+    "correction", "rally",
+
+    # Macro / thematic
+    "inflat",      # inflation, inflationary
+    "recess",      # recession, recessionary
+    "sentiment",
+    "catalyst",
+    "headwind",
+    "tailwind",
+    "thematic", "theme",
+})
+
+# Multi-word phrases — must appear as a contiguous substring.
+_DEEP_PHRASES = (
+    "what would happen", "what if", "how would", "how will",
+    "why is", "why are", "why did", "why would",
+    "pros and cons",
+    "in depth", "deep dive", "deep into",
+    "explain why", "explain how", "explain what",
+    "help me decide", "help me understand", "help me pick",
+    "give me your take", "your opinion",
+    "is it worth", "is this worth",
+    "compare", "comparison between",
+    "risks involved", "risk factors",
+    "best time to", "right time to",
+    "long run", "long term", "long-term",
+    "over the next",
+    "5 year", "10 year",
+    "which is better", "which one is",
+    "buy or sell", "hold or sell", "buy the dip",
+)
+
+# Difflib fuzzy match: anything not caught by prefix falls through to
+# difflib.get_close_matches() against this canonical set. Catches
+# badly-mangled typos like "analze", "straetgy", "compair".
+_DEEP_CANONICAL_TOKENS = (
+    "analyse", "analyze", "analysis", "analytical",
+    "compare", "comparison", "contrast",
+    "evaluate", "evaluation", "assess", "assessment", "review",
+    "valuation", "intrinsic", "discounted", "forecast", "projection",
+    "strategy", "strategic", "recommend", "allocation", "diversify",
+    "rebalance", "hedge",
+    "explain", "explanation", "elaborate", "clarify", "reason",
+    "opinion", "thoughts", "perspective", "outlook", "thesis",
+    "risk", "tradeoff", "upside", "downside", "advantage", "disadvantage",
+    "longterm", "shortterm", "fundamental", "technical", "historical",
+    "bullish", "bearish", "overvalued", "undervalued",
+    "correction", "rally", "sentiment", "catalyst",
+    "inflation", "recession", "headwind", "tailwind", "thematic",
+    "dissect", "interpret", "breakdown",
+)
+
+# Regex that finds word-like tokens for fuzzy matching.
+_DEEP_TOKEN_PATTERN = re.compile(r"[a-z][a-z'\-]{2,}")
+
+
+def _is_deep_thinking_needed(
+    user_message: str,
+    tool_results: dict[str, Any],
+) -> bool:
+    """Return True if the final answer needs the slow / high-quality model.
+
+    Signals (any one is enough):
+      1. Word prefix match (handles most typos automatically)
+      2. Multi-word phrase match
+      3. Fuzzy (difflib) match on tokens that missed prefix/phrase
+      4. User message is long (> 200 chars)
+      5. Multiple tools invoked (indicates multi-part query)
+      6. Screen/compare tool returned >= 3 rows (needs synthesis)
+    """
+    text = (user_message or "").lower().strip()
+    if not text:
+        return False
+
+    # (2) Multi-word phrases first (cheap early exit)
+    for phrase in _DEEP_PHRASES:
+        if phrase in text:
+            return True
+
+    # (1) Word-prefix match — iterate tokens, check each against prefixes
+    tokens = _DEEP_TOKEN_PATTERN.findall(text)
+    for tok in tokens:
+        for prefix in _DEEP_WORD_PREFIXES:
+            if tok.startswith(prefix):
+                return True
+
+    # (3) Fuzzy match on leftover tokens using difflib. This catches
+    # typos that mangle the prefix beyond recognition.
+    # Only check tokens >= 5 chars to avoid noise on short words.
+    import difflib
+    long_tokens = [t for t in tokens if len(t) >= 5]
+    if long_tokens:
+        for tok in long_tokens:
+            # cutoff=0.82 = ~1-2 char edit distance on a 6-8 char word
+            matches = difflib.get_close_matches(
+                tok, _DEEP_CANONICAL_TOKENS, n=1, cutoff=0.82,
+            )
+            if matches:
+                return True
+
+    # (4) Long user query
+    if len(text) > 200:
+        return True
+
+    # (5) Multiple tools invoked
+    if len(tool_results) >= 2:
+        return True
+
+    # (6) Screen/compare returned several rows
+    for name, result in tool_results.items():
+        if not isinstance(result, dict):
+            continue
+        if name in ("stock_screen", "stock_compare"):
+            stocks = result.get("stocks") or []
+            if len(stocks) >= 3:
+                return True
+        if name in ("mf_screen",):
+            funds = result.get("funds") or []
+            if len(funds) >= 3:
+                return True
+
+    return False
 
 # ---------------------------------------------------------------------------
 # System prompt — the brain of Artha
@@ -69,11 +296,14 @@ Available tools:
 - [TOOL:watchlist:{}] — Get user's watchlist stocks with current data
 - [TOOL:market_status:{}] — All tracked indices (India, US, Europe, Japan), FX majors, key commodities, and market open/close status for each region
 - [TOOL:ipo_list:{"status":"open"}] — List IPOs (open/upcoming/closed)
-- [TOOL:news:{"entity":"Reliance"}] — Get latest news, optionally filtered by company/topic
+- [TOOL:news:{"entity":"Reliance","since":"24h"}] — Get latest news filtered by company/topic. Optional since: 6h, 12h, 24h, 48h, 2d, 3d, week, month (default 48h). Uses hybrid vector + trigram semantic search.
 - [TOOL:macro:{"indicator":"gdp_growth"}] — Get macro indicators (gdp_growth, inflation_cpi, repo_rate, usd_inr, fiscal_deficit, current_account, iip_growth)
 - [TOOL:commodity:{}] — Get commodity prices (gold, silver, crude oil)
 - [TOOL:crypto:{}] — Get crypto prices (BTC, ETH, etc.)
-- [TOOL:tax:{"type":"ltcg","profit":500000,"purchase_year":"2020"}] — Calculate tax (ltcg, stcg, income_tax)
+- [TOOL:tax:{"type":"ltcg","profit":500000,"purchase_year":"2020"}] — Calculate tax (ltcg, stcg, income_tax) with real slab math, not just prose
+- [TOOL:stock_price_history:{"symbol":"TCS","period":"3mo"}] — Historical closes for one stock. Periods: 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y. Returns first/last/high/low/avg + a sampled series for trend description.
+- [TOOL:sector_performance:{"sector":"Information Technology"}] — Aggregate view: avg change %, gainer/loser counts, top 5 gainers + top 5 losers within that sector. Omit the sector param to get an all-sectors overview.
+- [TOOL:educational:{"concept":"pe_ratio"}] — Explain a financial concept: definition, formula, typical range, example, caveats. Concepts: pe_ratio, pb_ratio, roe, roce, ebitda, dcf, ltcg, stcg, debt_to_equity, dividend_yield.
 
 ## Rules
 1. Be concise — max 3-4 sentences for simple questions, longer for detailed analysis
@@ -134,7 +364,12 @@ _CARD_PATTERN = re.compile(r'\[CARD:(\S+)\]')
 _SUGGESTIONS_PATTERN = re.compile(r'\[SUGGESTIONS\](.*?)\[/SUGGESTIONS\]', re.DOTALL)
 
 
-async def _news_hybrid_search(pool, query: str, limit: int = 5) -> tuple[list[dict], str]:
+async def _news_hybrid_search(
+    pool,
+    query: str,
+    limit: int = 5,
+    since_interval: str = "7 days",
+) -> tuple[list[dict], str]:
     """Hybrid news search: vector semantic → trigram fuzzy → ILIKE fallback.
 
     Returns a tuple ``(rows, search_mode)`` where ``search_mode`` is one of
@@ -190,6 +425,7 @@ async def _news_hybrid_search(pool, query: str, limit: int = 5) -> tuple[list[di
                             "(embedding <=> $1) AS distance "
                             "FROM news_articles "
                             "WHERE embedding IS NOT NULL "
+                            f"  AND timestamp > NOW() - INTERVAL '{since_interval}' "
                             "  AND (embedding <=> $1) < 0.6 "
                             "ORDER BY embedding <=> $1 "
                             "LIMIT $2",
@@ -233,7 +469,8 @@ async def _news_hybrid_search(pool, query: str, limit: int = 5) -> tuple[list[di
             "GREATEST(similarity(COALESCE(title,''), $1), "
             "         similarity(COALESCE(summary,''), $1)) AS score "
             "FROM news_articles "
-            "WHERE COALESCE(title,'') % $1 OR COALESCE(summary,'') % $1 "
+            f"WHERE timestamp > NOW() - INTERVAL '{since_interval}' "
+            "  AND (COALESCE(title,'') % $1 OR COALESCE(summary,'') % $1) "
             "ORDER BY score DESC, timestamp DESC "
             "LIMIT $2",
             query,
@@ -268,8 +505,9 @@ async def _news_hybrid_search(pool, query: str, limit: int = 5) -> tuple[list[di
         rows = await pool.fetch(
             "SELECT title, summary, source, timestamp, url, primary_entity, impact "
             "FROM news_articles "
-            "WHERE title ILIKE $1 OR summary ILIKE $1 OR body ILIKE $1 "
-            "   OR primary_entity ILIKE $1 "
+            f"WHERE timestamp > NOW() - INTERVAL '{since_interval}' "
+            "  AND (title ILIKE $1 OR summary ILIKE $1 OR body ILIKE $1 "
+            "       OR primary_entity ILIKE $1) "
             "ORDER BY timestamp DESC LIMIT $2",
             pattern,
             limit,
@@ -551,30 +789,39 @@ async def _execute_tool(
             }
 
         elif tool_name == "news":
-            # Hybrid semantic + trigram search on news_articles.
-            #
-            # Why: primary_entity is a TOPIC category ("market_news",
-            # "dow_jones", "nifty_50", "sensex", "gold", ...) — NOT a
-            # company ticker. Plain ILIKE also misses semantically
-            # related articles (asking about "TCS" should match
-            # "Tata Consultancy Services" and "Indian IT sector").
-            #
-            # Strategy:
-            #   1. Try vector search (pgvector) if embedding is available
-            #      for the query AND the news_articles.embedding column
-            #      has been backfilled.
-            #   2. Otherwise use pg_trgm similarity() ranking.
-            #   3. Fall back to plain ILIKE if neither extension is installed.
+            # Hybrid semantic + trigram search on news_articles with
+            # a configurable time filter (since='24h'|'week'|'month').
             entity = (params.get("entity") or "").strip()
+            since = str(params.get("since", "48h") or "48h").lower().strip()
+            # Parse the time window
+            _SINCE_MAP = {
+                "6h": "6 hours",
+                "12h": "12 hours",
+                "24h": "24 hours",
+                "48h": "48 hours",
+                "today": "24 hours",
+                "2d": "2 days",
+                "3d": "3 days",
+                "week": "7 days",
+                "1w": "7 days",
+                "month": "30 days",
+                "1m": "30 days",
+            }
+            pg_interval = _SINCE_MAP.get(since, "48 hours")
+
             if not entity:
                 rows = await pool.fetch(
                     "SELECT title, summary, source, timestamp, url, primary_entity, impact "
-                    "FROM news_articles ORDER BY timestamp DESC LIMIT 5",
+                    "FROM news_articles "
+                    f"WHERE timestamp > NOW() - INTERVAL '{pg_interval}' "
+                    "ORDER BY timestamp DESC LIMIT 5",
                     timeout=5,
                 )
                 search_mode = "recent"
             else:
-                rows, search_mode = await _news_hybrid_search(pool, entity, limit=5)
+                rows, search_mode = await _news_hybrid_search(
+                    pool, entity, limit=5, since_interval=pg_interval,
+                )
 
             return {
                 "query": entity or None,
@@ -675,12 +922,326 @@ async def _execute_tool(
             }
 
         elif tool_name == "tax":
-            # Basic tax info — delegate to LLM knowledge for now
+            # Real tax calculation for Indian equity capital gains.
+            # Supported types: ltcg, stcg, income_tax
+            tax_type = str(params.get("type", "ltcg")).lower().strip()
+            profit = float(params.get("profit", 0) or 0)
+            purchase_year = str(params.get("purchase_year", "") or "").strip()
+            sale_year = str(params.get("sale_year", "") or "").strip()
+
+            if tax_type in ("ltcg", "long_term", "longterm"):
+                # LTCG on equity (held > 1 year): 12.5% on gains above
+                # ₹1.25L exemption (FY 2024-25 onwards).
+                exemption = 125_000
+                taxable = max(0, profit - exemption)
+                tax = taxable * 0.125
+                return {
+                    "type": "ltcg",
+                    "profit": profit,
+                    "exemption": exemption,
+                    "taxable": taxable,
+                    "tax_rate_pct": 12.5,
+                    "tax_amount": round(tax, 2),
+                    "effective_rate_pct": round(tax / profit * 100, 2) if profit > 0 else 0,
+                    "note": "Indian LTCG on listed equity (held >1 year). ₹1.25L annual exemption, 12.5% flat rate (FY 2024-25).",
+                    "purchase_year": purchase_year or None,
+                    "sale_year": sale_year or None,
+                }
+            elif tax_type in ("stcg", "short_term", "shortterm"):
+                # STCG on equity (held ≤ 1 year): 20% flat from FY 2024-25
+                tax = profit * 0.20
+                return {
+                    "type": "stcg",
+                    "profit": profit,
+                    "tax_rate_pct": 20.0,
+                    "tax_amount": round(tax, 2),
+                    "note": "Indian STCG on listed equity (held ≤1 year). 20% flat rate (FY 2024-25 onwards).",
+                }
+            elif tax_type in ("income_tax", "income", "it"):
+                # New tax regime slabs (FY 2024-25), without rebate/surcharge
+                income = profit  # user passes total income as "profit"
+                slabs = [
+                    (300_000, 0.00),
+                    (700_000, 0.05),
+                    (1_000_000, 0.10),
+                    (1_200_000, 0.15),
+                    (1_500_000, 0.20),
+                    (float("inf"), 0.30),
+                ]
+                remaining = income
+                tax = 0.0
+                last = 0
+                breakdown = []
+                for limit, rate in slabs:
+                    if remaining <= 0:
+                        break
+                    slab = min(remaining, limit - last)
+                    slab_tax = slab * rate
+                    breakdown.append({
+                        "slab": f"₹{last:,.0f}–{limit if limit != float('inf') else 'above':,}",
+                        "rate_pct": rate * 100,
+                        "slab_taxable": slab,
+                        "slab_tax": round(slab_tax, 2),
+                    })
+                    tax += slab_tax
+                    remaining -= slab
+                    last = limit
+                cess = tax * 0.04  # 4% health & education cess
+                return {
+                    "type": "income_tax",
+                    "regime": "new",
+                    "gross_income": income,
+                    "base_tax": round(tax, 2),
+                    "cess_4pct": round(cess, 2),
+                    "total_tax": round(tax + cess, 2),
+                    "effective_rate_pct": round((tax + cess) / income * 100, 2) if income > 0 else 0,
+                    "slab_breakdown": breakdown,
+                    "note": "New tax regime slabs FY 2024-25. No standard deduction or rebates applied. Old regime not supported here.",
+                }
+            else:
+                return {
+                    "error": (
+                        f"Unknown tax type: {tax_type}. "
+                        "Supported: ltcg, stcg, income_tax"
+                    ),
+                }
+
+        elif tool_name == "stock_price_history":
+            # Historical OHLCV-ish prices for a single stock.
+            # Periods: 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y
+            symbol = str(params.get("symbol", "")).upper().strip()
+            period = str(params.get("period", "1mo")).lower().strip()
+            if not symbol:
+                return {"error": "No symbol provided"}
+            _PERIOD_DAYS = {
+                "5d": 5, "1mo": 30, "3mo": 90, "6mo": 180,
+                "1y": 365, "2y": 730, "5y": 1825,
+            }
+            days = _PERIOD_DAYS.get(period, 90)
+            rows = await pool.fetch(
+                "SELECT trade_date, close, volume "
+                "FROM discover_stock_price_history "
+                "WHERE symbol = $1 "
+                "  AND trade_date >= CURRENT_DATE - ($2 || ' days')::interval "
+                "ORDER BY trade_date ASC",
+                symbol, days,
+            )
+            if not rows:
+                return {
+                    "error": f"No historical price data for {symbol}",
+                    "symbol": symbol,
+                    "period": period,
+                }
+            closes = [float(r["close"]) for r in rows if r["close"] is not None]
+            if not closes:
+                return {
+                    "error": f"Price history exists but has no close values for {symbol}",
+                    "symbol": symbol,
+                }
+            first_close = closes[0]
+            last_close = closes[-1]
+            pct_change = (
+                ((last_close - first_close) / first_close * 100)
+                if first_close > 0 else 0
+            )
+            high = max(closes)
+            low = min(closes)
+            avg = sum(closes) / len(closes)
+            # Keep the returned array short for LLM context — downsample
+            # to ~30 points max so the model can describe the trend.
+            sample_size = min(30, len(rows))
+            step = max(1, len(rows) // sample_size)
+            sampled = [
+                {
+                    "date": rows[i]["trade_date"].isoformat(),
+                    "close": round(float(rows[i]["close"]), 2),
+                    "volume": rows[i]["volume"],
+                }
+                for i in range(0, len(rows), step)
+            ][:sample_size]
             return {
-                "note": "Tax calculation delegated to LLM knowledge. "
-                "Indian LTCG: 12.5% above ₹1.25L exemption (equity held >1 year). "
-                "STCG: 20% (equity held <1 year). "
-                "New tax regime is default from FY 2024-25.",
+                "symbol": symbol,
+                "period": period,
+                "count": len(rows),
+                "first_date": rows[0]["trade_date"].isoformat(),
+                "last_date": rows[-1]["trade_date"].isoformat(),
+                "first_close": round(first_close, 2),
+                "last_close": round(last_close, 2),
+                "high": round(high, 2),
+                "low": round(low, 2),
+                "avg": round(avg, 2),
+                "pct_change": round(pct_change, 2),
+                "series": sampled,
+            }
+
+        elif tool_name == "sector_performance":
+            # Aggregate view across all stocks in a sector or all sectors.
+            sector = str(params.get("sector", "") or "").strip()
+            if sector:
+                # Single sector detail
+                rows = await pool.fetch(
+                    "SELECT symbol, display_name, last_price, percent_change, "
+                    "market_cap, score "
+                    "FROM discover_stock_snapshots "
+                    "WHERE sector = $1 AND percent_change IS NOT NULL "
+                    "ORDER BY percent_change DESC",
+                    sector,
+                )
+                if not rows:
+                    return {"error": f"No stocks found in sector '{sector}'", "sector": sector}
+                changes = [float(r["percent_change"]) for r in rows if r["percent_change"] is not None]
+                avg_change = sum(changes) / len(changes) if changes else 0
+                gainers = [r for r in rows if (r["percent_change"] or 0) > 0]
+                losers = [r for r in rows if (r["percent_change"] or 0) < 0]
+                return {
+                    "sector": sector,
+                    "total_stocks": len(rows),
+                    "gainer_count": len(gainers),
+                    "loser_count": len(losers),
+                    "avg_change_pct": round(avg_change, 2),
+                    "top_gainers": [
+                        {
+                            "symbol": r["symbol"],
+                            "name": r["display_name"],
+                            "change_pct": float(r["percent_change"] or 0),
+                            "price": float(r["last_price"] or 0),
+                            "score": float(r["score"] or 0) if r.get("score") is not None else None,
+                        }
+                        for r in rows[:5]
+                    ],
+                    "top_losers": [
+                        {
+                            "symbol": r["symbol"],
+                            "name": r["display_name"],
+                            "change_pct": float(r["percent_change"] or 0),
+                            "price": float(r["last_price"] or 0),
+                            "score": float(r["score"] or 0) if r.get("score") is not None else None,
+                        }
+                        for r in sorted(rows, key=lambda x: x["percent_change"] or 0)[:5]
+                    ],
+                }
+            else:
+                # All sectors overview — average change per sector
+                rows = await pool.fetch(
+                    "SELECT sector, "
+                    "COUNT(*) AS stock_count, "
+                    "AVG(percent_change) AS avg_change, "
+                    "SUM(CASE WHEN percent_change > 0 THEN 1 ELSE 0 END) AS gainers, "
+                    "SUM(CASE WHEN percent_change < 0 THEN 1 ELSE 0 END) AS losers "
+                    "FROM discover_stock_snapshots "
+                    "WHERE sector IS NOT NULL AND percent_change IS NOT NULL "
+                    "GROUP BY sector "
+                    "ORDER BY avg_change DESC NULLS LAST"
+                )
+                return {
+                    "sectors": [
+                        {
+                            "sector": r["sector"],
+                            "stock_count": int(r["stock_count"]),
+                            "avg_change_pct": round(float(r["avg_change"] or 0), 2),
+                            "gainers": int(r["gainers"] or 0),
+                            "losers": int(r["losers"] or 0),
+                        }
+                        for r in rows
+                    ],
+                }
+
+        elif tool_name == "educational":
+            # Explain a financial concept using a curated dictionary.
+            # LLM can then expand with context-specific examples.
+            concept = str(params.get("concept", "")).lower().strip()
+            _CONCEPTS = {
+                "pe_ratio": {
+                    "name": "P/E Ratio (Price-to-Earnings)",
+                    "definition": "Share price divided by earnings per share (EPS). Tells you how many rupees investors are paying for every rupee of annual profit.",
+                    "formula": "P/E = Price / EPS",
+                    "typical_range": "Indian market average ~20-25. <15 = value territory, 30+ = growth/premium, 50+ = expensive unless growing fast.",
+                    "example": "TCS trading at ₹3,500 with EPS ₹120 → P/E = 29.2. That's above market average, which is normal for a high-quality IT leader.",
+                    "caveats": "Meaningless for loss-making companies. Needs comparison within the same sector.",
+                },
+                "roe": {
+                    "name": "Return on Equity (ROE)",
+                    "definition": "Net profit as a percentage of shareholders' equity. Measures how efficiently a company generates profit from every rupee of owner capital.",
+                    "formula": "ROE = Net Profit / Shareholders' Equity × 100",
+                    "typical_range": "15-20% is good, 25%+ is excellent, <10% is weak.",
+                    "example": "HDFC Bank with ROE ~17% means every ₹100 of equity generates ₹17 of annual profit.",
+                    "caveats": "High ROE with high debt can be misleading — check D/E ratio together.",
+                },
+                "roce": {
+                    "name": "Return on Capital Employed (ROCE)",
+                    "definition": "Operating profit divided by total capital employed (equity + debt). More comprehensive than ROE because it includes debt in the denominator.",
+                    "formula": "ROCE = EBIT / Capital Employed × 100",
+                    "typical_range": "15%+ is good, 25%+ is excellent.",
+                    "example": "Asian Paints with ROCE ~30% means it generates ₹30 of operating profit per ₹100 of total capital.",
+                    "caveats": "Better metric than ROE for leveraged businesses.",
+                },
+                "ltcg": {
+                    "name": "Long-Term Capital Gains (LTCG) Tax",
+                    "definition": "Tax on profits from selling equity shares or equity mutual funds held for more than 12 months.",
+                    "formula": "LTCG Tax = (Profit − ₹1.25L exemption) × 12.5%",
+                    "typical_range": "₹1.25L annual exemption. Flat 12.5% rate (FY 2024-25 onwards).",
+                    "example": "Sell TCS for ₹6L profit held 2 years → (₹6L − ₹1.25L) × 12.5% = ₹59,375 tax.",
+                    "caveats": "Exemption is PER YEAR, not per transaction. Indexation benefit removed in FY 2024-25.",
+                },
+                "stcg": {
+                    "name": "Short-Term Capital Gains (STCG) Tax",
+                    "definition": "Tax on profits from selling equity shares or equity mutual funds held for 12 months or less.",
+                    "formula": "STCG Tax = Profit × 20%",
+                    "typical_range": "Flat 20% rate (FY 2024-25). No exemption.",
+                    "example": "Sell Reliance for ₹2L profit held 6 months → ₹2L × 20% = ₹40,000 tax.",
+                    "caveats": "Applies regardless of your income tax slab. Short-term trading is heavily taxed.",
+                },
+                "dcf": {
+                    "name": "Discounted Cash Flow (DCF) Valuation",
+                    "definition": "Method to estimate intrinsic value of a stock by forecasting future cash flows and discounting them to present value.",
+                    "formula": "Value = Σ (FCFₜ / (1+r)ᵗ) for all future years",
+                    "typical_range": "WACC (discount rate) usually 10-14% in Indian markets.",
+                    "example": "If TCS's projected FCFs discount to ₹4,200/share and it trades at ₹3,500, DCF says it's undervalued.",
+                    "caveats": "Highly sensitive to growth and discount rate assumptions. Small changes swing the result wildly.",
+                },
+                "pb_ratio": {
+                    "name": "P/B Ratio (Price-to-Book)",
+                    "definition": "Share price divided by book value per share (net assets per share). Tells you what you're paying relative to the company's accounting net worth.",
+                    "formula": "P/B = Price / Book Value per Share",
+                    "typical_range": "<1 = below book, 1-3 = normal, 3-5 = premium, >5 = usually needs justification.",
+                    "example": "A bank trading at P/B of 2 means you pay ₹2 for every ₹1 of net assets.",
+                    "caveats": "Most useful for financial companies (banks, NBFCs) where book value is meaningful.",
+                },
+                "debt_to_equity": {
+                    "name": "Debt-to-Equity Ratio (D/E)",
+                    "definition": "Total debt divided by shareholders' equity. Measures financial leverage and balance sheet health.",
+                    "formula": "D/E = Total Debt / Equity",
+                    "typical_range": "<0.5 = conservative, 0.5-1 = moderate, >1 = aggressive, >2 = high risk.",
+                    "example": "TCS with D/E of 0.1 is effectively debt-free. Real estate companies often run 1-2+.",
+                    "caveats": "Varies massively by sector — compare within peers.",
+                },
+                "ebitda": {
+                    "name": "EBITDA",
+                    "definition": "Earnings Before Interest, Taxes, Depreciation, and Amortization. Proxy for operating cash flow before capital structure and non-cash charges.",
+                    "formula": "EBITDA = Net Profit + Interest + Taxes + D&A",
+                    "typical_range": "EBITDA margin 15-25% = healthy for most sectors.",
+                    "example": "If revenue is ₹100Cr and EBITDA is ₹20Cr, margin is 20%.",
+                    "caveats": "Ignores capex — dangerous for capital-intensive businesses.",
+                },
+                "dividend_yield": {
+                    "name": "Dividend Yield",
+                    "definition": "Annual dividend per share divided by share price. Tells you what cash yield you get from holding the stock.",
+                    "formula": "Yield = Annual Dividend / Price × 100",
+                    "typical_range": "Nifty average ~1.5%. 3-5% = good income stock. 6%+ often means stress.",
+                    "example": "ITC paying ₹15 annual dividend at price ₹450 → yield 3.3%.",
+                    "caveats": "A falling price inflates yield. Check if dividend is sustainable.",
+                },
+            }
+            # Fuzzy match on concept key
+            if concept in _CONCEPTS:
+                return _CONCEPTS[concept]
+            # Try matching by name substring
+            for key, info in _CONCEPTS.items():
+                if concept in key or concept in info["name"].lower():
+                    return info
+            return {
+                "error": f"Unknown concept: '{concept}'",
+                "available_concepts": sorted(_CONCEPTS.keys()),
             }
 
         else:
@@ -1625,12 +2186,24 @@ async def stream_chat_response(
     # never sees the bracketed syntax leak into the chat bubble, even
     # as the tags land mid-chunk in the SSE stream.
 
+    # Decide which model chain handles the final answer. Default is
+    # fast; upgrade to slow only if the query needs deep analysis.
+    needs_deep = _is_deep_thinking_needed(user_message, tool_results)
+    compose_chain = _SLOW_MODELS if needs_deep else _FAST_MODELS
+    logger.info(
+        "chat_stream: compose_chain=%s (deep=%s, tools=%d, msg_len=%d)",
+        "slow" if needs_deep else "fast",
+        needs_deep,
+        len(tool_results),
+        len(user_message or ""),
+    )
+
     async def _stream_final() -> AsyncGenerator[str, None]:
         """Yield raw token deltas from the appropriate model chain."""
         if compose_messages is not None:
-            # Tools were used — compose with slow model
+            # Tools were used — compose via real OpenRouter streaming
             async for delta in _stream_llm_response(
-                api_key, compose_messages, chain=_SLOW_MODELS,
+                api_key, compose_messages, chain=compose_chain,
             ):
                 yield delta
         else:
