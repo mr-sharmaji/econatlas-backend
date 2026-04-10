@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 MAX_CONTEXT_MESSAGES = 15  # Send last N messages for multi-turn context
-MAX_MESSAGES_PER_DAY = 100
+MAX_MESSAGES_PER_DAY = 300
 MAX_SESSIONS_PER_DEVICE = 50
 STREAM_TIMEOUT = 60.0  # 60s ceiling per LLM call (was 30s — too tight for tool chains)
 HEARTBEAT_INTERVAL = 5.0  # Send a "thinking" keepalive every 5s during long calls

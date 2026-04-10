@@ -47,7 +47,7 @@ async def stream_chat(req: ChatMessageRequest):
     if not allowed:
         async def rate_limit_stream():
             yield _sse_event("error", {
-                "message": "You've reached your daily limit of 100 messages. Try again tomorrow!",
+                "message": "You've reached your daily limit of 300 messages. Try again tomorrow!",
                 "retry": False,
             })
         return StreamingResponse(
