@@ -2050,11 +2050,22 @@ async def stream_chat_response(
                 params = {}
             result = await _execute_tool(tool_name, params, device_id)
             if isinstance(result, dict) and "error" not in result:
-                summary = {
-                    k: (len(v) if isinstance(v, list) else "obj")
-                    for k in ("stocks", "funds", "articles", "ipos", "indices_by_region", "data", "commodities", "crypto")
-                    if k in result
-                }
+                # Build a compact shape summary for the INFO log. Bug fix:
+                # the previous dict comprehension referenced `v` which was
+                # never defined (`for k in (...)` iterates only `k`), so
+                # every tool call crashed with NameError and the whole
+                # stream aborted with "Something went wrong".
+                _SUMMARY_KEYS = (
+                    "stocks", "funds", "articles", "ipos",
+                    "indices_by_region", "data", "commodities", "crypto",
+                    "series", "sectors", "top_gainers", "top_losers",
+                )
+                summary: dict[str, Any] = {}
+                for k in _SUMMARY_KEYS:
+                    if k not in result:
+                        continue
+                    val = result[k]
+                    summary[k] = len(val) if isinstance(val, list) else "obj"
                 logger.info(
                     "tool_call: OK name=%s summary=%s",
                     tool_name, summary or "{scalar}",
