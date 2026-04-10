@@ -401,10 +401,12 @@ Forward views — "I expect Nifty to test 24,500 over the next few weeks", "TCS 
 Be direct. Defend the view with the numbers you already cited. If you're uncertain, say "the base case is" or "if X holds". Don't hedge with "consult a financial advisor", "do your own research", or "past performance is not indicative of future results" — the user already knows.
 
 ### 7. UNKNOWN HANDLING — say it, don't fake it
-When you genuinely don't have data (after trying the right tool), respond with:
-> "I don't have that data right now. Want me to try fetching it?"
+When you genuinely don't have a SPECIFIC live figure (after trying the right tool), say so clearly.
+- For exact unavailable figures / dates / benchmark data / historical series, respond with:
+  "I don't have that exact data right now. Want me to try again?"
+- For explanatory, opinion, or forward-looking questions, still answer with your best broad reasoning using the LIVE SNAPSHOT, any tool results you do have, and your general market knowledge.
 
-Never say "approximately ₹X" or "around Y%" or "roughly 30 days" without a tool source. Never invent company names like "XYZ Tech" or "Company A". Never invent business descriptions ("FIRSTCRY is a kids-education platform") — use only the `display_name` from tool results. If you don't know what a company does, just say its name.
+Never invent exact figures, dates, or company-specific facts you didn't fetch. Never say "approximately ₹X" or "around Y%" without a tool source. Never invent company names like "XYZ Tech" or business descriptions not present in fetched data.
 
 ### 8. CURRENCY — match the asset, don't force ₹ everywhere
 - **Indian stock PRICES and market cap** → `₹` with Indian units:
@@ -451,6 +453,13 @@ English by default. Match Hinglish (Hindi in Latin script) if the user writes th
 
 ### 12. NO DISCLAIMERS
 Do not add "NFA", "do your own research", "consult a financial advisor", "past performance is not indicative of future results" unless the user specifically asks. These waste the user's time.
+
+### 13. ASK ONE CLARIFYING QUESTION FOR BUY/PICK REQUESTS
+If the user asks what to buy / which fund to pick / where to invest and they have not given risk appetite, time horizon, or budget, ask ONE short clarifying question first instead of jumping straight to picks. Examples:
+- "What’s your time horizon for this money?"
+- "Are you looking for lower risk or higher upside?"
+
+Once they answer, then give the picks. If the same session already established the context, do not ask again.
 
 ## FEW-SHOT EXAMPLES
 
@@ -572,6 +581,72 @@ _SUGGESTIONS_PATTERN = re.compile(
     r'\[SUGGESTIONS\](.*?)(?:\[/SUGGESTIONS\]|\Z)',
     re.DOTALL,
 )
+_MARKDOWN_THINKING_RE = re.compile(
+    r'^\s*#{1,6}\s*Thinking\s*\n+(.*?)(?:\n{2,}(.*))?$',
+    re.DOTALL | re.IGNORECASE,
+)
+
+_SECTOR_ALIASES = {
+    "it": "IT",
+    "information technology": "IT",
+    "technology": "IT",
+    "tech": "IT",
+    "auto": "Auto",
+    "automobile": "Auto",
+    "automobiles": "Auto",
+    "automotive": "Auto",
+    "bank": "Financials",
+    "banks": "Financials",
+    "banking": "Financials",
+    "financial": "Financials",
+    "financials": "Financials",
+    "financial services": "Financials",
+    "pharma": "Healthcare",
+    "pharmaceutical": "Healthcare",
+    "pharmaceuticals": "Healthcare",
+    "healthcare": "Healthcare",
+    "fmcg": "FMCG",
+    "consumer staples": "FMCG",
+    "consumer goods": "FMCG",
+    "consumer discretionary": "Consumer Discretionary",
+    "industrial": "Industrials",
+    "industrials": "Industrials",
+    "telecom": "Telecom",
+    "telecommunications": "Telecom",
+    "real estate": "Real Estate",
+    "realty": "Real Estate",
+    "media": "Media & Entertainment",
+    "entertainment": "Media & Entertainment",
+}
+
+
+def _normalize_thinking_markup(text: str | None) -> str:
+    """Convert leaked markdown thinking headings into <thinking> tags."""
+    if not text:
+        return ""
+    stripped = text.lstrip()
+    if stripped.startswith("<thinking>"):
+        return text
+    match = _MARKDOWN_THINKING_RE.match(text)
+    if not match:
+        return text
+    thinking = (match.group(1) or "").strip()
+    rest = (match.group(2) or "").lstrip()
+    if not thinking:
+        return text
+    if rest:
+        return f"<thinking>\n{thinking}\n</thinking>\n\n{rest}"
+    return f"<thinking>\n{thinking}\n</thinking>"
+
+
+def _normalize_sector_name(sector: str | None) -> str:
+    """Map common user/LLM sector labels to canonical DB sector names."""
+    raw = (sector or "").strip()
+    if not raw:
+        return ""
+    cleaned = re.sub(r"\b(nifty|sector|index)\b", "", raw, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return _SECTOR_ALIASES.get(cleaned.lower(), cleaned)
 
 
 async def _news_hybrid_search(
@@ -745,6 +820,20 @@ async def _news_hybrid_search(
         query, total_ms,
     )
     return [], "none"
+
+
+async def _persist_assistant_error_message(
+    session_id: str | None,
+    message: str,
+) -> str | None:
+    """Best-effort persistence for assistant-side failures."""
+    if not session_id:
+        return None
+    try:
+        return await save_message(session_id, "assistant", message)
+    except Exception:
+        logger.exception("chat_stream: failed to persist assistant error message")
+        return None
 
 
 # Refusal-detection patterns for the tool-invocation log. When Artha's
@@ -1593,19 +1682,24 @@ async def _execute_tool(
 
         elif tool_name == "sector_performance":
             # Aggregate view across all stocks in a sector or all sectors.
-            sector = str(params.get("sector", "") or "").strip()
-            if sector:
+            raw_sector = str(params.get("sector", "") or "").strip()
+            if raw_sector:
+                sector = _normalize_sector_name(raw_sector)
                 # Single sector detail
                 rows = await pool.fetch(
                     "SELECT symbol, display_name, last_price, percent_change, "
                     "market_cap, score "
                     "FROM discover_stock_snapshots "
-                    "WHERE sector = $1 AND percent_change IS NOT NULL "
+                    "WHERE LOWER(sector) = LOWER($1) AND percent_change IS NOT NULL "
                     "ORDER BY percent_change DESC",
                     sector,
                 )
                 if not rows:
-                    return {"error": f"No stocks found in sector '{sector}'", "sector": sector}
+                    return {
+                        "error": f"No stocks found in sector '{raw_sector}'",
+                        "requested_sector": raw_sector,
+                        "sector": sector,
+                    }
                 changes = [float(r["percent_change"]) for r in rows if r["percent_change"] is not None]
                 avg_change = sum(changes) / len(changes) if changes else 0
                 gainers = [r for r in rows if (r["percent_change"] or 0) > 0]
@@ -2018,7 +2112,9 @@ async def _execute_tool(
             if not topic:
                 return {"error": "No topic/query provided"}
             try:
-                articles = await _news_hybrid_search(topic, limit=15, since_interval=since)
+                articles, _search_mode = await _news_hybrid_search(
+                    pool, topic, limit=15, since_interval=since,
+                )
             except Exception as e:
                 logger.warning("news_sentiment: search failed: %s", e)
                 return {"error": "news search failed"}
@@ -2058,9 +2154,10 @@ async def _execute_tool(
 
         elif tool_name == "sector_thesis":
             # On-demand aggregate + thesis scaffolding for a sector.
-            sector = (params.get("sector") or "").strip()
-            if not sector:
+            raw_sector = (params.get("sector") or "").strip()
+            if not raw_sector:
                 return {"error": "No sector provided"}
+            sector = _normalize_sector_name(raw_sector)
             rows = await pool.fetch(
                 """
                 SELECT
@@ -2074,27 +2171,31 @@ async def _execute_tool(
                     AVG(operating_margins) AS avg_opm,
                     SUM(market_cap) AS total_mcap
                 FROM discover_stock_snapshots
-                WHERE sector ILIKE $1
+                WHERE LOWER(sector) = LOWER($1)
                 """,
-                f"%{sector}%",
+                sector,
             )
             if not rows or (rows[0]["total"] or 0) == 0:
-                return {"error": f"No stocks found in sector '{sector}'"}
+                return {
+                    "error": f"No stocks found in sector '{raw_sector}'",
+                    "requested_sector": raw_sector,
+                    "sector": sector,
+                }
             r = rows[0]
             # Top 5 and bottom 5 by score for the thesis.
             top = await pool.fetch(
                 "SELECT symbol, display_name, last_price, percent_change_1y, "
                 "pe_ratio, roe, score, action_tag FROM discover_stock_snapshots "
-                "WHERE sector ILIKE $1 AND score IS NOT NULL "
+                "WHERE LOWER(sector) = LOWER($1) AND score IS NOT NULL "
                 "ORDER BY score DESC LIMIT 5",
-                f"%{sector}%",
+                sector,
             )
             weak = await pool.fetch(
                 "SELECT symbol, display_name, last_price, percent_change_1y, "
                 "pe_ratio, roe, score, action_tag FROM discover_stock_snapshots "
-                "WHERE sector ILIKE $1 AND score IS NOT NULL "
+                "WHERE LOWER(sector) = LOWER($1) AND score IS NOT NULL "
                 "ORDER BY score ASC LIMIT 5",
-                f"%{sector}%",
+                sector,
             )
             def _fnum(v):
                 try:
@@ -2870,12 +2971,6 @@ async def stream_chat_response(
         (user_message or "")[:80],
     )
 
-    api_key = _get_api_key()
-    if not api_key:
-        logger.error("chat_stream: no OPENROUTER_API_KEY configured")
-        yield {"event": "error", "data": {"message": "AI service is temporarily unavailable.", "retry": True}}
-        return
-
     # Save user message
     try:
         await save_message(session_id, "user", user_message)
@@ -2883,6 +2978,22 @@ async def stream_chat_response(
     except Exception:
         logger.exception("chat_stream: failed to save user message or update rate limit")
         yield {"event": "error", "data": {"message": "Could not save your message. Please try again.", "retry": True}}
+        return
+
+    api_key = _get_api_key()
+    if not api_key:
+        logger.error("chat_stream: no OPENROUTER_API_KEY configured")
+        error_message = "AI service is temporarily unavailable."
+        error_msg_id = await _persist_assistant_error_message(session_id, error_message)
+        yield {
+            "event": "error",
+            "data": {
+                "message": error_message,
+                "retry": True,
+                "message_id": error_msg_id,
+                "session_id": session_id,
+            },
+        }
         return
 
     # Build conversation context (passes user message for k-NN tool routing)
@@ -2900,8 +3011,19 @@ async def stream_chat_response(
     initial_response = await _call_llm_blocking(
         api_key, messages, chain=_FAST_MODELS,
     )
+    initial_response = _normalize_thinking_markup(initial_response)
     if not initial_response:
-        yield {"event": "error", "data": {"message": "Artha is taking a break. Try again in a few minutes.", "retry": True}}
+        error_message = "Artha is taking a break. Try again in a few minutes."
+        error_msg_id = await _persist_assistant_error_message(session_id, error_message)
+        yield {
+            "event": "error",
+            "data": {
+                "message": error_message,
+                "retry": True,
+                "message_id": error_msg_id,
+                "session_id": session_id,
+            },
+        }
         return
 
     # ─────────────────────────────────────────────────────────────────
@@ -3053,6 +3175,7 @@ async def stream_chat_response(
                 retry_response = await _call_llm_blocking(
                     api_key, retry_messages, chain=_FAST_MODELS,
                 )
+                retry_response = _normalize_thinking_markup(retry_response)
                 if retry_response:
                     retry_markers = _TOOL_PATTERN.findall(retry_response)
                     if retry_markers:
@@ -3081,8 +3204,11 @@ async def stream_chat_response(
                 "Any [TOOL:...] markers you emit will be IGNORED and your "
                 "response will look broken to the user. Work ONLY with the "
                 "tool results shown below. If you need data you don't have, "
-                "be honest: say 'I don't have that data right now. Want me "
-                "to try fetching it?' and stop.\n\n"
+                "be honest about exact missing figures, but do NOT stop early "
+                "if the user asked for an explanation, opinion, or forward "
+                "view. In those cases, answer with broad reasoning using the "
+                "snapshot, the tool results you do have, and general market "
+                "knowledge — just avoid unsourced exact numbers.\n\n"
                 "FORMAT REQUIREMENTS (mandatory, non-negotiable):\n"
                 "1. START with a `<thinking>...</thinking>` block (2-4 sentences "
                 "explaining which data you're pulling from the tool results and "
@@ -3097,9 +3223,11 @@ async def stream_chat_response(
                 "[/SUGGESTIONS] tag.\n"
                 "4. Do NOT include any [TOOL:...] markers — they will be ignored.\n"
                 "5. Be specific with the numbers from the tool results above.\n"
-                "6. If a tool returned an error or empty data, be honest: say "
-                "'I couldn't fetch X right now, want me to try again?' instead "
-                "of inventing numbers.\n"
+                "6. If a tool returned an error or empty data, do NOT invent "
+                "numbers. For exact unavailable figures, say "
+                "'I don't have that exact data right now. Want me to try "
+                "again?'. For explanatory questions, continue with a "
+                "qualitative answer.\n"
                 "7. Currency rules: commodities (gold/silver/crude/brent) in "
                 "USD ($). Indian stock prices / market cap in ₹. "
                 "Index VALUES (Nifty, Sensex, S&P 500, Nasdaq, Nikkei, FTSE, "
@@ -3292,6 +3420,7 @@ async def stream_chat_response(
     final_response = raw_accum
     if not final_response:
         final_response = "I couldn't generate a response. Please try again."
+    final_response = _normalize_thinking_markup(final_response)
 
     # Clean: strip <thinking> blocks, tool markers, card markers.
     # The <thinking> content has already been streamed as thinking_text

@@ -71,9 +71,21 @@ async def stream_chat(req: ChatMessageRequest):
                 yield _sse_event(event["event"], event["data"])
         except Exception as e:
             logger.error("Chat stream error: %s", e, exc_info=True)
+            error_message = "Something went wrong. Please try again."
+            message_id = None
+            try:
+                message_id = await chat_service.save_message(
+                    session_id,
+                    "assistant",
+                    error_message,
+                )
+            except Exception:
+                logger.exception("Failed to persist fallback chat error")
             yield _sse_event("error", {
-                "message": "Something went wrong. Please try again.",
+                "message": error_message,
                 "retry": True,
+                "message_id": message_id,
+                "session_id": session_id,
             })
 
     return StreamingResponse(
