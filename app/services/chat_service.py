@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -5080,7 +5081,6 @@ async def stream_chat_response(
     # caused over-refusal because the LLM doesn't know what tool maps to
     # them.  A canonicalised version ("Show today's FII and DII net cash
     # flows...") is unambiguous.  Hinglish detection also rides this path.
-    api_key_for_preproc = os.environ.get("OPENROUTER_API_KEY")
     query_meta: dict[str, Any] = {
         "original": original_user_message,
         "canonical": original_user_message,
@@ -5088,11 +5088,12 @@ async def stream_chat_response(
         "rewritten_by": None,
     }
     try:
+        api_key_for_preproc = os.environ.get("OPENROUTER_API_KEY")
         query_meta = await preprocess_user_query(
             original_user_message, api_key=api_key_for_preproc,
         )
     except Exception:
-        logger.debug("chat_stream: preprocess failed", exc_info=True)
+        logger.warning("chat_stream: preprocess failed", exc_info=True)
     # Use the canonical form downstream.  Save the original on the user
     # row, but pass the canonical form into the LLM context so the
     # intent is clear.
