@@ -8,7 +8,7 @@ from arq.connections import RedisSettings
 from arq.worker import Worker, create_worker
 
 from app.core.config import get_settings
-from app.queue.settings import get_arq_functions
+from app.queue.settings import expand_job_family_ids, get_arq_functions
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +52,9 @@ async def _clear_stale_arq_state() -> None:
     # 3. Delete stale job hashes for startup/manual jobs
     from app.api.routes.ops import _VALID_JOBS
 
-    known_ids = (
-        [f"startup_{name}" for name in _VALID_JOBS]
-        + [f"{name}_manual" for name in _VALID_JOBS]
-    )
+    known_ids: set[str] = set()
+    for name in _VALID_JOBS:
+        known_ids.update(expand_job_family_ids(name))
     for jid in known_ids:
         job_key = job_key_prefix + jid
         if await pool.exists(job_key):

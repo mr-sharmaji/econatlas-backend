@@ -15,7 +15,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, AsyncGenerator
 
 import httpx
@@ -459,7 +459,10 @@ Do not add "NFA", "do your own research", "consult a financial advisor", "past p
 If the user asks what to buy / which fund to pick / where to invest and the time horizon is still missing, ask ONE short clarifying question first instead of jumping straight to picks:
 - "What’s your time horizon for this money?"
 
-Once the time horizon is clear, give exactly 3 ranked picks by default unless the user asked for a different count. Keep the default universe to Indian stocks + mutual funds only. Do not include ETFs, gold, commodities, crypto, or global assets unless the user explicitly asks wider. If the same session already established the horizon, do not ask again.
+If the time horizon is clear but the stock evidence is still thin, ask ONE short follow-up about risk appetite:
+- "What risk appetite should I assume: conservative, balanced, or aggressive?"
+
+Once the needed clarifier(s) are clear, give exactly 3 ranked picks by default unless the user asked for a different count. Keep the default universe to Indian stocks + mutual funds only. Do not include ETFs, gold, commodities, crypto, or global assets unless the user explicitly asks wider. Use a balanced risk profile unless the user explicitly asks otherwise. Prefer hybrid evidence — live snapshot + at least one tool-backed signal — before ranking picks. If the same session already established the horizon or risk appetite, do not ask again.
 
 ## FEW-SHOT EXAMPLES
 
@@ -661,6 +664,43 @@ _WIDER_ASSET_SCOPE_RE = re.compile(
     r"\b(etf|gold|silver|commodity|commodities|crypto|bitcoin|global|international|us stocks?|nasdaq|s&p 500)\b",
     re.IGNORECASE,
 )
+_MUTUAL_FUND_SCOPE_RE = re.compile(
+    r"\b(mutual funds?|funds?|sip|scheme|elss|index fund|flexi cap|large cap fund|mid cap fund|small cap fund)\b",
+    re.IGNORECASE,
+)
+_STOCK_SCOPE_RE = re.compile(
+    r"\b(stocks?|shares?|equities|equity)\b",
+    re.IGNORECASE,
+)
+_RISK_APPETITE_PROMPT_RE = re.compile(r"\brisk appetite\b", re.IGNORECASE)
+_RISK_CONSERVATIVE_RE = re.compile(
+    r"\b(conservative|low risk|safe|safer|stability|stable|capital preservation|capital protect)\b",
+    re.IGNORECASE,
+)
+_RISK_BALANCED_RE = re.compile(
+    r"\b(balanced|moderate|medium risk|not too risky|some risk|reasonable risk)\b",
+    re.IGNORECASE,
+)
+_RISK_AGGRESSIVE_RE = re.compile(
+    r"\b(aggressive|high risk|very risky|maximum returns?|can take risk|higher risk|high conviction)\b",
+    re.IGNORECASE,
+)
+_RETRY_FETCH_RE = re.compile(
+    r"\b(want me to try|want me to fetch|try again|retry the fetch)\b",
+    re.IGNORECASE,
+)
+_INDIA_LINKED_NEWS_RE = re.compile(
+    r"\b(india|indian|nifty|sensex|rbi|rupee|nse|bse|sebi|fii|dii|gift nifty|domestic market)\b",
+    re.IGNORECASE,
+)
+_CRYPTO_TOPIC_RE = re.compile(r"\b(bitcoin|btc|ethereum|eth|crypto)\b", re.IGNORECASE)
+
+_DISCOVER_STOCK_HEALTH_TTL = 60
+_DISCOVER_STOCK_STALE_BUSINESS_DAYS = 3
+_discover_stock_health_cache: dict[str, Any] = {
+    "value": None,
+    "updated_at": 0.0,
+}
 
 
 def _normalize_thinking_markup(text: str | None) -> str:
@@ -779,6 +819,40 @@ def _canonicalize_tool_params(tool_name: str, params: dict[str, Any] | None) -> 
             str(normalized["query"]),
         )
 
+    if tool_name == "stock_compare":
+        raw_symbols = normalized.get("symbols")
+        if isinstance(raw_symbols, str):
+            raw_symbols = re.split(
+                r"\s*(?:,|/| vs | versus | and )\s*",
+                raw_symbols,
+                flags=re.IGNORECASE,
+            )
+        elif raw_symbols is None:
+            fallback_symbols = []
+            for key in ("symbol", "stock", "stock1", "stock2", "stock3"):
+                value = normalized.get(key)
+                if isinstance(value, str) and value.strip():
+                    fallback_symbols.extend(
+                        re.split(
+                            r"\s*(?:,|/| vs | versus | and )\s*",
+                            value,
+                            flags=re.IGNORECASE,
+                        )
+                    )
+            raw_symbols = fallback_symbols
+        if isinstance(raw_symbols, list):
+            cleaned_symbols: list[str] = []
+            for item in raw_symbols:
+                if not isinstance(item, str):
+                    continue
+                candidate = item.strip().upper()
+                if not candidate:
+                    continue
+                if candidate not in cleaned_symbols:
+                    cleaned_symbols.append(candidate)
+            if cleaned_symbols:
+                normalized["symbols"] = cleaned_symbols[:3]
+
     if tool_name == "mf_lookup":
         if normalized.get("name") and not normalized.get("scheme_name"):
             normalized["scheme_name"] = normalized["name"]
@@ -803,14 +877,40 @@ def _assistant_asked_time_horizon(text: str | None) -> bool:
     return bool(_TIME_HORIZON_PROMPT_RE.search(text or ""))
 
 
-def _detect_recommendation_mode(
+def _extract_risk_appetite(text: str | None) -> str | None:
+    """Classify a user's risk appetite from short recommendation replies."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    if _RISK_CONSERVATIVE_RE.search(raw):
+        return "conservative"
+    if _RISK_AGGRESSIVE_RE.search(raw):
+        return "aggressive"
+    if _RISK_BALANCED_RE.search(raw):
+        return "balanced"
+    return None
+
+
+def _assistant_asked_risk_appetite(text: str | None) -> bool:
+    return bool(_RISK_APPETITE_PROMPT_RE.search(text or ""))
+
+
+def _detect_recommendation_asset_preference(texts: list[str]) -> str:
+    """Return fund_only, stock_only, or mixed for recommendation asks."""
+    has_fund = any(_MUTUAL_FUND_SCOPE_RE.search(text or "") for text in texts)
+    has_stock = any(_STOCK_SCOPE_RE.search(text or "") for text in texts)
+    if has_fund and not has_stock:
+        return "fund_only"
+    if has_stock and not has_fund:
+        return "stock_only"
+    return "mixed"
+
+
+def _build_recommendation_context(
     session_messages: list[dict],
     user_message: str,
-) -> str | None:
-    """Return 'clarify', 'picks', or None for recommendation flows."""
-    if not user_message:
-        return None
-
+) -> dict[str, Any]:
+    """Capture the current recommendation flow state for this session."""
     prior_messages = session_messages
     if session_messages and session_messages[-1].get("role") == "user":
         last_content = (session_messages[-1].get("content") or "").strip()
@@ -819,38 +919,99 @@ def _detect_recommendation_mode(
 
     prior_user_messages = [
         (m.get("content") or "")
-        for m in prior_messages[-8:]
+        for m in prior_messages[-10:]
         if m.get("role") == "user"
     ]
     prior_assistant_messages = [
         (m.get("content") or "")
-        for m in prior_messages[-4:]
+        for m in prior_messages[-6:]
         if m.get("role") == "assistant"
     ]
 
     current_is_request = _is_recommendation_request(user_message)
     current_has_horizon = _has_time_horizon(user_message)
     prior_has_horizon = any(_has_time_horizon(text) for text in prior_user_messages)
+    current_risk = _extract_risk_appetite(user_message)
+    prior_risk = None
+    for text in reversed(prior_user_messages):
+        detected_risk = _extract_risk_appetite(text)
+        if detected_risk:
+            prior_risk = detected_risk
+            break
     prior_recommendation = any(
         _is_recommendation_request(text) for text in prior_user_messages
     )
     assistant_asked_horizon = any(
         _assistant_asked_time_horizon(text) for text in prior_assistant_messages
     )
+    assistant_asked_risk = any(
+        _assistant_asked_risk_appetite(text) for text in prior_assistant_messages
+    )
+    recommendation_active = any((
+        current_is_request,
+        prior_recommendation,
+        assistant_asked_horizon,
+        assistant_asked_risk,
+    ))
+    asset_preference = _detect_recommendation_asset_preference(
+        [user_message, *prior_user_messages[-4:]],
+    )
 
-    if current_is_request and not (current_has_horizon or prior_has_horizon):
+    return {
+        "current_is_request": current_is_request,
+        "current_has_horizon": current_has_horizon,
+        "horizon_known": current_has_horizon or prior_has_horizon,
+        "current_risk": current_risk,
+        "risk_profile": current_risk or prior_risk,
+        "prior_recommendation": prior_recommendation,
+        "assistant_asked_horizon": assistant_asked_horizon,
+        "assistant_asked_risk": assistant_asked_risk,
+        "recommendation_active": recommendation_active,
+        "asset_preference": asset_preference,
+        "prior_user_messages": prior_user_messages,
+    }
+
+
+def _detect_recommendation_mode(
+    session_messages: list[dict],
+    user_message: str,
+) -> str | None:
+    """Return 'clarify', 'picks', or None for recommendation flows."""
+    if not user_message:
+        return None
+
+    ctx = _build_recommendation_context(session_messages, user_message)
+    if ctx["current_is_request"] and not ctx["horizon_known"]:
         return "clarify"
 
-    if current_is_request and (current_has_horizon or prior_has_horizon):
+    if ctx["current_is_request"] and ctx["horizon_known"]:
         return "picks"
 
-    if assistant_asked_horizon and current_has_horizon and prior_recommendation:
+    if (
+        ctx["assistant_asked_horizon"]
+        and ctx["current_has_horizon"]
+        and ctx["prior_recommendation"]
+    ):
+        return "picks"
+
+    if (
+        ctx["assistant_asked_risk"]
+        and ctx["current_risk"]
+        and ctx["prior_recommendation"]
+        and ctx["horizon_known"]
+    ):
         return "picks"
 
     return None
 
 
-def _build_recommendation_instruction(user_message: str) -> str:
+def _build_recommendation_instruction(
+    user_message: str,
+    *,
+    risk_profile: str | None = None,
+    asset_preference: str = "mixed",
+    stock_health: dict[str, Any] | None = None,
+) -> str:
     """Extra system nudge so recommendation replies stay within scope."""
     explicit_count_requested = bool(_RECOMMENDATION_COUNT_RE.search(user_message or ""))
     wider_scope_requested = bool(_WIDER_ASSET_SCOPE_RE.search(user_message or ""))
@@ -868,11 +1029,167 @@ def _build_recommendation_instruction(user_message: str) -> str:
             "Do not include ETFs, gold, commodities, crypto, or global assets."
         )
     )
+    risk_rule = (
+        f"Use a {risk_profile} risk profile."
+        if risk_profile
+        else "Use a balanced risk profile by default."
+    )
+    evidence_rule = (
+        "Use hybrid evidence: combine live snapshot context with at least one tool-backed "
+        "signal before ranking picks. Prefer stock_screen, stock_lookup, mf_screen, "
+        "or mf_lookup before finalising the list."
+    )
+    if asset_preference == "fund_only":
+        preference_rule = (
+            "The user is asking for funds, so keep the picks to Indian mutual funds unless "
+            "they explicitly ask for stocks."
+        )
+    elif asset_preference == "stock_only":
+        preference_rule = (
+            "The user is leaning toward stocks, so prefer liquid mainstream Indian stocks "
+            "unless the data is too thin."
+        )
+    else:
+        preference_rule = (
+            "For broad buy requests, prefer liquid mainstream Indian stocks and direct "
+            "mutual funds rather than thin speculative movers."
+        )
+
+    stock_health_rule = ""
+    if stock_health and stock_health.get("thin_for_recommendations"):
+        stock_health_rule = (
+            " discover_stock evidence is currently too thin for high-confidence stock-only "
+            "picks, so lean fund-heavy or use broad caveated stock ideas rather than forcing "
+            "precise stock calls."
+        )
+
     return (
         "This turn is a recommendation flow. "
-        f"{count_rule} {scope_rule} "
-        "Keep each rationale to one line and order the picks from strongest to weakest."
+        f"{count_rule} {scope_rule} {risk_rule} {evidence_rule} {preference_rule}"
+        f"{stock_health_rule} Keep each rationale to one line and order the picks from "
+        "strongest to weakest."
     )
+
+
+def _count_business_days_between(start_date: date, end_date: date) -> int:
+    """Count weekday boundaries between two dates, ignoring holidays."""
+    if end_date <= start_date:
+        return 0
+    days = 0
+    cursor = start_date
+    while cursor < end_date:
+        cursor += timedelta(days=1)
+        if cursor.weekday() < 5:
+            days += 1
+    return days
+
+
+def _is_india_linked_news_row(title: str | None, primary_entity: str | None) -> bool:
+    text = f"{title or ''} {primary_entity or ''}".strip()
+    return bool(text and _INDIA_LINKED_NEWS_RE.search(text))
+
+
+async def _get_discover_stock_health(force_refresh: bool = False) -> dict[str, Any]:
+    """Return discover_stock freshness + queue health for internal gating."""
+    now_ts = time.time()
+    cached = _discover_stock_health_cache.get("value")
+    updated_at = float(_discover_stock_health_cache.get("updated_at") or 0.0)
+    if not force_refresh and cached and (now_ts - updated_at) < _DISCOVER_STOCK_HEALTH_TTL:
+        return cached
+
+    health: dict[str, Any] = {
+        "known": False,
+        "latest_source_timestamp": None,
+        "latest_ingested_at": None,
+        "age_business_days": None,
+        "stale": False,
+        "queued_ids": [],
+        "running_ids": [],
+        "job_stuck": False,
+        "thin_for_recommendations": False,
+    }
+    try:
+        pool = await get_pool()
+        row = await pool.fetchrow(
+            """
+            SELECT
+                MAX(source_timestamp) AS latest_source_timestamp,
+                MAX(ingested_at) AS latest_ingested_at
+            FROM discover_stock_snapshots
+            """
+        )
+        latest_source_ts = row["latest_source_timestamp"] if row else None
+        latest_ingested_at = row["latest_ingested_at"] if row else None
+
+        age_business_days = None
+        stale = False
+        if latest_source_ts:
+            latest_dt = latest_source_ts
+            if getattr(latest_dt, "tzinfo", None) is None:
+                latest_dt = latest_dt.replace(tzinfo=timezone.utc)
+            latest_date = latest_dt.astimezone(timezone.utc).date()
+            current_date = datetime.now(timezone.utc).date()
+            age_business_days = _count_business_days_between(latest_date, current_date)
+            stale = age_business_days > _DISCOVER_STOCK_STALE_BUSINESS_DAYS
+        else:
+            stale = True
+
+        queued_ids: list[str] = []
+        running_ids: list[str] = []
+        try:
+            from arq.constants import default_queue_name, in_progress_key_prefix, job_key_prefix
+
+            from app.queue.redis_pool import get_redis_pool
+            from app.queue.settings import expand_job_family_ids
+
+            redis_pool = await get_redis_pool()
+            family_ids = expand_job_family_ids("discover_stock")
+
+            in_progress_key = in_progress_key_prefix + default_queue_name
+            raw_members = await redis_pool.smembers(in_progress_key)
+            for raw_id in raw_members or set():
+                job_id = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
+                if job_id in family_ids:
+                    running_ids.append(job_id)
+
+            for family_id in family_ids:
+                if await redis_pool.exists(job_key_prefix + family_id):
+                    queued_ids.append(family_id)
+        except Exception:
+            logger.debug("discover_stock_health: redis inspection failed", exc_info=True)
+
+        job_stuck = bool(queued_ids and not running_ids)
+        health = {
+            "known": True,
+            "latest_source_timestamp": latest_source_ts,
+            "latest_ingested_at": latest_ingested_at,
+            "age_business_days": age_business_days,
+            "stale": stale,
+            "queued_ids": sorted(set(queued_ids)),
+            "running_ids": sorted(set(running_ids)),
+            "job_stuck": job_stuck,
+            "thin_for_recommendations": bool(stale or job_stuck),
+        }
+    except Exception:
+        logger.debug("discover_stock_health: lookup failed", exc_info=True)
+
+    _discover_stock_health_cache["value"] = health
+    _discover_stock_health_cache["updated_at"] = now_ts
+    return health
+
+
+def _recommendation_needs_risk_clarifier(
+    recommendation_ctx: dict[str, Any],
+    stock_health: dict[str, Any] | None,
+) -> bool:
+    """Ask risk appetite only when stock evidence is thin and scope is broad/stocky."""
+    if recommendation_ctx.get("risk_profile"):
+        return False
+    if recommendation_ctx.get("asset_preference") == "fund_only":
+        return False
+    if not stock_health:
+        return False
+    return bool(stock_health.get("thin_for_recommendations"))
 
 
 async def _news_hybrid_search(
@@ -1281,6 +1598,211 @@ async def _flag_last_tool_invocation_refused(session_id: str | None) -> None:
         logger.debug("chat_tool_invocations: refusal flag failed: %s", e)
 
 
+def _tool_call_succeeded(result: Any) -> bool:
+    return isinstance(result, dict) and "error" not in result
+
+
+def _format_compose_metric(value: Any, *, digits: int = 2) -> str | None:
+    try:
+        if value is None:
+            return None
+        return f"{float(value):.{digits}f}"
+    except Exception:
+        return None
+
+
+def _summarize_stock_for_compose(row: dict[str, Any]) -> str:
+    parts = [str(row.get("symbol") or row.get("display_name") or "stock")]
+    roe = _format_compose_metric(row.get("roe"))
+    score = _format_compose_metric(row.get("score"))
+    pe = _format_compose_metric(row.get("pe_ratio"))
+    pct = _format_compose_metric(row.get("percent_change") or row.get("percent_change_1d"))
+    if roe is not None:
+        parts.append(f"ROE {roe}")
+    if pe is not None:
+        parts.append(f"PE {pe}")
+    if pct is not None:
+        parts.append(f"{pct}%")
+    if score is not None:
+        parts.append(f"score {score}")
+    return " | ".join(parts)
+
+
+def _summarize_fund_for_compose(row: dict[str, Any]) -> str:
+    name = str(row.get("scheme_name") or row.get("scheme_code") or "fund")
+    parts = [name]
+    returns_3y = _format_compose_metric(row.get("returns_3y"))
+    score = _format_compose_metric(row.get("score"))
+    category = row.get("category")
+    if category:
+        parts.append(str(category))
+    if returns_3y is not None:
+        parts.append(f"3Y {returns_3y}")
+    if score is not None:
+        parts.append(f"score {score}")
+    return " | ".join(parts)
+
+
+def _summarize_tool_result_for_compose(
+    tool_name: str,
+    params: dict[str, Any],
+    result: Any,
+) -> str:
+    """Create a short human-readable summary that the composer can actually use."""
+    if not isinstance(result, dict):
+        return f"[{tool_name}] returned a non-dict result."
+    if "error" in result:
+        return f"[{tool_name}] ERROR: {result['error']}"
+
+    if tool_name in {"stock_screen", "stock_compare", "watchlist"}:
+        stocks = result.get("stocks") or []
+        if stocks:
+            preview = "; ".join(
+                _summarize_stock_for_compose(row)
+                for row in stocks[:3]
+                if isinstance(row, dict)
+            )
+            return f"[{tool_name}] SUCCESS with {len(stocks)} stock(s): {preview}"
+
+    if tool_name == "stock_lookup":
+        return f"[stock_lookup] SUCCESS: {_summarize_stock_for_compose(result)}"
+
+    if tool_name in {"mf_screen"}:
+        funds = result.get("funds") or []
+        if funds:
+            preview = "; ".join(
+                _summarize_fund_for_compose(row)
+                for row in funds[:3]
+                if isinstance(row, dict)
+            )
+            return f"[{tool_name}] SUCCESS with {len(funds)} fund(s): {preview}"
+
+    if tool_name == "mf_lookup":
+        return f"[mf_lookup] SUCCESS: {_summarize_fund_for_compose(result)}"
+
+    if tool_name == "sector_thesis":
+        stats = result.get("stats") or {}
+        sector = result.get("sector") or params.get("sector") or "sector"
+        top = result.get("top_picks") or []
+        top_names = ", ".join(
+            str(row.get("symbol") or row.get("display_name"))
+            for row in top[:3]
+            if isinstance(row, dict)
+        )
+        return (
+            f"[sector_thesis] SUCCESS for {sector}: total={stats.get('total_stocks')}, "
+            f"avg_pe={_format_compose_metric(stats.get('avg_pe'))}, "
+            f"avg_roe={_format_compose_metric(stats.get('avg_roe'))}, "
+            f"top={top_names or 'n/a'}"
+        )
+
+    if tool_name == "sector_performance":
+        sector = result.get("sector") or params.get("sector") or "all sectors"
+        if result.get("top_gainers"):
+            gainers = ", ".join(
+                str(row.get("symbol") or row.get("name"))
+                for row in result["top_gainers"][:3]
+                if isinstance(row, dict)
+            )
+            return (
+                f"[sector_performance] SUCCESS for {sector}: avg_change="
+                f"{_format_compose_metric(result.get('avg_change_pct'))}, top={gainers or 'n/a'}"
+            )
+        if result.get("sectors"):
+            sectors = ", ".join(
+                f"{row.get('sector')} {_format_compose_metric(row.get('avg_change_pct'))}%"
+                for row in result["sectors"][:3]
+                if isinstance(row, dict)
+            )
+            return f"[sector_performance] SUCCESS overview: {sectors}"
+
+    return f"[{tool_name}] SUCCESS: {json.dumps(result, default=str)[:500]}"
+
+
+def _build_tool_context_for_compose(tool_entries: list[dict[str, Any]]) -> str:
+    """Render both compact summaries and raw tool payloads for final composition."""
+    summaries: list[str] = []
+    raw_chunks: list[str] = []
+    for idx, entry in enumerate(tool_entries, start=1):
+        tool_name = entry.get("tool") or f"tool_{idx}"
+        params = entry.get("params") or {}
+        result = entry.get("result")
+        summaries.append(_summarize_tool_result_for_compose(tool_name, params, result))
+        raw_chunks.append(
+            f"[{idx}] {tool_name} params={json.dumps(params, default=str)} "
+            f"result={json.dumps(result, default=str)[:1800]}"
+        )
+    return (
+        "\n\n--- TOOL SUMMARIES ---\n"
+        + "\n".join(summaries)
+        + "\n\n--- RAW TOOL RESULTS ---\n"
+        + "\n".join(raw_chunks)
+    )
+
+
+def _extract_expected_entities_from_tool_entries(
+    tool_entries: list[dict[str, Any]],
+) -> list[str]:
+    entities: list[str] = []
+    for entry in tool_entries:
+        result = entry.get("result")
+        if not _tool_call_succeeded(result):
+            continue
+        tool_name = entry.get("tool")
+        if tool_name in {"stock_screen", "stock_compare", "watchlist"}:
+            for row in (result.get("stocks") or [])[:3]:
+                if isinstance(row, dict):
+                    for candidate in (row.get("symbol"), row.get("display_name")):
+                        if isinstance(candidate, str) and candidate.strip():
+                            entities.append(candidate.strip())
+        elif tool_name == "stock_lookup":
+            for candidate in (result.get("symbol"), result.get("display_name")):
+                if isinstance(candidate, str) and candidate.strip():
+                    entities.append(candidate.strip())
+        elif tool_name in {"mf_screen"}:
+            for row in (result.get("funds") or [])[:3]:
+                if isinstance(row, dict):
+                    name = row.get("scheme_name")
+                    if isinstance(name, str) and name.strip():
+                        entities.append(name.strip())
+        elif tool_name == "mf_lookup":
+            name = result.get("scheme_name")
+            if isinstance(name, str) and name.strip():
+                entities.append(name.strip())
+        elif tool_name in {"sector_thesis", "sector_performance"}:
+            sector = result.get("sector") or (entry.get("params") or {}).get("sector")
+            if isinstance(sector, str) and sector.strip():
+                entities.append(sector.strip())
+    return entities[:8]
+
+
+def _compose_response_needs_retry(
+    response_text: str | None,
+    tool_entries: list[dict[str, Any]],
+) -> bool:
+    """Detect when a composed answer ignored or contradicted successful tool data."""
+    if not response_text:
+        return False
+    successful_entries = [entry for entry in tool_entries if _tool_call_succeeded(entry.get("result"))]
+    if not successful_entries:
+        return False
+
+    lowered = response_text.lower()
+    if _detect_refusal(response_text) or _RETRY_FETCH_RE.search(response_text):
+        return True
+
+    expected_entities = _extract_expected_entities_from_tool_entries(successful_entries)
+    if expected_entities:
+        mentioned = 0
+        for entity in expected_entities:
+            if entity.lower() in lowered:
+                mentioned += 1
+        if mentioned == 0:
+            return True
+
+    return False
+
+
 async def _execute_tool(
     tool_name: str,
     params: dict,
@@ -1536,7 +2058,36 @@ async def _execute_tool(
                 f"WHERE symbol IN ({placeholders})",
                 *symbols,
             )
-            return {"stocks": [record_to_dict(r) for r in rows]}
+            stocks = [record_to_dict(r) for r in rows]
+            found_symbols = {str(r.get("symbol") or "").upper() for r in stocks}
+            missing_symbols = [s for s in symbols if s not in found_symbols]
+            if len(stocks) == 1:
+                base_stock = stocks[0]
+                peer_rows = await pool.fetch(
+                    "SELECT symbol, display_name, sector, last_price, percent_change, "
+                    "pe_ratio, roe, roce, debt_to_equity, market_cap, score "
+                    "FROM discover_stock_snapshots "
+                    "WHERE sector = $1 AND symbol != $2 "
+                    "ORDER BY market_cap DESC NULLS LAST LIMIT 5",
+                    base_stock.get("sector"),
+                    base_stock.get("symbol"),
+                )
+                return {
+                    "stocks": stocks,
+                    "missing_symbols": missing_symbols,
+                    "fallback": "single_stock_with_peers",
+                    "peers": [record_to_dict(r) for r in peer_rows],
+                    "warning": (
+                        "Only one requested stock was found, so this response includes "
+                        "that stock plus close peers instead of a full comparison."
+                    ),
+                }
+            if not stocks:
+                return {"error": f"None of the requested symbols were found: {', '.join(symbols)}"}
+            return {
+                "stocks": stocks,
+                "missing_symbols": missing_symbols,
+            }
 
         elif tool_name == "mf_lookup":
             row, error = await _resolve_mutual_fund_row(pool, params)
@@ -3043,6 +3594,7 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
     try:
         context_parts: list[str] = []
         real_names: list[str] = []  # tracker for "only use these names" guardrail
+        stock_health = await _get_discover_stock_health()
 
         now = datetime.now(timezone.utc)
         ist_hour = (now.hour + 5) % 24 + (30 // 60)
@@ -3074,30 +3626,31 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
             pass
 
         # ── 3. Top 5 gainers + top 5 losers (REAL symbols) ──────────
-        try:
-            pool_conn = await get_pool()
-            top_gainers = await pool_conn.fetch(
-                "SELECT symbol, display_name, percent_change FROM discover_stock_snapshots "
-                "WHERE percent_change IS NOT NULL "
-                "ORDER BY percent_change DESC LIMIT 5"
-            )
-            top_losers = await pool_conn.fetch(
-                "SELECT symbol, display_name, percent_change FROM discover_stock_snapshots "
-                "WHERE percent_change IS NOT NULL "
-                "ORDER BY percent_change ASC LIMIT 5"
-            )
-            if top_gainers:
-                gs = ", ".join(f"{r['symbol']} ({r['percent_change']:+.1f}%)" for r in top_gainers)
-                context_parts.append(f"Top gainers today: {gs}")
-                real_names.extend(r["symbol"] for r in top_gainers)
-                real_names.extend(str(r.get("display_name") or "") for r in top_gainers)
-            if top_losers:
-                ls = ", ".join(f"{r['symbol']} ({r['percent_change']:+.1f}%)" for r in top_losers)
-                context_parts.append(f"Top losers today: {ls}")
-                real_names.extend(r["symbol"] for r in top_losers)
-                real_names.extend(str(r.get("display_name") or "") for r in top_losers)
-        except Exception:
-            pass
+        if not stock_health.get("stale"):
+            try:
+                pool_conn = await get_pool()
+                top_gainers = await pool_conn.fetch(
+                    "SELECT symbol, display_name, percent_change FROM discover_stock_snapshots "
+                    "WHERE percent_change IS NOT NULL "
+                    "ORDER BY percent_change DESC LIMIT 5"
+                )
+                top_losers = await pool_conn.fetch(
+                    "SELECT symbol, display_name, percent_change FROM discover_stock_snapshots "
+                    "WHERE percent_change IS NOT NULL "
+                    "ORDER BY percent_change ASC LIMIT 5"
+                )
+                if top_gainers:
+                    gs = ", ".join(f"{r['symbol']} ({r['percent_change']:+.1f}%)" for r in top_gainers)
+                    context_parts.append(f"Top gainers today: {gs}")
+                    real_names.extend(r["symbol"] for r in top_gainers)
+                    real_names.extend(str(r.get("display_name") or "") for r in top_gainers)
+                if top_losers:
+                    ls = ", ".join(f"{r['symbol']} ({r['percent_change']:+.1f}%)" for r in top_losers)
+                    context_parts.append(f"Top losers today: {ls}")
+                    real_names.extend(r["symbol"] for r in top_losers)
+                    real_names.extend(str(r.get("display_name") or "") for r in top_losers)
+            except Exception:
+                pass
 
         # ── 4. Real open/upcoming IPOs ─────────────────────────────
         try:
@@ -3139,14 +3692,23 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
                 "SELECT title, primary_entity FROM news_articles "
                 "WHERE timestamp > NOW() - INTERVAL '24 hours' "
                 "  AND title IS NOT NULL "
-                "ORDER BY timestamp DESC LIMIT 5"
+                "ORDER BY timestamp DESC LIMIT 20"
             )
+            news_rows = [
+                row for row in news_rows
+                if _is_india_linked_news_row(row.get("title"), row.get("primary_entity"))
+            ]
             if news_rows:
                 heads = [
                     f"\"{(r['title'] or '')[:90]}\""
-                    for r in news_rows
+                    for r in news_rows[:5]
                 ]
                 context_parts.append("Recent news:\n- " + "\n- ".join(heads))
+                real_names.extend(
+                    str(r.get("primary_entity") or "").strip()
+                    for r in news_rows[:5]
+                    if str(r.get("primary_entity") or "").strip()
+                )
         except Exception:
             pass
 
@@ -3197,10 +3759,12 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
             "verbs like 'Ask for...' or 'Check...'. Write as if the user is "
             "typing the question.\n"
             "3. English only, first-person, no numbering, no bullets.\n"
-            "4. DIVERSE: mix stocks, mutual funds, macro, IPOs, tax, "
-            "commodities, crypto, news reactions, sector views, watchlist "
-            "references.\n"
-            "5. Output exactly 30 prompts, one per line. No headings."
+            "4. India-first mix only: Indian stocks, mutual funds, sectors, "
+            "IPOs, tax, macro, watchlist ideas, and India-linked global-news "
+            "reactions. Do NOT include crypto prompts by default.\n"
+            "5. Use a global company or overseas event only when the live "
+            "context clearly links it to Indian markets.\n"
+            "6. Output exactly 30 prompts, one per line. No headings."
         )
         user_msg = (
             f"Live market context (use only these real names):\n{context_str}\n\n"
@@ -3238,6 +3802,9 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
             if any(p in low for p in placeholder_markers):
                 logger.debug("suggestions: filtered placeholder line: %r", line)
                 continue
+            if _CRYPTO_TOPIC_RE.search(low):
+                logger.debug("suggestions: filtered crypto line: %r", line)
+                continue
             cleaned.append(line)
 
         # Dedup (case-insensitive)
@@ -3267,30 +3834,30 @@ def _static_suggestions(ist_hour: int) -> list[str]:
     if ist_hour < 9:
         return [
             "How is Gift Nifty today?",
-            "Top 5 stocks by score",
             "Any upcoming IPOs?",
-            "Best large cap mutual funds",
+            "Best flexi cap mutual funds",
+            "What is the market setup today?",
         ]
     elif ist_hour < 15:
         return [
-            "Market summary",
+            "How is Nifty doing today?",
             "How are my watchlist stocks doing?",
-            "Top gainers today",
+            "Which sectors are leading today?",
             "Compare TCS vs Infosys",
         ]
     elif ist_hour < 20:
         return [
             "How did the market close?",
             "Best performing sectors today",
-            "IT stocks with ROE > 20%",
-            "Gold price today",
+            "Best flexi cap mutual funds",
+            "Calculate LTCG tax on ₹5L profit",
         ]
     else:
         return [
-            "Top 5 stocks by score",
             "Best SIP mutual funds",
-            "Calculate LTCG tax on ₹5L profit",
             "India GDP growth trend",
+            "Any upcoming IPOs?",
+            "Best flexi cap mutual funds",
         ]
 
 
@@ -3336,7 +3903,11 @@ async def stream_chat_response(
         logger.debug("chat_stream: failed to load session messages", exc_info=True)
         session_messages = []
 
+    recommendation_ctx = _build_recommendation_context(session_messages, user_message)
     recommendation_mode = _detect_recommendation_mode(session_messages, user_message)
+    stock_health = None
+    if recommendation_ctx.get("recommendation_active"):
+        stock_health = await _get_discover_stock_health()
     if recommendation_mode == "clarify":
         thinking_text = (
             "I need one key input before ranking ideas: your time horizon changes "
@@ -3355,6 +3926,33 @@ async def stream_chat_response(
             )
         except Exception:
             logger.exception("chat_stream: failed to save clarifier message")
+            msg_id = None
+        yield {"event": "done", "data": {"message_id": msg_id, "session_id": session_id}}
+        return
+    if recommendation_mode == "picks" and _recommendation_needs_risk_clarifier(
+        recommendation_ctx,
+        stock_health,
+    ):
+        thinking_text = (
+            "Your time horizon is clear, but stock evidence is thin right now, so I need "
+            "your risk appetite before I decide whether to lean toward steadier funds or "
+            "higher-beta stock ideas."
+        )
+        response_text = (
+            "What risk appetite should I assume: conservative, balanced, or aggressive?"
+        )
+        yield {"event": "thinking", "data": {"status": "Refining your recommendation..."}}
+        yield {"event": "thinking_text", "data": {"text": thinking_text}}
+        yield {"event": "token", "data": {"text": response_text}}
+        try:
+            msg_id = await save_message(
+                session_id,
+                "assistant",
+                response_text,
+                thinking_text=thinking_text,
+            )
+        except Exception:
+            logger.exception("chat_stream: failed to save risk clarifier message")
             msg_id = None
         yield {"event": "done", "data": {"message_id": msg_id, "session_id": session_id}}
         return
@@ -3382,7 +3980,12 @@ async def stream_chat_response(
             1,
             {
                 "role": "system",
-                "content": _build_recommendation_instruction(user_message),
+                "content": _build_recommendation_instruction(
+                    user_message,
+                    risk_profile=recommendation_ctx.get("risk_profile"),
+                    asset_preference=recommendation_ctx.get("asset_preference", "mixed"),
+                    stock_health=stock_health,
+                ),
             },
         )
 
@@ -3418,6 +4021,7 @@ async def stream_chat_response(
     # ─────────────────────────────────────────────────────────────────
     tool_markers = _TOOL_PATTERN.findall(initial_response)
     tool_results: dict[str, Any] = {}
+    tool_entries: list[dict[str, Any]] = []
     stock_cards: list[dict] = []
     mf_cards: list[dict] = []
     tools_used: list[dict] = []
@@ -3493,6 +4097,11 @@ async def stream_chat_response(
                 logger.info("tool_call: ERROR_RESULT name=%s error=%s", tool_name, result.get("error"))
                 any_error = True
             tool_results[tool_name] = result
+            tool_entries.append({
+                "tool": tool_name,
+                "params": params,
+                "result": result,
+            })
             tools_used.append({"tool": tool_name, "params": params})
 
             # Card extraction
@@ -3579,15 +4188,28 @@ async def stream_chat_response(
                     initial_response = retry_response
 
         # ── Phase 3: Compose final answer with SLOW model + REAL streaming
-        tool_context = "\n\n--- Tool Results ---\n"
-        for tn, tr in tool_results.items():
-            tool_context += f"\n[{tn}]: {json.dumps(tr, default=str)[:2000]}\n"
+        successful_tool_entries = [
+            entry for entry in tool_entries if _tool_call_succeeded(entry.get("result"))
+        ]
+        tool_context = _build_tool_context_for_compose(tool_entries)
 
         messages.append({"role": "assistant", "content": initial_response})
+        compose_intro = [
+            "Here are the tool results. Compose your FINAL response now.",
+        ]
+        if successful_tool_entries:
+            compose_intro.extend([
+                "",
+                f"{len(successful_tool_entries)} tool call(s) succeeded.",
+                "You MUST synthesize the successful results below before using any "
+                "fallback phrasing.",
+                "Do NOT say you lack the data when a relevant successful tool result exists.",
+            ])
         messages.append({
             "role": "user",
             "content": (
-                "Here are the tool results. Compose your FINAL response now.\n\n"
+                "\n".join(compose_intro)
+                + "\n\n"
                 "⚠️ CRITICAL: You have NO MORE TOOL CALLS available. "
                 "Any [TOOL:...] markers you emit will be IGNORED and your "
                 "response will look broken to the user. Work ONLY with the "
@@ -3633,15 +4255,12 @@ async def stream_chat_response(
         compose_messages = None
 
     # ─────────────────────────────────────────────────────────────────
-    # REAL STREAMING PHASE (final answer)
+    # FINAL ANSWER PHASE
     # ─────────────────────────────────────────────────────────────────
-    # We stream tokens directly from OpenRouter's SSE endpoint. No more
-    # fake sleep loop — pacing is naturally determined by the model.
-    #
-    # Cursor-based filtering strips [TOOL:...], [CARD:...], and the
-    # [SUGGESTIONS]...[/SUGGESTIONS] block on-the-fly so the client
-    # never sees the bracketed syntax leak into the chat bubble, even
-    # as the tags land mid-chunk in the SSE stream.
+    # Tool-based answers are composed with a blocking call so we can
+    # validate that the draft actually uses the successful tool results
+    # before we stream it to the client. No-tool answers continue to use
+    # the already-generated first-pass text.
 
     # Decide which model chain handles the final answer. Default is
     # fast; upgrade to slow only if the query needs deep analysis.
@@ -3656,13 +4275,43 @@ async def stream_chat_response(
     )
 
     async def _stream_final() -> AsyncGenerator[str, None]:
-        """Yield raw token deltas from the appropriate model chain."""
+        """Yield the final response text, already validated if tools ran."""
         if compose_messages is not None:
-            # Tools were used — compose via real OpenRouter streaming
-            async for delta in _stream_llm_response(
+            composed_text = await _call_llm_blocking(
                 api_key, compose_messages, chain=compose_chain,
-            ):
-                yield delta
+            )
+            composed_text = _normalize_thinking_markup(composed_text)
+            if _compose_response_needs_retry(composed_text, tool_entries):
+                logger.info(
+                    "chat_stream: compose retry triggered tools=%d",
+                    len(tool_entries),
+                )
+                correction_messages = compose_messages + [
+                    {"role": "assistant", "content": composed_text or ""},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Rewrite that answer. You ignored or contradicted successful "
+                            "tool results.\n"
+                            "- Use the successful tool results already provided.\n"
+                            "- Do not say data is unavailable when a tool succeeded.\n"
+                            "- Do not ask whether to retry or fetch again unless the user "
+                            "explicitly asked for another fetch.\n"
+                            "- Keep the exact same formatting contract: <thinking> block, "
+                            "answer, then [SUGGESTIONS]."
+                        ),
+                    },
+                ]
+                corrected_text = await _call_llm_blocking(
+                    api_key,
+                    correction_messages,
+                    chain=compose_chain,
+                )
+                if corrected_text:
+                    composed_text = _normalize_thinking_markup(corrected_text)
+            if composed_text:
+                yield composed_text
+                return
         else:
             # No tools — the fast model already wrote the answer. Fake
             # stream it word-by-word for UX parity with the real-stream
@@ -3896,6 +4545,9 @@ async def stream_chat_response(
         except Exception:
             logger.debug("chat_stream: follow-up fallback failed", exc_info=True)
 
+    if _detect_refusal(final_response) and tool_entries:
+        await _flag_last_tool_invocation_refused(session_id)
+
     # Send stock cards
     for card in stock_cards[:5]:
         yield {"event": "stock_card", "data": card}
@@ -3970,6 +4622,7 @@ async def _refresh_prefetch_cache_once() -> None:
     try:
         t0 = time.monotonic()
         pool = await get_pool()
+        stock_health = await _get_discover_stock_health()
 
         # 1. Indices (Nifty 50, Sensex, Bank, IT, + global benchmarks)
         from app.services.market_service import get_latest_prices
@@ -3993,36 +4646,39 @@ async def _refresh_prefetch_cache_once() -> None:
                 }
 
         # 2. Top 5 gainers + top 5 losers (NSE universe)
-        gain_rows = await pool.fetch(
-            "SELECT symbol, display_name, percent_change, last_price "
-            "FROM discover_stock_snapshots "
-            "WHERE percent_change IS NOT NULL "
-            "ORDER BY percent_change DESC LIMIT 5"
-        )
-        lose_rows = await pool.fetch(
-            "SELECT symbol, display_name, percent_change, last_price "
-            "FROM discover_stock_snapshots "
-            "WHERE percent_change IS NOT NULL "
-            "ORDER BY percent_change ASC LIMIT 5"
-        )
-        top_gainers = [
-            {
-                "symbol": r["symbol"],
-                "name": r["display_name"],
-                "change_pct": float(r["percent_change"] or 0),
-                "price": float(r["last_price"] or 0),
-            }
-            for r in gain_rows
-        ]
-        top_losers = [
-            {
-                "symbol": r["symbol"],
-                "name": r["display_name"],
-                "change_pct": float(r["percent_change"] or 0),
-                "price": float(r["last_price"] or 0),
-            }
-            for r in lose_rows
-        ]
+        top_gainers: list[dict[str, Any]] = []
+        top_losers: list[dict[str, Any]] = []
+        if not stock_health.get("stale"):
+            gain_rows = await pool.fetch(
+                "SELECT symbol, display_name, percent_change, last_price "
+                "FROM discover_stock_snapshots "
+                "WHERE percent_change IS NOT NULL "
+                "ORDER BY percent_change DESC LIMIT 5"
+            )
+            lose_rows = await pool.fetch(
+                "SELECT symbol, display_name, percent_change, last_price "
+                "FROM discover_stock_snapshots "
+                "WHERE percent_change IS NOT NULL "
+                "ORDER BY percent_change ASC LIMIT 5"
+            )
+            top_gainers = [
+                {
+                    "symbol": r["symbol"],
+                    "name": r["display_name"],
+                    "change_pct": float(r["percent_change"] or 0),
+                    "price": float(r["last_price"] or 0),
+                }
+                for r in gain_rows
+            ]
+            top_losers = [
+                {
+                    "symbol": r["symbol"],
+                    "name": r["display_name"],
+                    "change_pct": float(r["percent_change"] or 0),
+                    "price": float(r["last_price"] or 0),
+                }
+                for r in lose_rows
+            ]
 
         # 3. FX majors
         fx_rows = await get_latest_prices(instrument_type="currency")
@@ -4565,21 +5221,43 @@ async def _stream_llm_response(
 async def autocomplete(query: str, limit: int = 8) -> list[dict]:
     """Search stocks and MFs for autocomplete. Returns mixed results."""
     pool = await get_pool()
-    q = f"%{query.strip()}%"
+    exact = query.strip()
+    q = f"%{exact}%"
+    prefix = f"{exact}%"
 
     stock_rows = await pool.fetch(
         "SELECT symbol, display_name, score FROM discover_stock_snapshots "
-        "WHERE symbol ILIKE $1 OR display_name ILIKE $1 "
-        "ORDER BY score DESC NULLS LAST LIMIT $2",
+        "WHERE symbol ILIKE $2 OR display_name ILIKE $2 "
+        "ORDER BY "
+        "CASE "
+        "  WHEN UPPER(symbol) = UPPER($1) THEN 0 "
+        "  WHEN UPPER(symbol) ILIKE UPPER($3) THEN 1 "
+        "  WHEN LOWER(display_name) = LOWER($1) THEN 2 "
+        "  WHEN display_name ILIKE $3 THEN 3 "
+        "  ELSE 4 "
+        "END ASC, "
+        "score DESC NULLS LAST LIMIT $4",
+        exact,
         q,
+        prefix,
         limit,
     )
 
     mf_rows = await pool.fetch(
         "SELECT scheme_code, scheme_name, score FROM discover_mutual_fund_snapshots "
-        "WHERE scheme_name ILIKE $1 OR scheme_code ILIKE $1 "
-        "ORDER BY score DESC NULLS LAST LIMIT $2",
+        "WHERE scheme_name ILIKE $2 OR scheme_code ILIKE $2 "
+        "ORDER BY "
+        "CASE "
+        "  WHEN scheme_code = $1 THEN 0 "
+        "  WHEN LOWER(scheme_name) = LOWER($1) THEN 1 "
+        "  WHEN scheme_code ILIKE $3 THEN 2 "
+        "  WHEN scheme_name ILIKE $3 THEN 3 "
+        "  ELSE 4 "
+        "END ASC, "
+        "score DESC NULLS LAST LIMIT $4",
+        exact,
         q,
+        prefix,
         limit // 2,
     )
 

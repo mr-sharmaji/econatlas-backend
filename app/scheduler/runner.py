@@ -8,6 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.core.config import get_settings
 from app.queue.redis_pool import get_redis_pool
+from app.queue.settings import canonicalize_job_id
 from app.scheduler.job_executors import shutdown_job_executors
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,7 @@ async def _enqueue(job_name: str, *, job_id: str | None = None) -> None:
     ARQ task wrapper (``_run_with_retry``) after the job completes.  The
     TTL is a safety net in case the worker hard-crashes.
     """
-    effective_id = job_id or job_name
+    effective_id = canonicalize_job_id(job_id or job_name) or job_name
     lock_key = f"job_lock:{effective_id}"
     try:
         pool = await get_redis_pool()

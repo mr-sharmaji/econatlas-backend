@@ -3,6 +3,14 @@ from __future__ import annotations
 
 from arq import func
 
+# Legacy discover_stock aliases that have existed in Redis/ARQ state.
+# We canonicalize them to the base job ID so scheduler dedupe, worker
+# in-progress tracking, and stale-state cleanup all agree on one family.
+_LEGACY_JOB_ID_ALIASES: dict[str, str] = {
+    "discover_stock_retry": "discover_stock",
+    "startup_discover_stock": "discover_stock",
+}
+
 # (max_retries, delay_base_seconds)
 # Backoff formula: delay_base * 2^(attempt - 1)
 JOB_RETRY_POLICIES: dict[str, tuple[int, int]] = {
@@ -36,6 +44,25 @@ JOB_RETRY_POLICIES: dict[str, tuple[int, int]] = {
     # News embedding backfill — CPU-bound, self-idempotent
     "news_embed": (1, 30),
 }
+
+
+def canonicalize_job_id(job_id: str | None) -> str | None:
+    """Map legacy ARQ/scheduler job ids onto their canonical family id."""
+    if not job_id:
+        return job_id
+    return _LEGACY_JOB_ID_ALIASES.get(job_id, job_id)
+
+
+def expand_job_family_ids(job_name: str) -> set[str]:
+    """Return canonical + known legacy ids for a job family."""
+    ids = {
+        job_name,
+        f"startup_{job_name}",
+        f"{job_name}_manual",
+    }
+    if job_name == "discover_stock":
+        ids.update(_LEGACY_JOB_ID_ALIASES.keys())
+    return ids
 
 
 def get_arq_functions() -> list:

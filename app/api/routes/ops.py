@@ -273,6 +273,7 @@ async def clear_stale_jobs(
     _authorize(x_ops_token)
     from arq.constants import default_queue_name, in_progress_key_prefix, job_key_prefix
 
+    from app.queue.settings import expand_job_family_ids
     from app.queue.redis_pool import get_redis_pool
 
     pool = await get_redis_pool()
@@ -298,8 +299,10 @@ async def clear_stale_jobs(
         cleared_per_job.append(key_str.removeprefix(in_progress_key_prefix))
 
     # 3. Delete individual job hash keys for known startup/manual jobs
-    known_prefixes = [f"startup_{name}" for name in _VALID_JOBS] + [f"{name}_manual" for name in _VALID_JOBS]
-    for jid in known_prefixes:
+    known_ids: set[str] = set()
+    for name in _VALID_JOBS:
+        known_ids.update(expand_job_family_ids(name))
+    for jid in known_ids:
         job_key = job_key_prefix + jid
         if await pool.exists(job_key):
             await pool.delete(job_key)
@@ -339,9 +342,11 @@ async def abort_job(
         )
     from arq.constants import default_queue_name, in_progress_key_prefix, job_key_prefix
 
+    from app.queue.settings import expand_job_family_ids
     from app.queue.redis_pool import get_redis_pool
 
     pool = await get_redis_pool()
+    family_ids = expand_job_family_ids(job_name)
 
     # 1. Set abort flag (TTL 10 minutes — long enough for job to see it)
     abort_key = f"job:abort:{job_name}"
@@ -353,21 +358,23 @@ async def abort_job(
     raw_members = await pool.smembers(in_progress_key)
     for raw_id in raw_members or set():
         job_id = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
-        if job_name in job_id:
+        if job_id in family_ids:
             await pool.srem(in_progress_key, raw_id)
             cleared.append(job_id)
 
     # 3. Clear per-job in-progress keys
-    async for key in pool.scan_iter(match=f"{in_progress_key_prefix}*{job_name}*"):
-        key_str = key.decode() if isinstance(key, bytes) else str(key)
-        await pool.delete(key)
-        cleared.append(key_str)
+    for family_id in family_ids:
+        async for key in pool.scan_iter(match=f"{in_progress_key_prefix}{family_id}*"):
+            key_str = key.decode() if isinstance(key, bytes) else str(key)
+            await pool.delete(key)
+            cleared.append(key_str)
 
     # 4. Clear job hash keys
-    async for key in pool.scan_iter(match=f"{job_key_prefix}*{job_name}*"):
-        key_str = key.decode() if isinstance(key, bytes) else str(key)
-        await pool.delete(key)
-        cleared.append(key_str)
+    for family_id in family_ids:
+        async for key in pool.scan_iter(match=f"{job_key_prefix}{family_id}*"):
+            key_str = key.decode() if isinstance(key, bytes) else str(key)
+            await pool.delete(key)
+            cleared.append(key_str)
 
     logger.warning("Abort requested for job %s: flag set, cleared %d ARQ keys", job_name, len(cleared))
     return {
