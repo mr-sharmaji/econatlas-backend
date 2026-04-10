@@ -33,7 +33,7 @@ MAX_MESSAGES_PER_DAY = 100
 MAX_SESSIONS_PER_DEVICE = 50
 STREAM_TIMEOUT = 60.0  # 60s ceiling per LLM call (was 30s — too tight for tool chains)
 HEARTBEAT_INTERVAL = 5.0  # Send a "thinking" keepalive every 5s during long calls
-MAX_TOKENS_CHAT = 800  # Larger than narrative — chat needs room
+MAX_TOKENS_CHAT = 1500  # Generous ceiling so long analyses don't truncate mid-answer
 
 # Two model chains: FAST is the default for almost everything, SLOW is
 # only invoked when the query needs deep analysis or multi-step
@@ -308,16 +308,25 @@ Available tools:
 
 ## CORE RULES (non-negotiable)
 
-### 1. MANDATORY — begin EVERY response with a `### Thinking` section
-Every single response, without exception (except pure greetings like "hi"), MUST start with:
+### 1. MANDATORY — wrap reasoning in `<thinking>...</thinking>` tags
+Every non-trivial response MUST begin with a `<thinking>` block that explains your plan in 2-4 sentences: which tools you'll call, what data you need, how you'll structure the answer. The tags are required — they are parsed by the client and rendered separately from the actual answer.
 
+Format:
 ```
-### Thinking
-<one short paragraph — 2-4 sentences — explaining what you're about to do:
- which tools you'll call, what data you need, how you'll structure the answer>
+<thinking>
+I'll fetch TCS fundamentals via stock_lookup, then present price,
+valuation, and profitability in a bullet list with a stock card.
+</thinking>
+
+(Actual answer goes here, OUTSIDE the thinking tags.)
 ```
 
-Then the actual answer follows. This is visible to the user. DO NOT SKIP THIS SECTION. If you find yourself writing a response without the `### Thinking` heading at the top, STOP and add it.
+Rules for the thinking block:
+- Always wrap reasoning in `<thinking>...</thinking>` — NEVER use `### Thinking` headings or other markers.
+- The block must be the FIRST thing in your response.
+- Keep it 2-4 sentences max.
+- Skip it only for one-line greetings ("hi", "hello", "what's up").
+- The actual answer starts AFTER `</thinking>` on a new line.
 
 ### 2. CITATION — specific numbers MUST come from tools or the LIVE SNAPSHOT
 Every specific price, percentage, ratio, metric, or historical data point in your answer MUST come from either:
@@ -345,21 +354,29 @@ When you genuinely don't have data (after trying the right tool), respond with:
 
 Never say "approximately ₹X" or "around Y%" or "roughly 30 days" without a tool source. Never invent company names like "XYZ Tech" or "Company A". Never invent business descriptions ("FIRSTCRY is a kids-education platform") — use only the `display_name` from tool results. If you don't know what a company does, just say its name.
 
-### 5. CURRENCY — INR for Indian prices, USD for global commodities
-- **Indian stocks, MFs, indices, market cap:** always `₹` symbol with Indian units:
-  - Stock prices: `₹3,450.25` (2 decimals)
-  - Market cap: `₹12,345 Cr` (crore), `₹1.2 L Cr` (lakh crore), `₹45 L` (lakh)
-  - Never `Rs`, `INR`, `rupees`, `million`, `billion`, or `$` for Indian assets
-- **Global commodities:** ALWAYS USD with the `$` symbol:
+### 5. CURRENCY — match the asset, don't force ₹ everywhere
+- **Indian stock PRICES and market cap** → `₹` with Indian units:
+  - Prices: `₹3,450.25` (2 decimals)
+  - Market cap: `₹12,345 Cr`, `₹1.2 L Cr`, `₹45 L`
+  - Never `Rs`, `INR`, `rupees`, `million`, `billion`, `$`
+- **Indian INDEX VALUES** (Nifty 50, Sensex, Nifty Bank, etc.) → **no currency symbol, just the number** (indices are points, not money):
+  - ✅ `Nifty 50 at 24,004.25 (+0.96%)`
+  - ❌ `Nifty 50 at ₹24,004.25` (wrong — indices aren't money)
+- **Global INDEX VALUES** (S&P 500, Nasdaq, Dow Jones, Nikkei 225, FTSE 100, DAX) → **no currency symbol either, just the number**:
+  - ✅ `S&P 500 at 6,824.66 (+0.62%)`
+  - ✅ `Nasdaq at 22,822.42 (+0.83%)`
+  - ✅ `Nikkei 225 at 56,924.11 (+1.84%)`
+  - ❌ `S&P 500 at ₹6,824.66` (wrong — global indices are points, not rupees)
+  - ❌ `Nasdaq at $22,822.42` (wrong — index values don't use currency)
+- **Global commodities** → USD with `$`:
   - Gold: `$4,776.90/oz` (per troy ounce), NOT `₹4,776.90 per 10g`
   - Silver: `$28.50/oz`
-  - Crude / Brent: `$98.69/bbl` (per barrel), NOT `₹98.69 per barrel`
+  - Crude / Brent: `$98.69/bbl`
   - Natural gas: `$2.67/MMBtu`
-  - Copper/aluminum/etc: `$X.XX/lb` or `/t`
-- **Cryptocurrencies:** USD with `$` symbol (`$67,450`)
-- **FX pairs:** quote currency as-is (`USD/INR at ₹92.64`)
-- **Conversions:** If you convert USD → INR, do exact math. `$100 at ₹92.64 = ₹9,264` (not `₹9,200`).
-- Percentages: 2 decimals with explicit sign (`+1.23%`, `-0.45%`). Positive percentages ALWAYS get a `+` prefix.
+- **Cryptocurrencies** → USD with `$` (`$67,450`)
+- **FX pairs** → quote currency as-is (`USD/INR at ₹92.64`, `EUR/USD at $1.08`)
+- **Conversions** → exact math. `$100 at ₹92.64 = ₹9,264` (not `₹9,200`).
+- **Percentages** → 2 decimals with explicit sign. Positive always gets `+` prefix: `+1.23%`, `-0.45%`.
 
 ### 6. OUTPUT FORMAT — match the query type
 - **Single stock / MF lookup** → bullet list with **bold** key numbers + a [CARD:SYMBOL] marker. 3-6 bullets max.
@@ -392,8 +409,11 @@ Do not add "NFA", "do your own research", "consult a financial advisor", "past p
 ### Example 1 — Single stock lookup
 USER: What's the status of TCS?
 ASSISTANT:
-### Thinking
-I'll pull TCS fundamentals with stock_lookup and present price, valuation, and profitability in a quick-scan bullet list with the stock card.
+<thinking>
+I'll pull TCS fundamentals with stock_lookup and present price,
+valuation, and profitability in a quick-scan bullet list with the
+stock card.
+</thinking>
 
 [TOOL:stock_lookup:{"symbol":"TCS"}]
 
@@ -407,11 +427,13 @@ I'll pull TCS fundamentals with stock_lookup and present price, valuation, and p
 
 *Verdict:* Strong fundamentals, richly valued. Growth is the swing factor.
 
-### Example 2 — Screener
-USER: Top 5 IT stocks by ROE
+### Example 2 — Screener with index reference
+USER: Top 5 IT stocks by ROE. How is Nifty IT doing?
 ASSISTANT:
-### Thinking
-I'll screen stocks by sector='Information Technology' with ROE > 20 sorted by score, then list the top 5 with cards.
+<thinking>
+I'll screen IT stocks with ROE > 20 sorted by score. The Nifty IT
+reading comes straight from the LIVE SNAPSHOT — no tool needed for it.
+</thinking>
 
 [TOOL:stock_screen:{"query":"sector = 'Information Technology' AND roe > 20","limit":5}]
 
@@ -423,23 +445,25 @@ I'll screen stocks by sector='Information Technology' with ROE > 20 sorted by sc
 - **Wipro** [CARD:WIPRO] — ROE **21.5%**, PE 19.8×, ₹485.50
 - **LTI Mindtree** [CARD:LTIM] — ROE **21.1%**, PE 30.2×, ₹5,120.00
 
-*Verdict:* TCS dominates on capital efficiency. Infosys offers the best balance of ROE and valuation.
+**Nifty IT** is at **30,902.25 (-2.32%)** today — the sector is lagging.
+(Note: no ₹ prefix — indices are points, not currency.)
 
-### Example 3 — Macro / educational mix
-USER: Explain inflation and its current impact on the market
+*Verdict:* TCS dominates on capital efficiency. Infosys offers the best balance of ROE and valuation at a weak-sector moment.
+
+### Example 3 — Global indices + commodities
+USER: What are US markets and gold doing?
 ASSISTANT:
-### Thinking
-Quick definition of CPI-based inflation, then pull the latest India inflation_cpi reading and tie it to the current Nifty level from the snapshot above.
+<thinking>
+Both are in the LIVE SNAPSHOT above. I'll quote the US index points
+(no $ prefix, indices are points) and gold in USD per ounce.
+</thinking>
 
-[TOOL:macro:{"indicator":"inflation_cpi"}]
+**US Markets:**
+- S&P 500: **6,824.66 (+0.62%)**
+- Nasdaq: **22,822.42 (+0.83%)**
+- Dow Jones: **48,185.80 (+0.58%)**
 
-(After tool returns)
-**Inflation (CPI)** measures how fast prices of a typical basket of goods and services are rising year-over-year. RBI targets **4% ± 2%**.
-
-- **Latest India CPI:** **4.85%** — just above target, within comfort band
-- **Impact today:** With Nifty 50 at **23,995.75 (+0.93%)**, the market is shrugging off the elevated print — investors seem to expect RBI to hold rates steady at the next meeting
-
-*Takeaway:* Inflation is neither a tailwind nor a headwind at current levels.
+**Gold:** **$4,776.90/oz** (−0.10%) — range-bound near recent highs.
 
 ## FOLLOW-UP SUGGESTIONS (append at end of EVERY response)
 At the very end of every response, append exactly 5 follow-up suggestions in this format:
@@ -733,9 +757,26 @@ async def _execute_tool(
             }
 
         elif tool_name == "stock_compare":
-            symbols = [s.upper().strip() for s in params.get("symbols", [])][:3]
+            raw_symbols = params.get("symbols")
+            if not raw_symbols or not isinstance(raw_symbols, list):
+                return {
+                    "error": (
+                        "Missing 'symbols' list. Example correct call: "
+                        '[TOOL:stock_compare:{"symbols":["TCS","INFY","WIPRO"]}]. '
+                        "You must include the symbols list with 2-3 items."
+                    ),
+                    "hint": "Call stock_compare with a symbols array",
+                    "example": {"symbols": ["TCS", "INFY", "WIPRO"]},
+                }
+            symbols = [s.upper().strip() for s in raw_symbols if s][:3]
             if len(symbols) < 2:
-                return {"error": "Need at least 2 symbols to compare"}
+                return {
+                    "error": (
+                        f"Need at least 2 symbols to compare, got {len(symbols)}. "
+                        'Example: {"symbols":["TCS","INFY","WIPRO"]}'
+                    ),
+                    "hint": "Provide 2-3 stock symbols in the symbols array",
+                }
             placeholders = ", ".join(f"${i+1}" for i in range(len(symbols)))
             rows = await pool.fetch(
                 f"SELECT symbol, display_name, sector, last_price, percent_change, "
@@ -2335,24 +2376,34 @@ async def stream_chat_response(
         messages.append({
             "role": "user",
             "content": (
-                "Here are the tool results. Compose your final response now. "
+                "Here are the tool results. Compose your FINAL response now.\n\n"
+                "⚠️ CRITICAL: You have NO MORE TOOL CALLS available. "
+                "Any [TOOL:...] markers you emit will be IGNORED and your "
+                "response will look broken to the user. Work ONLY with the "
+                "tool results shown below. If you need data you don't have, "
+                "be honest: say 'I don't have that data right now. Want me "
+                "to try fetching it?' and stop.\n\n"
                 "FORMAT REQUIREMENTS (mandatory, non-negotiable):\n"
-                "1. START with a `### Thinking` section (2-4 sentences explaining "
-                "which data you're pulling from the tool results and how you'll "
-                "structure the answer). This is visible to the user.\n"
-                "2. Then write the actual answer using the format rules for this "
-                "query type (bullets / table / prose).\n"
+                "1. START with a `<thinking>...</thinking>` block (2-4 sentences "
+                "explaining which data you're pulling from the tool results and "
+                "how you'll structure the answer). Use the literal XML-style "
+                "tags `<thinking>` and `</thinking>` — NOT `### Thinking` "
+                "headings. The tags are parsed out by the client.\n"
+                "2. Then write the actual answer AFTER `</thinking>` using the "
+                "format rules for this query type (bullets / table / prose).\n"
                 "3. END with a [SUGGESTIONS]...[/SUGGESTIONS] block containing "
                 "EXACTLY 5 short follow-up questions (max 12 words each, "
                 "first-person, no instructional verbs). Include the closing "
                 "[/SUGGESTIONS] tag.\n"
-                "4. Do NOT include any [TOOL:...] markers in your response.\n"
+                "4. Do NOT include any [TOOL:...] markers — they will be ignored.\n"
                 "5. Be specific with the numbers from the tool results above.\n"
                 "6. If a tool returned an error or empty data, be honest: say "
                 "'I couldn't fetch X right now, want me to try again?' instead "
                 "of inventing numbers.\n"
-                "7. For commodity prices (gold/silver/crude/brent), use USD ($) "
-                "NOT INR (₹). For Indian stocks/MFs/indices use ₹."
+                "7. Currency rules: commodities (gold/silver/crude/brent) in "
+                "USD ($). Indian stock prices / market cap in ₹. "
+                "Index VALUES (Nifty, Sensex, S&P 500, Nasdaq, Nikkei, FTSE, "
+                "DAX) have NO currency symbol — they are points, not money."
                 f"{tool_context}"
             ),
         })
@@ -2405,64 +2456,136 @@ async def stream_chat_response(
                     yield chunk
                     await asyncio.sleep(0.01)
 
-    # Accumulated raw text (including bracketed blocks). Used for final
-    # DB save + post-stream suggestion extraction.
+    # ─────────────────────────────────────────────────────────────────
+    # Cursor-based filter with THREE channels:
+    #   * thinking_text events — content inside <thinking>...</thinking>
+    #   * token events         — the actual user-facing answer
+    #   * (suppressed)         — content inside [SUGGESTIONS]...[/SUGGESTIONS]
+    #
+    # The LLM's raw stream looks like:
+    #   <thinking>plan goes here</thinking>
+    #   Real answer body.
+    #   [SUGGESTIONS]...[/SUGGESTIONS]
+    #
+    # We walk the accumulated text with a cursor. When we cross a tag
+    # boundary we switch channels. [TOOL:...] and [CARD:...] markers are
+    # left in the stream and stripped post-hoc.
+    # ─────────────────────────────────────────────────────────────────
     raw_accum = ""
-    # Cursor: character offset up to which we've already emitted safely.
     yielded_up_to = 0
-    # True while we're inside a [SUGGESTIONS]...[/SUGGESTIONS] block.
-    in_suggestions_block = False
-    # Longest bracketed sentinel we might need to hold back at the
-    # tail to detect a mid-chunk tag start.
-    _HOLDBACK_LEN = len("[SUGGESTIONS]")
-    _START_TAG = "[SUGGESTIONS]"
-    _END_TAG = "[/SUGGESTIONS]"
+
+    # Channels: 'answer' (default), 'thinking', 'suppressed' (suggestions).
+    channel = "answer"
+
+    # Longest sentinel we need to hold back at the tail of each iteration
+    # so we don't emit a partial tag prefix that would complete next delta.
+    _THINK_START = "<thinking>"
+    _THINK_END = "</thinking>"
+    _SUG_START = "[SUGGESTIONS]"
+    _SUG_END = "[/SUGGESTIONS]"
+    _HOLDBACK_LEN = max(
+        len(_THINK_START), len(_THINK_END),
+        len(_SUG_START), len(_SUG_END),
+    )
+
+    def _emit(event_name: str, text: str):
+        if not text:
+            return None
+        return {"event": event_name, "data": {"text": text}}
 
     async for delta in _stream_final():
         if not delta:
             continue
         raw_accum += delta
 
-        if in_suggestions_block:
-            # Suppress all output until we see [/SUGGESTIONS].
-            end_idx = raw_accum.find(_END_TAG, yielded_up_to)
-            if end_idx >= 0:
-                yielded_up_to = end_idx + len(_END_TAG)
-                in_suggestions_block = False
-                # Fall through — we might be able to emit text after the
-                # closing tag in the same iteration.
-            else:
+        # Iteratively consume the accumulated buffer, switching channels
+        # whenever we hit a tag boundary. Each iteration either advances
+        # yielded_up_to to a safe point or breaks out to wait for more.
+        while yielded_up_to < len(raw_accum):
+            if channel == "suppressed":
+                # Skip everything until [/SUGGESTIONS]
+                end_idx = raw_accum.find(_SUG_END, yielded_up_to)
+                if end_idx >= 0:
+                    yielded_up_to = end_idx + len(_SUG_END)
+                    channel = "answer"
+                    continue
+                else:
+                    break  # need more input
+
+            if channel == "thinking":
+                # Emit thinking_text up to </thinking> (or safe point)
+                end_idx = raw_accum.find(_THINK_END, yielded_up_to)
+                if end_idx >= 0:
+                    if end_idx > yielded_up_to:
+                        emitted = _emit(
+                            "thinking_text",
+                            raw_accum[yielded_up_to:end_idx],
+                        )
+                        if emitted:
+                            yield emitted
+                    yielded_up_to = end_idx + len(_THINK_END)
+                    channel = "answer"
+                    continue
+                # No end tag yet — emit up to holdback boundary
+                safe_end = max(yielded_up_to, len(raw_accum) - _HOLDBACK_LEN)
+                if safe_end > yielded_up_to:
+                    emitted = _emit(
+                        "thinking_text",
+                        raw_accum[yielded_up_to:safe_end],
+                    )
+                    if emitted:
+                        yield emitted
+                    yielded_up_to = safe_end
+                break  # need more input
+
+            # channel == "answer": check for next boundary (<thinking> or [SUGGESTIONS])
+            think_idx = raw_accum.find(_THINK_START, yielded_up_to)
+            sug_idx = raw_accum.find(_SUG_START, yielded_up_to)
+            # Pick whichever comes first (if any)
+            candidates = [
+                (idx, tag, new_channel)
+                for idx, tag, new_channel in [
+                    (think_idx, _THINK_START, "thinking"),
+                    (sug_idx, _SUG_START, "suppressed"),
+                ]
+                if idx >= 0
+            ]
+            if candidates:
+                candidates.sort(key=lambda x: x[0])
+                boundary_idx, boundary_tag, new_channel = candidates[0]
+                # Emit answer text up to the boundary
+                if boundary_idx > yielded_up_to:
+                    emitted = _emit(
+                        "token",
+                        raw_accum[yielded_up_to:boundary_idx],
+                    )
+                    if emitted:
+                        yield emitted
+                yielded_up_to = boundary_idx + len(boundary_tag)
+                channel = new_channel
                 continue
 
-        # Not inside a suppression block. Check if a new [SUGGESTIONS]
-        # has appeared in the accumulated text.
-        start_idx = raw_accum.find(_START_TAG, yielded_up_to)
-        if start_idx >= 0:
-            # Emit everything up to the start of the block
-            if start_idx > yielded_up_to:
-                safe = raw_accum[yielded_up_to:start_idx]
-                if safe:
-                    yield {"event": "token", "data": {"text": safe}}
-            yielded_up_to = start_idx + len(_START_TAG)
-            in_suggestions_block = True
-            continue
+            # No boundary found — emit up to holdback boundary
+            safe_end = max(yielded_up_to, len(raw_accum) - _HOLDBACK_LEN)
+            if safe_end > yielded_up_to:
+                emitted = _emit("token", raw_accum[yielded_up_to:safe_end])
+                if emitted:
+                    yield emitted
+                yielded_up_to = safe_end
+            break  # need more input
 
-        # No full start tag found — emit up to a safe point, but hold
-        # back the last HOLDBACK_LEN chars in case they're a partial
-        # tag that will complete in the next delta.
-        safe_end = max(yielded_up_to, len(raw_accum) - _HOLDBACK_LEN)
-        if safe_end > yielded_up_to:
-            safe = raw_accum[yielded_up_to:safe_end]
-            if safe:
-                yield {"event": "token", "data": {"text": safe}}
-            yielded_up_to = safe_end
-
-    # Stream is done — flush any held-back tail that isn't inside a
-    # suggestions block.
-    if not in_suggestions_block and yielded_up_to < len(raw_accum):
+    # Stream is done — flush any tail that's still buffered.
+    if yielded_up_to < len(raw_accum):
         tail = raw_accum[yielded_up_to:]
-        if tail:
-            yield {"event": "token", "data": {"text": tail}}
+        if channel == "answer":
+            emitted = _emit("token", tail)
+            if emitted:
+                yield emitted
+        elif channel == "thinking":
+            emitted = _emit("thinking_text", tail)
+            if emitted:
+                yield emitted
+        # suppressed: drop
         yielded_up_to = len(raw_accum)
 
     # Build the full response for DB save + suggestion extraction.
@@ -2470,8 +2593,13 @@ async def stream_chat_response(
     if not final_response:
         final_response = "I couldn't generate a response. Please try again."
 
-    # Clean: strip tool markers, card markers.
+    # Clean: strip <thinking> blocks, tool markers, card markers.
+    # The <thinking> content has already been streamed as thinking_text
+    # SSE events — the saved DB content should have the answer only.
     final_response = _clean_response(final_response)
+    final_response = re.sub(
+        r"<thinking>.*?</thinking>", "", final_response, flags=re.DOTALL,
+    ).strip()
     final_response = _TOOL_PATTERN.sub("", final_response).strip()
     final_response = _CARD_PATTERN.sub("", final_response).strip()
 
@@ -2779,8 +2907,9 @@ def _render_prefetch_snapshot(
         for name in sorted_names:
             data = indices[name]
             sign = "+" if data["change_pct"] >= 0 else ""
+            # Index values are POINTS, not currency — no ₹/$ prefix.
             lines.append(
-                f"- {name}: ₹{data['price']:,.2f} ({sign}{data['change_pct']:.2f}%)"
+                f"- {name}: {data['price']:,.2f} ({sign}{data['change_pct']:.2f}%)"
             )
         lines.append("")
 
