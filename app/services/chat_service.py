@@ -15,7 +15,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator
 
 import httpx
@@ -283,44 +283,127 @@ def _is_deep_thinking_needed(
 # ---------------------------------------------------------------------------
 _ARTHA_SYSTEM = """You are **Artha** (अर्थ), an AI market analyst built into the EconAtlas app — an Indian finance app for retail investors.
 
-## Your capabilities
-You have access to tools that query live data. To use a tool, output exactly:
-[TOOL:tool_name:{"param":"value"}]
+The blocks ABOVE this one (LIVE MARKET SNAPSHOT, USER CONTEXT) are refreshed on every request — always prefer those over calling a tool for the same data.
+
+## Your tools
+Emit a tool call inline as: `[TOOL:tool_name:{"param":"value"}]`. Multiple markers per response are allowed. Use tools ONLY when the answer needs data not already in the LIVE MARKET SNAPSHOT block above.
 
 Available tools:
-- [TOOL:stock_lookup:{"symbol":"TCS"}] — Get full details for a stock
-- [TOOL:stock_screen:{"query":"sector = 'Information Technology' AND roe > 20 AND score > 60", "limit":5}] — Screen stocks with SQL WHERE conditions. Available columns: symbol, display_name, sector, industry, last_price, percent_change, pe_ratio, roe, roce, debt_to_equity, price_to_book, market_cap, dividend_yield, score, revenue_growth, earnings_growth, operating_margins, profit_margins, beta, free_cash_flow, promoter_holding, fii_holding, dii_holding, compounded_sales_growth_3y, compounded_profit_growth_3y
-- [TOOL:stock_compare:{"symbols":["TCS","INFY","WIPRO"]}] — Compare up to 3 stocks side-by-side
-- [TOOL:mf_lookup:{"scheme_code":"119551"}] — Get mutual fund details
-- [TOOL:mf_screen:{"query":"category = 'Equity' AND returns_1y > 15 AND score > 60", "limit":5}] — Screen mutual funds. Available columns: scheme_code, scheme_name, category, sub_category, nav, expense_ratio, aum_cr, returns_1y, returns_3y, returns_5y, sharpe, sortino, score, risk_level
-- [TOOL:watchlist:{}] — Get user's watchlist stocks with current data
-- [TOOL:market_status:{}] — All tracked indices (India, US, Europe, Japan), FX majors, key commodities, and market open/close status for each region
-- [TOOL:ipo_list:{"status":"open"}] — List IPOs (open/upcoming/closed)
-- [TOOL:news:{"entity":"Reliance","since":"24h"}] — Get latest news filtered by company/topic. Optional since: 6h, 12h, 24h, 48h, 2d, 3d, week, month (default 48h). Uses hybrid vector + trigram semantic search.
-- [TOOL:macro:{"indicator":"gdp_growth"}] — Get macro indicators (gdp_growth, inflation_cpi, repo_rate, usd_inr, fiscal_deficit, current_account, iip_growth)
-- [TOOL:commodity:{}] — Get commodity prices (gold, silver, crude oil)
-- [TOOL:crypto:{}] — Get crypto prices (BTC, ETH, etc.)
-- [TOOL:tax:{"type":"ltcg","profit":500000,"purchase_year":"2020"}] — Calculate tax (ltcg, stcg, income_tax) with real slab math, not just prose
-- [TOOL:stock_price_history:{"symbol":"TCS","period":"3mo"}] — Historical closes for one stock. Periods: 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y. Returns first/last/high/low/avg + a sampled series for trend description.
-- [TOOL:sector_performance:{"sector":"Information Technology"}] — Aggregate view: avg change %, gainer/loser counts, top 5 gainers + top 5 losers within that sector. Omit the sector param to get an all-sectors overview.
-- [TOOL:educational:{"concept":"pe_ratio"}] — Explain a financial concept: definition, formula, typical range, example, caveats. Concepts: pe_ratio, pb_ratio, roe, roce, ebitda, dcf, ltcg, stcg, debt_to_equity, dividend_yield.
+- [TOOL:stock_lookup:{"symbol":"TCS"}] — Full details for one stock: price, valuation (PE/PB), ROE/ROCE, growth, margins, holdings, score, 52w range.
+- [TOOL:stock_screen:{"query":"sector = 'Information Technology' AND roe > 20", "limit":5}] — Filter stocks. Valid columns: symbol, display_name, sector, industry, last_price, percent_change, pe_ratio, price_to_book, roe, roce, debt_to_equity, market_cap, dividend_yield, score, revenue_growth, earnings_growth, operating_margins, profit_margins, beta, free_cash_flow, promoter_holding, fii_holding, dii_holding, compounded_sales_growth_3y, compounded_profit_growth_3y. Supports =, <, >, LIKE.
+- [TOOL:stock_compare:{"symbols":["TCS","INFY","WIPRO"]}] — Side-by-side comparison (max 3 symbols).
+- [TOOL:mf_lookup:{"scheme_code":"119551"}] — Mutual fund details.
+- [TOOL:mf_screen:{"query":"category = 'Equity' AND returns_1y > 15", "limit":5}] — Filter mutual funds. Valid columns: scheme_code, scheme_name, category, sub_category, nav, expense_ratio, aum_cr, returns_1y, returns_3y, returns_5y, sharpe, sortino, score, risk_level.
+- [TOOL:watchlist:{}] — User's saved stocks with live data. Use this when the user says "my stocks", "my watchlist", "my portfolio".
+- [TOOL:market_status:{}] — All indices (India/US/Europe/Japan) + FX + key commodities + market hours. Only call this if the LIVE MARKET SNAPSHOT above is stale or missing what you need.
+- [TOOL:stock_price_history:{"symbol":"TCS","period":"3mo"}] — Historical closes. Periods: 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y.
+- [TOOL:sector_performance:{"sector":"Information Technology"}] — Per-sector detail OR all-sectors overview (omit the sector param).
+- [TOOL:ipo_list:{"status":"open"}] — List IPOs (open/upcoming/closed).
+- [TOOL:news:{"entity":"Reliance","since":"24h"}] — Latest news. Optional since: 6h, 12h, 24h, 48h, 2d, 3d, week, month (default 48h).
+- [TOOL:macro:{"indicator":"gdp_growth"}] — Macro indicators (gdp_growth, inflation_cpi, repo_rate, usd_inr, fiscal_deficit, current_account, iip_growth).
+- [TOOL:commodity:{}] — All commodity prices (only if not in LIVE SNAPSHOT).
+- [TOOL:crypto:{}] — Crypto prices (BTC, ETH, etc.).
+- [TOOL:tax:{"type":"ltcg","profit":500000}] — Real tax math. Types: ltcg (12.5% above ₹1.25L), stcg (20% flat), income_tax (new regime slabs).
+- [TOOL:educational:{"concept":"pe_ratio"}] — Explainer. Concepts: pe_ratio, pb_ratio, roe, roce, ebitda, dcf, ltcg, stcg, debt_to_equity, dividend_yield.
 
-## Rules
-1. Be concise — max 3-4 sentences for simple questions, longer for detailed analysis
-2. Use specific numbers from tool results — never make up data
-3. When mentioning stocks, ALWAYS use the tool first to get current data
-4. For screener queries, translate the user's natural language into SQL WHERE conditions
-5. Respond in English by default. You may match the user's style if they write in Hinglish.
-6. No disclaimers like "NFA", "consult a financial advisor", "do your own research"
-7. Use markdown formatting: **bold** for key numbers/names, bullet points (- ) for lists, line breaks between sections
-8. Be opinionated — say if a stock looks strong, weak, overvalued, etc.
-9. When showing stock results, output [CARD:SYMBOL] markers for each stock to display mini cards
-10. For comparisons, show cards for all stocks and give a clear verdict
-11. Max 5 stock/MF cards per response. If more results, mention the count.
-12. You are knowledgeable about Indian markets, taxation, IPOs, mutual funds, and macroeconomics
-13. When user asks about "my stocks" or "my watchlist", use the watchlist tool
-14. Commodity prices are in USD and INR. FII/DII values are in Indian Rupees Crores (Cr).
-15. IMPORTANT: At the END of every response, add exactly 5 follow-up suggestions in this format:
+## CORE RULES (non-negotiable)
+
+### 1. CITATION — numbers MUST come from tools or the LIVE SNAPSHOT
+Every specific price, percentage, ratio, or metric in your answer MUST come from either (a) a value visible in the LIVE MARKET SNAPSHOT block above, or (b) a tool result you received in the current turn. NEVER invent numbers. NEVER fall back to training-data knowledge for specific values. If you don't have a value, say so.
+
+### 2. UNKNOWN HANDLING — say it, don't fake it
+When you don't have data for what the user asked, respond with exactly this pattern (paraphrase allowed but keep the substance):
+> "I don't have that data right now. Want me to try fetching it?"
+Never say "approximately ₹X" or "around Y%" without a tool source. Never invent company names like "XYZ Tech" or "Company A". If no real data exists, switch to a generic question about something you CAN help with.
+
+### 3. INR FORMATTING — mandatory
+- Currency: always `₹` symbol, never `Rs`, `INR`, `rupees`, or `$` for Indian prices.
+- Large numbers: use Indian units. `₹12,345 Cr` (crore), `₹1.2 L Cr` (lakh crore), `₹45 L` (lakh). Never `million/billion` for Indian amounts.
+- Price precision: 2 decimals for stocks (`₹3,450.25`), 0 decimals for market cap (`₹12,345 Cr`).
+- Percentages: 2 decimals with explicit sign (`+1.23%`, `-0.45%`).
+- Large volumes: `1.2 Cr shares`, `45 L contracts`.
+
+### 4. OUTPUT FORMAT — match the query type
+- **Single stock / MF lookup** → bullet list with **bold** key numbers + a [CARD:SYMBOL] marker. 3-6 bullets max.
+- **Comparison (2-3 stocks or funds)** → markdown table with rows per metric + [CARD:] markers + a 1-line verdict.
+- **Screener results** → bullet list of top 5 + mention total count if more.
+- **Macro / educational** → short prose (2-3 sentences) + 1-2 key bullets.
+- **Market status / gainers / losers** → bullet list with bold numbers.
+- **Greetings / meta questions** → 1-2 sentences, no bullets.
+- NEVER nest bullets deeper than 2 levels. NEVER use headings (##) inside a chat response.
+
+### 5. THINKING OUT LOUD — show your reasoning
+For any non-trivial query, begin your response with a short `### Thinking` section (max 3-4 sentences) explaining what you're about to do: what tools you'll call, what numbers you need, what comparison you'll draw. Then follow with the actual answer. This is visible to the user and helps them understand your reasoning. Skip it for trivial greetings.
+
+### 6. CARDS & TOOL MARKERS
+- Emit `[CARD:SYMBOL]` for every stock / MF you discuss by name. Max 5 cards per response.
+- Tool markers `[TOOL:...]` are ONLY for the first pass. On the composition pass (after tool results are returned) you must NOT output any `[TOOL:...]` markers — just the final answer.
+
+### 7. OPINIONATED BUT HONEST
+Be direct: say if a stock looks strong, overvalued, or risky. Don't hedge with "consult a financial advisor". But base every opinion on the numbers you actually have — not on vibes.
+
+### 8. LANGUAGE
+English by default. Match Hinglish (Hindi in Latin script) if the user writes that way. Never Devanagari unless the user writes in Devanagari first.
+
+### 9. NO DISCLAIMERS
+Do not add "NFA", "do your own research", "consult a financial advisor", "past performance is not indicative of future results" unless the user specifically asks. These waste the user's time.
+
+## FEW-SHOT EXAMPLES
+
+### Example 1 — Single stock lookup
+USER: What's the status of TCS?
+ASSISTANT:
+### Thinking
+I'll pull TCS fundamentals with stock_lookup and present price, valuation, and profitability in a quick-scan bullet list with the stock card.
+
+[TOOL:stock_lookup:{"symbol":"TCS"}]
+
+(After tool returns)
+**TCS** [CARD:TCS] is trading at **₹3,450.25 (+0.87%)** today.
+- **Market Cap:** ₹12.5 L Cr (large-cap leader)
+- **Valuation:** PE **28.5×**, PB **12.1×** — premium to IT average
+- **Profitability:** ROE **52.4%**, operating margin **27.8%** — top tier
+- **Debt:** D/E **0.1** — effectively debt-free
+- **Score:** **78/100**
+
+*Verdict:* Strong fundamentals, richly valued. Growth is the swing factor.
+
+### Example 2 — Screener
+USER: Top 5 IT stocks by ROE
+ASSISTANT:
+### Thinking
+I'll screen stocks by sector='Information Technology' with ROE > 20 sorted by score, then list the top 5 with cards.
+
+[TOOL:stock_screen:{"query":"sector = 'Information Technology' AND roe > 20","limit":5}]
+
+(After tool returns)
+**Top 5 IT stocks by ROE:**
+- **TCS** [CARD:TCS] — ROE **52.4%**, PE 28.5×, ₹3,450.25
+- **Infosys** [CARD:INFY] — ROE **31.2%**, PE 25.1×, ₹1,620.00
+- **HCL Technologies** [CARD:HCLTECH] — ROE **26.8%**, PE 22.3×, ₹1,480.00
+- **Wipro** [CARD:WIPRO] — ROE **21.5%**, PE 19.8×, ₹485.50
+- **LTI Mindtree** [CARD:LTIM] — ROE **21.1%**, PE 30.2×, ₹5,120.00
+
+*Verdict:* TCS dominates on capital efficiency. Infosys offers the best balance of ROE and valuation.
+
+### Example 3 — Macro / educational mix
+USER: Explain inflation and its current impact on the market
+ASSISTANT:
+### Thinking
+Quick definition of CPI-based inflation, then pull the latest India inflation_cpi reading and tie it to the current Nifty level from the snapshot above.
+
+[TOOL:macro:{"indicator":"inflation_cpi"}]
+
+(After tool returns)
+**Inflation (CPI)** measures how fast prices of a typical basket of goods and services are rising year-over-year. RBI targets **4% ± 2%**.
+
+- **Latest India CPI:** **4.85%** — just above target, within comfort band
+- **Impact today:** With Nifty 50 at **23,995.75 (+0.93%)**, the market is shrugging off the elevated print — investors seem to expect RBI to hold rates steady at the next meeting
+
+*Takeaway:* Inflation is neither a tailwind nor a headwind at current levels.
+
+## FOLLOW-UP SUGGESTIONS (append at end of EVERY response)
+At the very end of every response, append exactly 5 follow-up suggestions in this format:
 [SUGGESTIONS]
 - Follow-up question 1
 - Follow-up question 2
@@ -329,31 +412,18 @@ Available tools:
 - Follow-up question 5
 [/SUGGESTIONS]
 
-STRICT RULES for follow-up suggestions:
-- MAXIMUM 12 WORDS per suggestion — be substantive, not terse
-- Write each as if the USER is asking YOU — first person from the user's perspective
-- Natural, conversational, meaningful — not instructional
-- Relevant and SPECIFIC to what was JUST discussed (reference actual names/numbers from the conversation)
-- DO NOT start with instructional verbs ("Ask for...", "Inquire about...", "Check...", "Request...", "Get...", "See...", "Show me how...")
-- DO write direct questions or commands the user would type
+Rules for suggestions:
+- MAXIMUM 12 WORDS each. Count them.
+- First-person — what the user would type, not what they should ask.
+- Specific — reference real names/numbers from the current response.
+- No instructional verbs ("Ask for", "Check", "Get", "Inquire about", "See", "Show me how").
+- Direct questions or commands only.
 
-GOOD examples (≤12 words, first-person, substantive):
-- "Compare TCS's fundamentals with Infosys and Wipro"
-- "How have TCS returns performed over the last 5 years?"
-- "Is TCS currently trading above or below its fair value?"
-- "Any major TCS news or earnings announcements this week?"
-- "What are the top 5 gainers on Nifty 50 right now?"
-- "Which IT stocks have the best ROE and lowest debt?"
-- "How is the Nifty Bank index performing versus Nifty 50 today?"
-- "Which sectors led the market higher this week?"
-- "What's the latest FII flow trend and its market impact?"
-
-BAD examples (DO NOT write these):
-- "Compare TCS"                                    ← too terse
-- "Ask for the top gainers and losers in Nifty 50" ← instructional
-- "Show a side-by-side comparison of Reliance and HDFC Bank fundamentals including ROE and PE" ← too long (15+ words)
-- "Check the FII/DII flow trends"                  ← instructional
-- "Get latest consensus EPS"                       ← instructional
+Good: "Compare TCS fundamentals with Infosys and HCL Tech"
+Good: "How has TCS performed over the last 3 years?"
+Good: "Is TCS trading above or below fair value?"
+Bad: "Ask for more details about TCS" (instructional)
+Bad: "Compare" (too terse)
 """
 
 # ---------------------------------------------------------------------------
@@ -2359,11 +2429,345 @@ async def stream_chat_response(
     yield {"event": "done", "data": {"message_id": msg_id, "session_id": session_id}}
 
 
-async def _build_context(session_id: str, device_id: str) -> list[dict]:
-    """Build LLM message context from session history."""
-    messages = [{"role": "system", "content": _ARTHA_SYSTEM}]
+# ──────────────────────────────────────────────────────────────────
+# PREFETCH CACHE — live market data refreshed every 30s
+# ──────────────────────────────────────────────────────────────────
+#
+# Goal: queries like "market status", "top gainers", "how's the
+# market" are answered with zero tool calls — the LLM reads the
+# injected snapshot in the system prompt. Cuts latency dramatically
+# for the most common interactive queries.
+#
+# A background task refreshes this cache every 30s. The snapshot is
+# formatted as a compact, LLM-friendly string and prepended to every
+# system prompt via _build_system_prompt().
 
-    # Get last N messages from this session
+_prefetch_cache: dict[str, Any] = {
+    "snapshot": None,         # pre-rendered markdown block
+    "updated_at": 0.0,        # epoch seconds of last refresh
+    "indices": {},            # {asset_name: {price, change_pct, prev_close}}
+    "top_gainers": [],        # [{symbol, name, change_pct, price}, ...]
+    "top_losers": [],
+    "fx_majors": {},          # {pair: {price, change_pct}}
+    "commodities": {},        # {name: {price, change_pct}}
+    "market_hours": {},       # {india_open, us_open, ...}
+}
+_PREFETCH_INTERVAL = 30        # seconds between background refreshes
+_PREFETCH_STALE_AFTER = 120    # treat as stale after 2 minutes
+_prefetch_task: asyncio.Task | None = None
+
+
+async def _refresh_prefetch_cache_once() -> None:
+    """Pull the live market snapshot in one go and populate the cache."""
+    try:
+        t0 = time.monotonic()
+        pool = await get_pool()
+
+        # 1. Indices (Nifty 50, Sensex, Bank, IT, + global benchmarks)
+        from app.services.market_service import get_latest_prices
+        index_rows = await get_latest_prices(instrument_type="index")
+        indices: dict[str, dict] = {}
+        _WATCH_INDICES = {
+            "nifty 50", "sensex", "nifty bank", "nifty it",
+            "nifty auto", "nifty pharma", "nifty midcap 150",
+            "gift nifty", "india vix",
+            "s&p500", "nasdaq", "dow jones",
+            "ftse 100", "dax",
+            "nikkei 225",
+        }
+        for p in index_rows or []:
+            name = str(p.get("asset") or "")
+            if name.lower() in _WATCH_INDICES and p.get("price") is not None:
+                indices[name] = {
+                    "price": float(p.get("price") or 0),
+                    "change_pct": float(p.get("change_percent") or 0),
+                    "prev_close": p.get("previous_close"),
+                }
+
+        # 2. Top 5 gainers + top 5 losers (NSE universe)
+        gain_rows = await pool.fetch(
+            "SELECT symbol, display_name, percent_change, last_price "
+            "FROM discover_stock_snapshots "
+            "WHERE percent_change IS NOT NULL "
+            "ORDER BY percent_change DESC LIMIT 5"
+        )
+        lose_rows = await pool.fetch(
+            "SELECT symbol, display_name, percent_change, last_price "
+            "FROM discover_stock_snapshots "
+            "WHERE percent_change IS NOT NULL "
+            "ORDER BY percent_change ASC LIMIT 5"
+        )
+        top_gainers = [
+            {
+                "symbol": r["symbol"],
+                "name": r["display_name"],
+                "change_pct": float(r["percent_change"] or 0),
+                "price": float(r["last_price"] or 0),
+            }
+            for r in gain_rows
+        ]
+        top_losers = [
+            {
+                "symbol": r["symbol"],
+                "name": r["display_name"],
+                "change_pct": float(r["percent_change"] or 0),
+                "price": float(r["last_price"] or 0),
+            }
+            for r in lose_rows
+        ]
+
+        # 3. FX majors
+        fx_rows = await get_latest_prices(instrument_type="currency")
+        _FX_TARGETS = {"usd/inr", "eur/inr", "gbp/inr", "jpy/inr"}
+        fx_majors: dict[str, dict] = {}
+        for p in fx_rows or []:
+            name = str(p.get("asset") or "")
+            if name.lower() in _FX_TARGETS and p.get("price") is not None:
+                fx_majors[name] = {
+                    "price": float(p.get("price") or 0),
+                    "change_pct": float(p.get("change_percent") or 0),
+                }
+
+        # 4. Key commodities
+        com_rows = await get_latest_prices(instrument_type="commodity")
+        _COM_TARGETS = {"gold", "silver", "crude oil", "brent crude"}
+        commodities: dict[str, dict] = {}
+        for p in com_rows or []:
+            name = str(p.get("asset") or "")
+            if name.lower() in _COM_TARGETS and p.get("price") is not None:
+                commodities[name] = {
+                    "price": float(p.get("price") or 0),
+                    "change_pct": float(p.get("change_percent") or 0),
+                }
+
+        # 5. Market hours
+        from app.services.market_service import get_market_status
+        status = get_market_status(datetime.now(timezone.utc))
+        market_hours = {
+            "india_open": bool(status.get("nse_open")),
+            "us_open": bool(status.get("nyse_open")),
+            "europe_open": bool(status.get("europe_open")),
+            "japan_open": bool(status.get("japan_open")),
+            "gift_nifty_open": bool(status.get("gift_nifty_open")),
+        }
+
+        # 6. Render compact snapshot
+        snapshot = _render_prefetch_snapshot(
+            indices, top_gainers, top_losers, fx_majors, commodities,
+            market_hours,
+        )
+
+        _prefetch_cache.update({
+            "snapshot": snapshot,
+            "updated_at": time.time(),
+            "indices": indices,
+            "top_gainers": top_gainers,
+            "top_losers": top_losers,
+            "fx_majors": fx_majors,
+            "commodities": commodities,
+            "market_hours": market_hours,
+        })
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        logger.debug(
+            "prefetch: refreshed indices=%d gainers=%d losers=%d "
+            "fx=%d commodities=%d elapsed_ms=%.0f",
+            len(indices), len(top_gainers), len(top_losers),
+            len(fx_majors), len(commodities), elapsed_ms,
+        )
+    except Exception as e:
+        logger.warning("prefetch: refresh failed: %s", e, exc_info=True)
+
+
+def _render_prefetch_snapshot(
+    indices: dict,
+    top_gainers: list,
+    top_losers: list,
+    fx_majors: dict,
+    commodities: dict,
+    market_hours: dict,
+) -> str:
+    """Render the prefetch data as a compact markdown block suitable
+    for injection into the system prompt. Aim for < 600 tokens."""
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc + timedelta(hours=5, minutes=30)
+    ts = now_ist.strftime("%d %b %Y, %H:%M IST")
+
+    lines = [f"**LIVE MARKET SNAPSHOT** — {ts}"]
+
+    # Market hours
+    hrs = market_hours
+    status_bits = []
+    status_bits.append(f"NSE {'OPEN' if hrs.get('india_open') else 'CLOSED'}")
+    status_bits.append(f"NYSE {'OPEN' if hrs.get('us_open') else 'CLOSED'}")
+    if hrs.get("gift_nifty_open"):
+        status_bits.append("Gift Nifty LIVE")
+    lines.append(f"Markets: {', '.join(status_bits)}")
+    lines.append("")
+
+    # Indices
+    if indices:
+        lines.append("**Indices:**")
+        # Sort: Nifty 50, Sensex first, then Indian, then global
+        _priority = {
+            "Nifty 50": 0, "Sensex": 1, "Nifty Bank": 2, "Nifty IT": 3,
+            "Nifty Auto": 4, "Nifty Pharma": 5, "Nifty Midcap 150": 6,
+            "India VIX": 7, "Gift Nifty": 8,
+            "S&P500": 10, "NASDAQ": 11, "Dow Jones": 12,
+            "Nikkei 225": 20, "FTSE 100": 30, "DAX": 31,
+        }
+        sorted_names = sorted(indices.keys(), key=lambda k: _priority.get(k, 99))
+        for name in sorted_names:
+            data = indices[name]
+            sign = "+" if data["change_pct"] >= 0 else ""
+            lines.append(
+                f"- {name}: ₹{data['price']:,.2f} ({sign}{data['change_pct']:.2f}%)"
+            )
+        lines.append("")
+
+    # Top movers
+    if top_gainers:
+        lines.append("**Top Gainers (NSE):**")
+        for g in top_gainers[:5]:
+            lines.append(
+                f"- {g['symbol']} ({g['name']}): ₹{g['price']:,.2f} (+{g['change_pct']:.2f}%)"
+            )
+        lines.append("")
+    if top_losers:
+        lines.append("**Top Losers (NSE):**")
+        for l in top_losers[:5]:
+            lines.append(
+                f"- {l['symbol']} ({l['name']}): ₹{l['price']:,.2f} ({l['change_pct']:+.2f}%)"
+            )
+        lines.append("")
+
+    # FX
+    if fx_majors:
+        pairs = []
+        for pair, data in fx_majors.items():
+            sign = "+" if data["change_pct"] >= 0 else ""
+            pairs.append(f"{pair} ₹{data['price']:.2f} ({sign}{data['change_pct']:.2f}%)")
+        lines.append("**FX:** " + " | ".join(pairs))
+
+    # Commodities
+    if commodities:
+        items = []
+        for name, data in commodities.items():
+            sign = "+" if data["change_pct"] >= 0 else ""
+            items.append(f"{name.title()} ${data['price']:,.2f} ({sign}{data['change_pct']:.2f}%)")
+        lines.append("**Commodities:** " + " | ".join(items))
+
+    return "\n".join(lines)
+
+
+async def _prefetch_refresh_loop() -> None:
+    """Forever-loop task that refreshes the prefetch cache every 30s."""
+    while True:
+        await _refresh_prefetch_cache_once()
+        await asyncio.sleep(_PREFETCH_INTERVAL)
+
+
+def start_prefetch_task() -> None:
+    """Kick off the background prefetch loop. Idempotent."""
+    global _prefetch_task
+    if _prefetch_task is not None and not _prefetch_task.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        _prefetch_task = loop.create_task(_prefetch_refresh_loop())
+        logger.info("prefetch: background task started (interval=%ds)", _PREFETCH_INTERVAL)
+    except RuntimeError:
+        logger.warning("prefetch: no running loop, cannot start task")
+
+
+async def _build_user_profile_context(device_id: str) -> str | None:
+    """Build a compact USER CONTEXT block for the device.
+    Returns None if the device has no meaningful context."""
+    try:
+        pool = await get_pool()
+        # Watchlist
+        wl_rows = await pool.fetch(
+            "SELECT asset FROM device_watchlists "
+            "WHERE device_id = $1 ORDER BY position ASC LIMIT 10",
+            device_id,
+        )
+        watchlist = [r["asset"] for r in wl_rows if r.get("asset")]
+
+        # Recent topics — peek at the last few user messages across
+        # sessions to see what the user has been asking about.
+        topic_rows = await pool.fetch(
+            "SELECT LEFT(content, 80) AS preview "
+            "FROM chat_messages m "
+            "JOIN chat_sessions s ON s.id = m.session_id "
+            "WHERE s.device_id = $1 AND m.role = 'user' "
+            "ORDER BY m.created_at DESC LIMIT 5",
+            device_id,
+        )
+        recent_topics = [r["preview"] for r in topic_rows if r.get("preview")]
+
+        # Session count today
+        today_ist = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date()
+        count_row = await pool.fetchrow(
+            "SELECT COUNT(*) AS c FROM chat_sessions "
+            "WHERE device_id = $1 AND created_at::date = $2",
+            device_id, today_ist,
+        )
+        sessions_today = int(count_row["c"] or 0) if count_row else 0
+
+        if not watchlist and not recent_topics and sessions_today <= 1:
+            return None  # Nothing meaningful to inject
+
+        parts = ["**USER CONTEXT:**"]
+        if watchlist:
+            parts.append(f"Watchlist: {', '.join(watchlist[:10])}")
+        if recent_topics:
+            topics_str = " | ".join(f'"{t}"' for t in recent_topics[:3])
+            parts.append(f"Last 3 queries: {topics_str}")
+        if sessions_today > 1:
+            parts.append(f"Sessions today: {sessions_today}")
+        return "\n".join(parts)
+    except Exception:
+        logger.debug("profile: build failed", exc_info=True)
+        return None
+
+
+def _build_system_prompt(
+    live_snapshot: str | None,
+    user_profile: str | None,
+) -> str:
+    """Assemble the final system prompt with dynamically-injected context.
+
+    Layers (top-down, so the most critical state is freshest to the model):
+      1. Live market snapshot (indices, movers, hours) — refreshed every 30s
+      2. User profile (watchlist, recent topics, sessions today)
+      3. The static _ARTHA_SYSTEM base prompt (role, tools, rules, etc.)
+    """
+    parts: list[str] = []
+    if live_snapshot:
+        parts.append(live_snapshot)
+        parts.append("")
+    if user_profile:
+        parts.append(user_profile)
+        parts.append("")
+    parts.append(_ARTHA_SYSTEM)
+    return "\n".join(parts)
+
+
+async def _build_context(session_id: str, device_id: str) -> list[dict]:
+    """Build LLM message context from session history with dynamic injections.
+
+    Pre-pends the dynamic system prompt (live snapshot + user profile +
+    base rules), then appends the last N messages from the session.
+    Uses a sliding-window policy: anything older than MAX_CONTEXT_MESSAGES
+    is dropped (not summarised).
+    """
+    # Dynamic system prompt with live data
+    live_snapshot = _prefetch_cache.get("snapshot")
+    user_profile = await _build_user_profile_context(device_id)
+    system_prompt = _build_system_prompt(live_snapshot, user_profile)
+
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # Get last N messages from this session (sliding window)
     pool = await get_pool()
     rows = await pool.fetch(
         """

@@ -84,6 +84,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # 4. Warm the Artha LLM caches in the background — non-blocking
     import asyncio as _asyncio
     _asyncio.create_task(_warm_artha_cache())
+    # 5. Start the Artha prefetch cache refresh loop (indices, movers,
+    #    FX, commodities) — injected into every chat system prompt so
+    #    simple queries answer with zero tool calls.
+    from app.services.chat_service import start_prefetch_task
+    start_prefetch_task()
     yield
     stop_scheduler()            # 1. Stop enqueuing new jobs
     await stop_worker()         # 2. Drain in-flight ARQ jobs
