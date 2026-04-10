@@ -31,8 +31,25 @@ logger = logging.getLogger(__name__)
 MAX_CONTEXT_MESSAGES = 15  # Send last N messages for multi-turn context
 MAX_MESSAGES_PER_DAY = 100
 MAX_SESSIONS_PER_DEVICE = 50
-STREAM_TIMEOUT = 30.0
+STREAM_TIMEOUT = 60.0  # 60s ceiling per LLM call (was 30s — too tight for tool chains)
+HEARTBEAT_INTERVAL = 5.0  # Send a "thinking" keepalive every 5s during long calls
 MAX_TOKENS_CHAT = 800  # Larger than narrative — chat needs room
+
+# Two model chains: fast for intent/tool detection, slow for the final
+# answer that composes tool results into a polished response.
+# Fast chain prioritises latency over quality — a 20B param model can
+# easily decide "is this a stock lookup or a macro question?". Slow chain
+# prioritises quality — 120B handles the nuanced composition better.
+_FAST_MODELS = [
+    "openai/gpt-oss-20b:free",
+    "google/gemma-4-31b-it:free",
+    "openai/gpt-oss-120b:free",  # fallback if the smaller ones fail
+]
+_SLOW_MODELS = [
+    "openai/gpt-oss-120b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "openai/gpt-oss-20b:free",  # fallback if the big ones fail
+]
 
 # ---------------------------------------------------------------------------
 # System prompt — the brain of Artha
@@ -73,36 +90,40 @@ Available tools:
 12. You are knowledgeable about Indian markets, taxation, IPOs, mutual funds, and macroeconomics
 13. When user asks about "my stocks" or "my watchlist", use the watchlist tool
 14. Commodity prices are in USD and INR. FII/DII values are in Indian Rupees Crores (Cr).
-15. IMPORTANT: At the END of every response, add exactly 3 follow-up suggestions in this format:
+15. IMPORTANT: At the END of every response, add exactly 5 follow-up suggestions in this format:
 [SUGGESTIONS]
 - Follow-up question 1
 - Follow-up question 2
 - Follow-up question 3
+- Follow-up question 4
+- Follow-up question 5
 [/SUGGESTIONS]
 
 STRICT RULES for follow-up suggestions:
-- MAXIMUM 6 WORDS per suggestion — count them, no exceptions
+- MAXIMUM 12 WORDS per suggestion — be substantive, not terse
 - Write each as if the USER is asking YOU — first person from the user's perspective
-- Punchy, natural, conversational
-- Relevant to what was JUST discussed
+- Natural, conversational, meaningful — not instructional
+- Relevant and SPECIFIC to what was JUST discussed (reference actual names/numbers from the conversation)
 - DO NOT start with instructional verbs ("Ask for...", "Inquire about...", "Check...", "Request...", "Get...", "See...", "Show me how...")
-- DO write direct short questions/commands
+- DO write direct questions or commands the user would type
 
-GOOD examples (≤6 words, first-person):
-- "Compare TCS with Infosys"          (4 words ✓)
-- "TCS 5-year returns?"               (3 words ✓)
-- "TCS fair value?"                   (3 words ✓)
-- "Any TCS news today?"               (4 words ✓)
-- "Top gainers today"                 (3 words ✓)
-- "How are IT stocks?"                (4 words ✓)
-- "Best sector this week"             (4 words ✓)
-- "FII flow trend"                    (3 words ✓)
+GOOD examples (≤12 words, first-person, substantive):
+- "Compare TCS's fundamentals with Infosys and Wipro"
+- "How have TCS returns performed over the last 5 years?"
+- "Is TCS currently trading above or below its fair value?"
+- "Any major TCS news or earnings announcements this week?"
+- "What are the top 5 gainers on Nifty 50 right now?"
+- "Which IT stocks have the best ROE and lowest debt?"
+- "How is the Nifty Bank index performing versus Nifty 50 today?"
+- "Which sectors led the market higher this week?"
+- "What's the latest FII flow trend and its market impact?"
 
 BAD examples (DO NOT write these):
-- "Ask for the top gainers and losers in Nifty 50"    ← instructional + too long
-- "Show a side-by-side comparison of Reliance and HDFC Bank"  ← too long (10 words)
-- "Check the FII/DII flow trends after major earnings releases this month"  ← instructional + too long
-- "Get the latest analyst consensus EPS for Infosys and Tata Motors"  ← instructional + too long
+- "Compare TCS"                                    ← too terse
+- "Ask for the top gainers and losers in Nifty 50" ← instructional
+- "Show a side-by-side comparison of Reliance and HDFC Bank fundamentals including ROE and PE" ← too long (15+ words)
+- "Check the FII/DII flow trends"                  ← instructional
+- "Get latest consensus EPS"                       ← instructional
 """
 
 # ---------------------------------------------------------------------------
@@ -594,30 +615,62 @@ async def _execute_tool(
             }
 
         elif tool_name == "commodity":
+            # market_service returns `price` (not `close` / `last_price`).
+            # Filter to commodities the user actually asks about most.
             from app.services.market_service import get_latest_prices
             prices = await get_latest_prices(instrument_type="commodity")
+            # Sort so the most commonly-asked-about ones come first.
+            _COMMODITY_PRIORITY = {
+                "gold": 1, "silver": 2, "crude oil": 3, "brent crude": 4,
+                "natural gas": 5, "copper": 6, "aluminum": 7,
+                "platinum": 8, "palladium": 9,
+            }
+            sorted_prices = sorted(
+                prices or [],
+                key=lambda p: _COMMODITY_PRIORITY.get(
+                    str(p.get("asset") or "").lower(), 99
+                ),
+            )
             return {
+                "count": len(sorted_prices),
                 "commodities": [
                     {
                         "name": p.get("asset"),
-                        "price": p.get("close") or p.get("last_price"),
+                        "price": p.get("price"),
+                        "previous_close": p.get("previous_close"),
                         "change_pct": p.get("change_percent"),
+                        "unit": p.get("unit"),
                     }
-                    for p in prices[:10]
+                    for p in sorted_prices[:12]
+                    if p.get("price") is not None
                 ],
             }
 
         elif tool_name == "crypto":
+            # Same key fix as commodity — use `price` not `close`.
             from app.services.market_service import get_latest_prices
             prices = await get_latest_prices(instrument_type="crypto")
+            _CRYPTO_PRIORITY = {
+                "btc": 1, "bitcoin": 1, "eth": 2, "ethereum": 2,
+                "bnb": 3, "sol": 4, "solana": 4, "xrp": 5, "ada": 6,
+            }
+            sorted_prices = sorted(
+                prices or [],
+                key=lambda p: _CRYPTO_PRIORITY.get(
+                    str(p.get("asset") or "").lower(), 99
+                ),
+            )
             return {
+                "count": len(sorted_prices),
                 "crypto": [
                     {
                         "name": p.get("asset"),
-                        "price": p.get("close") or p.get("last_price"),
+                        "price": p.get("price"),
+                        "previous_close": p.get("previous_close"),
                         "change_pct": p.get("change_percent"),
                     }
-                    for p in prices[:10]
+                    for p in sorted_prices[:10]
+                    if p.get("price") is not None
                 ],
             }
 
@@ -1401,34 +1454,44 @@ async def stream_chat_response(
 
     yield {"event": "thinking", "data": {"status": "Artha is thinking..."}}
 
-    # Phase 1: Initial LLM call (may contain tool markers)
-    initial_response = await _call_llm_blocking(api_key, messages)
+    # ─────────────────────────────────────────────────────────────────
+    # PHASE 1 — Intent + tool detection (FAST model)
+    # ─────────────────────────────────────────────────────────────────
+    # The first call only needs to decide "which tool(s) should I
+    # invoke?" and emit [TOOL:...] markers. A small 20B model handles
+    # this reliably in ~2-3s. We reserve the slow 120B model for the
+    # final answer composition where writing quality matters.
+    initial_response = await _call_llm_blocking(
+        api_key, messages, chain=_FAST_MODELS,
+    )
     if not initial_response:
         yield {"event": "error", "data": {"message": "Artha is taking a break. Try again in a few minutes.", "retry": True}}
         return
 
-    # Phase 2: Parse and execute tools
+    # ─────────────────────────────────────────────────────────────────
+    # PHASE 2 — Parse and execute tools (with retry loop)
+    # ─────────────────────────────────────────────────────────────────
     tool_markers = _TOOL_PATTERN.findall(initial_response)
-    tool_results = {}
-    stock_cards = []
-    mf_cards = []
-    tools_used = []
+    tool_results: dict[str, Any] = {}
+    stock_cards: list[dict] = []
+    mf_cards: list[dict] = []
+    tools_used: list[dict] = []
 
-    if tool_markers:
-        yield {"event": "thinking", "data": {"status": "Querying data..."}}
-
-        for tool_name, params_str in tool_markers:
+    async def _run_tool_markers(markers: list[tuple[str, str]]) -> bool:
+        """Execute a batch of [TOOL:...] markers. Returns True if at
+        least one tool errored (so caller can decide to retry)."""
+        nonlocal tool_results, stock_cards, mf_cards, tools_used
+        any_error = False
+        for tool_name, params_str in markers:
             try:
                 params = json.loads(params_str)
             except json.JSONDecodeError:
                 params = {}
             result = await _execute_tool(tool_name, params, device_id)
-            # Log outcome summary (success log — failure already logged inside _execute_tool)
             if isinstance(result, dict) and "error" not in result:
-                # Try a few common keys to summarise the result shape
                 summary = {
                     k: (len(v) if isinstance(v, list) else "obj")
-                    for k in ("stocks", "funds", "articles", "ipos", "indices_by_region", "data")
+                    for k in ("stocks", "funds", "articles", "ipos", "indices_by_region", "data", "commodities", "crypto")
                     if k in result
                 }
                 logger.info(
@@ -1437,10 +1500,11 @@ async def stream_chat_response(
                 )
             else:
                 logger.info("tool_call: ERROR_RESULT name=%s error=%s", tool_name, result.get("error"))
+                any_error = True
             tool_results[tool_name] = result
             tools_used.append({"tool": tool_name, "params": params})
 
-            # Extract stock cards from results
+            # Card extraction
             if tool_name in ("stock_lookup", "stock_screen", "stock_compare", "watchlist"):
                 stocks = result.get("stocks", [])
                 if not stocks and "symbol" in result:
@@ -1456,8 +1520,6 @@ async def stream_chat_response(
                             "score": s.get("score"),
                             "market_cap": s.get("market_cap"),
                         })
-
-            # Extract MF cards
             if tool_name in ("mf_lookup", "mf_screen"):
                 funds = result.get("funds", [])
                 if not funds and "scheme_code" in result:
@@ -1473,8 +1535,58 @@ async def stream_chat_response(
                             "returns_1y": f.get("returns_1y"),
                             "score": f.get("score"),
                         })
+        return any_error
 
-        # Phase 3: Re-call LLM with tool results injected
+    if tool_markers:
+        yield {"event": "thinking", "data": {"status": "Querying data..."}}
+        had_error = await _run_tool_markers(tool_markers)
+
+        # ── Retry loop: if any tool errored, feed the errors back to
+        # the fast model ONCE and let it regenerate the tool call.
+        # Catches LLM mistakes like wrong column names that our
+        # whitelist/alias layer couldn't auto-fix.
+        if had_error:
+            error_summary_lines = []
+            for tn, tr in tool_results.items():
+                if isinstance(tr, dict) and "error" in tr:
+                    error_summary_lines.append(f"[{tn}] → {tr['error']}")
+            if error_summary_lines:
+                error_feedback = "\n".join(error_summary_lines)
+                logger.info("tool_retry: feeding errors back to LLM: %s", error_feedback[:400])
+                retry_messages = messages + [
+                    {"role": "assistant", "content": initial_response},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Some tools you called returned errors:\n"
+                            f"{error_feedback}\n\n"
+                            "Try the SAME request again, but FIX the tool call. "
+                            "Pay attention to the valid column names mentioned in "
+                            "the error. Use [TOOL:...] markers for the corrected calls. "
+                            "If the tool simply has no data, proceed without it and "
+                            "write your answer using whatever other data you have."
+                        ),
+                    },
+                ]
+                yield {"event": "thinking", "data": {"status": "Correcting query..."}}
+                retry_response = await _call_llm_blocking(
+                    api_key, retry_messages, chain=_FAST_MODELS,
+                )
+                if retry_response:
+                    retry_markers = _TOOL_PATTERN.findall(retry_response)
+                    if retry_markers:
+                        logger.info(
+                            "tool_retry: retrying %d tool calls", len(retry_markers),
+                        )
+                        # Merge: if a retry tool succeeds, overwrite the
+                        # failed previous result. stock_cards/mf_cards
+                        # accumulate as normal.
+                        await _run_tool_markers(retry_markers)
+                    # Update "initial_response" to the retry so phase 3
+                    # includes the corrected thinking.
+                    initial_response = retry_response
+
+        # ── Phase 3: Compose final answer with SLOW model + REAL streaming
         tool_context = "\n\n--- Tool Results ---\n"
         for tn, tr in tool_results.items():
             tool_context += f"\n[{tn}]: {json.dumps(tr, default=str)[:2000]}\n"
@@ -1482,29 +1594,126 @@ async def stream_chat_response(
         messages.append({"role": "assistant", "content": initial_response})
         messages.append({
             "role": "user",
-            "content": f"Here are the tool results. Now write your response using this data. "
-                       f"Do NOT include any [TOOL:...] markers in your response. "
-                       f"Be specific with the numbers.{tool_context}",
+            "content": (
+                "Here are the tool results. Now write your response using this data. "
+                "Do NOT include any [TOOL:...] markers in your response. "
+                "Be specific with the numbers. "
+                "If a tool returned an error or empty data, be honest with the user: "
+                "say 'I couldn't fetch X right now, want me to try again?' instead of "
+                "inventing numbers. "
+                "Remember to append the [SUGGESTIONS]...[/SUGGESTIONS] block with "
+                "exactly 5 follow-up questions (max 12 words each)."
+                f"{tool_context}"
+            ),
         })
 
         yield {"event": "thinking", "data": {"status": "Composing response..."}}
-        final_response = await _call_llm_blocking(api_key, messages)
-        if not final_response:
-            # Fall back to initial response with tool markers stripped
-            final_response = _TOOL_PATTERN.sub("", initial_response).strip()
-            if not final_response:
-                final_response = "I found the data but couldn't generate a summary. Please try again."
+        compose_messages = messages
     else:
-        final_response = initial_response
+        # No tools — stream the initial (fast model) response directly.
+        # The fast model already composed a full answer.
+        compose_messages = None
 
-    # Clean response
+    # ─────────────────────────────────────────────────────────────────
+    # REAL STREAMING PHASE (final answer)
+    # ─────────────────────────────────────────────────────────────────
+    # We stream tokens directly from OpenRouter's SSE endpoint. No more
+    # fake sleep loop — pacing is naturally determined by the model.
+    #
+    # Cursor-based filtering strips [TOOL:...], [CARD:...], and the
+    # [SUGGESTIONS]...[/SUGGESTIONS] block on-the-fly so the client
+    # never sees the bracketed syntax leak into the chat bubble, even
+    # as the tags land mid-chunk in the SSE stream.
+
+    async def _stream_final() -> AsyncGenerator[str, None]:
+        """Yield raw token deltas from the appropriate model chain."""
+        if compose_messages is not None:
+            # Tools were used — compose with slow model
+            async for delta in _stream_llm_response(
+                api_key, compose_messages, chain=_SLOW_MODELS,
+            ):
+                yield delta
+        else:
+            # No tools — the fast model already wrote the answer. Fake
+            # stream it word-by-word for UX parity with the real-stream
+            # path. We can't re-stream the blocking call's output as
+            # SSE from OpenRouter, so we split and emit.
+            for chunk in re.split(r'(\s+)', initial_response):
+                if chunk:
+                    yield chunk
+                    await asyncio.sleep(0.01)
+
+    # Accumulated raw text (including bracketed blocks). Used for final
+    # DB save + post-stream suggestion extraction.
+    raw_accum = ""
+    # Cursor: character offset up to which we've already emitted safely.
+    yielded_up_to = 0
+    # True while we're inside a [SUGGESTIONS]...[/SUGGESTIONS] block.
+    in_suggestions_block = False
+    # Longest bracketed sentinel we might need to hold back at the
+    # tail to detect a mid-chunk tag start.
+    _HOLDBACK_LEN = len("[SUGGESTIONS]")
+    _START_TAG = "[SUGGESTIONS]"
+    _END_TAG = "[/SUGGESTIONS]"
+
+    async for delta in _stream_final():
+        if not delta:
+            continue
+        raw_accum += delta
+
+        if in_suggestions_block:
+            # Suppress all output until we see [/SUGGESTIONS].
+            end_idx = raw_accum.find(_END_TAG, yielded_up_to)
+            if end_idx >= 0:
+                yielded_up_to = end_idx + len(_END_TAG)
+                in_suggestions_block = False
+                # Fall through — we might be able to emit text after the
+                # closing tag in the same iteration.
+            else:
+                continue
+
+        # Not inside a suppression block. Check if a new [SUGGESTIONS]
+        # has appeared in the accumulated text.
+        start_idx = raw_accum.find(_START_TAG, yielded_up_to)
+        if start_idx >= 0:
+            # Emit everything up to the start of the block
+            if start_idx > yielded_up_to:
+                safe = raw_accum[yielded_up_to:start_idx]
+                if safe:
+                    yield {"event": "token", "data": {"text": safe}}
+            yielded_up_to = start_idx + len(_START_TAG)
+            in_suggestions_block = True
+            continue
+
+        # No full start tag found — emit up to a safe point, but hold
+        # back the last HOLDBACK_LEN chars in case they're a partial
+        # tag that will complete in the next delta.
+        safe_end = max(yielded_up_to, len(raw_accum) - _HOLDBACK_LEN)
+        if safe_end > yielded_up_to:
+            safe = raw_accum[yielded_up_to:safe_end]
+            if safe:
+                yield {"event": "token", "data": {"text": safe}}
+            yielded_up_to = safe_end
+
+    # Stream is done — flush any held-back tail that isn't inside a
+    # suggestions block.
+    if not in_suggestions_block and yielded_up_to < len(raw_accum):
+        tail = raw_accum[yielded_up_to:]
+        if tail:
+            yield {"event": "token", "data": {"text": tail}}
+        yielded_up_to = len(raw_accum)
+
+    # Build the full response for DB save + suggestion extraction.
+    final_response = raw_accum
+    if not final_response:
+        final_response = "I couldn't generate a response. Please try again."
+
+    # Clean: strip tool markers, card markers.
     final_response = _clean_response(final_response)
     final_response = _TOOL_PATTERN.sub("", final_response).strip()
     final_response = _CARD_PATTERN.sub("", final_response).strip()
 
-    # Extract follow-up suggestions before streaming.
-    # Server-side enforcement: max 3 chips, max 6 words each (hard cap
-    # so the UI chips stay single-line regardless of LLM compliance).
+    # Extract follow-up suggestions (max 5 chips, max 12 words each).
     follow_ups = []
     suggestions_match = _SUGGESTIONS_PATTERN.search(final_response)
     if suggestions_match:
@@ -1513,13 +1722,11 @@ async def stream_chat_response(
             cleaned = line.lstrip("- *•").strip().strip('"').strip()
             if not cleaned or cleaned == "-":
                 continue
-            # Hard-cap to 6 words — truncate mid-sentence and add ellipsis
-            # only if the LLM ignored the prompt limit.
             words = cleaned.split()
-            if len(words) > 6:
-                cleaned = " ".join(words[:6]).rstrip(",.;:") + "…"
+            if len(words) > 12:
+                cleaned = " ".join(words[:12]).rstrip(",.;:") + "…"
             follow_ups.append(cleaned)
-            if len(follow_ups) >= 3:
+            if len(follow_ups) >= 5:
                 break
         final_response = _SUGGESTIONS_PATTERN.sub("", final_response).strip()
         if follow_ups:
@@ -1527,37 +1734,6 @@ async def stream_chat_response(
                 "chat_stream: follow_ups extracted count=%d preview=%r",
                 len(follow_ups), follow_ups,
             )
-
-    # Stream tokens — preserve newlines, tabs, and all whitespace so
-    # markdown structures (tables, bullet lists, paragraphs) render
-    # correctly on the client. The previous implementation used
-    # .split() + " ".join() which collapsed ALL whitespace (including
-    # newlines) to a single space, breaking every table and list.
-    #
-    # Strategy: split on whitespace but KEEP the separators as their
-    # own tokens via re.split(r'(\s+)', ...), then re-emit 2 words at
-    # a time with a tiny sleep between chunks so the client sees a
-    # ChatGPT-like typewriter effect instead of the whole response
-    # landing in one frame.
-    _STREAM_WORDS_PER_CHUNK = 2
-    _STREAM_DELAY_SECONDS = 0.025  # 25ms → ~40 chunks/sec, natural typing
-    tokens = re.split(r'(\s+)', final_response)
-    buffer = ""
-    word_count = 0
-    for tok in tokens:
-        buffer += tok
-        # Only non-whitespace tokens count toward the word quota
-        if tok and not tok.isspace():
-            word_count += 1
-        if word_count >= _STREAM_WORDS_PER_CHUNK:
-            yield {"event": "token", "data": {"text": buffer}}
-            buffer = ""
-            word_count = 0
-            # Yield event loop so the client sees progressive rendering
-            # instead of a burst of tokens arriving in the same frame.
-            await asyncio.sleep(_STREAM_DELAY_SECONDS)
-    if buffer:
-        yield {"event": "token", "data": {"text": buffer}}
 
     # Send stock cards
     for card in stock_cards[:5]:
@@ -1623,8 +1799,22 @@ async def _build_context(session_id: str, device_id: str) -> list[dict]:
     return messages
 
 
-async def _call_llm_blocking(api_key: str, messages: list[dict], max_tokens: int | None = None) -> str | None:
-    """Call OpenRouter LLM (blocking, not streaming). Returns text or None."""
+async def _call_llm_blocking(
+    api_key: str,
+    messages: list[dict],
+    max_tokens: int | None = None,
+    *,
+    chain: list[str] | None = None,
+) -> str | None:
+    """Call OpenRouter LLM (blocking, not streaming). Returns text or None.
+
+    Args:
+        chain: which model chain to use. None = fall back to the
+               legacy _MODELS list. Typical usage:
+                  _FAST_MODELS  — intent/tool detection, suggestions
+                  _SLOW_MODELS  — final answer composition
+    """
+    models = chain or _MODELS
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -1632,9 +1822,10 @@ async def _call_llm_blocking(api_key: str, messages: list[dict], max_tokens: int
         "X-Title": "EconAtlas Artha",
     }
 
-    for model in _MODELS:
+    for model in models:
         try:
             async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
+                t0 = time.monotonic()
                 resp = await client.post(
                     _OPENROUTER_BASE,
                     headers=headers,
@@ -1646,7 +1837,7 @@ async def _call_llm_blocking(api_key: str, messages: list[dict], max_tokens: int
                     },
                 )
                 if resp.status_code == 429:
-                    logger.debug("Rate limited on %s, trying next", model)
+                    logger.info("llm: rate-limited on %s, trying next", model)
                     continue
                 resp.raise_for_status()
                 data = resp.json()
@@ -1656,14 +1847,112 @@ async def _call_llm_blocking(api_key: str, messages: list[dict], max_tokens: int
                 text = content.strip()
                 if not text:
                     continue
-                logger.debug("Artha LLM response from %s", model)
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                logger.info(
+                    "llm: %s OK len=%d elapsed_ms=%.0f",
+                    model, len(text), elapsed_ms,
+                )
                 return text
         except Exception:
-            logger.debug("Artha LLM call failed for %s", model, exc_info=True)
+            logger.info("llm: %s FAILED", model, exc_info=True)
             continue
 
-    logger.warning("All AI models failed for Artha chat")
+    logger.warning("llm: all models failed for chain=%s", [m.split('/')[-1] for m in models])
     return None
+
+
+async def _stream_llm_response(
+    api_key: str,
+    messages: list[dict],
+    max_tokens: int | None = None,
+    *,
+    chain: list[str] | None = None,
+) -> AsyncGenerator[str, None]:
+    """Stream tokens from OpenRouter as they arrive.
+
+    This is REAL streaming — we use OpenRouter's native SSE support
+    (the `stream: true` flag) instead of the old fake typewriter
+    loop. Tokens are yielded as the model generates them, giving a
+    genuine ChatGPT-style experience with natural pacing determined
+    by the model itself, not by artificial sleeps.
+
+    Yields one string per partial token. The string may be empty if
+    the chunk is a control frame. On full failure, falls through to
+    a blocking call at the end and yields the whole response at once
+    as a safety net — callers still get SOMETHING.
+    """
+    models = chain or _MODELS
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://econatlas.com",
+        "X-Title": "EconAtlas Artha",
+        "Accept": "text/event-stream",
+    }
+
+    for model in models:
+        any_tokens = False
+        try:
+            async with httpx.AsyncClient(timeout=STREAM_TIMEOUT) as client:
+                t0 = time.monotonic()
+                async with client.stream(
+                    "POST",
+                    _OPENROUTER_BASE,
+                    headers=headers,
+                    json={
+                        "model": model,
+                        "max_tokens": max_tokens or MAX_TOKENS_CHAT,
+                        "temperature": 0.7,
+                        "stream": True,
+                        "messages": messages,
+                    },
+                ) as resp:
+                    if resp.status_code == 429:
+                        logger.info("llm-stream: rate-limited on %s, trying next", model)
+                        continue
+                    if resp.status_code >= 400:
+                        logger.info(
+                            "llm-stream: HTTP %d on %s, trying next",
+                            resp.status_code, model,
+                        )
+                        continue
+                    async for raw_line in resp.aiter_lines():
+                        if not raw_line:
+                            continue
+                        line = raw_line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        payload = line[5:].strip()
+                        if payload == "[DONE]":
+                            continue
+                        try:
+                            frame = json.loads(payload)
+                        except json.JSONDecodeError:
+                            continue
+                        delta = (
+                            frame.get("choices", [{}])[0]
+                            .get("delta", {})
+                            .get("content")
+                        )
+                        if delta:
+                            any_tokens = True
+                            yield delta
+                    if any_tokens:
+                        elapsed_ms = (time.monotonic() - t0) * 1000
+                        logger.info(
+                            "llm-stream: %s OK elapsed_ms=%.0f",
+                            model, elapsed_ms,
+                        )
+                        return
+        except Exception:
+            logger.info("llm-stream: %s FAILED", model, exc_info=True)
+            continue
+
+    # Fallback: blocking call on the same chain, yield the whole response
+    logger.warning("llm-stream: all streaming attempts failed, falling back to blocking")
+    text = await _call_llm_blocking(api_key, messages, max_tokens=max_tokens, chain=chain)
+    if text:
+        yield text
 
 
 # ---------------------------------------------------------------------------

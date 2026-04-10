@@ -504,6 +504,37 @@ async def init_pool() -> asyncpg.Pool:
         await conn.execute(
             "ALTER TABLE notification_log ADD COLUMN IF NOT EXISTS fcm_topic TEXT"
         )
+        # --- news_articles: clean up legacy duplicate URLs ---
+        # A handful of rows (~10) were inserted with duplicate urls
+        # before the unique index on url was in force. Those duplicates
+        # prevent UPDATE operations on affected rows (index maintenance
+        # fires a UniqueViolationError for the sibling row). The fix is
+        # a one-time cleanup: for each duplicate URL keep the newest
+        # row and delete the rest. Idempotent — re-running is a no-op.
+        try:
+            deleted = await conn.execute(
+                """
+                WITH dups AS (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY url ORDER BY timestamp DESC, id DESC
+                           ) AS rn
+                    FROM news_articles
+                    WHERE url IS NOT NULL
+                )
+                DELETE FROM news_articles
+                WHERE id IN (SELECT id FROM dups WHERE rn > 1)
+                """
+            )
+            # conn.execute returns a status string like "DELETE 10"
+            if deleted and deleted.startswith("DELETE"):
+                n = int(deleted.split()[-1]) if deleted.split()[-1].isdigit() else 0
+                if n > 0:
+                    logger.info(
+                        "news_articles: deleted %d legacy duplicate-URL rows", n,
+                    )
+        except Exception as e:
+            logger.warning("news_articles: dup-URL cleanup failed: %s", e)
         # --- news_articles: semantic + fuzzy search infrastructure ---
         # 384-dim embedding from BAAI/bge-small-en-v1.5 (fastembed default).
         # Nullable — backfill happens async via /ops/jobs/trigger/news_embed.
