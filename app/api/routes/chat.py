@@ -187,6 +187,7 @@ async def get_session(session_id: str, device_id: str = Query(..., min_length=6)
                 "stock_cards": [_coerce_card(c) for c in (m.get("stock_cards") or [])],
                 "mf_cards": [_coerce_card(c) for c in (m.get("mf_cards") or [])],
                 "tool_calls": m.get("tool_calls") or [],
+                "follow_up_suggestions": m.get("follow_up_suggestions") or [],
                 "feedback": m.get("feedback"),
                 "created_at": m["created_at"],
             }

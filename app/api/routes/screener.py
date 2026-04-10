@@ -290,6 +290,29 @@ async def get_stock_history(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.get("/stocks/{symbol}/intraday", response_model=PriceHistoryResponse)
+async def get_stock_intraday(symbol: str) -> PriceHistoryResponse:
+    """Return today's intraday ticks for the 1D chart.
+
+    Hybrid source: persistent 30-min ticks from `discover_stock_intraday`
+    table, falling back to a live Yahoo 5-min fetch when the table has
+    fewer than 3 points (e.g. pre-market or cold start). Backed by a
+    5-minute in-process cache to absorb app-open bursts.
+    """
+    try:
+        points = await discover_service.get_stock_intraday_history(symbol=symbol)
+        return PriceHistoryResponse(
+            symbol=symbol,
+            points=[
+                PriceHistoryPoint(date=p["ts"], value=p["price"])
+                for p in points
+            ],
+            count=len(points),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.get("/mutual-funds/{scheme_code}/history", response_model=PriceHistoryResponse)
 async def get_mf_history(
     scheme_code: str,

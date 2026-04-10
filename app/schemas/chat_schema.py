@@ -72,6 +72,9 @@ class ChatMessageResponse(BaseModel):
     # see exactly which tools fired and what came back without diving
     # into the chat_tool_invocations table.
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    # Persisted follow-up chips. When a historical session is reopened,
+    # these are the exact suggestions the user saw the first time.
+    follow_up_suggestions: list[str] = Field(default_factory=list)
     feedback: int | None = None
     created_at: datetime
 

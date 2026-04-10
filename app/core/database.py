@@ -692,6 +692,36 @@ async def init_pool() -> asyncpg.Pool:
         await conn.execute(
             "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS tool_calls JSONB"
         )
+        # --- chat_messages.follow_up_suggestions column for chat resume ---
+        # Stores the 5 follow-up chips emitted after each assistant message
+        # so reopening a historical session shows the same suggestions the
+        # user saw the first time (instead of an empty chip tray).
+        await conn.execute(
+            "ALTER TABLE chat_messages "
+            "ADD COLUMN IF NOT EXISTS follow_up_suggestions JSONB"
+        )
+        # --- discover_stock_intraday: 30-min live ticks for 1D charts ---
+        # Populated by the intraday scheduler job (Mon-Fri 09:00-15:45
+        # IST). Each row is a lightweight tick (price/volume/timestamp).
+        # Today's ticks drive the 1D chart on the stock detail screen.
+        # Rows older than 2 trading days are pruned to keep the table
+        # bounded (~28k rows/day × 2 = ~56k max retention).
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS discover_stock_intraday (
+                symbol TEXT NOT NULL,
+                ts TIMESTAMPTZ NOT NULL,
+                price DOUBLE PRECISION NOT NULL,
+                volume BIGINT,
+                percent_change DOUBLE PRECISION,
+                PRIMARY KEY (symbol, ts)
+            )
+            """
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_discover_stock_intraday_symbol_ts "
+            "ON discover_stock_intraday (symbol, ts DESC)"
+        )
         # --- device_preferences: per-device user settings ---
         # verbosity      — concise/balanced/detailed, controls Artha's
         #                  output length + max_tokens per response

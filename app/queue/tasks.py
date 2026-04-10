@@ -144,6 +144,23 @@ async def task_discover_stock_price(ctx: dict) -> None:
     await _run_with_retry(ctx, "discover_stock_price", run_discover_stock_price_job)
 
 
+async def task_discover_stock_intraday(ctx: dict) -> None:
+    """Lightweight 30-min intraday price refresh (market hours only).
+
+    Writes ONLY last_price / percent_change / volume to
+    discover_stock_snapshots.  Auto-skips between 15:55 and 16:45 IST
+    so it never races the heavy daily discover_stock → rescore pipeline
+    that runs at 16:00 / 16:20 / 16:30 IST.
+    """
+    from app.scheduler.discover_stock_intraday_job import (
+        run_discover_stock_intraday_job,
+    )
+
+    await _run_with_retry(
+        ctx, "discover_stock_intraday", run_discover_stock_intraday_job,
+    )
+
+
 async def task_discover_mf_nav(ctx: dict) -> None:
     from app.scheduler.discover_mf_nav_job import run_discover_mf_nav_job
 

@@ -386,7 +386,7 @@ Anti-refusal table (these tools exist — use them):
 | "How much SIP for 1 crore in 10 years?" | `sip_calculator({"mode":"reverse","goal_amount":10000000,"years":10,"annual_return_pct":12})` |
 | "I'm 30, help me plan retirement" | `retirement_calculator({"current_age":30,"retire_age":60,"monthly_expense":50000})` |
 | "Ideal asset allocation for a 30 year old" | `allocation_advisor({"age":30,"risk_tolerance":"balanced"})` |
-| "Best EV / renewable / defense stocks" | `theme_screen({"theme":"ev"})` etc. |
+| "Best EV / renewable / defence / railways / solar / wind / AI / semis / PSU banks / private banks / fintech / metals / cement / specialty chem / auto ancillaries / new-age tech stocks" | **ALWAYS** use `theme_screen({"theme":"renewable_energy"})` — NEVER `sector = 'Renewable'` or `industry LIKE '%renewable%'`. Those themes are cross-sector and have curated symbol allow-lists. Supported themes: renewable_energy, solar, wind, ev, defence, railways, ai, semiconductor, new_age_tech, psu_banks, private_banks, specialty_chem, fintech, metals, cement, auto_ancillaries. |
 | "Which sectors are rotating in?" | `sector_rotation({"lookback_days":30})` |
 | "Fed decision impact on Nifty" | `global_macro({"event":"fed"})` then take an Opinion: tag forward view. |
 | "What's on the calendar this week" | `economic_calendar({"filter":"all"})` |
@@ -394,7 +394,38 @@ Anti-refusal table (these tools exist — use them):
 | "What are the drawbacks of my picks?" | Analyze red_flags + fundamentals — DO NOT refuse. |
 | "What's the news on X?" | `news({"entity":"X"})` first. |
 
-**AUTO-RELAX awareness**: `stock_screen` now auto-relaxes filters when a query returns 0 rows. Response will include `"relaxed": true` and a `relaxation_trail`. When you see this, acknowledge it naturally: "No stocks met your strict criteria, but relaxing the filter shows these candidates instead…"
+**AUTO-RELAX awareness**: `stock_screen` AND `mf_screen` now auto-relax filters when a query returns 0 rows. Response will include `"relaxed": true` and a `relaxation_trail`. When you see this, acknowledge it naturally: "No stocks met your strict criteria, but relaxing the filter shows these candidates instead…"
+
+### 3a. CRITICAL — ZERO-RESULT HANDLING + UNIT RULES + FUZZY LOOKUP + LLM FALLBACK
+
+**UNITS (hammer this into every `stock_screen` query):**
+- `market_cap`, `total_debt`, `total_cash`, `total_revenue`, `total_assets`, `free_cash_flow`, `operating_cash_flow` are ALL stored in **₹ Crores**. Max real value in the DB is ~1.9 million (HDFC Bank at ₹19 L Cr). NEVER write `market_cap > 50000000000` (that's 50 billion Cr = ₹500 trillion, impossible). For "large-cap > ₹50k Cr" write `market_cap > 50000`. For "mid-cap > ₹10k Cr" write `market_cap > 10000`. A unit sanitizer will auto-rewrite absurd values and log a warning, but you should write them correctly in the first place.
+- `aum_cr` (mutual fund AUM) is also in ₹ Crores.
+- MF `returns_1y` / `returns_3y` / `returns_5y` are stored as **percent** (11.17 means 11.17%). For "above 12%" write `returns_1y > 12`, NOT `returns_1y > 0.12`.
+
+**SINGLE-TOKEN TICKER RULE:** If the user's message is a single alphanumeric token 2–12 characters long (e.g. `HEXT`, `CDSL`, `TATA`, `INFY`), that's almost certainly a ticker. Call `stock_lookup({"symbol":"<THAT_TOKEN>"})` IMMEDIATELY. Do NOT ask "could you clarify?" — call the tool and let the result speak.
+
+**FUZZY LOOKUP AWARENESS:** When `stock_lookup` returns `status: "not_found_exact"`, it means the exact symbol wasn't in our universe but the response includes up to 3 `candidates` that match by substring/prefix. READ the candidates and:
+1. If ONE candidate is an obvious match for what the user meant (same company name or clear typo), call `stock_lookup` again with that candidate's symbol.
+2. If NO candidate fits OR the company is recently-listed / unlisted (e.g. NSDL listed July 2025 and may still be onboarding), say so plainly: *"NSDL isn't in our live data feed yet (listed July 2025, onboarding in progress)."* Then continue with qualitative commentary from general market knowledge — but **clearly label such facts as "general context, not live data"** and **never invent specific numbers** (market cap, PE, revenue, etc.). Ranges are OK ("depositories typically trade at 30–40x PE"), exact figures are NOT.
+
+**THEME QUERIES ARE CROSS-SECTOR.** Queries about "renewable", "green energy", "solar", "wind", "EV", "defence", "railways", "AI", "semis", "new-age tech", "PSU banks", "private banks", "specialty chem", "metals", "cement", "fintech", "auto ancillaries" — these **CANNOT** be answered with `sector = '...'` or `industry LIKE '%...%'` because the matching stocks span 4–6 different sectors and industries. Example: renewable energy spans Energy (ADANIGREEN, NTPCGREEN), Industrials (WAAREEENER, SUZLON, INOXWIND), Financials (IREDA), Utilities (ACMESOLAR, KPIGREEN), Commodities (SOLARINDS). Use `theme_screen({"theme":"renewable_energy"})` — it has curated symbol allow-lists for each theme and is the ONLY correct tool for these questions. Other supported themes: see the quick-reference table above.
+
+**ZERO RESULTS FROM A TOOL — the decision tree:**
+1. **Did the filter have a units bug?** (`market_cap > 50000000000` etc.) — The sanitizer will catch and rewrite it, but double-check before re-querying.
+2. **Did you use the wrong column/sector name?** — Common traps: `sector = 'Banking'` (correct: `'Financials'`), `sector = 'Pharma'` (correct: `'Healthcare'`), `sector = 'Renewable'` (no such sector — use `theme_screen`).
+3. **Was the threshold genuinely too strict?** — The auto-relax will kick in and return partial matches with `relaxed: true`. Acknowledge the relaxation in your response.
+4. **Is the data genuinely missing from our universe?** (e.g. newly-listed NSDL, or a micro-cap outside the discover feed) — Say so plainly and then pivot to **LLM general knowledge** to answer qualitatively: "NSDL isn't in our live feed yet. From public reports, NSDL listed on 30 July 2025, market cap estimated around ₹30,000 Cr, business model is depository services similar to CDSL but handles the institutional/FII segment…" **Tag the general-knowledge section clearly** (e.g. "*General context (not from live data):*") and never fabricate precise numbers — use ranges or "approximately" language.
+5. **NEVER** silently substitute general-knowledge numbers for missing tool data. NEVER write "NSDL market cap ~₹30 Cr" as if it were a tool result. If you are reasoning from general knowledge, tag it explicitly.
+
+**NO-FABRICATION GATE:** If you have not seen a specific number in a tool result or in your prior assistant turns in THIS session, you may not present it as a fact. You CAN:
+- Quote ranges ("trades at roughly 30–40x PE historically")
+- Use qualitative language ("strong cash flows", "high-margin business")
+- Say "approximately" / "around" when citing general-knowledge figures
+You CANNOT:
+- Write "CDSL market cap is ₹23,671 Cr" without having seen it in a tool result
+- Invent ownership / allocation percentages ("Parag Parikh holds 30-35% large-cap core")
+- Report a "recent earnings beat of 12%" without a tool-sourced number
 
 **NEVER redirect the user to another app feature.** Phrases like "open the EconAtlas Screener tab", "check the app", "use the dashboard", or "consult a financial advisor" are FORBIDDEN. You ARE the feature. If you can't answer, say so directly and ask what other data would help.
 
@@ -1054,6 +1085,270 @@ _SECTOR_ALIASES = {
     "entertainment": "Media & Entertainment",
 }
 
+# ---------------------------------------------------------------------------
+# Theme → symbol allow-list.  Cross-sector themes (renewable, EV, defence,
+# AI, semis, railways, new-age) cannot be served by a single `sector =` or
+# `industry LIKE` query because the matching stocks are scattered across
+# 5–6 different sectors.  Waaree Energies is 'Industrials', Adani Green is
+# 'Energy', IREDA is 'Financials', Solar Industries is 'Commodities'.  We
+# maintain an explicit curated map and resolve theme_screen() through it.
+# Add new themes here; the tagger below rebuilds the reverse map.
+# ---------------------------------------------------------------------------
+_THEME_SYMBOLS: dict[str, dict[str, Any]] = {
+    "renewable_energy": {
+        "display": "Renewable Energy",
+        "aliases": (
+            "renewable", "renewables", "renewable energy", "green energy",
+            "clean energy", "green power", "clean power",
+        ),
+        "symbols": (
+            "ADANIGREEN", "NTPCGREEN", "WAAREEENER", "SUZLON", "INOXWIND",
+            "IREDA", "ACMESOLAR", "KPIGREEN", "WAAREERTL", "SOLARINDS",
+            "ORIENTGREEN", "JPPOWER", "JYOTISTRUC", "WEBSOLAR", "GREENPOWER",
+            "TATAPOWER", "RPOWER", "CESC", "TORNTPOWER", "NHPC",
+        ),
+    },
+    "solar": {
+        "display": "Solar",
+        "aliases": ("solar", "solar power", "solar energy"),
+        "symbols": (
+            "WAAREEENER", "WAAREERTL", "ADANIGREEN", "NTPCGREEN", "KPIGREEN",
+            "ACMESOLAR", "SOLARINDS", "WEBSOLAR", "GREENPOWER", "INSOLATION",
+        ),
+    },
+    "wind": {
+        "display": "Wind Energy",
+        "aliases": ("wind", "wind energy", "wind power"),
+        "symbols": (
+            "SUZLON", "INOXWIND", "ORIENTGREEN", "JYOTISTRUC",
+        ),
+    },
+    "ev": {
+        "display": "Electric Vehicles",
+        "aliases": (
+            "ev", "evs", "electric vehicle", "electric vehicles", "e-vehicle",
+            "emobility", "e-mobility",
+        ),
+        "symbols": (
+            "OLECTRA", "TATAMOTORS", "M&M", "TVSMOTOR", "BAJAJ-AUTO",
+            "GREAVESCOT", "HEROMOTOCO", "EICHERMOT", "ASHOKLEY", "JBMA",
+            "EXIDEIND", "AMARAJABAT", "HBLPOWER", "SONACOMS", "MOTHERSON",
+            "UNOMINDA", "BOSCHLTD", "SUNDARMFIN",
+        ),
+    },
+    "defence": {
+        "display": "Defence",
+        "aliases": (
+            "defence", "defense", "defence stocks", "defense stocks",
+            "aerospace", "military",
+        ),
+        "symbols": (
+            "HAL", "BEL", "BDL", "MAZAGON", "MIDHANI", "GRSE", "COCHINSHIP",
+            "PARAS", "DATAPATTNS", "ASTRAMICRO", "DCXINDIA", "APOLLO",
+            "ZENTEC", "NELCO", "BEML", "ORDNFAC",
+        ),
+    },
+    "railways": {
+        "display": "Railways",
+        "aliases": ("railway", "railways", "rail", "indian railways"),
+        "symbols": (
+            "IRCTC", "IRFC", "RVNL", "RITES", "IRCON", "CONCOR", "TEXRAIL",
+            "TITAGARH", "JUPITERWAG", "BEML", "JYOTISTRUC", "RAILTEL",
+            "KEC", "KALPATPOWR",
+        ),
+    },
+    "ai": {
+        "display": "AI / Data Centre",
+        "aliases": (
+            "ai", "artificial intelligence", "data centre", "data center",
+            "ai infrastructure", "generative ai", "gen ai",
+        ),
+        "symbols": (
+            "TCS", "INFY", "WIPRO", "HCLTECH", "TECHM", "LTIM", "PERSISTENT",
+            "COFORGE", "MPHASIS", "HEXT", "CYIENT", "ZENSARTECH", "TATAELXSI",
+            "HAPPSTMNDS", "KPITTECH", "NETWEB",
+        ),
+    },
+    "semiconductor": {
+        "display": "Semiconductor",
+        "aliases": (
+            "semiconductor", "semiconductors", "semis", "chip", "chips",
+            "chip design", "chipmaker",
+        ),
+        "symbols": (
+            "DIXON", "KAYNES", "SYRMA", "MOSCHIP", "SPEL", "CGPOWER",
+            "TATAELXSI", "NETWEB",
+        ),
+    },
+    "new_age_tech": {
+        "display": "New-Age Tech",
+        "aliases": (
+            "new age", "new-age", "new age tech", "fintech", "startups",
+            "unicorn", "unicorns", "digital", "internet",
+        ),
+        "symbols": (
+            "ZOMATO", "NYKAA", "PAYTM", "POLICYBZR", "CARTRADE", "DELHIVERY",
+            "MAPMYINDIA", "IRCTC", "EASEMYTRIP", "TATATECH", "LODHA",
+        ),
+    },
+    "psu_banks": {
+        "display": "PSU Banks",
+        "aliases": (
+            "psu bank", "psu banks", "public sector bank", "public sector banks",
+            "government bank", "government banks",
+        ),
+        "symbols": (
+            "SBIN", "BANKBARODA", "PNB", "CANBK", "UNIONBANK", "INDIANB",
+            "IOB", "CENTRALBK", "UCOBANK", "BANKINDIA", "PSB", "MAHABANK",
+        ),
+    },
+    "private_banks": {
+        "display": "Private Banks",
+        "aliases": (
+            "private bank", "private banks", "private sector bank",
+        ),
+        "symbols": (
+            "HDFCBANK", "ICICIBANK", "AXISBANK", "KOTAKBANK", "INDUSINDBK",
+            "IDFCFIRSTB", "YESBANK", "FEDERALBNK", "RBLBANK", "BANDHANBNK",
+            "AUBANK", "CUB", "KARURVYSYA", "DCBBANK", "SOUTHBANK",
+        ),
+    },
+    "specialty_chem": {
+        "display": "Specialty Chemicals",
+        "aliases": (
+            "specialty chem", "specialty chemicals", "chemicals",
+            "fine chemicals",
+        ),
+        "symbols": (
+            "PIDILITIND", "SRF", "NAVINFLUOR", "DEEPAKNTR", "AARTIIND",
+            "ATUL", "VINATIORGA", "GALAXYSURF", "PCBL", "CLEAN", "NOCIL",
+            "SUDARSCHEM", "TATACHEM", "UPL",
+        ),
+    },
+    "fintech": {
+        "display": "Fintech",
+        "aliases": ("fintech", "financial technology", "payments"),
+        "symbols": (
+            "PAYTM", "POLICYBZR", "CAMS", "CDSL", "BSE", "MCX", "IEX",
+            "NIITMTS", "360ONE",
+        ),
+    },
+    "metals": {
+        "display": "Metals & Mining",
+        "aliases": (
+            "metals", "metal", "mining", "steel", "iron", "aluminium",
+            "aluminum", "copper", "zinc",
+        ),
+        "symbols": (
+            "TATASTEEL", "JSWSTEEL", "SAIL", "JINDALSTEL", "HINDALCO",
+            "NATIONALUM", "NMDC", "VEDL", "HINDZINC", "COALINDIA", "MOIL",
+            "RATNAMANI", "WELCORP",
+        ),
+    },
+    "cement": {
+        "display": "Cement",
+        "aliases": ("cement", "cement stocks"),
+        "symbols": (
+            "ULTRACEMCO", "SHREECEM", "AMBUJACEM", "ACC", "DALBHARAT",
+            "RAMCOCEM", "JKCEMENT", "HEIDELBERG", "BIRLACORPN", "INDIACEM",
+            "JKLAKSHMI", "PRISMJOHN",
+        ),
+    },
+    "auto_ancillaries": {
+        "display": "Auto Ancillaries",
+        "aliases": (
+            "auto ancillaries", "auto components", "auto parts",
+            "auto ancillary",
+        ),
+        "symbols": (
+            "MOTHERSON", "BOSCHLTD", "UNOMINDA", "BALKRISIND", "MRF",
+            "APOLLOTYRE", "CEATLTD", "EXIDEIND", "AMARAJABAT", "SONACOMS",
+            "SUNDARMFIN", "JAMNAAUTO", "ENDURANCE", "SCHAEFFLER", "GABRIEL",
+        ),
+    },
+}
+
+
+def _build_theme_alias_index() -> dict[str, str]:
+    """Flatten the curated theme map into alias → canonical theme key."""
+    idx: dict[str, str] = {}
+    for theme_key, spec in _THEME_SYMBOLS.items():
+        idx[theme_key] = theme_key
+        for alias in spec.get("aliases", ()):
+            idx[str(alias).strip().lower()] = theme_key
+    return idx
+
+
+_THEME_ALIAS_INDEX: dict[str, str] = _build_theme_alias_index()
+
+
+def _resolve_theme(query: str | None) -> str | None:
+    """Map a user-supplied theme phrase → canonical theme key or None."""
+    if not query:
+        return None
+    key = str(query).strip().lower()
+    if key in _THEME_ALIAS_INDEX:
+        return _THEME_ALIAS_INDEX[key]
+    # Substring fallback for "green energy stocks" style inputs.
+    for alias, canonical in _THEME_ALIAS_INDEX.items():
+        if alias and alias in key:
+            return canonical
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Stock-screen numeric sanitizer.  The LLM sometimes writes filters like
+# `market_cap > 50000000000` (raw rupees, 50 billion) when our column is
+# stored in **₹ Crores** (max real value ~1.9M).  Detect absurd thresholds
+# on known-Crore columns and auto-rewrite by dividing by 1e7 (raw rupees →
+# Cr) or 1e5 (lakhs → Cr).  Logs every rewrite for observability.
+# ---------------------------------------------------------------------------
+_CRORE_COLUMNS: frozenset[str] = frozenset({
+    "market_cap", "total_debt", "total_cash", "total_revenue", "total_assets",
+    "free_cash_flow", "operating_cash_flow", "aum_cr",
+})
+_NUMERIC_FILTER_RE = re.compile(
+    r"(\b(?:" + "|".join(re.escape(c) for c in _CRORE_COLUMNS) + r")\b)"
+    r"\s*([<>]=?|=)\s*"
+    r"(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_crore_units(query: str, *, logger_prefix: str = "stock_screen") -> str:
+    """Rewrite absurd raw-rupee thresholds into Crores.
+
+    `market_cap > 50000000000` → `market_cap > 5000` (with a log line).
+    """
+    if not query:
+        return query
+
+    def _rewrite(match: re.Match[str]) -> str:
+        col, op, num = match.groups()
+        try:
+            value = float(num)
+        except ValueError:
+            return match.group(0)
+        # Cap of 10M Cr ≈ 100 trillion rupees — beyond any real company.
+        # Anything larger is definitely a unit mistake.
+        if value <= 10_000_000:
+            return match.group(0)
+        if value >= 1e12:       # trillions — user wrote 1e12 = 1 trillion
+            fixed = value / 1e7
+        elif value >= 1e9:      # billions of rupees
+            fixed = value / 1e7
+        else:                   # lakhs probably
+            fixed = value / 1e5
+        logger.warning(
+            "%s: unit sanitizer rewrote %s %s %s -> %s (assumed raw rupees, "
+            "target column is in Crores)",
+            logger_prefix, col, op, num, int(fixed),
+        )
+        return f"{col} {op} {int(fixed)}"
+
+    return _NUMERIC_FILTER_RE.sub(_rewrite, query)
+
+
 _FUND_VARIANT_PATTERNS = (
     (re.compile(r"\bdirect\s+plan\b", re.IGNORECASE), "direct"),
     (re.compile(r"\bregular\s+plan\b", re.IGNORECASE), "regular"),
@@ -1367,7 +1662,13 @@ def _score_fund_candidate(query: str, candidate_name: str) -> float:
 
 
 def _canonicalize_stock_screen_query(query: str | None) -> str:
-    """Rewrite sector literals inside stock_screen queries to DB labels."""
+    """Rewrite sector literals + sanitize numeric units inside queries.
+
+    Two passes:
+    1. Sector literal rewrite (`sector = 'Information Technology'` → `'IT'`).
+    2. Crore-unit sanitizer (`market_cap > 50000000000` → `> 5000`) to
+       catch LLM unit confusion before the SQL hits the DB.
+    """
     if not query:
         return ""
 
@@ -1376,7 +1677,8 @@ def _canonicalize_stock_screen_query(query: str | None) -> str:
         normalized = _normalize_sector_name(value)
         return f"{prefix}{normalized or value}{suffix}"
 
-    return _STOCK_SCREEN_SECTOR_LITERAL_RE.sub(_replace, query)
+    rewritten = _STOCK_SCREEN_SECTOR_LITERAL_RE.sub(_replace, query)
+    return _sanitize_crore_units(rewritten)
 
 
 # --- MF sub_category / category canonicalisation ---------------------
@@ -2499,7 +2801,51 @@ async def _execute_tool(
                 symbol,
             )
             if not row:
-                return {"error": f"Stock '{symbol}' not found"}
+                # ── Fuzzy fallback.  On exact miss, search by ILIKE on
+                # both symbol and display_name so common typos ("HEXAWRE",
+                # "HCLTEC") recover, plus a startswith on the symbol for
+                # prefix hits ("TAT" → TATA*).  Returns the top 3
+                # candidates for Artha to present, plus a clear
+                # `status: "not_found_exact"` flag so the prompt rules can
+                # branch into "suggest candidates or use general knowledge"
+                # without hallucinating numbers.
+                try:
+                    like_pat = f"%{symbol}%"
+                    prefix_pat = f"{symbol}%"
+                    candidates = await pool.fetch(
+                        "SELECT symbol, display_name, sector, industry, "
+                        "last_price, market_cap, score "
+                        "FROM discover_stock_snapshots "
+                        "WHERE symbol ILIKE $1 OR display_name ILIKE $1 "
+                        "   OR symbol ILIKE $2 "
+                        "ORDER BY "
+                        "  CASE WHEN symbol ILIKE $2 THEN 0 ELSE 1 END, "
+                        "  market_cap DESC NULLS LAST "
+                        "LIMIT 3",
+                        like_pat, prefix_pat,
+                    )
+                except Exception as e:
+                    logger.debug("stock_lookup: fuzzy fallback failed: %s", e)
+                    candidates = []
+                return {
+                    "status": "not_found_exact",
+                    "requested_symbol": symbol,
+                    "error": (
+                        f"Stock '{symbol}' not found by exact symbol match."
+                    ),
+                    "candidates": [record_to_dict(c) for c in candidates],
+                    "fallback_guidance": (
+                        "If ONE candidate above is clearly what the user "
+                        "meant (same name or obvious typo), call stock_lookup "
+                        "again with that exact symbol. If the user asked "
+                        "about a recently-listed or unlisted company (NSDL, "
+                        "etc.) not in our universe, say so plainly and then "
+                        "use general market knowledge to answer qualitatively "
+                        "— BUT clearly label such facts as 'general context, "
+                        "not from live data' and never invent specific "
+                        "numbers (market cap, PE, revenue)."
+                    ),
+                }
             d = record_to_dict(row)
             # Parse score_breakdown JSONB for action signals + narratives.
             import json as _json
@@ -2895,19 +3241,67 @@ async def _execute_tool(
             ok, err = _validate_screen_query(query_where, _MF_SCREEN_COLUMNS)
             if not ok:
                 return {"error": err}
+            _mf_select = (
+                "SELECT scheme_code, scheme_name, category, sub_category, nav, "
+                "returns_1y, returns_3y, returns_5y, expense_ratio, "
+                "aum_cr, score, risk_level "
+                "FROM discover_mutual_fund_snapshots "
+            )
             rows = await pool.fetch(
-                f"SELECT scheme_code, scheme_name, category, nav, "
-                f"returns_1y, returns_3y, returns_5y, expense_ratio, "
-                f"aum_cr, score, risk_level "
-                f"FROM discover_mutual_fund_snapshots "
-                f"WHERE {query_where} "
+                f"{_mf_select}WHERE {query_where} "
                 f"ORDER BY score DESC NULLS LAST "
                 f"LIMIT {limit}",
                 timeout=5,
             )
+            # --- AUTO-RELAX: mirror the stock_screen behaviour.
+            # When the strict query returns 0 rows, progressively drop
+            # the trailing AND-clauses one at a time until we find the
+            # closest match. Returns `relaxed: true` + `relaxation_trail`
+            # so Artha can explain what was dropped.  Without this, "best
+            # flexi cap fund above 12% 1y returns" returns zero (max
+            # Flexi Cap 1y in the DB right now is 11.17%) and the user
+            # gets a flat "no results" answer.
+            relaxation_trail: list[str] = []
+            if len(rows) == 0:
+                import re as _re
+                relaxed_query = query_where
+                for _ in range(5):
+                    _parts = _re.split(
+                        r"\s+AND\s+", relaxed_query, flags=_re.IGNORECASE,
+                    )
+                    if len(_parts) <= 1:
+                        break
+                    dropped = _parts[-1].strip()
+                    relaxed_query = " AND ".join(_parts[:-1])
+                    relaxation_trail.append(dropped)
+                    try:
+                        rows = await pool.fetch(
+                            f"{_mf_select}WHERE {relaxed_query} "
+                            f"ORDER BY score DESC NULLS LAST "
+                            f"LIMIT {limit}",
+                            timeout=5,
+                        )
+                    except Exception:
+                        continue
+                    if len(rows) > 0:
+                        logger.info(
+                            "mf_screen: auto-relaxed after dropping %d clauses: %s",
+                            len(relaxation_trail),
+                            " | ".join(relaxation_trail),
+                        )
+                        break
             return {
                 "count": len(rows),
                 "funds": [record_to_dict(r) for r in rows],
+                "relaxed": bool(relaxation_trail and len(rows) > 0),
+                "relaxation_trail": relaxation_trail,
+                "relaxation_note": (
+                    "Strict filters returned zero. Dropped the trailing "
+                    f"clauses: {relaxation_trail}. Acknowledge this in the "
+                    "response ('no funds met your exact criteria, closest "
+                    "matches after relaxing X are…')"
+                    if relaxation_trail and len(rows) > 0 else None
+                ),
             }
 
         elif tool_name == "watchlist":
@@ -4609,47 +5003,82 @@ async def _execute_tool(
             }
 
         elif tool_name == "theme_screen":
-            # Fuzzy theme matching via industry column + display_name patterns.
-            theme = (params.get("theme") or "").strip().lower()
-            limit = min(int(params.get("limit", 10)), 20)
-            if not theme:
+            # Curated theme → symbol allow-list.  Cross-sector themes like
+            # "renewable" span Energy + Industrials + Financials + Utilities
+            # + Commodities + Consumer Discretionary and CANNOT be served
+            # by a single `sector =` or `industry LIKE` query.  We maintain
+            # `_THEME_SYMBOLS` above as the single source of truth and
+            # resolve user input through alias index → canonical key.
+            theme_raw = (params.get("theme") or "").strip()
+            order_by = (params.get("order") or "").strip()
+            limit = min(int(params.get("limit", 10)), 30)
+            if not theme_raw:
                 return {"error": "No theme provided"}
-            # Known theme patterns — maps theme → list of (column, pattern)
-            _THEME_PATTERNS: dict[str, list[tuple[str, str]]] = {
-                "ev": [("industry", "%electric%"), ("industry", "%battery%"), ("industry", "%auto%"), ("display_name", "%electric%")],
-                "electric vehicle": [("industry", "%electric%"), ("industry", "%battery%")],
-                "renewable": [("industry", "%renewable%"), ("industry", "%solar%"), ("industry", "%wind%"), ("display_name", "%green%"), ("display_name", "%solar%")],
-                "solar": [("industry", "%solar%"), ("display_name", "%solar%")],
-                "defense": [("industry", "%defense%"), ("industry", "%aerospace%"), ("display_name", "%defence%")],
-                "defence": [("industry", "%defense%"), ("industry", "%aerospace%"), ("display_name", "%defence%")],
-                "ai": [("display_name", "%ai%"), ("display_name", "%artificial%"), ("industry", "%software%")],
-                "semiconductor": [("industry", "%semi%"), ("display_name", "%chip%")],
-                "nuclear": [("industry", "%nuclear%"), ("industry", "%power%")],
-                "railway": [("industry", "%railway%"), ("display_name", "%rail%")],
-                "infrastructure": [("industry", "%infra%"), ("industry", "%construction%")],
+            canonical = _resolve_theme(theme_raw)
+            if not canonical:
+                return {
+                    "error": (
+                        f"Unknown theme '{theme_raw}'. Supported themes: "
+                        + ", ".join(sorted(_THEME_SYMBOLS.keys()))
+                    ),
+                    "theme": theme_raw,
+                    "supported": sorted(_THEME_SYMBOLS.keys()),
+                }
+            spec = _THEME_SYMBOLS[canonical]
+            allow_list = list(spec.get("symbols", ()))
+            if not allow_list:
+                return {
+                    "theme": canonical,
+                    "display": spec.get("display"),
+                    "count": 0,
+                    "stocks": [],
+                    "note": "Theme has no curated symbol list yet.",
+                }
+            # Validate an optional ORDER BY against the SELECT column list
+            # so the LLM can request ordering without opening a SQLi hole.
+            _ORDER_WHITELIST = {
+                "market_cap", "score", "percent_change", "pe_ratio", "roe",
+                "last_price", "revenue_growth", "dividend_yield",
+                "percent_change_1y", "percent_change_3m", "percent_change_1w",
             }
-            patterns = _THEME_PATTERNS.get(theme, [("industry", f"%{theme}%"), ("display_name", f"%{theme}%")])
-            # Build OR query
-            conditions = []
-            args: list[Any] = []
-            for i, (col, pat) in enumerate(patterns, start=1):
-                conditions.append(f"{col} ILIKE ${i}")
-                args.append(pat)
-            where = " OR ".join(conditions)
-            sql = (
-                f"SELECT symbol, display_name, sector, industry, last_price, percent_change, "
-                f"pe_ratio, roe, market_cap, score, action_tag "
-                f"FROM discover_stock_snapshots WHERE {where} "
-                f"ORDER BY score DESC NULLS LAST LIMIT {limit}"
+            order_clause = "score DESC NULLS LAST"
+            if order_by:
+                m = re.fullmatch(
+                    r"\s*([a-zA-Z_]+)(?:\s+(ASC|DESC))?\s*",
+                    order_by,
+                    re.IGNORECASE,
+                )
+                if m and m.group(1).lower() in _ORDER_WHITELIST:
+                    direction = (m.group(2) or "DESC").upper()
+                    order_clause = f"{m.group(1).lower()} {direction} NULLS LAST"
+            rows = await pool.fetch(
+                f"SELECT symbol, display_name, sector, industry, last_price, "
+                f"percent_change, pe_ratio, roe, market_cap, score, action_tag, "
+                f"revenue_growth, operating_margins, dividend_yield "
+                f"FROM discover_stock_snapshots "
+                f"WHERE symbol = ANY($1::text[]) "
+                f"ORDER BY {order_clause} "
+                f"LIMIT {limit}",
+                allow_list,
+                timeout=5,
             )
-            rows = await pool.fetch(sql, *args)
+            found_symbols = {r["symbol"] for r in rows}
+            missing_from_universe = [
+                s for s in allow_list if s not in found_symbols
+            ]
             return {
-                "theme": theme,
+                "theme": canonical,
+                "display": spec.get("display"),
+                "query_echo": theme_raw,
                 "count": len(rows),
                 "stocks": [record_to_dict(r) for r in rows],
+                "curated_list_size": len(allow_list),
+                "missing_from_universe": missing_from_universe[:10],
                 "note": (
-                    "Theme matches are approximate (industry/name pattern). "
-                    "Verify business overlap before acting."
+                    "Theme matches use a curated symbol allow-list (not "
+                    "sector/industry guessing). If you want stocks NOT in "
+                    "this list, say so and Artha can reason about them "
+                    "qualitatively using general market knowledge."
                 ),
             }
 
@@ -4996,7 +5425,7 @@ async def get_session_messages(session_id: str, device_id: str) -> list[dict]:
     out: list[dict] = []
     for r in rows:
         d = record_to_dict(r)
-        for k in ("stock_cards", "mf_cards", "tool_calls"):
+        for k in ("stock_cards", "mf_cards", "tool_calls", "follow_up_suggestions"):
             v = d.get(k)
             if isinstance(v, str):
                 try:
@@ -5028,6 +5457,7 @@ async def save_message(
     stock_cards: list[dict] | None = None,
     mf_cards: list[dict] | None = None,
     tool_calls: list[dict] | None = None,
+    follow_up_suggestions: list[str] | None = None,
 ) -> str:
     """Save a message and return its ID."""
     pool = await get_pool()
@@ -5035,9 +5465,10 @@ async def save_message(
     await pool.execute(
         """
         INSERT INTO chat_messages (
-            id, session_id, role, content, thinking_text, stock_cards, mf_cards, tool_calls, created_at
+            id, session_id, role, content, thinking_text,
+            stock_cards, mf_cards, tool_calls, follow_up_suggestions, created_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, NOW())
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, NOW())
         """,
         msg_id,
         session_id,
@@ -5047,6 +5478,7 @@ async def save_message(
         json.dumps(stock_cards) if stock_cards else None,
         json.dumps(mf_cards) if mf_cards else None,
         json.dumps(tool_calls) if tool_calls else None,
+        json.dumps(follow_up_suggestions) if follow_up_suggestions else None,
     )
     # Update session title from first user message
     if role == "user":
@@ -6056,6 +6488,39 @@ async def stream_chat_response(
                 "fallback phrasing.",
                 "Do NOT say you lack the data when a relevant successful tool result exists.",
             ])
+
+        # ── Prior-turn context reinforcement ────────────────────────────
+        # Fixes the "Compare Parag Parikh vs HDFC — I don't have HDFC
+        # data" amnesia bug.  The LLM has the prior assistant turns in
+        # its context window but the giant tool_context block distracts
+        # it.  We pluck numbers Artha already printed and surface them
+        # up-front so the LLM cannot plausibly claim they are missing.
+        try:
+            recent_assistant_excerpts: list[str] = []
+            for _m in reversed(session_messages[-6:] if session_messages else []):
+                if _m.get("role") != "assistant":
+                    continue
+                _content = (_m.get("content") or "").strip()
+                if not _content or len(_content) < 40:
+                    continue
+                # First 280 chars is enough to carry the numeric bullet
+                # points (ROE, CAGR, price, etc.) we care about.
+                recent_assistant_excerpts.append(_content[:280])
+                if len(recent_assistant_excerpts) >= 2:
+                    break
+            if recent_assistant_excerpts:
+                compose_intro.extend([
+                    "",
+                    "IMPORTANT — PRIOR CONTEXT.  You have ALREADY printed "
+                    "these numbers earlier in this session.  If the user's "
+                    "current question references any of these entities, "
+                    "REUSE the numbers you printed instead of claiming the "
+                    "data is missing.  Excerpts from your recent turns:",
+                ])
+                for i, excerpt in enumerate(reversed(recent_assistant_excerpts), start=1):
+                    compose_intro.append(f"  [prev-{i}] {excerpt}")
+        except Exception:
+            logger.debug("compose: prior-turn reinforcement failed", exc_info=True)
         messages.append({
             "role": "user",
             "content": (
@@ -6085,11 +6550,19 @@ async def stream_chat_response(
                 "4. Do NOT include any [TOOL:...] markers — they will be ignored.\n"
                 "5. Be specific with the numbers from the tool results above.\n"
                 "6. If a tool returned an error or empty data, do NOT invent "
-                "numbers. For exact unavailable figures, say "
-                "'I don't have that exact data right now.' and continue "
-                "with a qualitative answer when it still helps the user. "
-                "Do not offer another fetch unless the user explicitly "
-                "asks you to retry.\n"
+                "specific numbers. You MAY continue the answer using LLM "
+                "general knowledge (ranges, qualitative language, "
+                "'approximately X') — but TAG that section clearly: "
+                "*General context (not from live data):* … . Never present "
+                "general-knowledge figures as if they came from a tool. "
+                "If `stock_lookup` returned `status: \"not_found_exact\"`, "
+                "check the `candidates` list first — if one is an obvious "
+                "typo match, call the tool again with that exact symbol. "
+                "If the user asked about a recently-listed or unlisted "
+                "company not in our universe, say so plainly and answer "
+                "qualitatively from general market knowledge, with range-"
+                "based figures only. Do not offer another fetch unless "
+                "the user explicitly asks you to retry.\n"
                 "7. Currency rules: commodities (gold/silver/crude/brent) in "
                 "USD ($). Indian stock prices / market cap in ₹. "
                 "Index VALUES (Nifty, Sensex, S&P 500, Nasdaq, Nikkei, FTSE, "
@@ -6403,7 +6876,9 @@ async def stream_chat_response(
     if follow_ups:
         yield {"event": "suggestions", "data": {"suggestions": follow_ups}}
 
-    # Save assistant message
+    # Save assistant message (includes follow_up_suggestions so that
+    # reopening this session later restores the exact chips the user
+    # saw the first time).
     try:
         msg_id = await save_message(
             session_id,
@@ -6413,6 +6888,7 @@ async def stream_chat_response(
             stock_cards=stock_cards if stock_cards else None,
             mf_cards=mf_cards if mf_cards else None,
             tool_calls=tools_used if tools_used else None,
+            follow_up_suggestions=follow_ups if follow_ups else None,
         )
     except Exception:
         logger.exception("chat_stream: failed to save assistant message")

@@ -135,6 +135,17 @@ async def _run_discover_stock_price() -> None:
     await _enqueue("discover_stock_price")
 
 
+async def _run_discover_stock_intraday() -> None:
+    """Intraday live-price refresh (market-hours only).
+
+    Fires every 30 minutes Mon-Fri 09:00-15:45 IST. The job itself also
+    guards with a 15:55-16:45 IST exclusion window so the heavy daily
+    pipeline (discover_stock → discover_stock_price → rescore) at 16:00
+    is never touched by this job.
+    """
+    await _enqueue("discover_stock_intraday")
+
+
 async def _run_discover_mf_nav() -> None:
     await _enqueue("discover_mf_nav")
 
@@ -280,6 +291,43 @@ def start_scheduler() -> None:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=10800,
+        )
+        # ── Intraday live-price refresh (Mon-Fri market hours) ──
+        # Every 30 min between 09:00 and 15:45 IST. The job itself has
+        # a 15:55-16:45 IST exclusion window so it can never race the
+        # heavy daily pipeline that runs at 16:00 / 16:20 / 16:30 IST.
+        # Lightweight: ONLY updates last_price / percent_change /
+        # volume on discover_stock_snapshots — never touches scores,
+        # fundamentals, or red flags.
+        _scheduler.add_job(
+            _run_discover_stock_intraday,
+            "cron",
+            day_of_week=intervals["discover_stock_daily_days"],
+            hour="9-15",
+            minute="0,30",
+            timezone="Asia/Kolkata",
+            id="discover_stock_intraday",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=600,
+        )
+        # Pre-open tick at 09:00 IST + post-close tick at 15:45 IST are
+        # already covered by the 9-15 cron (09:00 and 15:30), but we
+        # add one extra slot at 15:45 so the close-print is captured
+        # before the daily pipeline replaces it at 16:00.
+        _scheduler.add_job(
+            _run_discover_stock_intraday,
+            "cron",
+            day_of_week=intervals["discover_stock_daily_days"],
+            hour=15,
+            minute=45,
+            timezone="Asia/Kolkata",
+            id="discover_stock_intraday_close",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=600,
         )
         # Daily MF NAV history update (runs 30 min after MF snapshot job)
         _scheduler.add_job(

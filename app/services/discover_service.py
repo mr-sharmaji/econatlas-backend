@@ -3866,6 +3866,120 @@ async def get_stock_price_history(*, symbol: str, days: int = 365) -> list[dict]
     return [record_to_dict(r) for r in rows]
 
 
+# ---------------------------------------------------------------------------
+# Intraday 1D chart data: hybrid source.
+#   1. Primary: `discover_stock_intraday` table (30-min ticks written by the
+#      scheduler during market hours).
+#   2. On-demand fallback: Yahoo chart `interval=5m&range=1d` — triggered
+#      when the stored table has fewer than 3 points (e.g. pre-market on
+#      Monday before the first scheduler tick).
+#   3. Process-local 5-min cache keyed on (symbol, minute bucket) so a
+#      burst of app opens doesn't hammer Yahoo.
+# ---------------------------------------------------------------------------
+
+import time as _time
+
+_INTRADAY_CACHE_TTL = 300  # 5 minutes
+_INTRADAY_CACHE: dict[str, tuple[float, list[dict]]] = {}
+
+
+async def _fetch_yahoo_intraday(symbol: str) -> list[dict]:
+    """Fetch 5-min ticks for today from Yahoo. Returns points or []."""
+    import httpx
+    yahoo_symbol = f"{symbol}.NS"
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}"
+        "?interval=5m&range=1d"
+    )
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            payload = resp.json()
+    except Exception as exc:
+        logger.debug("yahoo intraday fetch failed for %s: %s", symbol, exc)
+        return []
+
+    try:
+        result = payload.get("chart", {}).get("result") or []
+        if not result:
+            return []
+        r0 = result[0]
+        timestamps = r0.get("timestamp") or []
+        closes = (
+            r0.get("indicators", {})
+              .get("quote", [{}])[0]
+              .get("close") or []
+        )
+        from datetime import datetime, timezone
+        out: list[dict] = []
+        for ts, close in zip(timestamps, closes):
+            if close is None:
+                continue
+            out.append(
+                {
+                    "ts": datetime.fromtimestamp(int(ts), tz=timezone.utc),
+                    "price": float(close),
+                    "volume": None,
+                    "percent_change": None,
+                }
+            )
+        return out
+    except Exception as exc:
+        logger.debug("yahoo intraday parse failed for %s: %s", symbol, exc)
+        return []
+
+
+async def get_stock_intraday_history(*, symbol: str) -> list[dict]:
+    """Return today's intraday ticks for a stock (30-min or 5-min granularity).
+
+    Hybrid source:
+    1. Stored table `discover_stock_intraday` for persistent 30-min ticks.
+    2. On-demand Yahoo 5-min fetch if the stored table has fewer than 3
+       points for today.
+    3. 5-minute process-local cache keyed by symbol to absorb bursts.
+    """
+    key = symbol.upper().strip()
+    now = _time.time()
+    cached = _INTRADAY_CACHE.get(key)
+    if cached and now - cached[0] < _INTRADAY_CACHE_TTL:
+        return cached[1]
+
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT ts, price, volume, percent_change
+        FROM discover_stock_intraday
+        WHERE symbol = $1
+          AND ts >= CURRENT_DATE AT TIME ZONE 'Asia/Kolkata'
+        ORDER BY ts ASC
+        """,
+        key,
+    )
+    points = [record_to_dict(r) for r in rows]
+
+    # If the stored table has fewer than 3 ticks (start of day, before
+    # the first scheduler run), fall back to Yahoo 5-min ticks.
+    if len(points) < 3:
+        yahoo_points = await _fetch_yahoo_intraday(key)
+        if yahoo_points:
+            points = yahoo_points
+
+    _INTRADAY_CACHE[key] = (now, points)
+    # Bound the cache size to prevent unbounded growth.
+    if len(_INTRADAY_CACHE) > 2000:
+        # Drop the 500 oldest entries (by insertion order in Python 3.7+).
+        for k in list(_INTRADAY_CACHE.keys())[:500]:
+            _INTRADAY_CACHE.pop(k, None)
+    return points
+
+
 async def get_bulk_stock_volatility_data() -> dict[str, dict]:
     """Fetch 3M price stats + short-term stats + 1Y/3Y/5Y returns for all stocks.
 
