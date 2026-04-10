@@ -15,6 +15,8 @@ from app.scheduler.runner import start_scheduler, stop_scheduler
 
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s - %(message)s"
 
+logger = logging.getLogger(__name__)
+
 
 def _resolve_log_level(value: str | None) -> int:
     if not value:
@@ -42,11 +44,36 @@ def _configure_logging(level_name: str | None) -> int:
     return level
 
 
+async def _warm_artha_cache() -> None:
+    """Warm the Artha suggestions cache in the background so the first
+    real client request hits a populated cache instead of the ~7s cold
+    LLM path. Non-fatal — failures just mean the first request uses
+    the static fallback."""
+    try:
+        import asyncio as _asyncio
+        # Delay slightly so it runs after the pool + worker are fully up
+        await _asyncio.sleep(2)
+        from app.services.chat_service import _compute_suggestions_llm, _suggestions_cache
+        import time as _time
+        logger.info("artha: warming suggestions cache…")
+        lines = await _compute_suggestions_llm(device_id=None)
+        if lines and len(lines) >= 4:
+            _suggestions_cache["_global"] = (lines, _time.time())
+            logger.info("artha: cache warmed with %d suggestions", len(lines))
+        else:
+            logger.warning("artha: cache warmup returned empty result")
+    except Exception:
+        logger.warning("artha: cache warmup failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await init_pool()           # 1. PostgreSQL pool
     await start_worker()        # 2. ARQ worker (ready to pick up jobs)
     start_scheduler()           # 3. APScheduler (starts enqueuing into Redis)
+    # 4. Warm the Artha LLM caches in the background — non-blocking
+    import asyncio as _asyncio
+    _asyncio.create_task(_warm_artha_cache())
     yield
     stop_scheduler()            # 1. Stop enqueuing new jobs
     await stop_worker()         # 2. Drain in-flight ARQ jobs

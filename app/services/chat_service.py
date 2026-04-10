@@ -9,6 +9,7 @@ Core flow:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -872,24 +873,89 @@ async def generate_greeting() -> dict:
 
 # Cache for LLM-generated suggestions: {cache_key: (suggestions, timestamp)}
 _suggestions_cache: dict[str, tuple[list[str], float]] = {}
-_SUGGESTIONS_CACHE_TTL = 4 * 3600  # 4 hours
+_SUGGESTIONS_CACHE_TTL = 4 * 3600  # 4 hours — aggressive, suggestions barely change
+_SUGGESTIONS_SOFT_TTL = 30 * 60    # 30 min — serve stale while refreshing in bg
+# Track in-flight refresh tasks so we don't kick N concurrent LLM calls
+# for the same cache key.
+_suggestions_inflight: dict[str, asyncio.Task] = {}
+
+
+async def _refresh_suggestions_bg(device_id: str | None, cache_key: str) -> None:
+    """Background task: compute LLM suggestions and update the cache.
+
+    Runs outside the request path so the user never waits for the LLM.
+    """
+    try:
+        lines = await _compute_suggestions_llm(device_id)
+        if lines and len(lines) >= 4:
+            _suggestions_cache[cache_key] = (lines, time.time())
+            logger.info(
+                "suggestions: cache refreshed key=%s count=%d",
+                cache_key, len(lines),
+            )
+    except Exception:
+        logger.warning("suggestions: background refresh failed", exc_info=True)
+    finally:
+        _suggestions_inflight.pop(cache_key, None)
+
+
+def _kick_background_refresh(device_id: str | None, cache_key: str) -> None:
+    """Start a background refresh if one isn't already running for this key."""
+    if cache_key in _suggestions_inflight:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(_refresh_suggestions_bg(device_id, cache_key))
+        _suggestions_inflight[cache_key] = task
+    except RuntimeError:
+        # No running loop — can't schedule bg task, skip
+        pass
 
 
 async def generate_suggestions(device_id: str | None = None) -> list[str]:
-    """Generate dynamic LLM-powered suggested prompts with watchlist context.
+    """Return suggested prompts with stale-while-revalidate semantics.
 
-    Caches per device_id (or global) for 4 hours to avoid excess LLM calls.
-    Falls back to time-based static suggestions on LLM failure.
+    Cache states:
+      * fresh  (< 30 min old)  → return cached, no refresh
+      * stale  (30 min - 4 h)  → return cached, kick background refresh
+      * missing (> 4 h or none)→ return static fallback, kick background refresh
+
+    The user NEVER waits for the LLM on this path. First request hits
+    the static fallback, subsequent requests hit the warm cache.
     """
     cache_key = device_id or "_global"
     now_ts = time.time()
+    now = datetime.now(timezone.utc)
+    ist_hour = (now.hour + 5) % 24 + (30 // 60)
 
-    # Check cache
+    # Fresh cache hit — return immediately
     if cache_key in _suggestions_cache:
         cached, ts = _suggestions_cache[cache_key]
-        if now_ts - ts < _SUGGESTIONS_CACHE_TTL:
+        age = now_ts - ts
+        if age < _SUGGESTIONS_SOFT_TTL:
+            logger.debug("suggestions: fresh cache hit key=%s age=%.0fs", cache_key, age)
+            return cached
+        if age < _SUGGESTIONS_CACHE_TTL:
+            # Stale — serve cached, refresh in background
+            logger.info(
+                "suggestions: stale cache hit key=%s age=%.0fs — refreshing in bg",
+                cache_key, age,
+            )
+            _kick_background_refresh(device_id, cache_key)
             return cached
 
+    # Cold cache — kick background refresh and return static immediately
+    logger.info(
+        "suggestions: cache MISS key=%s — returning static, refreshing in bg",
+        cache_key,
+    )
+    _kick_background_refresh(device_id, cache_key)
+    return _static_suggestions(ist_hour)
+
+
+async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
+    """Actually call the LLM to generate suggestions. Never blocks the
+    request path — only invoked from the background refresh task."""
     try:
         # Gather context for the LLM
         now = datetime.now(timezone.utc)
@@ -992,7 +1058,6 @@ async def generate_suggestions(device_id: str | None = None) -> list[str]:
                 if line.strip() and len(line.strip()) > 5
             ][:6]
             if len(lines) >= 4:
-                _suggestions_cache[cache_key] = (lines, now_ts)
                 return lines
 
         # Fallback
@@ -1056,14 +1121,28 @@ async def stream_chat_response(
     - {"event": "done", "data": {"message_id": "...", "session_id": "..."}}
     - {"event": "error", "data": {"message": "...", "retry": bool}}
     """
+    stream_start = time.monotonic()
+    device_tag = (device_id or "")[:16]
+    logger.info(
+        "chat_stream: START device=%s session=%s msg_len=%d preview=%r",
+        device_tag, session_id[:12], len(user_message or ""),
+        (user_message or "")[:80],
+    )
+
     api_key = _get_api_key()
     if not api_key:
+        logger.error("chat_stream: no OPENROUTER_API_KEY configured")
         yield {"event": "error", "data": {"message": "AI service is temporarily unavailable.", "retry": True}}
         return
 
     # Save user message
-    await save_message(session_id, "user", user_message)
-    await increment_rate_limit(device_id)
+    try:
+        await save_message(session_id, "user", user_message)
+        await increment_rate_limit(device_id)
+    except Exception:
+        logger.exception("chat_stream: failed to save user message or update rate limit")
+        yield {"event": "error", "data": {"message": "Could not save your message. Please try again.", "retry": True}}
+        return
 
     # Build conversation context
     messages = await _build_context(session_id, device_id)
@@ -1204,8 +1283,12 @@ async def stream_chat_response(
     # newlines) to a single space, breaking every table and list.
     #
     # Strategy: split on whitespace but KEEP the separators as their
-    # own tokens via re.split(r'(\s+)', ...), then re-emit in chunks of
-    # ~4 word-tokens so the stream still feels smooth.
+    # own tokens via re.split(r'(\s+)', ...), then re-emit 2 words at
+    # a time with a tiny sleep between chunks so the client sees a
+    # ChatGPT-like typewriter effect instead of the whole response
+    # landing in one frame.
+    _STREAM_WORDS_PER_CHUNK = 2
+    _STREAM_DELAY_SECONDS = 0.025  # 25ms → ~40 chunks/sec, natural typing
     tokens = re.split(r'(\s+)', final_response)
     buffer = ""
     word_count = 0
@@ -1214,10 +1297,13 @@ async def stream_chat_response(
         # Only non-whitespace tokens count toward the word quota
         if tok and not tok.isspace():
             word_count += 1
-        if word_count >= 4:
+        if word_count >= _STREAM_WORDS_PER_CHUNK:
             yield {"event": "token", "data": {"text": buffer}}
             buffer = ""
             word_count = 0
+            # Yield event loop so the client sees progressive rendering
+            # instead of a burst of tokens arriving in the same frame.
+            await asyncio.sleep(_STREAM_DELAY_SECONDS)
     if buffer:
         yield {"event": "token", "data": {"text": buffer}}
 
@@ -1234,13 +1320,28 @@ async def stream_chat_response(
         yield {"event": "suggestions", "data": {"suggestions": follow_ups}}
 
     # Save assistant message
-    msg_id = await save_message(
-        session_id,
-        "assistant",
-        final_response,
-        stock_cards=stock_cards if stock_cards else None,
-        mf_cards=mf_cards if mf_cards else None,
-        tool_calls=tools_used if tools_used else None,
+    try:
+        msg_id = await save_message(
+            session_id,
+            "assistant",
+            final_response,
+            stock_cards=stock_cards if stock_cards else None,
+            mf_cards=mf_cards if mf_cards else None,
+            tool_calls=tools_used if tools_used else None,
+        )
+    except Exception:
+        logger.exception("chat_stream: failed to save assistant message")
+        msg_id = None
+
+    total_elapsed_ms = (time.monotonic() - stream_start) * 1000
+    logger.info(
+        "chat_stream: DONE device=%s session=%s msg_id=%s tools=%d "
+        "response_len=%d stock_cards=%d mf_cards=%d follow_ups=%d "
+        "elapsed_ms=%.0f",
+        device_tag, session_id[:12], (msg_id or "")[:12],
+        len(tools_used), len(final_response or ""),
+        len(stock_cards), len(mf_cards), len(follow_ups),
+        total_elapsed_ms,
     )
 
     yield {"event": "done", "data": {"message_id": msg_id, "session_id": session_id}}
