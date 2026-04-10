@@ -683,6 +683,78 @@ async def init_pool() -> asyncpg.Pool:
             "ON chat_tool_invocations (refused, created_at DESC) "
             "WHERE refused = TRUE"
         )
+        # --- chat_messages.tool_calls column for inline debug-on-read ---
+        # Stores a compact trace of every tool call made while composing
+        # the assistant message: name, params, result_size, success,
+        # latency_ms. Exposed via the /chat/sessions/{id} endpoint so the
+        # UI can show "what tools actually fired" without hitting the
+        # chat_tool_invocations table.
+        await conn.execute(
+            "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS tool_calls JSONB"
+        )
+        # --- device_preferences: per-device user settings ---
+        # verbosity      — concise/balanced/detailed, controls Artha's
+        #                  output length + max_tokens per response
+        # risk_tolerance — conservative/balanced/aggressive, shapes
+        #                  recommendation defaults + warning emphasis
+        # language       — en / hinglish, picks the composer voice
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS device_preferences (
+                device_id TEXT PRIMARY KEY,
+                verbosity TEXT NOT NULL DEFAULT 'balanced',
+                risk_tolerance TEXT NOT NULL DEFAULT 'balanced',
+                language TEXT NOT NULL DEFAULT 'en',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        # --- fixed_income_rates: curated live rates for FDs / PPF / G-Sec / etc. ---
+        # Populated by a scheduled scraper (to be added later). Artha's
+        # `fixed_income` tool reads this table for "best FD rates",
+        # "G-Sec yields", "tax-free bonds" etc. The rate_source column
+        # identifies the bank/issuer so we can attribute correctly.
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fixed_income_rates (
+                id BIGSERIAL PRIMARY KEY,
+                instrument_type TEXT NOT NULL,
+                rate_source TEXT NOT NULL,
+                tenor TEXT,
+                rate_pct DOUBLE PRECISION NOT NULL,
+                min_amount DOUBLE PRECISION,
+                tax_status TEXT,
+                lock_in_years DOUBLE PRECISION,
+                notes TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (instrument_type, rate_source, tenor)
+            )
+            """
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fixed_income_type "
+            "ON fixed_income_rates (instrument_type, rate_pct DESC)"
+        )
+        # --- discover_stock_snapshots: max-drawdown columns for risk metrics ---
+        # Populated at snapshot time from price history. Lets
+        # factor_decomposition / portfolio_risk tools compute aggregate
+        # worst-case drops without re-querying price history each call.
+        await conn.execute(
+            "ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS max_drawdown_1y DOUBLE PRECISION"
+        )
+        await conn.execute(
+            "ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS max_drawdown_3y DOUBLE PRECISION"
+        )
+        await conn.execute(
+            "ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS dividend_consistency_years INTEGER"
+        )
+        # --- ipo_snapshots: type classification for REIT/InvIT disambiguation ---
+        # Avoids Artha comparing SM REIT unit prices (\u20b910L per SEBI rule)
+        # to regular equity IPO prices as if they were the same category.
+        await conn.execute(
+            "ALTER TABLE ipo_snapshots ADD COLUMN IF NOT EXISTS ipo_type TEXT"
+        )
         logger.info("Idempotent indexes ensured")
     return _pool
 

@@ -141,6 +141,32 @@ async def get_session(session_id: str, device_id: str = Query(..., min_length=6)
         )
 
     messages = await chat_service.get_session_messages(session_id, device_id.strip())
+
+    def _coerce_card(card: dict) -> dict:
+        """Ensure required-looking fields are never None for legacy rows.
+
+        Historical stock_cards/mf_cards rows sometimes have symbol or
+        display_name persisted as None (a tool result explicitly set the
+        key to null). The old `str` (required) schema rejected these and
+        every long session crashed with HTTP 500 on reload. Schema is now
+        relaxed but we still coerce here so the UI sees a usable fallback.
+        """
+        if not isinstance(card, dict):
+            return {}
+        out = dict(card)
+        # Stock card fallback chain: display_name ← symbol ← "Unknown"
+        if not out.get("display_name"):
+            out["display_name"] = out.get("symbol") or "Unknown"
+        if out.get("symbol") is None and out.get("display_name"):
+            out["symbol"] = None  # explicit, still allowed by new schema
+        # MF card fallback: scheme_name ← display_name ← "Unknown"
+        if "scheme_code" in out or "scheme_name" in out:
+            if not out.get("scheme_name"):
+                out["scheme_name"] = out.get("display_name") or "Unknown"
+            if not out.get("display_name"):
+                out["display_name"] = out.get("scheme_name")
+        return out
+
     return ChatSessionDetailResponse(
         session=ChatSessionResponse(
             id=session["id"],
@@ -157,8 +183,9 @@ async def get_session(session_id: str, device_id: str = Query(..., min_length=6)
                 "role": m["role"],
                 "content": m["content"],
                 "thinking_text": m.get("thinking_text"),
-                "stock_cards": m.get("stock_cards") or [],
-                "mf_cards": m.get("mf_cards") or [],
+                "stock_cards": [_coerce_card(c) for c in (m.get("stock_cards") or [])],
+                "mf_cards": [_coerce_card(c) for c in (m.get("mf_cards") or [])],
+                "tool_calls": m.get("tool_calls") or [],
                 "feedback": m.get("feedback"),
                 "created_at": m["created_at"],
             }

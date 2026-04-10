@@ -404,7 +404,21 @@ def _fetch_rows_for_status(source_code: str, status: str, today_ist: date) -> li
         raw_id = _strip_text(row.get("~id"))
         symbol = f"IPO{raw_id}" if raw_id else _slug_symbol(ipo_name)
         category_blob = f"{_strip_text(row.get('~IPO_Category'))} {_strip_text(row.get('Name'))}".upper()
-        ipo_type = "sme" if "SME" in category_blob else "mainboard"
+        # Classify: SME / REIT / InvIT / Main Board.
+        # REITs and InvITs follow SEBI's SM REIT framework which mandates
+        # \u20b910L minimum investment per unit. Without this classification,
+        # Artha compares their unit prices to regular equity IPO prices
+        # and produces nonsense conclusions.
+        _REIT_KEYWORDS = ("REIT", "PROPSHARE", "EMBASSY", "MINDSPACE", "BROOKFIELD", "NEXUS")
+        _INVIT_KEYWORDS = ("INVIT", "INVIT ", "POWERGRID INV", "IRB INVIT", "INDIA GRID")
+        if any(k in category_blob for k in _INVIT_KEYWORDS):
+            ipo_type = "invit"
+        elif any(k in category_blob for k in _REIT_KEYWORDS):
+            ipo_type = "reit"
+        elif "SME" in category_blob:
+            ipo_type = "sme"
+        else:
+            ipo_type = "mainboard"
         gmp_percent = _to_float(row.get("~gmp_percent_calc"))
         if gmp_percent is None:
             gmp_percent = _to_float(row.get("GMP"))

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -24,8 +24,14 @@ class ChatFeedbackRequest(BaseModel):
 # --- Response models ---
 
 class StockCard(BaseModel):
-    symbol: str
-    display_name: str
+    # NOTE: `symbol` and `display_name` are both optional so legacy rows
+    # where a tool result persisted a None (distinct from "missing key")
+    # don't crash the GET /chat/sessions/{id} read path.  The write side
+    # now guards both fields via `or`-fallback, but the schema still has
+    # to accept None for historical data. Required fields here used to
+    # cause every long session to return HTTP 500 on reload.
+    symbol: str | None = None
+    display_name: str | None = None
     sector: str | None = None
     last_price: float | None = None
     percent_change: float | None = None
@@ -34,8 +40,9 @@ class StockCard(BaseModel):
 
 
 class MFCard(BaseModel):
-    scheme_code: str
-    scheme_name: str
+    # Same rationale as StockCard: relax required fields for legacy rows.
+    scheme_code: str | None = None
+    scheme_name: str | None = None
     display_name: str | None = None
     category: str | None = None
     nav: float | None = None
@@ -51,6 +58,12 @@ class ChatMessageResponse(BaseModel):
     thinking_text: str | None = None
     stock_cards: list[StockCard] = Field(default_factory=list)
     mf_cards: list[MFCard] = Field(default_factory=list)
+    # Inline tool-call trace for debug-on-read.  Each entry is
+    # {"tool": name, "params": {...}, "result_size": int|None,
+    #  "success": bool, "latency_ms": int|None}. Callers can use this to
+    # see exactly which tools fired and what came back without diving
+    # into the chat_tool_invocations table.
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
     feedback: int | None = None
     created_at: datetime
 

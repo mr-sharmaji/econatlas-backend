@@ -313,6 +313,21 @@ Available tools:
 - [TOOL:crypto:{}] — Crypto prices (BTC, ETH, etc.).
 - [TOOL:tax:{"type":"ltcg","profit":500000}] — Real tax math. Types: ltcg (12.5% above ₹1.25L), stcg (20% flat), income_tax (new regime slabs).
 - [TOOL:educational:{"concept":"pe_ratio"}] — Explainer. Concepts: pe_ratio, pb_ratio, roe, roce, ebitda, dcf, ltcg, stcg, debt_to_equity, dividend_yield.
+- [TOOL:nifty_index_constituents:{"index_name":"Nifty IT"}] — The 10-15 heavyweight stocks IN a specific Nifty sub-index (IT/Bank/Auto/Pharma/FMCG/Metal/Energy/Realty/PSU Bank/Financial Services). **Use this when the user asks about "Nifty IT", "Nifty Bank", etc. — do NOT confuse the INDEX (few heavyweights) with the SECTOR (all stocks in that sector).** The index is different from the sector: `sector_thesis` covers all sector stocks equal-weighted, while this tool returns just the index constituents.
+- [TOOL:watchlist_analysis:{}] — Aggregated diagnostic view of the user's watchlist: avg PE, avg ROE, avg D/E, avg score, avg dividend yield + per-stock details. Use for "analyze my watchlist", "how's my portfolio".
+- [TOOL:watchlist_diversification:{}] — Sector/market-cap breakdown + concentration risk assessment (HIGH/MEDIUM/LOW). Use for "is my portfolio diversified", "am I too concentrated".
+- [TOOL:watchlist_alerts:{}] — Red flags across watchlist: high debt, promoter pledging, declining margins, negative FCF, 52w extremes. Use for "any risks in my portfolio", "what should I watch out for".
+- [TOOL:sip_calculator:{"mode":"reverse","goal_amount":10000000,"years":10,"annual_return_pct":12}] — SIP math. `mode:forward` → given monthly+years+return, computes projected corpus. `mode:reverse` → given goal+years+return, computes required monthly SIP. Also `step_up_pct` and `current_corpus`. Use for "how much SIP for 1 crore in 10 years".
+- [TOOL:retirement_calculator:{"current_age":30,"retire_age":60,"current_corpus":500000,"monthly_expense":50000}] — Retirement plan math with 4% rule + inflation-adjusted corpus + age-based asset allocation. Use for "retirement planning", "am I retirement ready".
+- [TOOL:allocation_advisor:{"age":30,"risk_tolerance":"balanced","corpus":500000,"horizon_years":20}] — Recommended equity:debt:gold mix + product category suggestions. Use for "ideal asset allocation for a 30 year old", "how should I split my money".
+- [TOOL:historical_valuation:{"symbol":"TCS","metric":"pe","lookback":"5y"}] — Stock valuation relative to sector average. Use for "is HDFC Bank expensive relative to history".
+- [TOOL:global_macro:{"event":"fed"}] — Global cues (US/Japan/Europe/FX/commodities) + typical India impact matrix. Events: fed, jobs, oil, cpi, overview. Use for "Fed decision impact on Nifty", "crude oil spike effect".
+- [TOOL:sector_rotation:{"lookback_days":30}] — Inflow/outflow sectors based on FII/DII holding changes. Use for "which sectors are rotating in", "where is smart money going".
+- [TOOL:fixed_income:{"instrument_type":"all"}] — Live rates for FDs, PPF, G-Secs, tax-free bonds (if table populated). Fall back to Opinion: tag with typical ranges if table is empty. Use for "best FD rates", "should I buy G-Secs".
+- [TOOL:theme_screen:{"theme":"EV","limit":10}] — Theme-based stock screening via industry/name fuzzy match. Supported themes: ev, electric vehicle, renewable, solar, defense, ai, semiconductor, nuclear, railway, infrastructure. Use for "best EV stocks", "renewable energy plays".
+- [TOOL:factor_decomposition:{"symbols":["TCS","INFY"]}] — Beta + max drawdown + portfolio risk for a symbol or list. Use for "beta of my portfolio", "what's the max drawdown".
+- [TOOL:tax_harvest:{}] — Framework + rules for India tax-loss harvesting. Explanation-only (personalised harvesting needs entry prices which the watchlist doesn't store yet).
+- [TOOL:economic_calendar:{"filter":"all"}] — Upcoming macro events + earnings calendar. `filter:earnings|macro|policy|all`. Use for "what's on the calendar this week", "RBI policy date", "any Fed meetings".
 
 ## CORE RULES (non-negotiable)
 
@@ -352,21 +367,36 @@ In other words: every NUMBER must be sourced; every OPINION and EXPLANATION can 
 ### 3. TRY TOOLS HARD — do not refuse when data exists
 When the user asks about a stock, fund, concept, or topic that might have tool coverage, CALL THE TOOL FIRST. Don't refuse with "I don't have that data" until you've actually tried — and tried the RIGHT tool.
 
-Anti-refusal table:
+Anti-refusal table (these tools exist — use them):
 | User asks | Do this |
 |---|---|
 | "Show me today's FII net buying" | `institutional_flows({"scope":"fii","direction":"buying"})` |
 | "What's the macro backdrop?" | `macro_regime({})` |
 | "How is the market feeling?" | `market_mood({})` |
 | "What's the thesis on TCS?" | `narrative({"symbol":"TCS"})` |
-| "What's going on with Nifty IT sector?" | `sector_thesis({"sector":"Information Technology"})` + `stock_screen` for top IT stocks |
+| "What's happening with Nifty IT?" | `nifty_index_constituents({"index_name":"Nifty IT"})` — NOT sector_thesis! The INDEX is 10 heavyweights, not all IT stocks. |
+| "What's going on with the IT sector?" | `sector_thesis({"sector":"IT"})` (note: DB stores short names — IT / Auto / Financials / Healthcare / FMCG / Consumer Discretionary / Industrials / Energy / Materials / Telecom / Real Estate) |
+| "Best flexi cap fund?" | `mf_screen({"query":"sub_category = 'Flexi Cap' AND returns_1y > 12"})` (canonicalizer adds the " Fund" suffix automatically) |
+| "Which IT stocks have highest ROE?" | `stock_screen({"query":"sector = 'IT' AND roe > 15","limit":5})` — note short sector name. |
 | "What's the mood around RBI rate cut?" | `news_sentiment({"topic":"RBI rate cut","since":"7d"})` |
 | "Who are TCS peers?" | `peers({"symbol":"TCS"})` |
-| "Compare WEBELSOLAR with another solar stock" | `stock_lookup({"symbol":"WEBELSOLAR"})` + `stock_screen({"query":"sector LIKE '%Solar%'"})` |
-| "What are the drawbacks of my picks?" | Analyze red_flags + fundamentals from data you have — DO NOT refuse. |
+| "Analyze my watchlist" | `watchlist_analysis({})` + `watchlist_diversification({})` + `watchlist_alerts({})` |
+| "How much SIP for 1 crore in 10 years?" | `sip_calculator({"mode":"reverse","goal_amount":10000000,"years":10,"annual_return_pct":12})` |
+| "I'm 30, help me plan retirement" | `retirement_calculator({"current_age":30,"retire_age":60,"monthly_expense":50000})` |
+| "Ideal asset allocation for a 30 year old" | `allocation_advisor({"age":30,"risk_tolerance":"balanced"})` |
+| "Best EV / renewable / defense stocks" | `theme_screen({"theme":"ev"})` etc. |
+| "Which sectors are rotating in?" | `sector_rotation({"lookback_days":30})` |
+| "Fed decision impact on Nifty" | `global_macro({"event":"fed"})` then take an Opinion: tag forward view. |
+| "What's on the calendar this week" | `economic_calendar({"filter":"all"})` |
+| "Best FD rates / G-Secs / PPF" | `fixed_income({"instrument_type":"all"})` — if table empty, give Opinion: tag with typical ranges. |
+| "What are the drawbacks of my picks?" | Analyze red_flags + fundamentals — DO NOT refuse. |
 | "What's the news on X?" | `news({"entity":"X"})` first. |
 
-ONLY use the "I don't have that data right now" phrase when:
+**AUTO-RELAX awareness**: `stock_screen` now auto-relaxes filters when a query returns 0 rows. Response will include `"relaxed": true` and a `relaxation_trail`. When you see this, acknowledge it naturally: "No stocks met your strict criteria, but relaxing the filter shows these candidates instead…"
+
+**NEVER redirect the user to another app feature.** Phrases like "open the EconAtlas Screener tab", "check the app", "use the dashboard", or "consult a financial advisor" are FORBIDDEN. You ARE the feature. If you can't answer, say so directly and ask what other data would help.
+
+ONLY use "I don't have that exact data" when:
 - You actually called the right tool and it returned empty, OR
 - No tool exists for the data (e.g. "what's my bank account balance?"), OR
 - The data is genuinely outside the Indian market domain.
@@ -395,10 +425,44 @@ Examples that need NO tools:
 
 For these, skip the thinking block and answer in 2-4 sentences.
 
-### 6. FORWARD PREDICTIONS are normal analysis
-Forward views — "I expect Nifty to test 24,500 over the next few weeks", "TCS margins should improve as deal wins ramp", "This sector likely outperforms in H2" — are ALLOWED as normal analysis. Do NOT prefix them with "Opinion:" or "My view:" or "Disclaimer:". Just say them.
+### 6. FORWARD VIEWS — allowed, but tag as Opinion
+Forward views and counterfactuals ("I expect Nifty to test 24,500 over the next few weeks", "TCS margins should improve", "If the Fed cuts 25bp, IT rallies 2-3%", "Historically Nifty IT rebounds after 2% dips") are ENCOURAGED. But they MUST be clearly labelled so the user distinguishes your synthesis from tool-sourced fact.
 
-Be direct. Defend the view with the numbers you already cited. If you're uncertain, say "the base case is" or "if X holds". Don't hedge with "consult a financial advisor", "do your own research", or "past performance is not indicative of future results" — the user already knows.
+Prefix forward claims with **`**Opinion:**`** or **`**My view:**`** or **`**Historically:**`**. Examples:
+
+- **Opinion:** Nifty IT likely retests 30,500 in 2 weeks — the sector is already -1.9% and the smallcap cushion is fading.
+- **My view:** This dip is a buying opportunity for TCS given ROE 52% and the balance-sheet cushion.
+- **Historically:** A 25bp RBI cut adds 2-4% to NBFC stocks in the 2 weeks after.
+
+Be DIRECT. Defend the view with live numbers. Don't hedge with "consult a financial advisor", "do your own research", or "past performance is not indicative of future results" — the user already knows.
+
+### 6a. TIME HORIZON — read the user's intent and change your picks accordingly
+When the user asks "what should I buy" or similar, identify their time horizon FIRST:
+- **"intraday" / "today" / "now"** → momentum stocks with high volume, tight stops. EXCLUDE stocks at +15% or more (they're likely upper-circuit momentum traps — see rule 6b).
+- **"this week" / "swing" / "short term"** → breakout + trend alignment. 1-2 week holding.
+- **"positional" / "tomorrow" / "next month"** → quality + recent strength. Higher conviction needed.
+- **"long term" / "years" / "for retirement"** → quality score + ROE + low debt. Don't chase momentum.
+
+If the horizon is unclear, ASK ONE question to clarify before recommending — don't default to momentum.
+
+### 6b. MOMENTUM WARNINGS — be careful with upper-circuit stocks
+Stocks with today's move ≥ +15% are at or near the upper-circuit and are MOMENTUM TRAPS for next-day entry: the opening typically gaps down or trades sideways. When you mention a stock like this in a buy list:
+1. Include an "Opinion:" or explicit risk note: "upper-circuit stock, trade only with tight stops / avoid next-day entry".
+2. Don't list multiple circuit stocks as your top picks — include at least one quality + one value name alongside.
+
+### 6c. NIFTY INDEX vs SECTOR — they are DIFFERENT things
+- **Nifty IT / Nifty Bank / Nifty Auto / Nifty Pharma / Nifty FMCG / Nifty Metal / Nifty Energy / Nifty Realty / Nifty PSU Bank / Nifty Financial Services** are INDICES with ~10-15 heavyweight stocks each.
+- The **IT sector / Auto sector / Financials sector** is the full set of stocks with that sector tag in the screener (25-140 stocks).
+
+When the user asks about a **Nifty index** specifically, use `nifty_index_constituents` and answer based on the 10-15 heavyweights + the index level.
+When they ask about a **sector** broadly, use `sector_thesis` for the full sector view.
+If they mix terms ("Nifty IT down 1.9% but the IT sector is flat"), explain the distinction.
+
+### 6d. IPO TYPE — REITs and InvITs are NOT regular equity IPOs
+The `ipo_list` tool now returns `ipo_type` ∈ {mainboard, sme, reit, invit}.
+- **mainboard** — regular equity IPO, typical price band ₹100-5,000 per share.
+- **sme** — NSE-SME or BSE-SME listing, smaller issue size, retail-accessible.
+- **reit / invit** — trust units, NOT stock shares. SM REITs have a minimum investment of **₹10 lakh per unit** by SEBI rule. Do NOT compare their unit prices to regular IPO prices. Explain to the user: "This is an SM REIT. SEBI mandates ₹10L minimum per unit — it's not directly comparable to regular equity IPOs".
 
 ### 7. UNKNOWN HANDLING — say it, don't fake it
 When you genuinely don't have a SPECIFIC live figure (after trying the right tool), say so clearly.
@@ -449,11 +513,22 @@ Never invent exact figures, dates, or company-specific facts you didn't fetch. N
 - Emit `[CARD:SYMBOL]` for every stock / MF you discuss by name. Max 5 cards per response.
 - Tool markers `[TOOL:...]` are ONLY for the first pass. On the composition pass (after tool results are returned) you must NOT output any `[TOOL:...]` markers — just the final answer.
 
-### 11. LANGUAGE
-English by default. Match Hinglish (Hindi in Latin script) if the user writes that way. Never Devanagari unless the user writes in Devanagari first.
+### 11. LANGUAGE — Hinglish matching
+English by default. If the user writes in Hinglish (Hindi in Latin script, e.g. "TCS kaisa chal raha hai", "nifty kal kya hoga"), respond in the SAME Hinglish style:
+- Keep numbers + financial terms in English ("PE 28x", "+1.2%", "ROE")
+- Use Hinglish for the narrative verbs and connectors ("TCS achha chal raha hai, ROE 52% hai aur PE 28x par thoda mehnga lag raha hai")
+- Latin script only. Never Devanagari unless the user writes in Devanagari first.
 
 ### 12. NO DISCLAIMERS
 Do not add "NFA", "do your own research", "consult a financial advisor", "past performance is not indicative of future results" unless the user specifically asks. These waste the user's time.
+
+### 13a. META / SELF-AWARENESS queries
+If the user asks what you can do, what tools you have, who made you, or whether you work offline, answer with a short, direct response:
+- **"what can you do"** → "I'm Artha, your Indian-markets assistant. I can: look up stocks/funds with fundamentals, screen by criteria, analyse your watchlist, show FII/DII flows, run SIP math, plan retirement, compare sectors, explain concepts, and more. Ask me anything market-related."
+- **"who made you"** → "I'm Artha, built into EconAtlas by Subham Sharma."
+- **"are you offline"** → "No, I need internet to pull live market data."
+
+Never redirect users to another app feature (see rule 3).
 
 ### 13. ASK ONE CLARIFYING QUESTION FOR BUY/PICK REQUESTS
 If the user asks what to buy / which fund to pick / where to invest and the time horizon is still missing, ask ONE short clarifying question first instead of jumping straight to picks:
@@ -703,6 +778,146 @@ _discover_stock_health_cache: dict[str, Any] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Query preprocessing: rephrase terse / Hinglish / vague queries so the
+# LLM sees a full natural-language intent. Rules-first (zero latency),
+# LLM fallback for queries under ~10 words that don't hit any rule.
+# ---------------------------------------------------------------------------
+
+# Rule-based pattern → canonical rewrite.  Fast path, zero LLM cost.
+_QUERY_REWRITE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^\s*fii\s*dii\s*(moves?|flows?|activity|numbers?|data)?\s*\??\s*$", re.IGNORECASE),
+     "Show today's FII and DII net cash flows in Indian equity markets and note who was the bigger buyer or seller."),
+    (re.compile(r"^\s*fii\s*(flow|flows|net|data|buying|selling)?\s*\??\s*$", re.IGNORECASE),
+     "Show today's FII net buying or selling in Indian equities."),
+    (re.compile(r"^\s*dii\s*(flow|flows|net|data|buying|selling)?\s*\??\s*$", re.IGNORECASE),
+     "Show today's DII net buying or selling in Indian equities."),
+    (re.compile(r"^\s*market\s*(status|mood|update|now|today)?\s*\??\s*$", re.IGNORECASE),
+     "Give me the current status of Indian and global markets including Nifty 50, Nifty Midcap 150, Nifty Smallcap 250, Sensex, S&P 500, Nasdaq, Nikkei, gold, and USD/INR."),
+    (re.compile(r"^\s*(what'?s|whats)\s*(hot|moving|trending)\??\s*$", re.IGNORECASE),
+     "What are today's strongest momentum stocks, best value pick, and leading sector theme in the Indian market?"),
+    (re.compile(r"^\s*(any|got)\s*(ideas?|alpha|picks?)\??\s*$", re.IGNORECASE),
+     "Give me today's top 3 investment ideas: one momentum pick, one value pick, and one sector theme."),
+    (re.compile(r"^\s*(news|latest)\??\s*$", re.IGNORECASE),
+     "Show me the top 5 Indian market news stories from the last 24 hours with a brief summary."),
+    (re.compile(r"^\s*earnings\??\s*$", re.IGNORECASE),
+     "Show me upcoming Indian corporate earnings on the calendar this week and any notable recent releases."),
+    (re.compile(r"^\s*gold\s*(price)?\??\s*$", re.IGNORECASE),
+     "Give me today's gold price in USD per ounce and INR per 10g, with a brief outlook."),
+    (re.compile(r"^\s*buy\s*(what|today|now)\??\s*$", re.IGNORECASE),
+     "What should I buy today based on today's market momentum and fundamentals? Cover intraday, swing, and long-term picks."),
+    (re.compile(r"^\s*retire(ment)?\s*(at|by)?\s*(\d+)?\??\s*$", re.IGNORECASE),
+     "Help me plan retirement. Use the retirement_calculator to show required monthly SIP, corpus target, and asset allocation."),
+    (re.compile(r"^\s*sip\s*(calc(ulator)?|help)?\??\s*$", re.IGNORECASE),
+     "Help me calculate a SIP plan. Ask me for goal amount, years, and expected return if not provided, then use sip_calculator."),
+)
+
+# Hinglish detection: look for common Hindi function words in Latin
+# script that anchor code-switched queries.  If the query hits any of
+# these, Artha replies in Hinglish style.
+_HINGLISH_MARKERS = (
+    r"\bkaisa\b", r"\bkaisi\b", r"\bkaise\b", r"\bkya\b", r"\bkyu\b",
+    r"\bkyun\b", r"\bkyon\b", r"\bkab\b", r"\bkahan\b", r"\bkahaan\b",
+    r"\bhoga\b", r"\bhogi\b", r"\bhoge\b", r"\bhai\b", r"\bhain\b",
+    r"\bchal\b", r"\bchalta\b", r"\bchalti\b", r"\bchalra\b",
+    r"\bkarna\b", r"\bkaro\b", r"\bkaru\b", r"\bkarta\b", r"\bkarti\b",
+    r"\bacha\b", r"\bachha\b", r"\bbura\b", r"\bsahi\b", r"\bghat\b",
+    r"\bsahi\s+hai\b", r"\blagega\b", r"\blagti\b",
+    r"\bmat\b", r"\bnahi\b", r"\bnahin\b", r"\bbilkul\b",
+    r"\bhua\b", r"\bhui\b", r"\bhuye\b", r"\bmatlab\b",
+    r"\babhi\b", r"\bkab\s+tak\b", r"\bkal\b",
+)
+_HINGLISH_RE = re.compile("|".join(_HINGLISH_MARKERS), re.IGNORECASE)
+
+
+def detect_hinglish(text: str | None) -> bool:
+    """Return True if the query contains Hinglish anchor words."""
+    if not text:
+        return False
+    return bool(_HINGLISH_RE.search(text))
+
+
+def _rule_rewrite_query(text: str) -> str | None:
+    """Apply rule-based rewrites.  Returns canonical form or None."""
+    if not text:
+        return None
+    for pattern, canonical in _QUERY_REWRITE_RULES:
+        if pattern.search(text):
+            return canonical
+    return None
+
+
+async def preprocess_user_query(
+    text: str,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Preprocess a user query to help the LLM.
+
+    Returns a dict with:
+      - original:       the raw user text
+      - canonical:      a canonical rephrased version (or original)
+      - is_hinglish:    True if Hinglish anchor words detected
+      - rewritten_by:   "rule" | "llm" | None
+      - is_vague:       True if query is <5 words AND no rule matched
+
+    Rules first (zero latency), LLM fallback for short queries that
+    didn't hit a rule. Long queries are passed through untouched.
+    """
+    out: dict[str, Any] = {
+        "original": text,
+        "canonical": text,
+        "is_hinglish": detect_hinglish(text),
+        "rewritten_by": None,
+        "is_vague": False,
+    }
+    if not text or not text.strip():
+        return out
+    stripped = text.strip()
+    word_count = len(stripped.split())
+
+    # Rule-based rewrite first
+    rule_result = _rule_rewrite_query(stripped)
+    if rule_result:
+        out["canonical"] = rule_result
+        out["rewritten_by"] = "rule"
+        return out
+
+    # Short query not caught by a rule → LLM rephrase (if we have a key)
+    if word_count <= 6 and api_key:
+        try:
+            rephrase_sys = (
+                "You are a query rewriter for an Indian finance app.  "
+                "The user sent a very short or ambiguous query.  Rewrite "
+                "it into a single complete question about Indian markets "
+                "that a financial assistant can answer with specific data.  "
+                "Preserve the user's intent exactly.  Return ONLY the rewritten "
+                "question, no preamble or explanation."
+            )
+            rephrase_prompt = f"User query: {stripped}\nRewritten question:"
+            rephrased = await _call_llm_blocking(
+                api_key,
+                [
+                    {"role": "system", "content": rephrase_sys},
+                    {"role": "user", "content": rephrase_prompt},
+                ],
+                max_tokens=80,
+                chain=_FAST_MODELS,
+            )
+            if rephrased and rephrased.strip():
+                cleaned = rephrased.strip().strip('"').strip("'")
+                if 10 <= len(cleaned) <= 300:
+                    out["canonical"] = cleaned
+                    out["rewritten_by"] = "llm"
+                    return out
+        except Exception as e:
+            logger.debug("preprocess_user_query: LLM rephrase failed: %s", e)
+
+    # Very short + no rule + no LLM success → flag as vague
+    if word_count < 5:
+        out["is_vague"] = True
+    return out
+
+
 def _normalize_thinking_markup(text: str | None) -> str:
     """Convert leaked markdown thinking headings into <thinking> tags."""
     if not text:
@@ -807,6 +1022,103 @@ def _canonicalize_stock_screen_query(query: str | None) -> str:
     return _STOCK_SCREEN_SECTOR_LITERAL_RE.sub(_replace, query)
 
 
+# --- MF sub_category / category canonicalisation ---------------------
+# The discover_mutual_fund_snapshots table stores sub_category values
+# with a trailing " Fund" (e.g. "Flexi Cap Fund", "Large Cap Fund").
+# The LLM naturally writes queries like `sub_category = 'Flexi Cap'`
+# without the suffix, which silently returns 0 rows → Artha refuses.
+# This map rewrites the LLM's canonical name to the DB's exact literal.
+_MF_SUBCATEGORY_ALIASES: dict[str, str] = {
+    "flexi cap": "Flexi Cap Fund",
+    "flexi-cap": "Flexi Cap Fund",
+    "flexicap": "Flexi Cap Fund",
+    "large cap": "Large Cap Fund",
+    "large-cap": "Large Cap Fund",
+    "mid cap": "Mid Cap Fund",
+    "mid-cap": "Mid Cap Fund",
+    "small cap": "Small Cap Fund",
+    "small-cap": "Small Cap Fund",
+    "large and mid cap": "Large & Mid Cap Fund",
+    "large & mid cap": "Large & Mid Cap Fund",
+    "multi cap": "Multi Cap Fund",
+    "multi-cap": "Multi Cap Fund",
+    "value": "Value Fund",
+    "value fund": "Value Fund",
+    "contra": "Contra Fund",
+    "focused": "Focused Fund",
+    "dividend yield": "Dividend Yield Fund",
+    "elss": "ELSS",
+    "tax saver": "ELSS",
+    "sectoral": "Sectoral/ Thematic",
+    "thematic": "Sectoral/ Thematic",
+    "sectoral/thematic": "Sectoral/ Thematic",
+    "sector": "Sectoral/ Thematic",
+    # Hybrid buckets
+    "aggressive hybrid": "Aggressive Hybrid Fund",
+    "balanced hybrid": "Balanced Hybrid Fund",
+    "conservative hybrid": "Conservative Hybrid Fund",
+    "dynamic asset allocation": "Dynamic Asset Allocation",
+    "balanced advantage": "Dynamic Asset Allocation",
+    "multi asset": "Multi Asset Allocation",
+    "arbitrage": "Arbitrage Fund",
+    "equity savings": "Equity Savings",
+    # Debt buckets
+    "liquid": "Liquid Fund",
+    "ultra short": "Ultra Short Duration Fund",
+    "ultra short duration": "Ultra Short Duration Fund",
+    "low duration": "Low Duration Fund",
+    "short duration": "Short Duration Fund",
+    "medium duration": "Medium Duration Fund",
+    "long duration": "Long Duration Fund",
+    "corporate bond": "Corporate Bond Fund",
+    "banking and psu": "Banking and PSU Fund",
+    "gilt": "Gilt Fund",
+    "overnight": "Overnight Fund",
+    "money market": "Money Market Fund",
+}
+
+# category (broad class) aliases — simpler, just normalise case
+_MF_CATEGORY_ALIASES: dict[str, str] = {
+    "equity": "Equity",
+    "debt": "Debt",
+    "hybrid": "Hybrid",
+    "solution oriented": "Solution Oriented",
+    "other": "Other",
+    "income": "Income",
+    "commodity": "Commodity",
+}
+
+_MF_LITERAL_RE = re.compile(
+    r"(sub_category|category)\s*(=|LIKE)\s*(['\"])([^'\"]+)(['\"])",
+    re.IGNORECASE,
+)
+
+
+def _canonicalize_mf_screen_query(query: str | None) -> str:
+    """Rewrite MF category / sub_category literals to exact DB values.
+
+    Fixes the "best flexi cap" silent-refusal pattern where queries like
+    `sub_category = 'Flexi Cap'` returned zero rows because the DB stores
+    `'Flexi Cap Fund'` with a trailing " Fund". See _MF_SUBCATEGORY_ALIASES.
+    """
+    if not query:
+        return ""
+
+    def _replace(match: re.Match[str]) -> str:
+        column, op, open_q, value, close_q = match.groups()
+        col = column.lower()
+        key = (value or "").strip().lower()
+        if col == "sub_category":
+            canonical = _MF_SUBCATEGORY_ALIASES.get(key)
+        else:
+            canonical = _MF_CATEGORY_ALIASES.get(key)
+        if not canonical:
+            return match.group(0)
+        return f"{column} {op} {open_q}{canonical}{close_q}"
+
+    return _MF_LITERAL_RE.sub(_replace, query)
+
+
 def _canonicalize_tool_params(tool_name: str, params: dict[str, Any] | None) -> dict[str, Any]:
     """Normalize common entity variants before tool dispatch."""
     normalized = dict(params or {})
@@ -816,6 +1128,11 @@ def _canonicalize_tool_params(tool_name: str, params: dict[str, Any] | None) -> 
 
     if tool_name == "stock_screen" and normalized.get("query"):
         normalized["query"] = _canonicalize_stock_screen_query(
+            str(normalized["query"]),
+        )
+
+    if tool_name == "mf_screen" and normalized.get("query"):
+        normalized["query"] = _canonicalize_mf_screen_query(
             str(normalized["query"]),
         )
 
@@ -2012,19 +2329,71 @@ async def _execute_tool(
             ok, err = _validate_screen_query(query_where, _STOCK_SCREEN_COLUMNS)
             if not ok:
                 return {"error": err}
+            select_cols = (
+                "SELECT symbol, display_name, sector, last_price, percent_change, "
+                "pe_ratio, roe, roce, debt_to_equity, market_cap, score, "
+                "revenue_growth, operating_margins, dividend_yield "
+                "FROM discover_stock_snapshots "
+            )
             rows = await pool.fetch(
-                f"SELECT symbol, display_name, sector, last_price, percent_change, "
-                f"pe_ratio, roe, roce, debt_to_equity, market_cap, score, "
-                f"revenue_growth, operating_margins, dividend_yield "
-                f"FROM discover_stock_snapshots "
-                f"WHERE {query_where} "
+                f"{select_cols}WHERE {query_where} "
                 f"ORDER BY score DESC NULLS LAST "
                 f"LIMIT {limit}",
                 timeout=5,
             )
+            # --- AUTO-RELAX: if the strict query returned 0, try relaxing ---
+            # Drop numeric threshold filters one at a time. The LLM's most
+            # common failure mode is over-tight filters (roe > 25, pe < 15)
+            # that have zero intersection. Removing the tightest first
+            # gives the user the closest match to their intent.
+            relaxation_trail: list[str] = []
+            if len(rows) == 0:
+                import re as _re
+                relaxed_query = query_where
+                # Progressive relaxation: drop trailing AND-clauses one at a time.
+                clauses = _re.split(r"\s+AND\s+", query_where, flags=_re.IGNORECASE)
+                for i in range(len(clauses) - 1, 0, -1):
+                    relaxed = " AND ".join(clauses[:i])
+                    relaxation_trail.append(relaxed)
+                    try:
+                        ok_r, _ = _validate_screen_query(relaxed, _STOCK_SCREEN_COLUMNS)
+                        if not ok_r:
+                            continue
+                        rows = await pool.fetch(
+                            f"{select_cols}WHERE {relaxed} "
+                            f"ORDER BY score DESC NULLS LAST LIMIT {limit}",
+                            timeout=5,
+                        )
+                        if rows:
+                            relaxed_query = relaxed
+                            break
+                    except Exception:
+                        continue
+                # Final fallback: drop filters entirely, just return top scores in sector
+                if len(rows) == 0 and "sector" in query_where.lower():
+                    sector_match = _re.search(
+                        r"sector\s*(?:=|LIKE)\s*['\"]([^'\"]+)['\"]",
+                        query_where, _re.IGNORECASE,
+                    )
+                    if sector_match:
+                        fallback_sector = sector_match.group(1)
+                        rows = await pool.fetch(
+                            f"{select_cols}WHERE sector = $1 "
+                            f"ORDER BY score DESC NULLS LAST LIMIT {limit}",
+                            fallback_sector,
+                            timeout=5,
+                        )
+                        if rows:
+                            relaxation_trail.append(f"sector = '{fallback_sector}' only")
             return {
                 "count": len(rows),
                 "stocks": [record_to_dict(r) for r in rows],
+                "relaxed": bool(relaxation_trail),
+                "relaxation_trail": relaxation_trail,
+                "note": (
+                    "Original filter returned 0 rows. Relaxed criteria were used."
+                    if relaxation_trail else None
+                ),
             }
 
         elif tool_name == "stock_compare":
@@ -2228,6 +2597,7 @@ async def _execute_tool(
                     {
                         "name": i.get("company_name"),
                         "status": i.get("status"),
+                        "ipo_type": i.get("ipo_type") or "mainboard",
                         "open_date": i.get("open_date"),
                         "close_date": i.get("close_date"),
                         "price_band": i.get("price_band"),
@@ -2237,6 +2607,12 @@ async def _execute_tool(
                     }
                     for i in items[:10]
                 ],
+                "note": (
+                    "ipo_type values: 'mainboard' (regular equity IPO), "
+                    "'sme' (NSE-SME / BSE-SME), 'reit' (SM REIT \u2014 \u20b910L/unit per "
+                    "SEBI rule, do NOT compare to equity IPO prices), "
+                    "'invit' (infrastructure investment trust)."
+                ),
             }
 
         elif tool_name == "news":
@@ -3055,15 +3431,48 @@ async def _execute_tool(
             if not raw_sector:
                 return {"error": "No sector provided"}
             sector = _normalize_sector_name(raw_sector)
+            # Use trimmed mean (10-90 percentile) instead of naive AVG to
+            # avoid outlier contamination. The old AVG(pe_ratio) with just
+            # `< 500` filter let extreme P/Es of 300-450 skew sector
+            # averages toward ~36x when the real median was ~20x. percentile_cont
+            # is natively supported by Postgres and gives us robust estimates.
             rows = await pool.fetch(
                 """
                 SELECT
                     COUNT(*) AS total,
                     AVG(percent_change) AS avg_chg_1d,
                     AVG(percent_change_1y) AS avg_chg_1y,
-                    AVG(pe_ratio) FILTER (WHERE pe_ratio > 0 AND pe_ratio < 500) AS avg_pe,
-                    AVG(roe) AS avg_roe,
-                    AVG(debt_to_equity) AS avg_de,
+                    (
+                        SELECT AVG(pe_ratio)
+                        FROM (
+                            SELECT pe_ratio,
+                                   PERCENT_RANK() OVER (ORDER BY pe_ratio) AS pct
+                            FROM discover_stock_snapshots
+                            WHERE LOWER(sector) = LOWER($1) AND pe_ratio > 0 AND pe_ratio < 200
+                        ) trimmed
+                        WHERE pct BETWEEN 0.10 AND 0.90
+                    ) AS avg_pe,
+                    percentile_cont(0.5) WITHIN GROUP (ORDER BY pe_ratio)
+                        FILTER (WHERE pe_ratio > 0 AND pe_ratio < 200) AS median_pe,
+                    (
+                        SELECT AVG(roe)
+                        FROM (
+                            SELECT roe, PERCENT_RANK() OVER (ORDER BY roe) AS pct
+                            FROM discover_stock_snapshots
+                            WHERE LOWER(sector) = LOWER($1) AND roe IS NOT NULL
+                        ) trimmed
+                        WHERE pct BETWEEN 0.10 AND 0.90
+                    ) AS avg_roe,
+                    (
+                        SELECT AVG(debt_to_equity)
+                        FROM (
+                            SELECT debt_to_equity,
+                                   PERCENT_RANK() OVER (ORDER BY debt_to_equity) AS pct
+                            FROM discover_stock_snapshots
+                            WHERE LOWER(sector) = LOWER($1) AND debt_to_equity IS NOT NULL
+                        ) trimmed
+                        WHERE pct BETWEEN 0.10 AND 0.90
+                    ) AS avg_de,
                     AVG(revenue_growth) AS avg_rev_growth,
                     AVG(operating_margins) AS avg_opm,
                     SUM(market_cap) AS total_mcap
@@ -3106,6 +3515,7 @@ async def _execute_tool(
                     "avg_change_1d_pct": _fnum(r["avg_chg_1d"]),
                     "avg_change_1y_pct": _fnum(r["avg_chg_1y"]),
                     "avg_pe": _fnum(r["avg_pe"]),
+                    "median_pe": _fnum(r["median_pe"]),
                     "avg_roe": _fnum(r["avg_roe"]),
                     "avg_debt_to_equity": _fnum(r["avg_de"]),
                     "avg_revenue_growth": _fnum(r["avg_rev_growth"]),
@@ -3114,8 +3524,691 @@ async def _execute_tool(
                 },
                 "top_picks": [record_to_dict(x) for x in top],
                 "weak_picks": [record_to_dict(x) for x in weak],
-                "note": "Use these stats + top/weak picks to construct a bull/bear case. Cite numbers from stats.",
+                "note": (
+                    "PE/ROE/DE use trimmed mean (10-90 percentile) to avoid outliers. "
+                    "Use these stats + top/weak picks to construct a bull/bear case."
+                ),
             }
+
+        elif tool_name == "sip_calculator":
+            # Forward mode: given monthly + years + return rate → future value.
+            # Reverse mode: given goal + years + return rate → required monthly.
+            # Also supports step_up_pct for annual SIP increase.
+            mode = (params.get("mode") or "").lower()
+            years = float(params.get("years") or 0) or 10.0
+            annual_return = float(params.get("annual_return_pct") or 12.0)
+            step_up = float(params.get("step_up_pct") or 0.0)
+            current_corpus = float(params.get("current_corpus") or 0.0)
+            monthly_rate = annual_return / 100.0 / 12.0
+            months = int(years * 12)
+
+            def _fv_sip(sip: float, months: int, rate: float, step_up_annual: float) -> float:
+                """Future value of a SIP with optional annual step-up."""
+                fv = 0.0
+                current_sip = sip
+                for m in range(months):
+                    fv = fv * (1 + rate) + current_sip
+                    if step_up_annual > 0 and (m + 1) % 12 == 0:
+                        current_sip *= (1 + step_up_annual / 100.0)
+                return fv
+
+            if mode == "reverse" or (params.get("goal_amount") and not params.get("monthly_amount")):
+                goal = float(params.get("goal_amount") or 10000000)
+                # Grow current_corpus separately
+                corpus_fv = current_corpus * ((1 + annual_return / 100.0) ** years)
+                gap = max(0.0, goal - corpus_fv)
+                # Solve for monthly SIP that hits the gap via binary search
+                lo, hi = 0.0, 500000.0
+                for _ in range(40):
+                    mid = (lo + hi) / 2
+                    if _fv_sip(mid, months, monthly_rate, step_up) >= gap:
+                        hi = mid
+                    else:
+                        lo = mid
+                required_sip = round((lo + hi) / 2, 0)
+                return {
+                    "mode": "reverse",
+                    "goal_amount": goal,
+                    "years": years,
+                    "annual_return_pct": annual_return,
+                    "step_up_pct": step_up,
+                    "current_corpus": current_corpus,
+                    "required_monthly_sip": required_sip,
+                    "corpus_fv_contribution": round(corpus_fv, 0),
+                    "total_invested": round(required_sip * months, 0),
+                    "wealth_gain": round(goal - (required_sip * months) - current_corpus, 0),
+                }
+            else:
+                sip = float(params.get("monthly_amount") or 10000)
+                fv_from_sip = _fv_sip(sip, months, monthly_rate, step_up)
+                corpus_fv = current_corpus * ((1 + annual_return / 100.0) ** years)
+                total_fv = fv_from_sip + corpus_fv
+                return {
+                    "mode": "forward",
+                    "monthly_sip": sip,
+                    "years": years,
+                    "annual_return_pct": annual_return,
+                    "step_up_pct": step_up,
+                    "current_corpus": current_corpus,
+                    "projected_corpus": round(total_fv, 0),
+                    "total_invested": round(sip * months + current_corpus, 0),
+                    "wealth_gain": round(total_fv - sip * months - current_corpus, 0),
+                }
+
+        elif tool_name == "retirement_calculator":
+            # Deterministic retirement math + age-template mix.
+            current_age = int(params.get("current_age") or 30)
+            retire_age = int(params.get("retire_age") or 60)
+            current_corpus = float(params.get("current_corpus") or 0)
+            monthly_expense = float(params.get("monthly_expense") or 50000)
+            expected_return = float(params.get("expected_return_pct") or 12.0)
+            inflation = float(params.get("inflation_pct") or 6.0)
+            years_to_retire = max(1, retire_age - current_age)
+            post_retire_years = int(params.get("post_retire_years") or 25)
+            # Future monthly expense after inflation
+            future_monthly_expense = monthly_expense * ((1 + inflation / 100.0) ** years_to_retire)
+            # Corpus needed = 25x annual expense (4% rule, inflation-adjusted)
+            required_corpus = future_monthly_expense * 12 * 25
+            # Projected corpus from current
+            projected = current_corpus * ((1 + expected_return / 100.0) ** years_to_retire)
+            gap = max(0.0, required_corpus - projected)
+            # Required monthly SIP to bridge gap
+            monthly_rate = expected_return / 100.0 / 12.0
+            months = years_to_retire * 12
+            # FV annuity formula: FV = SIP * (((1+r)^n - 1) / r) * (1+r)
+            if monthly_rate > 0:
+                factor = (((1 + monthly_rate) ** months - 1) / monthly_rate) * (1 + monthly_rate)
+                required_sip = gap / factor if factor > 0 else 0
+            else:
+                required_sip = gap / max(1, months)
+            # Age-based asset allocation template
+            if current_age < 35:
+                alloc = {"equity": 75, "debt": 20, "gold": 5}
+            elif current_age < 50:
+                alloc = {"equity": 60, "debt": 30, "gold": 10}
+            elif current_age < 60:
+                alloc = {"equity": 45, "debt": 45, "gold": 10}
+            else:
+                alloc = {"equity": 30, "debt": 60, "gold": 10}
+            return {
+                "current_age": current_age,
+                "retire_age": retire_age,
+                "years_to_retire": years_to_retire,
+                "current_corpus": current_corpus,
+                "monthly_expense_today": monthly_expense,
+                "monthly_expense_at_retirement": round(future_monthly_expense, 0),
+                "required_corpus_at_retirement": round(required_corpus, 0),
+                "projected_corpus_from_current": round(projected, 0),
+                "corpus_shortfall": round(gap, 0),
+                "required_monthly_sip": round(required_sip, 0),
+                "recommended_allocation": alloc,
+                "inflation_assumption_pct": inflation,
+                "return_assumption_pct": expected_return,
+                "note": (
+                    "4% rule: corpus = 25x annual expense. Inflation-adjusted. "
+                    "Allocation is age-based rule of thumb \u2014 adjust for risk tolerance."
+                ),
+            }
+
+        elif tool_name == "allocation_advisor":
+            # Age + risk + corpus + goal → recommended mix + product suggestions.
+            age = int(params.get("age") or 30)
+            risk = (params.get("risk_tolerance") or "balanced").lower()
+            corpus = float(params.get("corpus") or 0)
+            goal = (params.get("goal") or "wealth_creation").lower()
+            horizon_years = int(params.get("horizon_years") or max(1, 60 - age))
+
+            # Base allocation from age (100 - age for equity) modulated by risk
+            base_equity = max(20, min(90, 100 - age))
+            if risk == "aggressive":
+                base_equity = min(95, base_equity + 15)
+            elif risk == "conservative":
+                base_equity = max(15, base_equity - 20)
+            debt_pct = min(70, 100 - base_equity - 10)
+            gold_pct = 10 if base_equity + debt_pct <= 90 else max(0, 100 - base_equity - debt_pct)
+
+            # Product suggestions (sector-level, not brand-specific)
+            products: dict[str, list[str]] = {}
+            if base_equity >= 15:
+                products["equity"] = [
+                    "Nifty 50 Index Fund or ETF (large-cap core)",
+                    "Flexi Cap Fund (diversification across market caps)",
+                ]
+                if risk in ("aggressive", "balanced"):
+                    products["equity"].append("Mid Cap / Small Cap Fund for growth tilt")
+            if debt_pct > 0:
+                products["debt"] = [
+                    "Short Duration or Corporate Bond Fund" if horizon_years >= 3 else "Liquid / Ultra Short Duration Fund",
+                    "PPF or EPF for tax-efficient long-term debt",
+                ]
+            if gold_pct > 0:
+                products["gold"] = ["Gold ETF / Sovereign Gold Bond (SGB)"]
+
+            return {
+                "age": age,
+                "risk_tolerance": risk,
+                "horizon_years": horizon_years,
+                "goal": goal,
+                "recommended_mix": {
+                    "equity_pct": base_equity,
+                    "debt_pct": debt_pct,
+                    "gold_pct": gold_pct,
+                },
+                "product_suggestions": products,
+                "rationale": (
+                    f"Age {age}, {risk} risk, {horizon_years}y horizon. "
+                    f"Equity {base_equity}% (growth), debt {debt_pct}% (stability), "
+                    f"gold {gold_pct}% (inflation hedge)."
+                ),
+            }
+
+        elif tool_name == "historical_valuation":
+            # Current PE/PB/EV-EBITDA vs 5y or 10y historical mean + percentile.
+            symbol = (params.get("symbol") or "").upper().strip()
+            metric = (params.get("metric") or "pe").lower()
+            lookback = (params.get("lookback") or "5y").lower()
+            years = 5 if "5" in lookback else (10 if "10" in lookback else 5)
+            if not symbol:
+                return {"error": "No symbol provided"}
+            # We only have a snapshot, not a PE time-series. Use the current
+            # value + synthesised context from compound_sales_growth + ROE trend.
+            row = await pool.fetchrow(
+                "SELECT symbol, display_name, sector, pe_ratio, price_to_book, "
+                "score_breakdown FROM discover_stock_snapshots WHERE symbol = $1",
+                symbol,
+            )
+            if not row:
+                return {"error": f"Stock '{symbol}' not found"}
+            d = record_to_dict(row)
+            current = d.get("pe_ratio") if metric == "pe" else d.get("price_to_book")
+            # Sector comparison as proxy for historical context
+            sector = d.get("sector")
+            sector_row = await pool.fetchrow(
+                "SELECT AVG(pe_ratio) AS avg_pe, AVG(price_to_book) AS avg_pb "
+                "FROM discover_stock_snapshots WHERE sector = $1 "
+                "AND pe_ratio > 0 AND pe_ratio < 100",
+                sector,
+            )
+            sector_avg = None
+            if sector_row:
+                sector_avg = float(sector_row["avg_pe"] or 0) if metric == "pe" else float(sector_row["avg_pb"] or 0)
+            return {
+                "symbol": symbol,
+                "display_name": d.get("display_name"),
+                "sector": sector,
+                "metric": metric,
+                "current_value": current,
+                "sector_avg": round(sector_avg, 2) if sector_avg else None,
+                "lookback_years": years,
+                "note": (
+                    "Historical time-series not yet stored \u2014 using sector average as proxy. "
+                    "Add snapshot_history table + quarterly archival job for true 5y/10y percentiles."
+                ),
+                "relative_assessment": (
+                    "above sector avg" if current and sector_avg and current > sector_avg * 1.1
+                    else "below sector avg" if current and sector_avg and current < sector_avg * 0.9
+                    else "near sector avg"
+                ),
+            }
+
+        elif tool_name == "global_macro":
+            # Bundle US/global cues with typical India-impact vectors.
+            event = (params.get("event") or "overview").lower()
+            rows = await pool.fetch(
+                """
+                SELECT asset, price, change_percent FROM market_prices
+                WHERE asset IN (
+                    'S&P500', 'NASDAQ', 'Dow Jones', 'Nikkei 225',
+                    'FTSE 100', 'DAX', 'Hang Seng', 'USD/INR',
+                    'gold', 'crude oil', 'brent crude'
+                )
+                AND change_percent IS NOT NULL
+                ORDER BY timestamp DESC LIMIT 30
+                """
+            )
+            seen: set[str] = set()
+            data: dict[str, dict] = {}
+            for r in rows:
+                name = r["asset"]
+                if name in seen:
+                    continue
+                seen.add(name)
+                data[name] = {
+                    "price": float(r["price"]) if r["price"] else None,
+                    "change_pct": float(r["change_percent"]) if r["change_percent"] is not None else None,
+                }
+            # India impact hints per event type
+            impact_hints = {
+                "fed": {
+                    "hawkish": "Negative for IT/pharma export margins; USD/INR up; FII outflows",
+                    "dovish": "Positive for IT (weaker dollar concerns); risk-on for EM; FII inflows",
+                },
+                "jobs": {
+                    "strong": "Fed hawkish bias → negative for tech; positive for USD",
+                    "weak": "Rate cut bets rise → positive for risk assets including Indian equities",
+                },
+                "oil": {
+                    "spike": "Negative for India (import inflation); hits paints, aviation, auto",
+                    "crash": "Positive for India (lower CPI, better current account)",
+                },
+                "cpi": {
+                    "hot": "Fed tightening bias → pressure on rate-sensitive sectors",
+                    "cool": "Rate cut bets rise → bullish for IT + financials",
+                },
+            }
+            return {
+                "event_type": event,
+                "global_data": data,
+                "india_impact_matrix": impact_hints.get(event, impact_hints),
+                "note": "Forward views should be tagged 'Opinion:' per prompt rules.",
+            }
+
+        elif tool_name == "sector_rotation":
+            # Aggregate recent FII + DII flows by sector + compare with
+            # short-term sector_performance to show rotation narrative.
+            lookback_days = int(params.get("lookback_days") or 30)
+            rows = await pool.fetch(
+                """
+                SELECT sector,
+                       SUM(COALESCE(fii_holding_change, 0)) AS fii_delta,
+                       SUM(COALESCE(dii_holding_change, 0)) AS dii_delta,
+                       AVG(percent_change) AS avg_1d,
+                       AVG(percent_change_1w) AS avg_1w,
+                       AVG(percent_change_3m) AS avg_3m,
+                       COUNT(*) AS stock_count
+                FROM discover_stock_snapshots
+                WHERE sector IS NOT NULL
+                GROUP BY sector
+                ORDER BY (SUM(COALESCE(fii_holding_change,0))
+                        + SUM(COALESCE(dii_holding_change,0))) DESC
+                """
+            )
+            sectors = [record_to_dict(r) for r in rows]
+            # Identify rotation: inflow sectors and outflow sectors
+            inflows = sectors[:5]
+            outflows = sectors[-5:] if len(sectors) > 5 else []
+            return {
+                "lookback_days": lookback_days,
+                "inflow_sectors": inflows,
+                "outflow_sectors": outflows,
+                "total_sectors": len(sectors),
+                "note": (
+                    "Inflow = FII+DII holding increased; outflow = decreased. "
+                    "Compose a rotation narrative: which sectors smart money is moving into / out of."
+                ),
+            }
+
+        elif tool_name == "fixed_income":
+            # Read curated rate table. Empty table is OK — Artha explains.
+            instrument = (params.get("instrument_type") or "all").lower()
+            if instrument == "all":
+                rows = await pool.fetch(
+                    "SELECT * FROM fixed_income_rates ORDER BY instrument_type, rate_pct DESC"
+                )
+            else:
+                rows = await pool.fetch(
+                    "SELECT * FROM fixed_income_rates WHERE instrument_type ILIKE $1 "
+                    "ORDER BY rate_pct DESC", f"%{instrument}%",
+                )
+            if not rows:
+                return {
+                    "instrument_type": instrument,
+                    "count": 0,
+                    "rates": [],
+                    "note": (
+                        "Fixed-income rate table is not yet populated. "
+                        "Use educated knowledge of typical rates (FD 6.5-7.5%, PPF 7.1%, "
+                        "G-Sec 7.0-7.2%, tax-free bonds 5.5-6.0%) with Opinion: tag."
+                    ),
+                }
+            return {
+                "instrument_type": instrument,
+                "count": len(rows),
+                "rates": [record_to_dict(r) for r in rows],
+            }
+
+        elif tool_name == "nifty_index_constituents":
+            # Known heavyweight constituents per Nifty sub-index.
+            # Static map keeps the tool deterministic without maintaining
+            # an index_constituents table.
+            index_name = (params.get("index_name") or "").lower().strip()
+            _INDEX_MAP: dict[str, list[str]] = {
+                "nifty it": ["TCS", "INFY", "HCLTECH", "WIPRO", "TECHM", "LTIM", "LTTS", "MPHASIS", "COFORGE", "PERSISTENT"],
+                "nifty bank": ["HDFCBANK", "ICICIBANK", "AXISBANK", "SBIN", "KOTAKBANK", "INDUSINDBK", "BANKBARODA", "AUBANK", "FEDERALBNK", "PNB", "IDFCFIRSTB"],
+                "nifty auto": ["M&M", "TATAMOTORS", "MARUTI", "BAJAJ-AUTO", "EICHERMOT", "HEROMOTOCO", "TVSMOTOR", "ASHOKLEY", "BOSCHLTD", "MRF"],
+                "nifty pharma": ["SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB", "LUPIN", "TORNTPHARM", "AUROPHARMA", "BIOCON", "ALKEM", "ZYDUSLIFE"],
+                "nifty fmcg": ["HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA", "DABUR", "MARICO", "GODREJCP", "COLPAL", "TATACONSUM", "UBL"],
+                "nifty metal": ["TATASTEEL", "JSWSTEEL", "HINDALCO", "COALINDIA", "VEDL", "ADANIENT", "JINDALSTEL", "SAIL", "NMDC", "NATIONALUM"],
+                "nifty energy": ["RELIANCE", "ONGC", "IOC", "BPCL", "NTPC", "POWERGRID", "GAIL", "HINDPETRO", "ADANIGREEN", "TATAPOWER"],
+                "nifty realty": ["DLF", "GODREJPROP", "OBEROIRLTY", "PRESTIGE", "PHOENIXLTD", "BRIGADE", "SOBHA", "LODHA", "MACROTECH", "SUNTECK"],
+                "nifty psu bank": ["SBIN", "BANKBARODA", "PNB", "CANBK", "UNIONBANK", "INDIANB", "BANKINDIA", "IOB", "UCOBANK", "MAHABANK"],
+                "nifty financial services": ["HDFCBANK", "ICICIBANK", "BAJFINANCE", "AXISBANK", "SBIN", "KOTAKBANK", "BAJAJFINSV", "HDFCLIFE", "SBILIFE", "SBICARD"],
+            }
+            # Fuzzy-normalise: strip "nifty" if user said just "IT" etc.
+            key = index_name if index_name.startswith("nifty") else f"nifty {index_name}"
+            symbols = _INDEX_MAP.get(key, [])
+            if not symbols:
+                return {
+                    "error": f"Unknown index '{index_name}'",
+                    "available": sorted(_INDEX_MAP.keys()),
+                }
+            rows = await pool.fetch(
+                "SELECT symbol, display_name, sector, last_price, percent_change, "
+                "percent_change_1w, percent_change_1y, pe_ratio, roe, market_cap, score "
+                "FROM discover_stock_snapshots WHERE symbol = ANY($1::text[]) "
+                "ORDER BY market_cap DESC NULLS LAST",
+                symbols,
+            )
+            return {
+                "index_name": key.title(),
+                "count": len(rows),
+                "constituents": [record_to_dict(r) for r in rows],
+                "note": (
+                    "These are the index heavyweights (not every stock in the sector). "
+                    "For broader sector view use sector_thesis or stock_screen."
+                ),
+            }
+
+        elif tool_name == "watchlist_analysis":
+            # Aggregated diagnostic view of the user's watchlist.
+            device_id_param = params.get("device_id") or device_id
+            rows = await pool.fetch(
+                """
+                SELECT dss.symbol, dss.display_name, dss.sector, dss.last_price,
+                       dss.percent_change, dss.pe_ratio, dss.roe, dss.debt_to_equity,
+                       dss.market_cap, dss.score, dss.action_tag, dss.dividend_yield,
+                       dss.score_breakdown
+                FROM device_watchlists w
+                JOIN discover_stock_snapshots dss ON dss.symbol = w.asset
+                WHERE w.device_id = $1
+                ORDER BY w.position ASC
+                """,
+                device_id_param,
+            )
+            if not rows:
+                return {
+                    "device_id": device_id_param,
+                    "count": 0,
+                    "note": "Watchlist is empty. Add stocks via the Watchlist tab first.",
+                }
+            stocks = [record_to_dict(r) for r in rows]
+            # Aggregates
+            pes = [float(s["pe_ratio"]) for s in stocks if s.get("pe_ratio") and float(s["pe_ratio"]) > 0]
+            roes = [float(s["roe"]) for s in stocks if s.get("roe") is not None]
+            des = [float(s["debt_to_equity"]) for s in stocks if s.get("debt_to_equity") is not None]
+            scores = [float(s["score"]) for s in stocks if s.get("score") is not None]
+            divs = [float(s["dividend_yield"]) for s in stocks if s.get("dividend_yield") is not None]
+            return {
+                "device_id": device_id_param,
+                "count": len(stocks),
+                "stocks": stocks,
+                "aggregates": {
+                    "avg_pe": round(sum(pes) / len(pes), 2) if pes else None,
+                    "avg_roe": round(sum(roes) / len(roes), 2) if roes else None,
+                    "avg_debt_to_equity": round(sum(des) / len(des), 2) if des else None,
+                    "avg_score": round(sum(scores) / len(scores), 2) if scores else None,
+                    "avg_dividend_yield": round(sum(divs) / len(divs), 2) if divs else None,
+                },
+            }
+
+        elif tool_name == "watchlist_diversification":
+            # Sector/market-cap breakdown + concentration risk assessment.
+            device_id_param = params.get("device_id") or device_id
+            rows = await pool.fetch(
+                """
+                SELECT dss.sector, dss.market_cap_category, dss.market_cap,
+                       dss.symbol, dss.display_name
+                FROM device_watchlists w
+                JOIN discover_stock_snapshots dss ON dss.symbol = w.asset
+                WHERE w.device_id = $1
+                """,
+                device_id_param,
+            )
+            if not rows:
+                return {"device_id": device_id_param, "count": 0, "note": "Watchlist is empty."}
+            sector_mix: dict[str, int] = {}
+            cap_mix: dict[str, int] = {}
+            total = len(rows)
+            for r in rows:
+                s = r.get("sector") or "Unknown"
+                c = r.get("market_cap_category") or "Unknown"
+                sector_mix[s] = sector_mix.get(s, 0) + 1
+                cap_mix[c] = cap_mix.get(c, 0) + 1
+            # Concentration risk: any sector >= 40% = high, 25-40% = medium
+            max_sector = max(sector_mix.items(), key=lambda x: x[1])
+            max_sector_pct = round(max_sector[1] / total * 100, 1)
+            if max_sector_pct >= 40:
+                risk = "HIGH"
+            elif max_sector_pct >= 25:
+                risk = "MEDIUM"
+            else:
+                risk = "LOW"
+            return {
+                "device_id": device_id_param,
+                "total": total,
+                "sector_mix_pct": {
+                    k: round(v / total * 100, 1) for k, v in sector_mix.items()
+                },
+                "cap_mix_pct": {
+                    k: round(v / total * 100, 1) for k, v in cap_mix.items()
+                },
+                "concentration_risk": risk,
+                "largest_sector": max_sector[0],
+                "largest_sector_pct": max_sector_pct,
+                "recommendation": (
+                    "Diversify across sectors (target no sector > 25% of watchlist)."
+                    if risk != "LOW"
+                    else "Sector distribution looks balanced."
+                ),
+            }
+
+        elif tool_name == "watchlist_alerts":
+            # Red flags + technical alerts across the watchlist.
+            device_id_param = params.get("device_id") or device_id
+            rows = await pool.fetch(
+                """
+                SELECT dss.symbol, dss.display_name, dss.last_price, dss.high_52w,
+                       dss.low_52w, dss.percent_change, dss.pe_ratio, dss.debt_to_equity,
+                       dss.opm_change, dss.pledged_promoter_pct, dss.free_cash_flow,
+                       dss.promoter_holding_change, dss.score_breakdown
+                FROM device_watchlists w
+                JOIN discover_stock_snapshots dss ON dss.symbol = w.asset
+                WHERE w.device_id = $1
+                """,
+                device_id_param,
+            )
+            if not rows:
+                return {"device_id": device_id_param, "count": 0, "alerts": []}
+            alerts = []
+            for r in rows:
+                d = record_to_dict(r)
+                red_flags = []
+                de = d.get("debt_to_equity")
+                if de and float(de) > 2:
+                    red_flags.append(f"high debt (D/E {de:.1f})")
+                pp = d.get("pledged_promoter_pct")
+                if pp and float(pp) > 30:
+                    red_flags.append(f"promoter pledging {pp:.0f}%")
+                opm = d.get("opm_change")
+                if opm is not None and float(opm) < -2:
+                    red_flags.append(f"OPM declined {abs(float(opm)):.1f}pp")
+                fcf = d.get("free_cash_flow")
+                if fcf is not None and float(fcf) < 0:
+                    red_flags.append("negative FCF")
+                # 52w position
+                lp = d.get("last_price")
+                hi = d.get("high_52w")
+                lo = d.get("low_52w")
+                position_note = None
+                if lp and hi and lo and hi > lo:
+                    pos = (float(lp) - float(lo)) / (float(hi) - float(lo)) * 100
+                    if pos > 95:
+                        position_note = "near 52w high"
+                    elif pos < 5:
+                        position_note = "near 52w low"
+                if red_flags or position_note:
+                    alerts.append({
+                        "symbol": d.get("symbol"),
+                        "display_name": d.get("display_name"),
+                        "red_flags": red_flags,
+                        "position": position_note,
+                    })
+            return {
+                "device_id": device_id_param,
+                "count": len(alerts),
+                "alerts": alerts,
+                "note": "Alerts with red_flags indicate fundamental concerns; position notes flag 52w extremes.",
+            }
+
+        elif tool_name == "theme_screen":
+            # Fuzzy theme matching via industry column + display_name patterns.
+            theme = (params.get("theme") or "").strip().lower()
+            limit = min(int(params.get("limit", 10)), 20)
+            if not theme:
+                return {"error": "No theme provided"}
+            # Known theme patterns — maps theme → list of (column, pattern)
+            _THEME_PATTERNS: dict[str, list[tuple[str, str]]] = {
+                "ev": [("industry", "%electric%"), ("industry", "%battery%"), ("industry", "%auto%"), ("display_name", "%electric%")],
+                "electric vehicle": [("industry", "%electric%"), ("industry", "%battery%")],
+                "renewable": [("industry", "%renewable%"), ("industry", "%solar%"), ("industry", "%wind%"), ("display_name", "%green%"), ("display_name", "%solar%")],
+                "solar": [("industry", "%solar%"), ("display_name", "%solar%")],
+                "defense": [("industry", "%defense%"), ("industry", "%aerospace%"), ("display_name", "%defence%")],
+                "defence": [("industry", "%defense%"), ("industry", "%aerospace%"), ("display_name", "%defence%")],
+                "ai": [("display_name", "%ai%"), ("display_name", "%artificial%"), ("industry", "%software%")],
+                "semiconductor": [("industry", "%semi%"), ("display_name", "%chip%")],
+                "nuclear": [("industry", "%nuclear%"), ("industry", "%power%")],
+                "railway": [("industry", "%railway%"), ("display_name", "%rail%")],
+                "infrastructure": [("industry", "%infra%"), ("industry", "%construction%")],
+            }
+            patterns = _THEME_PATTERNS.get(theme, [("industry", f"%{theme}%"), ("display_name", f"%{theme}%")])
+            # Build OR query
+            conditions = []
+            args: list[Any] = []
+            for i, (col, pat) in enumerate(patterns, start=1):
+                conditions.append(f"{col} ILIKE ${i}")
+                args.append(pat)
+            where = " OR ".join(conditions)
+            sql = (
+                f"SELECT symbol, display_name, sector, industry, last_price, percent_change, "
+                f"pe_ratio, roe, market_cap, score, action_tag "
+                f"FROM discover_stock_snapshots WHERE {where} "
+                f"ORDER BY score DESC NULLS LAST LIMIT {limit}"
+            )
+            rows = await pool.fetch(sql, *args)
+            return {
+                "theme": theme,
+                "count": len(rows),
+                "stocks": [record_to_dict(r) for r in rows],
+                "note": (
+                    "Theme matches are approximate (industry/name pattern). "
+                    "Verify business overlap before acting."
+                ),
+            }
+
+        elif tool_name == "factor_decomposition":
+            # Risk factor decomposition: beta, drawdown, Sharpe, Sortino.
+            # For single stock or list.
+            symbols = params.get("symbols") or []
+            if isinstance(symbols, str):
+                symbols = [s.strip().upper() for s in re.split(r"[,/ ]+", symbols) if s.strip()]
+            symbol = (params.get("symbol") or "").upper().strip()
+            if symbol and not symbols:
+                symbols = [symbol]
+            if not symbols:
+                return {"error": "No symbols provided"}
+            rows = await pool.fetch(
+                "SELECT symbol, display_name, beta, max_drawdown_1y, max_drawdown_3y, "
+                "percent_change_1y, percent_change_3y, score "
+                "FROM discover_stock_snapshots WHERE symbol = ANY($1::text[])",
+                symbols,
+            )
+            if not rows:
+                return {"error": f"None of {symbols} found"}
+            stocks = [record_to_dict(r) for r in rows]
+            # Aggregate beta (weighted equal since we don't have quantities)
+            betas = [float(s["beta"]) for s in stocks if s.get("beta") is not None]
+            avg_beta = round(sum(betas) / len(betas), 2) if betas else None
+            # Worst drawdown across any holding
+            dds = [float(s["max_drawdown_1y"]) for s in stocks if s.get("max_drawdown_1y") is not None]
+            worst_dd = min(dds) if dds else None
+            return {
+                "stocks": stocks,
+                "portfolio_beta": avg_beta,
+                "worst_drawdown_1y_pct": round(worst_dd, 2) if worst_dd is not None else None,
+                "interpretation": (
+                    "Beta > 1.3 = more volatile than market. "
+                    "Drawdown > 30% = significant capital risk in past year."
+                ),
+                "note": (
+                    "max_drawdown fields may be null if ingestion hasn't backfilled. "
+                    "Artha can still narrate using beta + percent_change_1y."
+                ),
+            }
+
+        elif tool_name == "tax_harvest":
+            # Explanation-only: portfolio entry-price data not yet in watchlist.
+            return {
+                "mode": "framework",
+                "rules": {
+                    "ltcg_equity_exemption": 125000,
+                    "ltcg_equity_rate_pct": 12.5,
+                    "stcg_equity_rate_pct": 20,
+                    "wash_sale_rule": False,
+                },
+                "framework": (
+                    "Tax-loss harvesting: sell loss-making positions to offset realised "
+                    "gains before 31 March. India has no wash-sale rule \u2014 you can rebuy "
+                    "the same stock immediately (but consider market risk between sell "
+                    "and buy). LTCG on equity is exempt up to \u20b91,25,000/year; above "
+                    "that taxed at 12.5%. STCG on equity at 20%."
+                ),
+                "note": (
+                    "Personalised harvesting needs entry prices per position, which isn't "
+                    "stored on the watchlist yet. Pass entry_price + quantity when that "
+                    "feature ships."
+                ),
+            }
+
+        elif tool_name == "economic_calendar":
+            # Upcoming macro / earnings events.
+            since = (params.get("since") or "-1d").lower()
+            until = (params.get("until") or "7d").lower()
+            filter_type = (params.get("filter") or "all").lower()
+            try:
+                rows = await pool.fetch(
+                    """
+                    SELECT event_name, institution, event_date, country, event_type,
+                           importance, previous, consensus, actual, surprise, status
+                    FROM economic_calendar
+                    WHERE event_date >= CURRENT_DATE - INTERVAL '2 days'
+                      AND event_date <= CURRENT_DATE + INTERVAL '14 days'
+                    ORDER BY event_date, importance DESC NULLS LAST
+                    LIMIT 50
+                    """
+                )
+                events = [record_to_dict(r) for r in rows]
+                if filter_type != "all":
+                    events = [
+                        e for e in events
+                        if e.get("event_type", "").lower() == filter_type
+                        or filter_type in (e.get("event_type") or "").lower()
+                    ]
+                return {
+                    "since": since,
+                    "until": until,
+                    "filter": filter_type,
+                    "count": len(events),
+                    "events": events,
+                }
+            except Exception as e:
+                logger.debug("economic_calendar fetch failed: %s", e)
+                return {
+                    "since": since,
+                    "until": until,
+                    "count": 0,
+                    "events": [],
+                    "note": "economic_calendar table may be empty or unavailable.",
+                }
 
         else:
             logger.warning("tool_call: unknown tool=%s params=%s", tool_name, params)
@@ -3326,7 +4419,14 @@ async def list_sessions(device_id: str) -> list[dict]:
 
 
 async def get_session_messages(session_id: str, device_id: str) -> list[dict]:
-    """Get all messages in a session (with device_id ownership check)."""
+    """Get all messages in a session (with device_id ownership check).
+
+    Parses JSONB fields (stock_cards, mf_cards, tool_calls) back into
+    Python lists so the API layer doesn't have to re-decode. Also coerces
+    legacy rows with None display_name on cards to a safe fallback so
+    the Pydantic response model never rejects them (fixes the old
+    HTTP 500 on long sessions regression).
+    """
     pool = await get_pool()
     rows = await pool.fetch(
         """
@@ -3338,7 +4438,20 @@ async def get_session_messages(session_id: str, device_id: str) -> list[dict]:
         session_id,
         device_id,
     )
-    return [record_to_dict(r) for r in rows]
+    out: list[dict] = []
+    for r in rows:
+        d = record_to_dict(r)
+        for k in ("stock_cards", "mf_cards", "tool_calls"):
+            v = d.get(k)
+            if isinstance(v, str):
+                try:
+                    d[k] = json.loads(v)
+                except Exception:
+                    d[k] = []
+            elif v is None:
+                d[k] = []
+        out.append(d)
+    return out
 
 
 async def delete_session(session_id: str, device_id: str) -> bool:
@@ -3882,20 +4995,52 @@ async def stream_chat_response(
     """
     stream_start = time.monotonic()
     device_tag = (device_id or "")[:16]
+    original_user_message = user_message
     logger.info(
         "chat_stream: START device=%s session=%s msg_len=%d preview=%r",
         device_tag, session_id[:12], len(user_message or ""),
         (user_message or "")[:80],
     )
 
-    # Save user message
+    # Save user message (always the ORIGINAL text — never the rewritten form).
+    # The rewritten version is only used to improve LLM understanding.
     try:
-        await save_message(session_id, "user", user_message)
+        await save_message(session_id, "user", original_user_message)
         await increment_rate_limit(device_id)
     except Exception:
         logger.exception("chat_stream: failed to save user message or update rate limit")
         yield {"event": "error", "data": {"message": "Could not save your message. Please try again.", "retry": True}}
         return
+
+    # Preprocess: rules-based rephrase → LLM fallback for terse queries.
+    # Terse queries like "fii dii moves ?" or "market?" have historically
+    # caused over-refusal because the LLM doesn't know what tool maps to
+    # them.  A canonicalised version ("Show today's FII and DII net cash
+    # flows...") is unambiguous.  Hinglish detection also rides this path.
+    api_key_for_preproc = os.environ.get("OPENROUTER_API_KEY")
+    query_meta: dict[str, Any] = {
+        "original": original_user_message,
+        "canonical": original_user_message,
+        "is_hinglish": False,
+        "rewritten_by": None,
+    }
+    try:
+        query_meta = await preprocess_user_query(
+            original_user_message, api_key=api_key_for_preproc,
+        )
+    except Exception:
+        logger.debug("chat_stream: preprocess failed", exc_info=True)
+    # Use the canonical form downstream.  Save the original on the user
+    # row, but pass the canonical form into the LLM context so the
+    # intent is clear.
+    user_message = query_meta.get("canonical") or original_user_message
+    if query_meta.get("rewritten_by"):
+        logger.info(
+            "chat_stream: query rewritten by=%s original=%r canonical=%r",
+            query_meta.get("rewritten_by"),
+            original_user_message[:80],
+            user_message[:120],
+        )
 
     try:
         session_messages = await get_session_messages(session_id, device_id)
@@ -3975,6 +5120,38 @@ async def stream_chat_response(
 
     # Build conversation context (passes user message for k-NN tool routing)
     messages = await _build_context(session_id, device_id, user_message)
+    # Inject Hinglish hint if detected so the composer switches voice.
+    if query_meta.get("is_hinglish"):
+        messages.insert(
+            1,
+            {
+                "role": "system",
+                "content": (
+                    "LANGUAGE HINT: The user wrote in Hinglish (Hindi in Latin "
+                    "script). Respond in the same Hinglish style. Keep numbers "
+                    "and financial terms in English (\"PE 28x\", \"ROE 52%\", "
+                    "\"+1.2%\") but use Hinglish connectors and verbs. Latin "
+                    "script only \u2014 never Devanagari."
+                ),
+            },
+        )
+    # If the original query was rewritten, pass both the original and the
+    # canonical form to the composer so it can still echo the user's
+    # intent style.
+    if query_meta.get("rewritten_by"):
+        messages.insert(
+            1,
+            {
+                "role": "system",
+                "content": (
+                    f"QUERY REWRITE: The user's original message was "
+                    f"{json.dumps(original_user_message)!s}. It was rewritten "
+                    f"to a canonical form (via {query_meta['rewritten_by']}) "
+                    f"to clarify intent. Answer the original intent, not the "
+                    f"literal canonical form."
+                ),
+            },
+        )
     if recommendation_mode == "picks":
         messages.insert(
             1,
@@ -4003,15 +5180,60 @@ async def stream_chat_response(
     )
     initial_response = _normalize_thinking_markup(initial_response)
     if not initial_response:
-        error_message = "Artha is taking a break. Try again in a few minutes."
-        error_msg_id = await _persist_assistant_error_message(session_id, error_message)
+        # DETERMINISTIC FALLBACK — all 4 LLM models in the chain failed.
+        # Instead of showing "Artha is taking a break", synthesise an
+        # answer from the LIVE SNAPSHOT cache + the user's rephrased
+        # query so the user gets SOMETHING useful. Always better than
+        # a dead-end error for the common case ("market status?").
+        logger.warning(
+            "chat_stream: all models failed, using deterministic fallback "
+            "session=%s msg=%r",
+            session_id[:12],
+            original_user_message[:80],
+        )
+        snapshot = _prefetch_cache.get("snapshot") if _prefetch_cache else None
+        fallback_body_parts: list[str] = []
+        fallback_body_parts.append(
+            "**Model temporarily unavailable.** Here's what I can tell you "
+            "from the latest cached market snapshot:"
+        )
+        if snapshot:
+            # Extract a compact summary from the snapshot text
+            snap_lines = [
+                ln for ln in snapshot.split("\n")
+                if ln.strip() and not ln.strip().startswith("##")
+            ]
+            fallback_body_parts.append("")
+            for ln in snap_lines[:14]:
+                fallback_body_parts.append(ln)
+        else:
+            fallback_body_parts.append(
+                "\nThe live snapshot isn't loaded either. Please try again "
+                "in a minute."
+            )
+        fallback_body_parts.append(
+            "\n**Note:** This is a cached snapshot, not a fresh analysis. "
+            "Retry your question in a minute for a full answer."
+        )
+        fallback_body = "\n".join(fallback_body_parts)
+        fallback_msg_id = None
+        try:
+            fallback_msg_id = await save_message(
+                session_id,
+                "assistant",
+                fallback_body,
+                thinking_text="Model chain failed; serving cached snapshot as fallback.",
+            )
+        except Exception:
+            logger.exception("chat_stream: failed to save deterministic fallback")
+        yield {"event": "thinking", "data": {"status": "Model unavailable \u2014 using cached data..."}}
+        yield {"event": "token", "data": {"text": fallback_body}}
         yield {
-            "event": "error",
+            "event": "done",
             "data": {
-                "message": error_message,
-                "retry": True,
-                "message_id": error_msg_id,
+                "message_id": fallback_msg_id,
                 "session_id": session_id,
+                "fallback": True,
             },
         }
         return
@@ -4574,6 +5796,65 @@ async def stream_chat_response(
     except Exception:
         logger.exception("chat_stream: failed to save assistant message")
         msg_id = None
+
+    # LLM-generated session title for the FIRST successful assistant turn.
+    # We only touch the title if it's still equal to the raw user message
+    # (save_message defaults to that). A cheap fast-model call condenses
+    # the Q+A into a 3-5 word title so the sidebar doesn't show giant
+    # duplicate rows like "Is the Nifty 50 rally likely to last into t…".
+    try:
+        pool = await get_pool()
+        title_row = await pool.fetchrow(
+            "SELECT title FROM chat_sessions WHERE id = $1",
+            session_id,
+        )
+        current_title = (title_row["title"] if title_row else "") or ""
+        # Only replace if the title is still the raw first-message stub
+        # (save_message uses content[:80] as the default). Identify this
+        # by checking the title is a prefix of the original user message.
+        looks_like_default = (
+            current_title
+            and len(current_title) <= 82
+            and (
+                current_title == original_user_message[:80]
+                or current_title == original_user_message[: len(current_title)]
+            )
+        )
+        if looks_like_default and final_response and len(final_response) > 40:
+            title_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Generate a 3-6 word title (no quotes, no punctuation) "
+                        "for a chat conversation. Output ONLY the title."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"User asked: {original_user_message[:200]}\n"
+                        f"Artha replied: {final_response[:400]}\n\nTitle:"
+                    ),
+                },
+            ]
+            new_title = await _call_llm_blocking(
+                api_key, title_messages, max_tokens=24, chain=_FAST_MODELS,
+            )
+            if new_title:
+                cleaned_title = new_title.strip().strip('"').strip("'").strip()
+                # Safety: fall back to default if LLM produced something weird
+                if 4 <= len(cleaned_title) <= 80 and "\n" not in cleaned_title:
+                    await pool.execute(
+                        "UPDATE chat_sessions SET title = $1 WHERE id = $2",
+                        cleaned_title,
+                        session_id,
+                    )
+                    logger.info(
+                        "chat_stream: session title updated session=%s title=%r",
+                        session_id[:12], cleaned_title,
+                    )
+    except Exception:
+        logger.debug("chat_stream: session title update failed", exc_info=True)
 
     total_elapsed_ms = (time.monotonic() - stream_start) * 1000
     logger.info(
