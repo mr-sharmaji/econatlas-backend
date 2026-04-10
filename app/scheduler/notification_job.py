@@ -1136,18 +1136,23 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
 
         pool = await get_pool()
 
-        # Get Nifty 50 and Sensex change percent
+        # Nifty 50 + Sensex (context) + Nifty Midcap 150 + Nifty Smallcap 250
+        # change percent. The two cap-tier indices drive the new 3-index
+        # notification title (Nifty | Midcap | Smallcap); Sensex is kept for
+        # AI body context only.
         index_rows = await pool.fetch(
             """
             SELECT asset, change_percent FROM market_prices
-            WHERE asset IN ('Nifty 50', 'Sensex')
+            WHERE asset IN ('Nifty 50', 'Sensex', 'Nifty Midcap 150', 'Nifty Smallcap 250')
             ORDER BY timestamp DESC
-            LIMIT 4
+            LIMIT 8
             """
         )
 
         nifty_change = 0.0
         sensex_change = 0.0
+        midcap_change: float | None = None
+        smallcap_change: float | None = None
         _seen_pm: set[str] = set()
         for row in index_rows:
             a = row["asset"]
@@ -1158,6 +1163,10 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
                 nifty_change = float(row["change_percent"])
             elif a == "Sensex" and row["change_percent"] is not None:
                 sensex_change = float(row["change_percent"])
+            elif a == "Nifty Midcap 150" and row["change_percent"] is not None:
+                midcap_change = float(row["change_percent"])
+            elif a == "Nifty Smallcap 250" and row["change_percent"] is not None:
+                smallcap_change = float(row["change_percent"])
 
         # Get breadth data
         overview = await get_post_market_overview(market="IN")
@@ -1167,8 +1176,12 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
         bottom_sector = overview.get("bottom_sector")
 
         logger.info(
-            "Post-market summary: nifty=%.1f%%, sensex=%.1f%%, adv=%d, dec=%d, top=%s, bottom=%s",
-            nifty_change, sensex_change, advancers, decliners, top_sector, bottom_sector,
+            "Post-market summary: nifty=%.1f%%, sensex=%.1f%%, midcap150=%s, smallcap250=%s, "
+            "adv=%d, dec=%d, top=%s, bottom=%s",
+            nifty_change, sensex_change,
+            f"{midcap_change:.1f}%" if midcap_change is not None else "n/a",
+            f"{smallcap_change:.1f}%" if smallcap_change is not None else "n/a",
+            advancers, decliners, top_sector, bottom_sector,
         )
 
         today_str = today.strftime("%Y-%m-%d")
@@ -1181,6 +1194,8 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
             decliners=decliners,
             top_sector=top_sector,
             bottom_sector=bottom_sector,
+            midcap150_change_pct=midcap_change,
+            smallcap250_change_pct=smallcap_change,
             dedup_key=dedup_key,
         )
 
@@ -1308,6 +1323,8 @@ async def _check_missed_close_notifications(
                         decliners=close_data.get("decliners", 0),
                         top_sector=close_data.get("top_sector"),
                         bottom_sector=close_data.get("bottom_sector"),
+                        midcap150_change_pct=close_data.get("midcap_change_pct"),
+                        smallcap250_change_pct=close_data.get("smallcap_change_pct"),
                         dedup_key=dedup_key,
                     )
                 except Exception:

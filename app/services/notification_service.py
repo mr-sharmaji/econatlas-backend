@@ -639,16 +639,41 @@ async def notify_post_market_summary(
     top_sector: str | None,
     bottom_sector: str | None,
     *,
+    midcap150_change_pct: float | None = None,
+    smallcap250_change_pct: float | None = None,
     dedup_key: str | None = None,
 ) -> bool:
-    """Send post-market summary notification."""
-    n_sign = "+" if nifty_change_pct >= 0 else ""
+    """Send post-market summary notification.
+
+    Title shows Nifty 50 + Nifty Midcap 150 + Nifty Smallcap 250 (the
+    three market-cap tiers) so users see the full breadth of the session
+    at a glance. Sensex is intentionally dropped from the title — it
+    duplicates Nifty 50 and adds no new information. `sensex_change_pct`
+    remains in the signature only for the AI body-generation context.
+    """
+    def _sign(pct: float) -> str:
+        return "+" if pct >= 0 else ""
+
     emoji = "\U0001f4c8" if nifty_change_pct >= 0 else "\U0001f4c9"
-    if sensex_change_pct and sensex_change_pct != 0:
-        s_sign = "+" if sensex_change_pct >= 0 else ""
-        title = f"{emoji} Nifty {n_sign}{nifty_change_pct:.1f}% | Sensex {s_sign}{sensex_change_pct:.1f}%"
+
+    # Build title from the 3 broad indices (Nifty / Midcap / Smallcap).
+    # Fall back to a Nifty-only title if the two cap-tier values are missing.
+    title_parts = [
+        f"{emoji} Nifty {_sign(nifty_change_pct)}{nifty_change_pct:.1f}%"
+    ]
+    if midcap150_change_pct is not None:
+        title_parts.append(
+            f"Midcap {_sign(midcap150_change_pct)}{midcap150_change_pct:.1f}%"
+        )
+    if smallcap250_change_pct is not None:
+        title_parts.append(
+            f"Smallcap {_sign(smallcap250_change_pct)}{smallcap250_change_pct:.1f}%"
+        )
+    if len(title_parts) == 1:
+        # No cap-tier data — keep the legacy "Market Closed" shape.
+        title = f"{title_parts[0]} — Market Closed"
     else:
-        title = f"{emoji} Nifty 50 {n_sign}{nifty_change_pct:.1f}% — Market Closed"
+        title = " | ".join(title_parts)
 
     # One-line market commentary
     total = advancers + decliners
@@ -698,7 +723,8 @@ async def notify_post_market_summary(
             "india_close",
             {
                 "nifty_pct": nifty_change_pct,
-                "sensex_pct": sensex_change_pct,
+                "midcap150_pct": midcap150_change_pct,
+                "smallcap250_pct": smallcap250_change_pct,
                 "advancers": advancers,
                 "decliners": decliners,
                 "breadth_ratio": round(breadth_ratio, 2),

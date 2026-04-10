@@ -273,6 +273,11 @@ Rules:
 - Use the data provided — be specific
 - No generic phrases like "investors should watch" or "markets remain volatile"
 - Capture the key theme of the session in a punchy, engaging way
+- For India close notifications: the three broad indices are Nifty 50 (large-caps),
+  Nifty Midcap 150 (midcaps), and Nifty Smallcap 250 (smallcaps). Reference at
+  least TWO of these tiers when their data is provided — the user wants to see
+  divergence across the market-cap spectrum, not just the large-cap headline.
+  Do NOT mention Sensex in the body — the title already covers the headline indices.
 - FII/DII values are in Indian Rupees Crores (Cr), not contracts
 - Commodity prices: USD and INR values as provided"""
 
