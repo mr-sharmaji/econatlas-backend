@@ -123,30 +123,47 @@ async def _news_hybrid_search(pool, query: str, limit: int = 5) -> tuple[list[di
     Each strategy is tried in order; the first one that returns ≥1 result
     wins. Strategies further down the list are used as fallbacks if the
     extension / embeddings aren't available or the higher-quality search
-    returns nothing.
+    returns nothing. Every strategy decision is logged at INFO so we can
+    diagnose "which search path ran for this query?" from the log tail.
     """
+    start_total = time.monotonic()
+    logger.info("news_search: query=%r limit=%d", query, limit)
+
     # --- Strategy 1: Vector semantic search via pgvector -----------------
     try:
         from app.services.embedding_service import embed_text
         from app.core.database import ensure_vector_registered
 
+        t0 = time.monotonic()
         query_vec = await embed_text(query)
+        embed_ms = (time.monotonic() - t0) * 1000
         if query_vec:
+            logger.debug(
+                "news_search: query embedded dim=%d in %.1fms",
+                len(query_vec), embed_ms,
+            )
             async with pool.acquire() as conn:
                 registered = await ensure_vector_registered(conn)
-                if registered:
+                if not registered:
+                    logger.info(
+                        "news_search: pgvector type not registered — skipping "
+                        "vector path (extension missing?)"
+                    )
+                else:
                     # Check embedding column is populated for at least some rows.
                     has_embeddings = await conn.fetchval(
                         "SELECT EXISTS(SELECT 1 FROM news_articles "
                         "WHERE embedding IS NOT NULL LIMIT 1)"
                     )
-                    if has_embeddings:
-                        # Cosine distance ordering. embedding <=> query
-                        # returns distance in [0, 2]; lower = more similar.
-                        # Require distance < 0.6 (~ similarity > 0.4) to
-                        # avoid irrelevant results.
+                    if not has_embeddings:
+                        logger.info(
+                            "news_search: no articles have embeddings yet — "
+                            "run POST /ops/jobs/trigger/news_embed to backfill"
+                        )
+                    else:
                         import numpy as np
                         vec = np.array(query_vec, dtype=np.float32)
+                        t1 = time.monotonic()
                         rows = await conn.fetch(
                             "SELECT title, summary, source, timestamp, url, "
                             "primary_entity, impact, "
@@ -159,16 +176,38 @@ async def _news_hybrid_search(pool, query: str, limit: int = 5) -> tuple[list[di
                             vec,
                             limit,
                         )
+                        sql_ms = (time.monotonic() - t1) * 1000
                         if rows:
+                            best = float(rows[0]["distance"]) if rows[0].get("distance") is not None else None
+                            worst = float(rows[-1]["distance"]) if rows[-1].get("distance") is not None else None
+                            total_ms = (time.monotonic() - start_total) * 1000
+                            logger.info(
+                                "news_search: VECTOR hit — %d rows, "
+                                "best_dist=%.3f worst_dist=%.3f embed_ms=%.1f "
+                                "sql_ms=%.1f total_ms=%.1f",
+                                len(rows), best or 0, worst or 0,
+                                embed_ms, sql_ms, total_ms,
+                            )
                             return [dict(r) for r in rows], "vector"
+                        else:
+                            logger.info(
+                                "news_search: vector path found 0 rows above "
+                                "similarity threshold (distance<0.6) — falling "
+                                "back to trigram"
+                            )
+        else:
+            logger.warning(
+                "news_search: embedding failed for query=%r — skipping vector path",
+                query,
+            )
     except Exception as e:
-        logger.debug("Vector news search failed, falling back: %s", e)
+        logger.warning(
+            "news_search: vector path raised, falling back: %s", e, exc_info=True,
+        )
 
     # --- Strategy 2: Trigram fuzzy match via pg_trgm ---------------------
     try:
-        # similarity() returns a score in [0, 1] where 1 = identical.
-        # Combine across title+summary with GREATEST() so the best match
-        # wins. Threshold 0.2 catches substrings and mild typos.
+        t0 = time.monotonic()
         rows = await pool.fetch(
             "SELECT title, summary, source, timestamp, url, primary_entity, impact, "
             "GREATEST(similarity(COALESCE(title,''), $1), "
@@ -181,14 +220,31 @@ async def _news_hybrid_search(pool, query: str, limit: int = 5) -> tuple[list[di
             limit,
             timeout=5,
         )
+        sql_ms = (time.monotonic() - t0) * 1000
         if rows:
+            best = float(rows[0]["score"]) if rows[0].get("score") is not None else None
+            total_ms = (time.monotonic() - start_total) * 1000
+            logger.info(
+                "news_search: TRIGRAM hit — %d rows, best_score=%.3f "
+                "sql_ms=%.1f total_ms=%.1f",
+                len(rows), best or 0, sql_ms, total_ms,
+            )
             return [dict(r) for r in rows], "trigram"
+        else:
+            logger.info(
+                "news_search: trigram found 0 rows for %r — falling back to ILIKE",
+                query,
+            )
     except Exception as e:
-        logger.debug("Trigram news search failed, falling back: %s", e)
+        logger.warning(
+            "news_search: trigram path raised, falling back: %s — "
+            "is pg_trgm extension installed?", e,
+        )
 
     # --- Strategy 3: Plain ILIKE ------------------------------------------
     try:
         pattern = f"%{query}%"
+        t0 = time.monotonic()
         rows = await pool.fetch(
             "SELECT title, summary, source, timestamp, url, primary_entity, impact "
             "FROM news_articles "
@@ -199,11 +255,27 @@ async def _news_hybrid_search(pool, query: str, limit: int = 5) -> tuple[list[di
             limit,
             timeout=5,
         )
+        sql_ms = (time.monotonic() - t0) * 1000
+        total_ms = (time.monotonic() - start_total) * 1000
         if rows:
+            logger.info(
+                "news_search: ILIKE hit — %d rows, sql_ms=%.1f total_ms=%.1f",
+                len(rows), sql_ms, total_ms,
+            )
             return [dict(r) for r in rows], "ilike"
+        else:
+            logger.info(
+                "news_search: ILIKE found 0 rows for %r — no results",
+                query,
+            )
     except Exception as e:
-        logger.debug("ILIKE news search failed: %s", e)
+        logger.warning("news_search: ILIKE path raised: %s", e, exc_info=True)
 
+    total_ms = (time.monotonic() - start_total) * 1000
+    logger.warning(
+        "news_search: NO RESULTS for query=%r across all 3 strategies total_ms=%.1f",
+        query, total_ms,
+    )
     return [], "none"
 
 
@@ -213,6 +285,9 @@ async def _execute_tool(
     device_id: str,
 ) -> dict[str, Any]:
     """Execute a tool and return results. Never raises — returns error dict on failure."""
+    tool_start = time.monotonic()
+    device_tag = (device_id or "")[:16]
+    logger.info("tool_call: START name=%s device_id=%s params=%s", tool_name, device_tag, params)
     try:
         pool = await get_pool()
 
@@ -553,10 +628,20 @@ async def _execute_tool(
             }
 
         else:
+            logger.warning("tool_call: unknown tool=%s params=%s", tool_name, params)
             return {"error": f"Unknown tool: {tool_name}"}
 
+        # If we reach here, the return statement in the matched branch has
+        # already produced the result. The actual return happens in the
+        # matched if/elif branch above — this line is unreachable but kept
+        # for type-checker clarity.
     except Exception as e:
-        logger.warning("Tool %s failed: %s", tool_name, e, exc_info=True)
+        elapsed_ms = (time.monotonic() - tool_start) * 1000
+        logger.warning(
+            "tool_call: FAILED name=%s elapsed_ms=%.1f error=%s",
+            tool_name, elapsed_ms, e,
+            exc_info=True,
+        )
         return {"error": f"Tool failed: {str(e)[:100]}"}
 
 
@@ -1009,6 +1094,20 @@ async def stream_chat_response(
             except json.JSONDecodeError:
                 params = {}
             result = await _execute_tool(tool_name, params, device_id)
+            # Log outcome summary (success log — failure already logged inside _execute_tool)
+            if isinstance(result, dict) and "error" not in result:
+                # Try a few common keys to summarise the result shape
+                summary = {
+                    k: (len(v) if isinstance(v, list) else "obj")
+                    for k in ("stocks", "funds", "articles", "ipos", "indices_by_region", "data")
+                    if k in result
+                }
+                logger.info(
+                    "tool_call: OK name=%s summary=%s",
+                    tool_name, summary or "{scalar}",
+                )
+            else:
+                logger.info("tool_call: ERROR_RESULT name=%s error=%s", tool_name, result.get("error"))
             tool_results[tool_name] = result
             tools_used.append({"tool": tool_name, "params": params})
 

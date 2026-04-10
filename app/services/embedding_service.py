@@ -46,17 +46,35 @@ async def _get_model() -> "TextEmbedding":
         try:
             from fastembed import TextEmbedding
         except ImportError as e:
+            logger.error(
+                "embedding: fastembed not installed — semantic search disabled. "
+                "Add 'fastembed' to requirements.txt and rebuild the image."
+            )
             raise RuntimeError(
                 "fastembed is not installed — run `pip install fastembed`"
             ) from e
-        logger.info("Loading embedding model %s (first call, may download)", MODEL_NAME)
+
+        import time as _time
+        t0 = _time.monotonic()
+        logger.info(
+            "embedding: loading model=%s (first call, may download ~130MB)",
+            MODEL_NAME,
+        )
         loop = asyncio.get_running_loop()
         # TextEmbedding.__init__ is sync and may download weights — run in
         # the default executor so we don't block the event loop.
-        _model = await loop.run_in_executor(
-            None, lambda: TextEmbedding(model_name=MODEL_NAME)
+        try:
+            _model = await loop.run_in_executor(
+                None, lambda: TextEmbedding(model_name=MODEL_NAME)
+            )
+        except Exception:
+            logger.exception("embedding: model load FAILED for %s", MODEL_NAME)
+            raise
+        elapsed = _time.monotonic() - t0
+        logger.info(
+            "embedding: model=%s loaded in %.1fs dim=%d",
+            MODEL_NAME, elapsed, EMBEDDING_DIM,
         )
-        logger.info("Embedding model %s loaded", MODEL_NAME)
         return _model
 
 
@@ -68,12 +86,20 @@ async def embed_text(text: str) -> list[float]:
     """
     text = (text or "").strip()
     if not text:
+        logger.debug("embedding: embed_text skipped — empty input")
         return []
     try:
         vectors = await embed_texts([text])
-        return vectors[0] if vectors else []
+        vec = vectors[0] if vectors else []
+        if not vec:
+            logger.debug("embedding: embed_text returned empty for len=%d", len(text))
+        return vec
     except Exception:
-        logger.warning("Failed to embed text (len=%d)", len(text), exc_info=True)
+        logger.warning(
+            "embedding: embed_text FAILED (len=%d) text=%r",
+            len(text), text[:80],
+            exc_info=True,
+        )
         return []
 
 
@@ -86,15 +112,20 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
     """
     if not texts:
         return []
+    import time as _time
+    batch_start = _time.monotonic()
     try:
         model = await _get_model()
     except Exception:
-        logger.warning("Embedding model unavailable — returning empty vectors")
+        logger.warning(
+            "embedding: model unavailable — returning %d empty vectors", len(texts),
+        )
         return [[] for _ in texts]
 
     # Filter out empty strings but remember positions
     indexed = [(i, t.strip()) for i, t in enumerate(texts) if t and t.strip()]
     if not indexed:
+        logger.debug("embedding: embed_texts skipped — all inputs empty (n=%d)", len(texts))
         return [[] for _ in texts]
 
     inputs = [t for _, t in indexed]
@@ -108,8 +139,17 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
     try:
         encoded = await loop.run_in_executor(None, _encode)
     except Exception:
-        logger.warning("Batch embed failed (n=%d)", len(inputs), exc_info=True)
+        logger.warning(
+            "embedding: batch encode FAILED (n=%d)", len(inputs),
+            exc_info=True,
+        )
         return [[] for _ in texts]
+
+    elapsed_ms = (_time.monotonic() - batch_start) * 1000
+    logger.info(
+        "embedding: batch OK n=%d (kept=%d) dim=%d elapsed_ms=%.1f",
+        len(texts), len(inputs), EMBEDDING_DIM, elapsed_ms,
+    )
 
     # Reinsert into full-length result list at original positions
     out: list[list[float]] = [[] for _ in texts]
