@@ -596,7 +596,9 @@ CREATE TABLE IF NOT EXISTS notification_log (
     notification_type TEXT NOT NULL,      -- e.g. 'market_close_us', 'market_open_india', 'gift_nifty_alert', 'fii_dii', 'pre_market', 'post_market', 'commodity_spike_gold'
     sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     title TEXT,
-    dedup_key TEXT NOT NULL               -- e.g. '2026-03-25_market_close_us' for daily dedup, or '2026-03-25_commodity_spike_gold_4' for band-based dedup
+    dedup_key TEXT NOT NULL,              -- e.g. '2026-03-25_market_close_us' for daily dedup, or '2026-03-25_commodity_spike_gold_4' for band-based dedup
+    fcm_message_id TEXT,                  -- FCM response message_id (e.g. 'projects/x/messages/1968...')
+    fcm_topic TEXT                        -- FCM topic the notification was sent to (e.g. 'market_alerts')
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_log_dedup ON notification_log (dedup_key);
 

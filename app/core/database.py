@@ -458,6 +458,15 @@ async def init_pool() -> asyncpg.Pool:
             )
             """
         )
+        # --- notification_log: store FCM delivery identifiers for diagnostics ---
+        # Lets us look up "was this push actually accepted by FCM, and what
+        # was the message_id?" in cases where users report missed notifications.
+        await conn.execute(
+            "ALTER TABLE notification_log ADD COLUMN IF NOT EXISTS fcm_message_id TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE notification_log ADD COLUMN IF NOT EXISTS fcm_topic TEXT"
+        )
         logger.info("Idempotent indexes ensured")
     return _pool
 

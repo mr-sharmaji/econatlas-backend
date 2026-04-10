@@ -29,17 +29,30 @@ async def _was_already_sent(dedup_key: str) -> bool:
     return row is not None
 
 
-async def _log_sent(notification_type: str, dedup_key: str, title: str) -> None:
-    """Log that a notification was sent."""
+async def _log_sent(
+    notification_type: str,
+    dedup_key: str,
+    title: str,
+    *,
+    fcm_message_id: str | None = None,
+    fcm_topic: str | None = None,
+) -> None:
+    """Log that a notification was sent, along with FCM delivery identifiers.
+
+    The FCM message_id is the response from ``messaging.send()`` and can be
+    looked up later in Firebase Console's Cloud Messaging delivery reports
+    to diagnose "was this push actually delivered?" questions.
+    """
     from app.core.database import get_pool
     pool = await get_pool()
     await pool.execute(
         """
-        INSERT INTO notification_log (notification_type, dedup_key, title)
-        VALUES ($1, $2, $3)
+        INSERT INTO notification_log
+            (notification_type, dedup_key, title, fcm_message_id, fcm_topic)
+        VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (dedup_key) DO NOTHING
         """,
-        notification_type, dedup_key, title,
+        notification_type, dedup_key, title, fcm_message_id, fcm_topic,
     )
 
 
@@ -114,15 +127,19 @@ async def send_topic_notification(
         )
         loop = asyncio.get_running_loop()
         response = await loop.run_in_executor(None, messaging.send, message)
+        # response is the FCM message_id string, e.g.
+        # 'projects/econatlas-70ca0/messages/1968655432726649650'
         logger.info("FCM sent to topic=%s: %s", topic, response)
 
-        # --- Log successful send for dedup ---
+        # --- Log successful send for dedup + diagnostics ---
         if dedup_key:
             try:
                 await _log_sent(
                     notification_type or "unknown",
                     dedup_key,
                     title,
+                    fcm_message_id=str(response) if response else None,
+                    fcm_topic=topic,
                 )
             except Exception:
                 logger.warning("Failed to log sent notification (dedup_key=%s)", dedup_key, exc_info=True)
