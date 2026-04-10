@@ -149,13 +149,17 @@ async def _fetch_india_close_data() -> dict | None:
         from app.core.database import get_pool
         pool = await get_pool()
 
-        # Nifty 50, Sensex, Midcap 150, Smallcap 250 latest
+        # The three broad market-cap indices for India: Nifty 50
+        # (large-cap), Nifty Midcap 150, Nifty Smallcap 250. Sensex is
+        # intentionally excluded — it duplicates the Nifty 50 large-cap
+        # signal and nothing in the close builder or the AI narrative
+        # prompt consumes it anymore.
         index_rows = await pool.fetch(
             """
             SELECT asset, change_percent, price FROM market_prices
-            WHERE asset IN ('Nifty 50', 'Sensex', 'Nifty Midcap 150', 'Nifty Smallcap 250')
+            WHERE asset IN ('Nifty 50', 'Nifty Midcap 150', 'Nifty Smallcap 250')
             ORDER BY timestamp DESC
-            LIMIT 8
+            LIMIT 6
             """
         )
         data: dict = {}
@@ -169,8 +173,6 @@ async def _fetch_india_close_data() -> dict | None:
             if a == "Nifty 50" and row["change_percent"] is not None:
                 data["nifty_change_pct"] = float(row["change_percent"])
                 nifty_close = float(row["price"])
-            elif a == "Sensex" and row["change_percent"] is not None:
-                data["sensex_change_pct"] = float(row["change_percent"])
             elif a == "Nifty Midcap 150" and row["change_percent"] is not None:
                 data["midcap_change_pct"] = float(row["change_percent"])
             elif a == "Nifty Smallcap 250" and row["change_percent"] is not None:
@@ -518,14 +520,16 @@ async def _fetch_japan_open_data() -> dict | None:
         if "nikkei_pct" not in data:
             return None
 
-        # Overnight US + FTSE (previous close) + gold
+        # Overnight US (Wall Street) + gold — the two global cues that
+        # _build_japan_open actually renders. FTSE used to be fetched
+        # here too but the builder never consumed it (dead data path).
         global_rows = await pool.fetch(
             """
             SELECT asset, change_percent FROM market_prices
-            WHERE asset IN ('S&P500', 'NASDAQ', 'FTSE 100', 'gold')
+            WHERE asset IN ('S&P500', 'NASDAQ', 'gold')
               AND change_percent IS NOT NULL
             ORDER BY timestamp DESC
-            LIMIT 8
+            LIMIT 6
             """,
         )
         seen2: set[str] = set()
@@ -539,8 +543,6 @@ async def _fetch_japan_open_data() -> dict | None:
                 data["us_sp500_pct"] = pct
             elif a == "NASDAQ":
                 data["us_nasdaq_pct"] = pct
-            elif a == "FTSE 100":
-                data["ftse_pct"] = pct
             elif a == "gold":
                 data["gold_pct"] = pct
 
@@ -980,8 +982,14 @@ async def _check_commodity_spikes(now: datetime) -> None:
         from app.core.database import get_pool
         pool = await get_pool()
 
-        # Only alert on essential commodities for Indian users
-        _SPIKE_ASSETS = ('gold', 'silver', 'crude_oil', 'natural_gas')
+        # Only alert on essential commodities for Indian users.
+        # NOTE: names MUST match market_prices.asset exactly. The canonical
+        # names come from commodity_job.SYMBOLS and use SPACES for multi-
+        # word commodities ("crude oil", not "crude_oil"). A previous bug
+        # here used underscores so crude-oil and natural-gas alerts never
+        # fired — the SQL filter asset = ANY($2) silently returned zero
+        # rows even during 5%+ intraday moves.
+        _SPIKE_ASSETS = ('gold', 'silver', 'crude oil', 'natural gas')
 
         # Get latest prices with significant moves (today only)
         rows = await pool.fetch(
@@ -1047,7 +1055,7 @@ async def _check_commodity_spikes(now: datetime) -> None:
                     # Silver: USD/oz → INR/kg (1 troy oz ≈ 31.1035g)
                     inr_price = price * usd_inr / 31.1035 * 1000
                     inr_unit = "kg"
-                elif asset in ("crude_oil", "natural_gas"):
+                elif asset in ("crude oil", "natural gas"):
                     # Crude/Gas: USD/bbl or USD/MMBtu → INR equivalent
                     inr_price = price * usd_inr
                     inr_unit = unit

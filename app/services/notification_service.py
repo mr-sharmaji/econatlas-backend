@@ -644,12 +644,17 @@ async def notify_pre_market_summary(
     gift_nifty_price: float,
     gift_nifty_change_pct: float,
     us_change: dict | None = None,
-    europe_change: dict | None = None,
     asia_change: dict | None = None,
     *,
     dedup_key: str | None = None,
 ) -> bool:
-    """Send pre-market summary at ~9:00 AM IST with Gift Nifty + global cues."""
+    """Send pre-market summary at ~9:00 AM IST with Gift Nifty + global cues.
+
+    Only US (overnight close) and Asia (Nikkei/Hang Seng live) are
+    surfaced — Europe doesn't open until ~13:30 IST so there's no
+    European data to show at 9:00 AM IST. The previous signature also
+    took `europe_change`, but nothing ever passed it.
+    """
     sign = "+" if gift_nifty_change_pct >= 0 else ""
     emoji = "\U0001f7e2" if gift_nifty_change_pct >= 0 else "\U0001f534"
     title = f"{emoji} Gift Nifty {sign}{gift_nifty_change_pct:.1f}% at {gift_nifty_price:,.0f}"
@@ -658,10 +663,6 @@ async def notify_pre_market_summary(
     cues = []
     if us_change:
         for idx, pct in us_change.items():
-            s = "+" if pct >= 0 else ""
-            cues.append(f"{idx} {s}{pct:.1f}%")
-    if europe_change:
-        for idx, pct in europe_change.items():
             s = "+" if pct >= 0 else ""
             cues.append(f"{idx} {s}{pct:.1f}%")
     if asia_change:
@@ -697,7 +698,6 @@ async def notify_pre_market_summary(
                 "gift_nifty_pct": gift_nifty_change_pct,
                 "gift_nifty_price": gift_nifty_price,
                 "us_change": us_change,
-                "europe_change": europe_change,
                 "asia_change": asia_change,
                 "outlook": outlook,
             },
@@ -717,24 +717,33 @@ async def notify_pre_market_summary(
     )
 
 
+# Keyed by the canonical asset name as stored in `market_prices.asset`.
+# Canonical names come from commodity_job.SYMBOLS and are space-separated
+# for multi-word commodities ("crude oil", not "crude_oil"). Legacy
+# underscore keys are kept as aliases so older callers don't break.
 _COMMODITY_EMOJIS: dict[str, str] = {
-    "gold": "\U0001f947",         # 🥇
-    "silver": "\U0001f948",       # 🥈
-    "crude_oil": "\U0001f6e2\ufe0f",  # 🛢️
-    "brent_crude": "\U0001f6e2\ufe0f",
-    "natural_gas": "\U0001f525",  # 🔥
-    "copper": "\U0001f7e0",       # 🟠
-    "platinum": "\u2b50",         # ⭐
+    "gold": "\U0001f947",          # 🥇
+    "silver": "\U0001f948",        # 🥈
+    "crude oil": "\U0001f6e2\ufe0f",   # 🛢️  (canonical)
+    "crude_oil": "\U0001f6e2\ufe0f",   # legacy alias
+    "brent crude": "\U0001f6e2\ufe0f", # canonical
+    "brent_crude": "\U0001f6e2\ufe0f", # legacy alias
+    "natural gas": "\U0001f525",   # 🔥  (canonical)
+    "natural_gas": "\U0001f525",   # legacy alias
+    "copper": "\U0001f7e0",        # 🟠
+    "platinum": "\u2b50",          # ⭐
     "palladium": "\u2b50",
-    "iron_ore": "\u26cf\ufe0f",   # ⛏️
-    "coal": "\u26ab",             # ⚫
-    "wheat": "\U0001f33e",        # 🌾
-    "corn": "\U0001f33d",         # 🌽
-    "cotton": "\u2601\ufe0f",     # ☁️
-    "sugar": "\U0001f36c",        # 🍬
-    "coffee": "\u2615",           # ☕
-    "palm_oil": "\U0001f334",     # 🌴
-    "rubber": "\U0001f6de",       # 🛞
+    "iron ore": "\u26cf\ufe0f",    # ⛏️
+    "iron_ore": "\u26cf\ufe0f",    # legacy alias
+    "coal": "\u26ab",              # ⚫
+    "wheat": "\U0001f33e",         # 🌾
+    "corn": "\U0001f33d",          # 🌽
+    "cotton": "\u2601\ufe0f",      # ☁️
+    "sugar": "\U0001f36c",         # 🍬
+    "coffee": "\u2615",            # ☕
+    "palm oil": "\U0001f334",      # 🌴
+    "palm_oil": "\U0001f334",      # legacy alias
+    "rubber": "\U0001f6de",        # 🛞
 }
 
 
@@ -1111,14 +1120,18 @@ def _build_europe_close(d: dict) -> tuple[str, str]:
     own_pcts = [p for p in [ftse_pct, dax_pct, cac_pct] if p is not None]
     avg_pct = sum(own_pcts) / len(own_pcts) if own_pcts else primary
 
-    # Sentence 1: Tone
-    base_tone = _close_tone(avg_pct)
-    if avg_pct >= 0.3:
-        sentences.append(f"{base_tone} across European bourses.")
+    # Sentence 1: Tone (distinct phrasing per direction so the notification
+    # body differs visually between up/down sessions)
+    if avg_pct >= 1.5:
+        sentences.append(f"Broad rally across European bourses.")
+    elif avg_pct >= 0.3:
+        sentences.append(f"Positive session lifted European bourses.")
+    elif avg_pct <= -1.5:
+        sentences.append(f"Sharp selloff across European bourses.")
     elif avg_pct <= -0.3:
-        sentences.append(f"{base_tone} across European bourses.")
+        sentences.append(f"Weakness dragged European bourses lower.")
     else:
-        sentences.append(f"{base_tone} for European markets.")
+        sentences.append(f"Flat session for European markets.")
 
     # Sentence 2: Brent crude context
     brent_pct = d.get("brent_change_pct")
