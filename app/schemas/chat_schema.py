@@ -48,6 +48,7 @@ class ChatMessageResponse(BaseModel):
     session_id: str
     role: Literal["user", "assistant"]
     content: str
+    thinking_text: str | None = None
     stock_cards: list[StockCard] = Field(default_factory=list)
     mf_cards: list[MFCard] = Field(default_factory=list)
     feedback: int | None = None

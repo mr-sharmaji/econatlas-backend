@@ -156,6 +156,7 @@ async def get_session(session_id: str, device_id: str = Query(..., min_length=6)
                 "session_id": m["session_id"],
                 "role": m["role"],
                 "content": m["content"],
+                "thinking_text": m.get("thinking_text"),
                 "stock_cards": m.get("stock_cards") or [],
                 "mf_cards": m.get("mf_cards") or [],
                 "feedback": m.get("feedback"),

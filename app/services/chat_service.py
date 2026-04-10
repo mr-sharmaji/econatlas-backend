@@ -295,7 +295,7 @@ Available tools:
 - [TOOL:peers:{"symbol":"TCS","limit":10}] — Top N comparable stocks in the same sector with side-by-side metrics. Use when user wants to see competitors of a specific stock beyond the 5 peers embedded in stock_lookup.
 - [TOOL:technicals:{"symbol":"TCS"}] — RSI, trend alignment, breakout signal, 52w range position, entry/exit signal, beta. Use when user asks about chart, momentum, or technical levels.
 - [TOOL:narrative:{"symbol":"TCS"}] — Rich narrative for a stock: why_narrative + action_tag reasoning + lynch_classification + market_regime. Use when user asks "what's the thesis on X" or "why is X rated this way".
-- [TOOL:mf_lookup:{"scheme_code":"119551"}] — Mutual fund details.
+- [TOOL:mf_lookup:{"scheme_name":"Parag Parikh Flexi Cap Fund - Direct Plan - Growth"}] — Mutual fund details. Accepts either `scheme_code` or `scheme_name`.
 - [TOOL:mf_screen:{"query":"category = 'Equity' AND returns_1y > 15", "limit":5}] — Filter mutual funds. Valid columns: scheme_code, scheme_name, category, sub_category, nav, expense_ratio, aum_cr, returns_1y, returns_3y, returns_5y, sharpe, sortino, score, risk_level.
 - [TOOL:watchlist:{}] — User's saved stocks with live data. Use this when the user says "my stocks", "my watchlist", "my portfolio".
 - [TOOL:market_status:{}] — All indices (India/US/Europe/Japan) + FX + key commodities + market hours. Only call this if the LIVE MARKET SNAPSHOT above is stale or missing what you need.
@@ -403,8 +403,9 @@ Be direct. Defend the view with the numbers you already cited. If you're uncerta
 ### 7. UNKNOWN HANDLING — say it, don't fake it
 When you genuinely don't have a SPECIFIC live figure (after trying the right tool), say so clearly.
 - For exact unavailable figures / dates / benchmark data / historical series, respond with:
-  "I don't have that exact data right now. Want me to try again?"
-- For explanatory, opinion, or forward-looking questions, still answer with your best broad reasoning using the LIVE SNAPSHOT, any tool results you do have, and your general market knowledge.
+  "I don't have that exact data right now."
+- If helpful, continue with a broad qualitative answer using the LIVE SNAPSHOT, any tool results you do have, and your general market knowledge.
+- Only offer another fetch when the user explicitly asks you to retry.
 
 Never invent exact figures, dates, or company-specific facts you didn't fetch. Never say "approximately ₹X" or "around Y%" without a tool source. Never invent company names like "XYZ Tech" or business descriptions not present in fetched data.
 
@@ -438,7 +439,7 @@ Never invent exact figures, dates, or company-specific facts you didn't fetch. N
 - **Screener results** → bullet list of top 5 + mention total count if more.
 - **Macro / educational** → short prose (2-3 sentences) + 1-2 key bullets.
 - **Market status / gainers / losers** → bullet list with bold numbers.
-- **"What should I buy" / recommendations** → bulleted picks with 1-line rationale each + a "Takeaway" line.
+- **"What should I buy" / recommendations** → exactly 3 ranked picks by default (unless the user asked for a different count), limited to Indian stocks + mutual funds unless the user explicitly asks wider. Keep each rationale to one line + a short "Takeaway" line.
 - **Drawbacks / pros & cons / risk analysis** → bulleted list of specific concerns pulled from the stock's fundamentals you already have.
 - **Sector thesis / big-picture** → 2-3 short paragraphs with a clear stance, backed by numbers from multiple tools.
 - **Greetings / meta questions** → 1-2 sentences, no bullets, no thinking tags.
@@ -455,11 +456,10 @@ English by default. Match Hinglish (Hindi in Latin script) if the user writes th
 Do not add "NFA", "do your own research", "consult a financial advisor", "past performance is not indicative of future results" unless the user specifically asks. These waste the user's time.
 
 ### 13. ASK ONE CLARIFYING QUESTION FOR BUY/PICK REQUESTS
-If the user asks what to buy / which fund to pick / where to invest and they have not given risk appetite, time horizon, or budget, ask ONE short clarifying question first instead of jumping straight to picks. Examples:
+If the user asks what to buy / which fund to pick / where to invest and the time horizon is still missing, ask ONE short clarifying question first instead of jumping straight to picks:
 - "What’s your time horizon for this money?"
-- "Are you looking for lower risk or higher upside?"
 
-Once they answer, then give the picks. If the same session already established the context, do not ask again.
+Once the time horizon is clear, give exactly 3 ranked picks by default unless the user asked for a different count. Keep the default universe to Indian stocks + mutual funds only. Do not include ETFs, gold, commodities, crypto, or global assets unless the user explicitly asks wider. If the same session already established the horizon, do not ask again.
 
 ## FEW-SHOT EXAMPLES
 
@@ -619,6 +619,49 @@ _SECTOR_ALIASES = {
     "entertainment": "Media & Entertainment",
 }
 
+_FUND_VARIANT_PATTERNS = (
+    (re.compile(r"\bdirect\s+plan\b", re.IGNORECASE), "direct"),
+    (re.compile(r"\bregular\s+plan\b", re.IGNORECASE), "regular"),
+    (re.compile(r"\bgrowth\s+option\b", re.IGNORECASE), "growth"),
+    (re.compile(r"\bdividend\s+(?:option|payout|reinvestment)\b", re.IGNORECASE), "idcw"),
+    (re.compile(r"\bidcw\b", re.IGNORECASE), "idcw"),
+)
+_FUND_SEARCH_STOPWORDS = frozenset({"fund", "plan", "option"})
+_STOCK_SCREEN_SECTOR_LITERAL_RE = re.compile(
+    r"(sector\s*(?:=|LIKE)\s*['\"])([^'\"]+)(['\"])",
+    re.IGNORECASE,
+)
+_RECOMMENDATION_REQUEST_RE = re.compile(
+    r"\b("
+    r"what should i buy|what to buy|which stocks? should i buy|"
+    r"which mutual funds?(?: should i pick)?|which funds?(?: should i pick)?|"
+    r"where should i invest|where to invest|what should i invest in|"
+    r"best stocks?(?: to buy)?|best mutual funds?|best sip(?:s)?|"
+    r"recommend(?: me)?|suggest(?: me)?|top stocks?(?: to buy)?|top mutual funds?"
+    r")\b",
+    re.IGNORECASE,
+)
+_RECOMMENDATION_COUNT_RE = re.compile(
+    r"\b(?:top|give me|show me|recommend|suggest)\s+(\d{1,2})\b"
+    r"|\b(\d{1,2})\s+(?:stocks?|funds?|picks?)\b",
+    re.IGNORECASE,
+)
+_TIME_HORIZON_RE = re.compile(
+    r"\b("
+    r"today|tomorrow|intraday|swing|short[\s-]?term|medium[\s-]?term|long[\s-]?term|"
+    r"next\s+\d+\s+(?:day|days|week|weeks|month|months|year|years)|"
+    r"\d+\s*(?:d|day|days|w|week|weeks|m|month|months|y|year|years)|"
+    r"few\s+(?:days|weeks|months|years)|"
+    r"this\s+(?:week|month|year)|retirement"
+    r")\b",
+    re.IGNORECASE,
+)
+_TIME_HORIZON_PROMPT_RE = re.compile(r"\btime horizon\b", re.IGNORECASE)
+_WIDER_ASSET_SCOPE_RE = re.compile(
+    r"\b(etf|gold|silver|commodity|commodities|crypto|bitcoin|global|international|us stocks?|nasdaq|s&p 500)\b",
+    re.IGNORECASE,
+)
+
 
 def _normalize_thinking_markup(text: str | None) -> str:
     """Convert leaked markdown thinking headings into <thinking> tags."""
@@ -639,6 +682,22 @@ def _normalize_thinking_markup(text: str | None) -> str:
     return f"<thinking>\n{thinking}\n</thinking>"
 
 
+def _extract_thinking_text(text: str | None) -> str | None:
+    """Return the inner content of any <thinking> blocks without tags."""
+    normalized = _normalize_thinking_markup(text)
+    if not normalized:
+        return None
+    blocks = re.findall(
+        r"<thinking>(.*?)</thinking>",
+        normalized,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    cleaned = [block.strip() for block in blocks if block and block.strip()]
+    if not cleaned:
+        return None
+    return "\n\n".join(cleaned)
+
+
 def _normalize_sector_name(sector: str | None) -> str:
     """Map common user/LLM sector labels to canonical DB sector names."""
     raw = (sector or "").strip()
@@ -647,6 +706,173 @@ def _normalize_sector_name(sector: str | None) -> str:
     cleaned = re.sub(r"\b(nifty|sector|index)\b", "", raw, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return _SECTOR_ALIASES.get(cleaned.lower(), cleaned)
+
+
+def _normalize_fund_name(name: str | None) -> str:
+    """Collapse fund-name variants so exact and fuzzy matching are stable."""
+    text = (name or "").strip().lower()
+    if not text:
+        return ""
+    for pattern, replacement in _FUND_VARIANT_PATTERNS:
+        text = pattern.sub(replacement, text)
+    text = text.replace("&", " and ")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _score_fund_candidate(query: str, candidate_name: str) -> float:
+    """Prefer exact variant matches and high token overlap for fund names."""
+    import difflib
+
+    normalized_query = _normalize_fund_name(query)
+    normalized_candidate = _normalize_fund_name(candidate_name)
+    if not normalized_query or not normalized_candidate:
+        return 0.0
+    if normalized_query == normalized_candidate:
+        return 200.0
+
+    query_tokens = set(normalized_query.split())
+    candidate_tokens = set(normalized_candidate.split())
+    overlap_ratio = 0.0
+    if query_tokens:
+        overlap_ratio = len(query_tokens & candidate_tokens) / len(query_tokens)
+
+    score = difflib.SequenceMatcher(
+        None, normalized_query, normalized_candidate,
+    ).ratio() * 100.0
+    score += overlap_ratio * 50.0
+
+    for variant in ("direct", "regular", "growth", "idcw", "etf", "index"):
+        if variant in query_tokens:
+            score += 15.0 if variant in candidate_tokens else -20.0
+
+    if normalized_candidate.startswith(normalized_query):
+        score += 12.0
+    elif normalized_query in normalized_candidate:
+        score += 8.0
+    return score
+
+
+def _canonicalize_stock_screen_query(query: str | None) -> str:
+    """Rewrite sector literals inside stock_screen queries to DB labels."""
+    if not query:
+        return ""
+
+    def _replace(match: re.Match[str]) -> str:
+        prefix, value, suffix = match.groups()
+        normalized = _normalize_sector_name(value)
+        return f"{prefix}{normalized or value}{suffix}"
+
+    return _STOCK_SCREEN_SECTOR_LITERAL_RE.sub(_replace, query)
+
+
+def _canonicalize_tool_params(tool_name: str, params: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalize common entity variants before tool dispatch."""
+    normalized = dict(params or {})
+
+    if tool_name in {"sector_thesis", "sector_performance"} and normalized.get("sector"):
+        normalized["sector"] = _normalize_sector_name(str(normalized["sector"]))
+
+    if tool_name == "stock_screen" and normalized.get("query"):
+        normalized["query"] = _canonicalize_stock_screen_query(
+            str(normalized["query"]),
+        )
+
+    if tool_name == "mf_lookup":
+        if normalized.get("name") and not normalized.get("scheme_name"):
+            normalized["scheme_name"] = normalized["name"]
+        if normalized.get("fund_name") and not normalized.get("scheme_name"):
+            normalized["scheme_name"] = normalized["fund_name"]
+        for key in ("scheme_code", "scheme_name", "query"):
+            if normalized.get(key) is not None:
+                normalized[key] = str(normalized[key]).strip()
+
+    return normalized
+
+
+def _is_recommendation_request(text: str | None) -> bool:
+    return bool(_RECOMMENDATION_REQUEST_RE.search(text or ""))
+
+
+def _has_time_horizon(text: str | None) -> bool:
+    return bool(_TIME_HORIZON_RE.search(text or ""))
+
+
+def _assistant_asked_time_horizon(text: str | None) -> bool:
+    return bool(_TIME_HORIZON_PROMPT_RE.search(text or ""))
+
+
+def _detect_recommendation_mode(
+    session_messages: list[dict],
+    user_message: str,
+) -> str | None:
+    """Return 'clarify', 'picks', or None for recommendation flows."""
+    if not user_message:
+        return None
+
+    prior_messages = session_messages
+    if session_messages and session_messages[-1].get("role") == "user":
+        last_content = (session_messages[-1].get("content") or "").strip()
+        if last_content == user_message.strip():
+            prior_messages = session_messages[:-1]
+
+    prior_user_messages = [
+        (m.get("content") or "")
+        for m in prior_messages[-8:]
+        if m.get("role") == "user"
+    ]
+    prior_assistant_messages = [
+        (m.get("content") or "")
+        for m in prior_messages[-4:]
+        if m.get("role") == "assistant"
+    ]
+
+    current_is_request = _is_recommendation_request(user_message)
+    current_has_horizon = _has_time_horizon(user_message)
+    prior_has_horizon = any(_has_time_horizon(text) for text in prior_user_messages)
+    prior_recommendation = any(
+        _is_recommendation_request(text) for text in prior_user_messages
+    )
+    assistant_asked_horizon = any(
+        _assistant_asked_time_horizon(text) for text in prior_assistant_messages
+    )
+
+    if current_is_request and not (current_has_horizon or prior_has_horizon):
+        return "clarify"
+
+    if current_is_request and (current_has_horizon or prior_has_horizon):
+        return "picks"
+
+    if assistant_asked_horizon and current_has_horizon and prior_recommendation:
+        return "picks"
+
+    return None
+
+
+def _build_recommendation_instruction(user_message: str) -> str:
+    """Extra system nudge so recommendation replies stay within scope."""
+    explicit_count_requested = bool(_RECOMMENDATION_COUNT_RE.search(user_message or ""))
+    wider_scope_requested = bool(_WIDER_ASSET_SCOPE_RE.search(user_message or ""))
+
+    count_rule = (
+        "Respect the user's requested pick count."
+        if explicit_count_requested
+        else "Return exactly 3 ranked picks."
+    )
+    scope_rule = (
+        "The user explicitly asked for a wider asset universe, so you may include it."
+        if wider_scope_requested
+        else (
+            "Limit the default universe to Indian stocks and mutual funds only. "
+            "Do not include ETFs, gold, commodities, crypto, or global assets."
+        )
+    )
+    return (
+        "This turn is a recommendation flow. "
+        f"{count_rule} {scope_rule} "
+        "Keep each rationale to one line and order the picks from strongest to weakest."
+    )
 
 
 async def _news_hybrid_search(
@@ -834,6 +1060,132 @@ async def _persist_assistant_error_message(
     except Exception:
         logger.exception("chat_stream: failed to persist assistant error message")
         return None
+
+
+async def _resolve_mutual_fund_row(
+    pool,
+    params: dict[str, Any],
+):
+    """Resolve a mutual fund by exact code, exact name, then conservative fuzzy match."""
+    code = str(params.get("scheme_code") or "").strip()
+    raw_query = str(
+        params.get("scheme_name")
+        or params.get("name")
+        or params.get("fund_name")
+        or params.get("query")
+        or ""
+    ).strip()
+
+    if code:
+        row = await pool.fetchrow(
+            "SELECT * FROM discover_mutual_fund_snapshots WHERE scheme_code = $1",
+            code,
+        )
+        if row:
+            return row, None
+        if not raw_query:
+            return None, f"Fund '{code}' not found"
+
+    if not raw_query:
+        return None, "No scheme_code or scheme_name provided"
+
+    row = await pool.fetchrow(
+        """
+        SELECT *
+        FROM discover_mutual_fund_snapshots
+        WHERE LOWER(TRIM(scheme_name)) = LOWER(TRIM($1))
+        LIMIT 1
+        """,
+        raw_query,
+    )
+    if row:
+        return row, None
+
+    normalized_query = _normalize_fund_name(raw_query)
+    if normalized_query:
+        row = await pool.fetchrow(
+            """
+            SELECT *
+            FROM discover_mutual_fund_snapshots
+            WHERE REGEXP_REPLACE(LOWER(scheme_name), '[^a-z0-9]+', ' ', 'g') = $1
+            LIMIT 1
+            """,
+            normalized_query,
+        )
+        if row:
+            return row, None
+
+    token_patterns: list[str] = []
+    if raw_query:
+        token_patterns.append(f"%{raw_query}%")
+    for token in normalized_query.split():
+        if len(token) < 3 or token in _FUND_SEARCH_STOPWORDS:
+            continue
+        token_patterns.append(f"%{token}%")
+
+    deduped_patterns: list[str] = []
+    seen_patterns: set[str] = set()
+    for pattern in token_patterns:
+        if pattern not in seen_patterns:
+            deduped_patterns.append(pattern)
+            seen_patterns.add(pattern)
+
+    if not deduped_patterns:
+        return None, f"Fund '{raw_query}' not found"
+
+    clauses = " OR ".join(
+        f"scheme_name ILIKE ${idx}" for idx in range(1, len(deduped_patterns) + 1)
+    )
+    rows = await pool.fetch(
+        f"""
+        SELECT *
+        FROM discover_mutual_fund_snapshots
+        WHERE {clauses}
+        ORDER BY score DESC NULLS LAST, returns_3y DESC NULLS LAST, aum_cr DESC NULLS LAST
+        LIMIT 25
+        """,
+        *deduped_patterns,
+    )
+    if not rows:
+        return None, f"Fund '{raw_query}' not found"
+
+    ranked = sorted(
+        rows,
+        key=lambda row: _score_fund_candidate(raw_query, row["scheme_name"]),
+        reverse=True,
+    )
+    best = ranked[0]
+    best_score = _score_fund_candidate(raw_query, best["scheme_name"])
+    if best_score < 78:
+        return None, f"Fund '{raw_query}' not found"
+
+    if len(ranked) >= 2:
+        second = ranked[1]
+        second_score = _score_fund_candidate(raw_query, second["scheme_name"])
+        best_variants = {
+            token for token in _normalize_fund_name(best["scheme_name"]).split()
+            if token in {"direct", "regular", "growth", "idcw"}
+        }
+        second_variants = {
+            token for token in _normalize_fund_name(second["scheme_name"]).split()
+            if token in {"direct", "regular", "growth", "idcw"}
+        }
+        query_variants = {
+            token for token in normalized_query.split()
+            if token in {"direct", "regular", "growth", "idcw"}
+        }
+        if (
+            best_variants != second_variants
+            and not query_variants
+            and abs(best_score - second_score) < 4
+        ):
+            return (
+                None,
+                "Multiple similar funds matched that name. Please specify Direct/Regular "
+                "or Growth/IDCW.",
+            )
+
+    return best, None
 
 
 # Refusal-detection patterns for the tool-invocation log. When Artha's
@@ -1187,15 +1539,9 @@ async def _execute_tool(
             return {"stocks": [record_to_dict(r) for r in rows]}
 
         elif tool_name == "mf_lookup":
-            code = params.get("scheme_code", "").strip()
-            if not code:
-                return {"error": "No scheme_code provided"}
-            row = await pool.fetchrow(
-                f"SELECT * FROM discover_mutual_fund_snapshots WHERE scheme_code = $1",
-                code,
-            )
-            if not row:
-                return {"error": f"Fund '{code}' not found"}
+            row, error = await _resolve_mutual_fund_row(pool, params)
+            if error or not row:
+                return {"error": error or "Fund not found"}
             d = record_to_dict(row)
             return {
                 "scheme_code": d.get("scheme_code"),
@@ -2459,6 +2805,7 @@ async def save_message(
     session_id: str,
     role: str,
     content: str,
+    thinking_text: str | None = None,
     stock_cards: list[dict] | None = None,
     mf_cards: list[dict] | None = None,
     tool_calls: list[dict] | None = None,
@@ -2468,13 +2815,16 @@ async def save_message(
     msg_id = str(uuid.uuid4())
     await pool.execute(
         """
-        INSERT INTO chat_messages (id, session_id, role, content, stock_cards, mf_cards, tool_calls, created_at)
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, NOW())
+        INSERT INTO chat_messages (
+            id, session_id, role, content, thinking_text, stock_cards, mf_cards, tool_calls, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, NOW())
         """,
         msg_id,
         session_id,
         role,
         content,
+        thinking_text,
         json.dumps(stock_cards) if stock_cards else None,
         json.dumps(mf_cards) if mf_cards else None,
         json.dumps(tool_calls) if tool_calls else None,
@@ -2980,6 +3330,35 @@ async def stream_chat_response(
         yield {"event": "error", "data": {"message": "Could not save your message. Please try again.", "retry": True}}
         return
 
+    try:
+        session_messages = await get_session_messages(session_id, device_id)
+    except Exception:
+        logger.debug("chat_stream: failed to load session messages", exc_info=True)
+        session_messages = []
+
+    recommendation_mode = _detect_recommendation_mode(session_messages, user_message)
+    if recommendation_mode == "clarify":
+        thinking_text = (
+            "I need one key input before ranking ideas: your time horizon changes "
+            "whether I should optimize for near-term momentum or longer-term compounding."
+        )
+        response_text = "What’s your time horizon for this money?"
+        yield {"event": "thinking", "data": {"status": "Clarifying your goal..."}}
+        yield {"event": "thinking_text", "data": {"text": thinking_text}}
+        yield {"event": "token", "data": {"text": response_text}}
+        try:
+            msg_id = await save_message(
+                session_id,
+                "assistant",
+                response_text,
+                thinking_text=thinking_text,
+            )
+        except Exception:
+            logger.exception("chat_stream: failed to save clarifier message")
+            msg_id = None
+        yield {"event": "done", "data": {"message_id": msg_id, "session_id": session_id}}
+        return
+
     api_key = _get_api_key()
     if not api_key:
         logger.error("chat_stream: no OPENROUTER_API_KEY configured")
@@ -2998,6 +3377,14 @@ async def stream_chat_response(
 
     # Build conversation context (passes user message for k-NN tool routing)
     messages = await _build_context(session_id, device_id, user_message)
+    if recommendation_mode == "picks":
+        messages.insert(
+            1,
+            {
+                "role": "system",
+                "content": _build_recommendation_instruction(user_message),
+            },
+        )
 
     yield {"event": "thinking", "data": {"status": "Artha is thinking..."}}
 
@@ -3045,6 +3432,7 @@ async def stream_chat_response(
                 params = json.loads(params_str)
             except json.JSONDecodeError:
                 params = {}
+            params = _canonicalize_tool_params(tool_name, params)
             _tool_t0 = time.monotonic()
             result = await _execute_tool(tool_name, params, device_id)
             _tool_latency_ms = int((time.monotonic() - _tool_t0) * 1000)
@@ -3225,9 +3613,10 @@ async def stream_chat_response(
                 "5. Be specific with the numbers from the tool results above.\n"
                 "6. If a tool returned an error or empty data, do NOT invent "
                 "numbers. For exact unavailable figures, say "
-                "'I don't have that exact data right now. Want me to try "
-                "again?'. For explanatory questions, continue with a "
-                "qualitative answer.\n"
+                "'I don't have that exact data right now.' and continue "
+                "with a qualitative answer when it still helps the user. "
+                "Do not offer another fetch unless the user explicitly "
+                "asks you to retry.\n"
                 "7. Currency rules: commodities (gold/silver/crude/brent) in "
                 "USD ($). Indian stock prices / market cap in ₹. "
                 "Index VALUES (Nifty, Sensex, S&P 500, Nasdaq, Nikkei, FTSE, "
@@ -3421,6 +3810,7 @@ async def stream_chat_response(
     if not final_response:
         final_response = "I couldn't generate a response. Please try again."
     final_response = _normalize_thinking_markup(final_response)
+    thinking_text = _extract_thinking_text(final_response)
 
     # Clean: strip <thinking> blocks, tool markers, card markers.
     # The <thinking> content has already been streamed as thinking_text
@@ -3524,6 +3914,7 @@ async def stream_chat_response(
             session_id,
             "assistant",
             final_response,
+            thinking_text=thinking_text,
             stock_cards=stock_cards if stock_cards else None,
             mf_cards=mf_cards if mf_cards else None,
             tool_calls=tools_used if tools_used else None,
@@ -3798,50 +4189,21 @@ def start_prefetch_task() -> None:
 
 
 async def _build_user_profile_context(device_id: str) -> str | None:
-    """Build a compact USER CONTEXT block for the device.
-    Returns None if the device has no meaningful context."""
+    """Build lightweight non-chat context for the device."""
     try:
         pool = await get_pool()
-        # Watchlist
         wl_rows = await pool.fetch(
             "SELECT asset FROM device_watchlists "
             "WHERE device_id = $1 ORDER BY position ASC LIMIT 10",
             device_id,
         )
         watchlist = [r["asset"] for r in wl_rows if r.get("asset")]
-
-        # Recent topics — peek at the last few user messages across
-        # sessions to see what the user has been asking about.
-        topic_rows = await pool.fetch(
-            "SELECT LEFT(content, 80) AS preview "
-            "FROM chat_messages m "
-            "JOIN chat_sessions s ON s.id = m.session_id "
-            "WHERE s.device_id = $1 AND m.role = 'user' "
-            "ORDER BY m.created_at DESC LIMIT 5",
-            device_id,
-        )
-        recent_topics = [r["preview"] for r in topic_rows if r.get("preview")]
-
-        # Session count today
-        today_ist = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date()
-        count_row = await pool.fetchrow(
-            "SELECT COUNT(*) AS c FROM chat_sessions "
-            "WHERE device_id = $1 AND created_at::date = $2",
-            device_id, today_ist,
-        )
-        sessions_today = int(count_row["c"] or 0) if count_row else 0
-
-        if not watchlist and not recent_topics and sessions_today <= 1:
-            return None  # Nothing meaningful to inject
+        if not watchlist:
+            return None
 
         parts = ["**USER CONTEXT:**"]
         if watchlist:
             parts.append(f"Watchlist: {', '.join(watchlist[:10])}")
-        if recent_topics:
-            topics_str = " | ".join(f'"{t}"' for t in recent_topics[:3])
-            parts.append(f"Last 3 queries: {topics_str}")
-        if sessions_today > 1:
-            parts.append(f"Sessions today: {sessions_today}")
         return "\n".join(parts)
     except Exception:
         logger.debug("profile: build failed", exc_info=True)
@@ -3863,7 +4225,7 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     "peers": "Comparable companies in the same sector as a given stock, with side-by-side metrics.",
     "technicals": "Technical indicators for a stock: RSI, trend alignment, breakout signal, 52w range position, beta.",
     "narrative": "Thesis and reasoning for why a stock is rated the way it is: action tag reasoning, Lynch classification, market regime, why-narrative.",
-    "mf_lookup": "Mutual fund scheme details including NAV, returns, expense ratio, risk, category.",
+    "mf_lookup": "Mutual fund scheme details including NAV, returns, expense ratio, risk, category; resolves by scheme code or scheme name.",
     "mf_screen": "Filter mutual funds by category, returns, Sharpe, cost, risk, AUM.",
     "watchlist": "The user's personal saved stocks with live prices and fundamentals.",
     "market_status": "Live index values, FX rates, commodity prices, and market open/close hours across India/US/Europe/Japan.",
@@ -3970,7 +4332,7 @@ def _build_system_prompt(
 
     Layers (top-down, so the most critical state is freshest to the model):
       1. Live market snapshot (indices, movers, hours) — refreshed every 30s
-      2. User profile (watchlist, recent topics, sessions today)
+      2. User context (watchlist only; no cross-session chat memory)
       3. k-NN tool hints based on the current user query (if any)
       4. The static _ARTHA_SYSTEM base prompt (role, tools, rules, etc.)
     """
@@ -3999,7 +4361,7 @@ async def _build_context(
 ) -> list[dict]:
     """Build LLM message context from session history with dynamic injections.
 
-    Pre-pends the dynamic system prompt (live snapshot + user profile +
+    Pre-pends the dynamic system prompt (live snapshot + watchlist context +
     k-NN tool hints + base rules), then appends the last N messages from
     the session. Uses a sliding-window policy: anything older than
     MAX_CONTEXT_MESSAGES is dropped (not summarised).

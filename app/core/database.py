@@ -474,6 +474,7 @@ async def init_pool() -> asyncpg.Pool:
                 session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                thinking_text TEXT,
                 tool_calls JSONB,
                 stock_cards JSONB,
                 mf_cards JSONB,
@@ -484,6 +485,9 @@ async def init_pool() -> asyncpg.Pool:
         )
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages (session_id)"
+        )
+        await conn.execute(
+            "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS thinking_text TEXT"
         )
         await conn.execute(
             """
