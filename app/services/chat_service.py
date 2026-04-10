@@ -371,7 +371,8 @@ When the user asks about a stock, fund, concept, or topic that might have tool c
 Anti-refusal table (these tools exist — use them):
 | User asks | Do this |
 |---|---|
-| "Show me today's FII net buying" | `institutional_flows({"scope":"fii","direction":"buying"})` |
+| "Show me today's FII net buying" | `institutional_flows({"scope":"fii","direction":"buying"})` — market-wide |
+| "FII buying / selling **in the IT sector**" | `stock_screen({"query":"sector = 'IT' AND fii_holding_change > 0","limit":10,"order":"fii_holding_change DESC"})` — the `institutional_flows` tool returns market-wide top-movers and does NOT accept a sector filter. If the user names a sector, you MUST use stock_screen with `sector = 'X'` + `fii_holding_change` / `dii_holding_change` columns. Same rule for "FII selling in banks", "DII buying in pharma", etc. |
 | "What's the macro backdrop?" | `macro_regime({})` |
 | "How is the market feeling?" | `market_mood({})` |
 | "What's the thesis on TCS?" | `narrative({"symbol":"TCS"})` |
@@ -497,6 +498,52 @@ Never invent exact figures, dates, or company-specific facts you didn't fetch. N
 - **FX pairs** → quote currency as-is (`USD/INR at ₹92.64`, `EUR/USD at $1.08`)
 - **Conversions** → exact math. `$100 at ₹92.64 = ₹9,264` (not `₹9,200`).
 - **Percentages** → 2 decimals with explicit sign. Positive always gets `+` prefix: `+1.23%`, `-0.45%`.
+
+### 8a. SECTOR AWARENESS — every sector has its own metric vocabulary
+Every sector / industry has its own financial fingerprint. Reporting
+a bank with "weak operating margin 0.1%" or flagging a utility for
+"high debt" is a category error, not analysis. When `stock_lookup`
+returns a stock, it includes a **`sector_notes`** field with the
+narrative framing, key metrics to focus on, and what's missing from
+our schema. It also **nulls out** any field that is not meaningful
+for that sector. You MUST read `sector_notes` and respect those
+nulls — don't report a null field as "weak" or "missing".
+
+Quick cheat sheet of how to frame each sector:
+
+- **Financials (Banks / NBFCs / Insurance)** — spread-based lenders.
+  Operating margin, D/E, FCF are nulled. Focus on ROE (>15% good,
+  >20% excellent), P/B (1.5–2.5x reasonable), analyst upside, FII/DII
+  flows. Banks are structurally leveraged; high D/E is NOT a red flag.
+  NIM / NII / CASA / GNPA are the right metrics but we don't store them.
+- **IT Services** — USD/INR exporters. Focus on margin stability
+  (22–27% is healthy), revenue growth, FCF, PE (20–30x normal).
+  Rupee strength is a headwind.
+- **FMCG** — quality compounders. High PE (25–40x) is NORMAL, not a
+  red flag. Focus on volume growth + margin stability, not absolute PE.
+- **Auto** — cyclical. Margins swing 6–12% with raw-material costs.
+  Judge by volume trend + margin, not static PE.
+- **Commodities / Metals** — cyclical with INVERTED PE signals. High
+  PE at a trough can mark a bottom; low PE at a peak can mark a top.
+  Trust cycle + margin trend over absolute PE.
+- **Energy (OMCs / Upstream / Refiners)** — commodity-linked, low PE
+  is normal, dividend yield is high and matters a lot.
+- **Telecom** — spectrum capex is debt-heavy; high D/E is structural,
+  NOT a red flag. Revenue growth = ARPU proxy.
+- **Real Estate** — judge on pre-sales momentum + debt reduction.
+  PE is unreliable due to lumpy revenue recognition.
+- **Pharma / Healthcare** — quality hinges on R&D pipeline and USFDA
+  compliance (which we don't store). Lean on score + analyst views.
+- **Utilities / Power** — regulated, debt-heavy, dividend-yielding.
+  Low PE and high D/E are NORMAL, not red flags.
+- **Industrials / Capital Goods** — order book driven (not in our
+  data). Revenue growth + margin stability are the visible signals.
+- **Chemicals / Materials** — specialty vs commodity have very
+  different economics. Check the `industry` field to tell them apart.
+
+If the user asks about a metric we don't store (NIM, ARPU, PLF,
+order book, ANDA pipeline, etc.), say so directly and pivot to the
+visible proxy in `sector_notes` rather than inventing a number.
 
 ### 9. OUTPUT FORMAT — match the query type
 - **Single stock / MF lookup** → bullet list with **bold** key numbers + a [CARD:SYMBOL] marker. 3-6 bullets max.
@@ -664,6 +711,315 @@ _MARKDOWN_THINKING_RE = re.compile(
     r'^\s*#{1,6}\s*Thinking\s*\n+(.*?)(?:\n{2,}(.*))?$',
     re.DOTALL | re.IGNORECASE,
 )
+
+# ---------------------------------------------------------------------------
+# Sector profiles — which metrics matter for each sector.
+# ---------------------------------------------------------------------------
+# Each sector has unique business economics.  The raw stock_lookup
+# payload returns a one-size-fits-all set of fields (operating_margins,
+# debt_to_equity, free_cash_flow, etc.), but many of those are
+# misleading or meaningless for certain sectors:
+#
+#   - Banks: operating_margin/profit_margin/D-E/FCF are category errors.
+#            Use ROE + P/B + institutional flows instead.
+#   - IT:    margin is key (22-27% is healthy). USD/INR is a tailwind.
+#   - FMCG:  high PE (25-40x) is NORMAL quality. volume growth matters.
+#   - Auto:  cyclical, margins swing with input costs. volume + EV mix.
+#   - Metal: cyclical, PE inverts (high PE at trough = bottom).
+#   - Pharma: R&D pipeline + USFDA status (we don't store these).
+#
+# For each sector we define:
+#   - suppress_fields:    fields that should be None in stock_lookup
+#                         output because they're meaningless for this sector
+#   - suppress_red_flags: red flags to filter out (e.g. "high_debt" for banks)
+#   - key_metrics:        ordered list of the metrics that DO matter
+#   - narrative:          one-liner the LLM can use to frame the stock
+#   - missing_data_note:  what we DON'T store that would matter
+#
+# Sectors not in this map get the default (all fields returned, no
+# suppression).  The key is matched case-insensitively against the
+# short DB sector names (IT / Auto / Financials / Healthcare / etc.).
+
+_SECTOR_PROFILES: dict[str, dict[str, Any]] = {
+    "financials": {
+        "display": "Financials (Banks / NBFCs / Insurance)",
+        "suppress_fields": (
+            "operating_margins", "profit_margins", "gross_margins",
+            "debt_to_equity", "interest_coverage", "free_cash_flow",
+            "operating_cash_flow", "opm_change_yoy", "roce",
+            "total_debt",
+        ),
+        "suppress_red_flags": (
+            "declining_margins", "high_debt", "weak_interest_coverage",
+            "negative_fcf",
+        ),
+        "key_metrics": (
+            "ROE (target >15%)", "P/B (1.5-2.5x reasonable)",
+            "PE", "analyst target + upside",
+            "FII / DII flows", "score_breakdown",
+        ),
+        "narrative": (
+            "Banks are spread-based lenders. Evaluate on ROE, P/B, "
+            "and institutional sentiment \u2014 NOT operating margin or D/E."
+        ),
+        "missing_data_note": (
+            "We don't yet store NIM / NII / CASA / GNPA / NNPA / CAR / "
+            "cost-to-income ratio. Use ROE + P/B as proxies."
+        ),
+    },
+    "it": {
+        "display": "Information Technology (IT Services)",
+        "key_metrics": (
+            "operating_margins (22-27% is healthy)", "ROE",
+            "revenue_growth YoY", "FCF", "PE (20-30x typical)",
+            "USD/INR (rupee weakness = tailwind)",
+        ),
+        "narrative": (
+            "IT services are USD/INR-sensitive exporters. Track margin "
+            "stability, deal momentum, and the rupee. A stronger rupee "
+            "compresses USD-earnings on translation."
+        ),
+        "missing_data_note": (
+            "We don't store deal TCV, employee utilization, attrition "
+            "rate, or digital revenue share \u2014 all key for IT. Lean on "
+            "margins + revenue_growth as the visible signals."
+        ),
+    },
+    "healthcare": {
+        "display": "Pharma / Healthcare",
+        "key_metrics": (
+            "revenue_growth", "operating_margins", "ROE",
+            "PE", "analyst target",
+        ),
+        "narrative": (
+            "Pharma quality depends on R&D pipeline and USFDA "
+            "compliance. Generic vs specialty mix and US revenue "
+            "exposure drive outcomes."
+        ),
+        "missing_data_note": (
+            "We don't store R&D spend, ANDA pipeline, USFDA inspection "
+            "status, or US revenue %. Score + analyst views are the best "
+            "proxies for these qualitative factors."
+        ),
+    },
+    "fmcg": {
+        "display": "Consumer Staples (FMCG)",
+        "key_metrics": (
+            "operating_margins (18-22% typical)", "ROE (>30% common)",
+            "dividend_yield", "revenue_growth (single-digit is normal)",
+            "PE (25-40x is quality, not red-flag)",
+        ),
+        "narrative": (
+            "FMCG is a quality compounder sector. High PE (25-40x) is "
+            "NORMAL, not a red flag \u2014 the market pays up for "
+            "predictable cash flows. Focus on volume growth + margin "
+            "stability, not absolute PE."
+        ),
+        "missing_data_note": (
+            "We don't store volume growth, rural vs urban demand mix, "
+            "distribution reach, or A&P spend. Margin stability YoY is "
+            "the best visible proxy for brand strength."
+        ),
+    },
+    "auto": {
+        "display": "Automobile (OEMs / Ancillaries)",
+        "key_metrics": (
+            "revenue_growth", "operating_margins (cyclical 6-12%)",
+            "ROE", "debt_to_equity (OEMs carry working-capital debt)",
+            "PE",
+        ),
+        "narrative": (
+            "Auto is highly cyclical. Margins swing with steel, rubber, "
+            "aluminium costs. EV mix is a structural lever. Judge by "
+            "volume + margin, not just PE."
+        ),
+        "missing_data_note": (
+            "We don't store unit volumes, ASP, EV mix, or export share. "
+            "Revenue growth is the best monthly volume proxy."
+        ),
+    },
+    "commodities": {
+        "display": "Commodities / Mining / Metals",
+        "key_metrics": (
+            "revenue_growth", "operating_margins (volatile)",
+            "debt_to_equity", "dividend_yield",
+            "score_risk (cyclicality baked in)",
+        ),
+        "narrative": (
+            "Commodity sectors are cyclical and PE can INVERT: high PE "
+            "at a trough can mark a bottom, low PE at a peak can mark a "
+            "top. Trust price cycle + margin trend over absolute PE."
+        ),
+        "missing_data_note": (
+            "We don't store realisation/tonne, capacity utilisation, "
+            "or input-cost deltas. Percent_change_1y is a rough cycle "
+            "position indicator."
+        ),
+    },
+    "energy": {
+        "display": "Oil & Gas / Energy",
+        "key_metrics": (
+            "dividend_yield (high is typical)", "ROE",
+            "debt_to_equity", "PE (low 5-10x is normal)",
+            "percent_change_1y (crude correlation)",
+        ),
+        "narrative": (
+            "Energy stocks (OMCs, upstream, refiners) are "
+            "commodity-linked. Low PE is typical. Refiners depend on "
+            "GRM; upstream on crude price; OMCs on marketing margin. "
+            "Dividend yield tends to be high and matters a lot."
+        ),
+        "missing_data_note": (
+            "We don't store GRM, crude throughput, marketing margin, "
+            "or subsidy burden. Dividend yield + 1y return are the "
+            "visible signals."
+        ),
+    },
+    "telecom": {
+        "display": "Telecom",
+        "key_metrics": (
+            "revenue_growth", "operating_margins",
+            "debt_to_equity (spectrum capex is debt-heavy)",
+            "percent_change_1y",
+        ),
+        "narrative": (
+            "Telecom capex is lumpy and debt-heavy due to spectrum "
+            "auctions. High debt is structural \u2014 not a red flag per se. "
+            "ARPU is the key metric but we don't store it."
+        ),
+        "missing_data_note": (
+            "We don't store ARPU, subscriber net-add, spectrum "
+            "holdings, or 5G penetration. Revenue growth is the "
+            "monthly ARPU proxy."
+        ),
+        "suppress_red_flags": ("high_debt",),
+    },
+    "real estate": {
+        "display": "Real Estate",
+        "key_metrics": (
+            "revenue_growth", "debt_to_equity", "ROE",
+            "percent_change_1y", "dividend_yield",
+        ),
+        "narrative": (
+            "Real estate is driven by pre-sales momentum, inventory "
+            "reduction, and debt de-leveraging. PE is often unreliable "
+            "due to lumpy revenue recognition."
+        ),
+        "missing_data_note": (
+            "We don't store pre-sales, inventory months, launch "
+            "pipeline, or collections. Score + analyst views are best."
+        ),
+    },
+    "industrials": {
+        "display": "Industrials / Capital Goods",
+        "key_metrics": (
+            "revenue_growth", "operating_margins", "ROE",
+            "PE", "debt_to_equity",
+        ),
+        "narrative": (
+            "Industrials depend on order books and execution. Revenue "
+            "growth + margin stability are the visible signals."
+        ),
+        "missing_data_note": (
+            "We don't store order book, book-to-bill, or working "
+            "capital days. Revenue growth YoY is the rough proxy."
+        ),
+    },
+    "consumer discretionary": {
+        "display": "Consumer Discretionary",
+        "key_metrics": (
+            "revenue_growth", "operating_margins", "ROE",
+            "PE", "percent_change_1y",
+        ),
+        "narrative": (
+            "Driven by discretionary spending cycles and consumer "
+            "sentiment. Revenue growth is the best visible signal."
+        ),
+        "missing_data_note": (
+            "We don't store same-store sales growth, new-store count, "
+            "or online revenue share. Revenue growth YoY is the proxy."
+        ),
+    },
+    "services": {
+        "display": "Services",
+        "key_metrics": (
+            "revenue_growth", "operating_margins", "ROE",
+            "PE", "score",
+        ),
+        "narrative": (
+            "Broad bucket \u2014 the `industry` field tells you the specific "
+            "sub-sector. Check it before framing."
+        ),
+        "missing_data_note": (
+            "Mixed bucket. Check `industry` column for the specific "
+            "business (IT services, hospitality, media, etc.)."
+        ),
+    },
+    "materials": {
+        "display": "Materials / Chemicals",
+        "key_metrics": (
+            "revenue_growth", "operating_margins (volatile)",
+            "debt_to_equity", "ROE",
+        ),
+        "narrative": (
+            "Specialty vs commodity chemicals have very different "
+            "economics. Specialty = margin story; commodity = cycle "
+            "story. Check `industry` to tell them apart."
+        ),
+        "missing_data_note": (
+            "We don't store volume by product line, input-cost spreads, "
+            "or capacity utilisation. Operating margin trend is the "
+            "best visible signal."
+        ),
+    },
+    "chemicals": {
+        "display": "Chemicals",
+        "key_metrics": (
+            "revenue_growth", "operating_margins",
+            "debt_to_equity", "ROE",
+        ),
+        "narrative": (
+            "Specialty chemicals are higher-margin and less cyclical "
+            "than commodity chemicals. Margin trend reveals which "
+            "bucket you're in."
+        ),
+        "missing_data_note": (
+            "We don't store product mix. Operating margin + ROE are "
+            "the visible quality signals."
+        ),
+    },
+    "utilities": {
+        "display": "Utilities / Power",
+        "key_metrics": (
+            "dividend_yield (high)", "debt_to_equity (structural)",
+            "ROE", "PE (low single-digit is typical)",
+        ),
+        "narrative": (
+            "Utilities are regulated, debt-heavy, dividend-yielding. "
+            "Low PE and high D/E are normal, not red flags."
+        ),
+        "missing_data_note": (
+            "We don't store PLF (plant load factor) or regulated "
+            "return caps. Dividend yield and 1y return are the proxies."
+        ),
+        "suppress_red_flags": ("high_debt",),
+    },
+}
+
+
+def _get_sector_profile(sector: str | None) -> dict[str, Any] | None:
+    """Return the profile for a sector name, case-insensitive match."""
+    if not sector:
+        return None
+    key = str(sector).strip().lower()
+    if key in _SECTOR_PROFILES:
+        return _SECTOR_PROFILES[key]
+    # Fuzzy fallback: check if any profile key is a substring
+    for profile_key in _SECTOR_PROFILES:
+        if profile_key in key or key in profile_key:
+            return _SECTOR_PROFILES[profile_key]
+    return None
+
 
 _SECTOR_ALIASES = {
     "it": "IT",
@@ -2215,6 +2571,31 @@ async def _execute_tool(
                     "reason": f"Promoter holding dropped {abs(phc):.1f}pp recently",
                 })
 
+            # --- Sector-aware adjustments ---
+            # Every sector has its own metric vocabulary. Banks don't have
+            # meaningful operating margin; commodities can't be judged on
+            # static PE; utilities are structurally debt-heavy. We look up
+            # a per-sector profile and use it to (a) suppress misleading
+            # fields, (b) filter out red flags that don't apply, and (c)
+            # emit a `sector_notes` block so the LLM frames the stock in
+            # the right mental model. See `_SECTOR_PROFILES` above.
+            sector_profile = _get_sector_profile(d.get("sector"))
+            suppress_fields: set[str] = set(
+                (sector_profile or {}).get("suppress_fields", ())
+            )
+            if sector_profile:
+                suppress_flags = set(sector_profile.get("suppress_red_flags", ()))
+                if suppress_flags:
+                    red_flags = [
+                        f for f in red_flags
+                        if f.get("flag") not in suppress_flags
+                    ]
+
+            def _sf(field: str, value: Any) -> Any:
+                """Suppress field value if the sector profile says it's
+                not meaningful for this sector."""
+                return value if field not in suppress_fields else None
+
             # --- Peers (top 5 in same sector by market cap, excluding self) ---
             peers: list[dict] = []
             sector = d.get("sector")
@@ -2258,12 +2639,15 @@ async def _execute_tool(
                 "peg_ratio": _f(sb.get("peg_ratio")),
                 "dividend_yield": _f(d.get("dividend_yield")),
                 # --- Profitability ---
+                # Per-sector suppression via `_sf()` — see sector_profile
+                # branch above. Banks null out margins/D/E/FCF; utilities
+                # null out high_debt flag; commodities lean on cycle, etc.
                 "roe": _f(d.get("roe")),
-                "roce": _f(d.get("roce")),
-                "gross_margins": _f(d.get("gross_margins")),
-                "operating_margins": _f(d.get("operating_margins")),
-                "profit_margins": _f(d.get("profit_margins")),
-                "opm_change_yoy": _f(d.get("opm_change")),
+                "roce": _sf("roce", _f(d.get("roce"))),
+                "gross_margins": _sf("gross_margins", _f(d.get("gross_margins"))),
+                "operating_margins": _sf("operating_margins", _f(d.get("operating_margins"))),
+                "profit_margins": _sf("profit_margins", _f(d.get("profit_margins"))),
+                "opm_change_yoy": _sf("opm_change_yoy", _f(d.get("opm_change"))),
                 # --- Growth ---
                 "revenue_growth": _f(d.get("revenue_growth")),
                 "earnings_growth": _f(d.get("earnings_growth")),
@@ -2272,12 +2656,15 @@ async def _execute_tool(
                 "compounded_sales_growth_3y": _f(d.get("compounded_sales_growth_3y")),
                 "compounded_profit_growth_3y": _f(d.get("compounded_profit_growth_3y")),
                 # --- Balance sheet ---
-                "debt_to_equity": _f(d.get("debt_to_equity")),
-                "interest_coverage": _f(d.get("interest_coverage")),
-                "total_debt": d.get("total_debt"),
+                # Suppressed per-sector: banks, telecom, utilities, etc.
+                # have structurally different balance sheets; see
+                # `_SECTOR_PROFILES.suppress_fields`.
+                "debt_to_equity": _sf("debt_to_equity", _f(d.get("debt_to_equity"))),
+                "interest_coverage": _sf("interest_coverage", _f(d.get("interest_coverage"))),
+                "total_debt": _sf("total_debt", d.get("total_debt")),
                 "total_cash": d.get("total_cash"),
-                "free_cash_flow": d.get("free_cash_flow"),
-                "operating_cash_flow": d.get("operating_cash_flow"),
+                "free_cash_flow": _sf("free_cash_flow", d.get("free_cash_flow")),
+                "operating_cash_flow": _sf("operating_cash_flow", d.get("operating_cash_flow")),
                 # --- Analyst consensus ---
                 "analyst_target_price": target,
                 "analyst_upside_pct": upside_pct,
@@ -2317,6 +2704,22 @@ async def _execute_tool(
                 "red_flags": red_flags,
                 # --- Peers (top 5 in same sector by market cap) ---
                 "peers": peers,
+                # --- Sector-specific guidance so the LLM interprets
+                # nulls correctly instead of flagging them as missing data.
+                # Dynamically built from `_SECTOR_PROFILES` — see helper
+                # `_get_sector_profile`. Includes the sector narrative,
+                # key metrics the LLM should focus on, and a note about
+                # what's missing from our schema.
+                "sector_notes": (
+                    (
+                        f"{sector_profile['display']}. "
+                        f"{sector_profile['narrative']} "
+                        f"Key metrics to focus on: "
+                        f"{', '.join(sector_profile['key_metrics'])}. "
+                        f"Note on missing data: "
+                        f"{sector_profile['missing_data_note']}"
+                    ) if sector_profile else None
+                ),
             }
 
         elif tool_name == "stock_screen":
@@ -4236,14 +4639,21 @@ async def _execute_tool(
 _STOCK_SCREEN_COLUMNS = {
     "symbol", "display_name", "sector", "industry",
     "last_price", "percent_change", "previous_close",
-    "pe_ratio", "price_to_book", "dividend_yield", "market_cap",
-    "roe", "roce", "debt_to_equity",
-    "operating_margins", "profit_margins",
+    "percent_change_1w", "percent_change_3m",
+    "percent_change_1y", "percent_change_3y", "percent_change_5y",
+    "pe_ratio", "forward_pe", "price_to_book", "dividend_yield", "market_cap",
+    "roe", "roce", "debt_to_equity", "interest_coverage",
+    "operating_margins", "profit_margins", "gross_margins",
     "revenue_growth", "earnings_growth",
     "compounded_sales_growth_3y", "compounded_profit_growth_3y",
-    "free_cash_flow", "beta",
+    "free_cash_flow", "operating_cash_flow", "total_debt", "total_cash",
+    "beta", "rsi_14", "technical_score",
     "promoter_holding", "fii_holding", "dii_holding",
+    "promoter_holding_change", "fii_holding_change", "dii_holding_change",
+    "pledged_promoter_pct",
+    "analyst_target_mean", "analyst_count", "analyst_recommendation_mean",
     "high_52w", "low_52w", "score",
+    "max_drawdown_1y", "max_drawdown_3y", "dividend_consistency_years",
 }
 
 _MF_SCREEN_COLUMNS = {
@@ -5561,43 +5971,35 @@ async def stream_chat_response(
     )
 
     async def _stream_final() -> AsyncGenerator[str, None]:
-        """Yield the final response text, already validated if tools ran."""
+        """Yield the final response text, streaming tokens as they arrive.
+
+        REGRESSION FIX: This path used to `await _call_llm_blocking(...)`
+        which waits for the entire response, then `yield composed_text`
+        in one giant chunk. The downstream cursor filter only saw a
+        single delta, so the user experienced "spinner … entire answer
+        appears at once" instead of ChatGPT-style progressive streaming.
+
+        Now the with-tools branch uses `_stream_llm_response` which is
+        real SSE-over-HTTP streaming from OpenRouter (`stream: true`),
+        yielding tokens as the model generates them.
+
+        The old blocking path also ran a post-hoc retry when the
+        composer contradicted successful tool results. That check is
+        skipped in streaming mode because (a) retries are now rare
+        thanks to stronger anti-refusal prompt rules, and (b) rewriting
+        a half-streamed answer mid-flight is worse UX than letting a
+        rare imperfect answer through. The refusal detector below still
+        flags it in logs + observability so we can catch regressions.
+        """
         if compose_messages is not None:
-            composed_text = await _call_llm_blocking(
+            # REAL STREAMING PATH — yield tokens as they arrive from the LLM.
+            async for delta in _stream_llm_response(
                 api_key, compose_messages, chain=compose_chain,
-            )
-            composed_text = _normalize_thinking_markup(composed_text)
-            if _compose_response_needs_retry(composed_text, tool_entries):
-                logger.info(
-                    "chat_stream: compose retry triggered tools=%d",
-                    len(tool_entries),
-                )
-                correction_messages = compose_messages + [
-                    {"role": "assistant", "content": composed_text or ""},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Rewrite that answer. You ignored or contradicted successful "
-                            "tool results.\n"
-                            "- Use the successful tool results already provided.\n"
-                            "- Do not say data is unavailable when a tool succeeded.\n"
-                            "- Do not ask whether to retry or fetch again unless the user "
-                            "explicitly asked for another fetch.\n"
-                            "- Keep the exact same formatting contract: <thinking> block, "
-                            "answer, then [SUGGESTIONS]."
-                        ),
-                    },
-                ]
-                corrected_text = await _call_llm_blocking(
-                    api_key,
-                    correction_messages,
-                    chain=compose_chain,
-                )
-                if corrected_text:
-                    composed_text = _normalize_thinking_markup(corrected_text)
-            if composed_text:
-                yield composed_text
-                return
+            ):
+                if not delta:
+                    continue
+                yield delta
+            return
         else:
             # No tools — the fast model already wrote the answer. Fake
             # stream it word-by-word for UX parity with the real-stream
@@ -5906,6 +6308,23 @@ async def stream_chat_response(
             )
             if new_title:
                 cleaned_title = new_title.strip().strip('"').strip("'").strip()
+                cleaned_title = cleaned_title.rstrip(".,;:!?")
+                # Some LLMs repeat the title twice concatenated: e.g.
+                # "Nifty IT dip amid weak fundamentalsNifty IT dip amid weak
+                # fundamentals" or "TCS Earnings - TCS Earnings".  Detect
+                # and collapse.  The regex captures any content + optional
+                # separator chars + the same content again.
+                _dup = re.fullmatch(
+                    r"\s*(.+?)\s*[\-\u2013\u2014:|]*\s*\1\s*",
+                    cleaned_title,
+                    re.IGNORECASE,
+                )
+                if _dup:
+                    cleaned_title = _dup.group(1).strip()
+                    logger.info(
+                        "chat_stream: dedup'd doubled title for session=%s",
+                        session_id[:12],
+                    )
                 # Safety: fall back to default if LLM produced something weird
                 if 4 <= len(cleaned_title) <= 80 and "\n" not in cleaned_title:
                     await pool.execute(
