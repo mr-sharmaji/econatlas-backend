@@ -1,6 +1,11 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector:pg16-alpine = postgres:16-alpine + pgvector extension
+    # preinstalled. Same Alpine base + same PG 16 on-disk format as the old
+    # image, so the existing postgres_data volume continues to work without
+    # migration. The `CREATE EXTENSION IF NOT EXISTS vector` in database.py
+    # runs idempotently on existing data.
+    image: pgvector/pgvector:pg16-alpine
     container_name: econatlas-postgres
     restart: always
     environment:

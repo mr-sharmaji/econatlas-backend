@@ -30,6 +30,7 @@ _VALID_JOBS = {
     "ipo", "tax", "market_score", "fertilizer",
     "notification_check", "ipo_notification",
     "gap_backfill",
+    "news_embed",
 }
 
 # Tables exposed for CRUD operations.

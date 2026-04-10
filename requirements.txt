@@ -14,3 +14,10 @@ arq>=0.26,<1
 redis[hiredis]>=5.0,<6
 curl_cffi>=0.7,<1
 firebase-admin>=6.0.0
+# Local embedding model for semantic news search.
+# fastembed ships BAAI/bge-small-en-v1.5 (384 dims, ~130MB) via ONNX runtime.
+# No external API calls — runs on CPU in-process. Lazy-loaded on first use.
+fastembed>=0.3,<1
+# pgvector Python driver — registers the VECTOR type with asyncpg so we can
+# pass list[float] as a vector parameter and read it back as a numpy array.
+pgvector>=0.3,<1

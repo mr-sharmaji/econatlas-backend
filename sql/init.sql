@@ -1,5 +1,12 @@
 -- EconAtlas backend schema (PostgreSQL)
 
+-- Extensions required for semantic + fuzzy search.
+-- Requires the pgvector/pgvector:pg16-alpine image (or any Postgres with
+-- pgvector installed). pg_trgm is a standard contrib extension shipped
+-- with every Postgres distribution.
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 -- Market and commodity prices
 CREATE TABLE IF NOT EXISTS market_prices (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

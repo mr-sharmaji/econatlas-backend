@@ -227,3 +227,9 @@ async def task_gap_backfill(ctx: dict) -> None:
     from app.scheduler.gap_backfill_job import run_gap_backfill_job
 
     await _run_with_retry(ctx, "gap_backfill", run_gap_backfill_job)
+
+
+async def task_news_embed(ctx: dict) -> None:
+    from app.scheduler.news_embed_job import run_news_embed_job
+
+    await _run_with_retry(ctx, "news_embed", run_news_embed_job)

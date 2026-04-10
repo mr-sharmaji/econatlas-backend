@@ -49,7 +49,7 @@ Available tools:
 - [TOOL:mf_lookup:{"scheme_code":"119551"}] — Get mutual fund details
 - [TOOL:mf_screen:{"query":"category = 'Equity' AND returns_1y > 15 AND score > 60", "limit":5}] — Screen mutual funds. Available columns: scheme_code, scheme_name, category, sub_category, nav, expense_ratio, aum_cr, returns_1y, returns_3y, returns_5y, sharpe, sortino, score, risk_level
 - [TOOL:watchlist:{}] — Get user's watchlist stocks with current data
-- [TOOL:market_status:{}] — Current market indices (Nifty, Sensex), market open/close status
+- [TOOL:market_status:{}] — All tracked indices (India, US, Europe, Japan), FX majors, key commodities, and market open/close status for each region
 - [TOOL:ipo_list:{"status":"open"}] — List IPOs (open/upcoming/closed)
 - [TOOL:news:{"entity":"Reliance"}] — Get latest news, optionally filtered by company/topic
 - [TOOL:macro:{"indicator":"gdp_growth"}] — Get macro indicators (gdp_growth, inflation_cpi, repo_rate, usd_inr, fiscal_deficit, current_account, iip_growth)
@@ -79,7 +79,31 @@ Available tools:
 - Follow-up question 3
 - Follow-up question 4
 [/SUGGESTIONS]
-Make follow-ups relevant to what was just discussed. Examples: if you discussed TCS, suggest "Compare TCS with Infosys", "Show TCS financials history", etc.
+
+RULES for follow-up suggestions:
+- Write each as if the USER is asking YOU — first person from the user's perspective
+- Keep them SHORT (4-10 words), natural, and conversational
+- Make them relevant to what was JUST discussed
+- DO NOT write instructional verbs like "Ask for...", "Inquire about...", "Check...", "Request...", "Get..." — those sound like instructions to the user, not questions
+- DO write direct questions the user would type
+
+GOOD examples (if the topic was TCS):
+- "Compare TCS with Infosys"
+- "Show TCS 5-year returns"
+- "What's TCS fair value?"
+- "Any TCS news today?"
+
+GOOD examples (if the topic was market status):
+- "Top gainers today"
+- "How are IT stocks doing?"
+- "Nifty vs Sensex trend"
+- "Best performing sector today"
+
+BAD examples (DO NOT write these):
+- "Ask for the top gainers" ← instructional
+- "Inquire about sector performance" ← instructional
+- "Check the macro indicators" ← instructional
+- "Request the latest news" ← instructional
 """
 
 # ---------------------------------------------------------------------------
@@ -88,6 +112,99 @@ Make follow-ups relevant to what was just discussed. Examples: if you discussed 
 _TOOL_PATTERN = re.compile(r'\[TOOL:(\w+):(.*?)\]', re.DOTALL)
 _CARD_PATTERN = re.compile(r'\[CARD:(\S+)\]')
 _SUGGESTIONS_PATTERN = re.compile(r'\[SUGGESTIONS\](.*?)\[/SUGGESTIONS\]', re.DOTALL)
+
+
+async def _news_hybrid_search(pool, query: str, limit: int = 5) -> tuple[list[dict], str]:
+    """Hybrid news search: vector semantic → trigram fuzzy → ILIKE fallback.
+
+    Returns a tuple ``(rows, search_mode)`` where ``search_mode`` is one of
+    ``"vector"``, ``"trigram"``, ``"ilike"``, or ``"none"``.
+
+    Each strategy is tried in order; the first one that returns ≥1 result
+    wins. Strategies further down the list are used as fallbacks if the
+    extension / embeddings aren't available or the higher-quality search
+    returns nothing.
+    """
+    # --- Strategy 1: Vector semantic search via pgvector -----------------
+    try:
+        from app.services.embedding_service import embed_text
+        from app.core.database import ensure_vector_registered
+
+        query_vec = await embed_text(query)
+        if query_vec:
+            async with pool.acquire() as conn:
+                registered = await ensure_vector_registered(conn)
+                if registered:
+                    # Check embedding column is populated for at least some rows.
+                    has_embeddings = await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM news_articles "
+                        "WHERE embedding IS NOT NULL LIMIT 1)"
+                    )
+                    if has_embeddings:
+                        # Cosine distance ordering. embedding <=> query
+                        # returns distance in [0, 2]; lower = more similar.
+                        # Require distance < 0.6 (~ similarity > 0.4) to
+                        # avoid irrelevant results.
+                        import numpy as np
+                        vec = np.array(query_vec, dtype=np.float32)
+                        rows = await conn.fetch(
+                            "SELECT title, summary, source, timestamp, url, "
+                            "primary_entity, impact, "
+                            "(embedding <=> $1) AS distance "
+                            "FROM news_articles "
+                            "WHERE embedding IS NOT NULL "
+                            "  AND (embedding <=> $1) < 0.6 "
+                            "ORDER BY embedding <=> $1 "
+                            "LIMIT $2",
+                            vec,
+                            limit,
+                        )
+                        if rows:
+                            return [dict(r) for r in rows], "vector"
+    except Exception as e:
+        logger.debug("Vector news search failed, falling back: %s", e)
+
+    # --- Strategy 2: Trigram fuzzy match via pg_trgm ---------------------
+    try:
+        # similarity() returns a score in [0, 1] where 1 = identical.
+        # Combine across title+summary with GREATEST() so the best match
+        # wins. Threshold 0.2 catches substrings and mild typos.
+        rows = await pool.fetch(
+            "SELECT title, summary, source, timestamp, url, primary_entity, impact, "
+            "GREATEST(similarity(COALESCE(title,''), $1), "
+            "         similarity(COALESCE(summary,''), $1)) AS score "
+            "FROM news_articles "
+            "WHERE COALESCE(title,'') % $1 OR COALESCE(summary,'') % $1 "
+            "ORDER BY score DESC, timestamp DESC "
+            "LIMIT $2",
+            query,
+            limit,
+            timeout=5,
+        )
+        if rows:
+            return [dict(r) for r in rows], "trigram"
+    except Exception as e:
+        logger.debug("Trigram news search failed, falling back: %s", e)
+
+    # --- Strategy 3: Plain ILIKE ------------------------------------------
+    try:
+        pattern = f"%{query}%"
+        rows = await pool.fetch(
+            "SELECT title, summary, source, timestamp, url, primary_entity, impact "
+            "FROM news_articles "
+            "WHERE title ILIKE $1 OR summary ILIKE $1 OR body ILIKE $1 "
+            "   OR primary_entity ILIKE $1 "
+            "ORDER BY timestamp DESC LIMIT $2",
+            pattern,
+            limit,
+            timeout=5,
+        )
+        if rows:
+            return [dict(r) for r in rows], "ilike"
+    except Exception as e:
+        logger.debug("ILIKE news search failed: %s", e)
+
+    return [], "none"
 
 
 async def _execute_tool(
@@ -249,36 +366,66 @@ async def _execute_tool(
         elif tool_name == "market_status":
             from app.services.market_service import get_latest_prices
             from app.services.market_service import get_market_status as _mkt_status
+            from app.core.asset_catalog import get_asset_meta
+
             prices = await get_latest_prices(instrument_type="index")
-            # Asset names in DB are title-case: "Nifty 50", "Sensex", "Nifty Bank", etc.
-            # Match case-insensitively so the tool is resilient to naming changes.
-            _TARGET_INDICES = {
-                "nifty 50", "sensex", "nifty bank", "nifty it",
-                "nifty auto", "nifty pharma", "nifty metal",
-                "nifty midcap 150", "nifty smallcap 250", "nifty 500",
-                "gift nifty",
-            }
-            indices = {}
-            for p in prices:
-                name = str(p.get("asset") or "")
-                if name.lower() not in _TARGET_INDICES:
-                    continue
-                indices[name] = {
+
+            def _fmt(p: dict) -> dict:
+                return {
+                    "name": p.get("asset"),
                     "price": p.get("price"),
                     "previous_close": p.get("previous_close"),
                     "change_pct": p.get("change_percent"),
-                    "timestamp": (
-                        p["timestamp"].isoformat()
-                        if p.get("timestamp") and hasattr(p["timestamp"], "isoformat")
-                        else p.get("timestamp")
-                    ),
                 }
+
+            # Group indices by region using the asset catalog
+            by_region: dict[str, list] = {}
+            for p in prices:
+                name = str(p.get("asset") or "")
+                if not name:
+                    continue
+                meta = get_asset_meta(name)
+                region = meta.region if meta else "Other"
+                by_region.setdefault(region, []).append(_fmt(p))
+
+            # Sort each region's indices by priority (benchmark first)
+            def _sort_key(i: dict) -> tuple[int, str]:
+                m = get_asset_meta(i["name"])
+                return (m.priority_rank if m else 9999, i["name"])
+            for region in by_region:
+                by_region[region].sort(key=_sort_key)
+
+            # FX majors — look up the most recent USD/INR + key pairs
+            fx_majors = []
+            fx_prices = await get_latest_prices(instrument_type="currency")
+            _FX_TARGETS = {"usd/inr", "eur/inr", "gbp/inr", "jpy/inr"}
+            for p in fx_prices or []:
+                name = str(p.get("asset") or "")
+                if name.lower() in _FX_TARGETS:
+                    fx_majors.append(_fmt(p))
+
+            # Key commodities
+            commodities_key = []
+            com_prices = await get_latest_prices(instrument_type="commodity")
+            _COM_TARGETS = {"gold", "silver", "crude oil", "brent crude", "natural gas"}
+            for p in com_prices or []:
+                name = str(p.get("asset") or "")
+                if name.lower() in _COM_TARGETS:
+                    commodities_key.append(_fmt(p))
+
             status = _mkt_status(datetime.now(timezone.utc))
             return {
-                "indices": indices,
-                "india_open": bool(status.get("nse_open")),
-                "us_open": bool(status.get("nyse_open")),
-                "count": len(indices),
+                "indices_by_region": by_region,
+                "market_hours": {
+                    "india_open": bool(status.get("nse_open")),
+                    "us_open": bool(status.get("nyse_open")),
+                    "europe_open": bool(status.get("europe_open")),
+                    "japan_open": bool(status.get("japan_open")),
+                    "gift_nifty_open": bool(status.get("gift_nifty_open")),
+                },
+                "fx_majors": fx_majors,
+                "commodities": commodities_key,
+                "total_indices": sum(len(v) for v in by_region.values()),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
@@ -305,32 +452,34 @@ async def _execute_tool(
             }
 
         elif tool_name == "news":
-            # news_articles.primary_entity is a TOPIC category
-            # ("market_news", "dow_jones", "nifty_50", "sensex", "gold",
-            # "crude_oil", ...) — NOT a company ticker. So exact-match on
-            # entity fails for company names like "TCS" or "Reliance".
-            # Instead, search the title/summary/body text with ILIKE.
+            # Hybrid semantic + trigram search on news_articles.
+            #
+            # Why: primary_entity is a TOPIC category ("market_news",
+            # "dow_jones", "nifty_50", "sensex", "gold", ...) — NOT a
+            # company ticker. Plain ILIKE also misses semantically
+            # related articles (asking about "TCS" should match
+            # "Tata Consultancy Services" and "Indian IT sector").
+            #
+            # Strategy:
+            #   1. Try vector search (pgvector) if embedding is available
+            #      for the query AND the news_articles.embedding column
+            #      has been backfilled.
+            #   2. Otherwise use pg_trgm similarity() ranking.
+            #   3. Fall back to plain ILIKE if neither extension is installed.
             entity = (params.get("entity") or "").strip()
             if not entity:
-                # No filter — return the most recent articles
                 rows = await pool.fetch(
                     "SELECT title, summary, source, timestamp, url, primary_entity, impact "
                     "FROM news_articles ORDER BY timestamp DESC LIMIT 5",
                     timeout=5,
                 )
+                search_mode = "recent"
             else:
-                pattern = f"%{entity}%"
-                rows = await pool.fetch(
-                    "SELECT title, summary, source, timestamp, url, primary_entity, impact "
-                    "FROM news_articles "
-                    "WHERE title ILIKE $1 OR summary ILIKE $1 OR body ILIKE $1 "
-                    "   OR primary_entity ILIKE $1 "
-                    "ORDER BY timestamp DESC LIMIT 5",
-                    pattern,
-                    timeout=5,
-                )
+                rows, search_mode = await _news_hybrid_search(pool, entity, limit=5)
+
             return {
                 "query": entity or None,
+                "search_mode": search_mode,
                 "count": len(rows),
                 "articles": [
                     {

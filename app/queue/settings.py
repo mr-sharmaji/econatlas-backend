@@ -33,6 +33,8 @@ JOB_RETRY_POLICIES: dict[str, tuple[int, int]] = {
     "ipo_notification": (2, 30),
     # Gap backfill — runs once at startup, retry matters
     "gap_backfill": (2, 60),
+    # News embedding backfill — CPU-bound, self-idempotent
+    "news_embed": (1, 30),
 }
 
 
@@ -59,6 +61,7 @@ def get_arq_functions() -> list:
         task_rescore_stock,
         task_fertilizer,
         task_market_score,
+        task_news_embed,
         task_notification_check,
         task_tax,
     )
@@ -86,4 +89,6 @@ def get_arq_functions() -> list:
         func(task_notification_check, name="notification_check"),
         func(task_ipo_notification, name="ipo_notification"),
         func(task_gap_backfill, name="gap_backfill", timeout=600),
+        # CPU-bound embedding — allow up to 30 min for a full backfill pass
+        func(task_news_embed, name="news_embed", timeout=1800),
     ]

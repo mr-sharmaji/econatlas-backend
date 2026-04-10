@@ -330,5 +330,19 @@ async def run_news_job() -> None:
             except Exception:
                 pass
         logger.info("News job complete: articles=%d accepted=%d events=%d", len(records), accepted, ev_ok)
+
+        # --- Trigger embedding backfill for any newly-inserted articles ---
+        # We enqueue the embed job instead of running inline so this job
+        # stays fast and the embed model (~130MB) is only loaded in the
+        # worker that picks up news_embed. The embed job is self-idempotent
+        # and only processes rows where embedding IS NULL.
+        if accepted > 0:
+            try:
+                from app.queue.redis_pool import get_redis_pool
+                pool = await get_redis_pool()
+                await pool.enqueue_job("news_embed", _job_id="news_embed_after_news")
+                logger.debug("Enqueued news_embed after %d new articles", accepted)
+            except Exception as e:
+                logger.debug("Failed to enqueue news_embed (non-fatal): %s", e)
     except Exception:
         logger.exception("News job failed")

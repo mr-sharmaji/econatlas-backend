@@ -63,6 +63,26 @@ async def get_pool() -> asyncpg.Pool:
     return _pool
 
 
+async def ensure_vector_registered(conn: asyncpg.Connection) -> bool:
+    """Register pgvector's VECTOR type on a connection. Idempotent.
+
+    Must be called explicitly before running any query that binds or
+    returns a VECTOR value on a given connection — we don't use the
+    pool's init hook because the hook runs before the CREATE EXTENSION
+    migration, creating a chicken-and-egg problem.
+
+    Returns True on success, False if the extension isn't installed or
+    the pgvector Python driver is missing (callers should fall back to
+    non-vector search in that case).
+    """
+    try:
+        from pgvector.asyncpg import register_vector
+        await register_vector(conn)
+        return True
+    except Exception:
+        return False
+
+
 async def init_pool() -> asyncpg.Pool:
     """Create the connection pool and run schema if present. Called during app lifespan."""
     global _pool
@@ -94,6 +114,23 @@ async def init_pool() -> asyncpg.Pool:
                 if up.startswith("CREATE") or up.startswith("ALTER") or up.startswith("DROP"):
                     await conn.execute(stmt)
             logger.info("Schema init executed from sql/init.sql")
+        # --- Extensions ---
+        # pgvector: required for semantic search on news_articles.
+        # pg_trgm: required for fuzzy trigram matching on text columns.
+        # Both are idempotent — safe to run on existing databases.
+        try:
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            logger.info("pgvector extension ensured")
+        except Exception as e:
+            logger.warning(
+                "Failed to create 'vector' extension (semantic news search "
+                "will fall back to trigram-only): %s", e
+            )
+        try:
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+            logger.info("pg_trgm extension ensured")
+        except Exception as e:
+            logger.warning("Failed to create 'pg_trgm' extension: %s", e)
         # Ensure idempotent-insert indexes exist (for ON CONFLICT).
         await conn.execute(
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_market_prices_asset_type_ts '
@@ -467,6 +504,43 @@ async def init_pool() -> asyncpg.Pool:
         await conn.execute(
             "ALTER TABLE notification_log ADD COLUMN IF NOT EXISTS fcm_topic TEXT"
         )
+        # --- news_articles: semantic + fuzzy search infrastructure ---
+        # 384-dim embedding from BAAI/bge-small-en-v1.5 (fastembed default).
+        # Nullable — backfill happens async via /ops/jobs/trigger/news_embed.
+        # The column and indexes only install if pgvector/pg_trgm are present;
+        # otherwise the block is skipped gracefully so the app still boots on
+        # a plain postgres instance (news tool falls back to ILIKE).
+        try:
+            await conn.execute(
+                "ALTER TABLE news_articles ADD COLUMN IF NOT EXISTS embedding vector(384)"
+            )
+            # HNSW index is much faster than ivfflat for our query volume and
+            # doesn't need training. cosine ops match the distance function
+            # used by bge-small-en-v1.5.
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_news_articles_embedding_hnsw "
+                "ON news_articles USING hnsw (embedding vector_cosine_ops)"
+            )
+            logger.info("news_articles.embedding column + HNSW index ensured")
+        except Exception as e:
+            logger.warning(
+                "Failed to create news_articles.embedding (pgvector not "
+                "available?): %s — semantic search disabled, trigram still works",
+                e,
+            )
+        # Trigram GIN indexes for fuzzy text matching on title/summary.
+        try:
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_news_articles_title_trgm "
+                "ON news_articles USING gin (title gin_trgm_ops)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_news_articles_summary_trgm "
+                "ON news_articles USING gin (summary gin_trgm_ops)"
+            )
+            logger.info("news_articles trigram indexes ensured")
+        except Exception as e:
+            logger.warning("Failed to create news trigram indexes: %s", e)
         logger.info("Idempotent indexes ensured")
     return _pool
 
