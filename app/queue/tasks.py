@@ -16,10 +16,35 @@ from app.queue.settings import JOB_RETRY_POLICIES
 logger = logging.getLogger(__name__)
 
 
+async def _release_job_lock(job_id: str | None) -> None:
+    """Release the Redis ``job_lock:{job_id}`` key set by the scheduler.
+
+    The scheduler's ``_enqueue()`` sets this lock with a 300s TTL to dedup
+    enqueues.  If we don't release it here, high-frequency jobs (e.g.
+    notification_check every 30s) get blocked for ~5 minutes after every
+    restart or completed run — causing missed market-open notifications.
+    """
+    if not job_id:
+        return
+    try:
+        from app.queue.redis_pool import get_redis_pool
+        pool = await get_redis_pool()
+        await pool.delete(f"job_lock:{job_id}")
+    except Exception:
+        logger.debug("Failed to release job_lock:%s (non-fatal)", job_id, exc_info=True)
+
+
 async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # noqa: ANN001
-    """Execute *coro_factory()*, retry on failure or send to DLQ."""
+    """Execute *coro_factory()*, retry on failure or send to DLQ.
+
+    Always releases the scheduler's ``job_lock:{job_id}`` key on exit, so
+    the next scheduler tick can enqueue immediately instead of waiting for
+    the 300s TTL to expire.
+    """
     max_retries, delay_base = JOB_RETRY_POLICIES.get(job_name, (3, 10))
     job_try: int = ctx.get("job_try", 1)
+    job_id = ctx.get("job_id")
+    release_lock = True  # Release on success or permanent failure, not on Retry
 
     try:
         await coro_factory()
@@ -40,6 +65,9 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
                 delay,
                 exc,
             )
+            # Keep the lock held so the scheduler doesn't double-enqueue
+            # while we wait for the retry backoff to fire.
+            release_lock = False
             raise Retry(defer=delay) from exc
 
         logger.error(
@@ -54,6 +82,9 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
             traceback_text=traceback.format_exc(),
             retry_count=job_try,
         )
+    finally:
+        if release_lock:
+            await _release_job_lock(job_id)
 
 
 # ── Individual task entry-points ─────────────────────────────────────

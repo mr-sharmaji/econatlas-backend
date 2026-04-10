@@ -56,17 +56,21 @@ async def _enqueue(job_name: str, *, job_id: str | None = None) -> None:
     """Enqueue a named job into ARQ.  Uses job_name as default dedup key.
 
     Before enqueueing, checks a Redis lock key to prevent pileup when the
-    same job is already running or queued.  The lock auto-expires (TTL) so
-    a crashed worker cannot permanently block future runs.
+    same job is already running or queued.  The lock is released by the
+    ARQ task wrapper (``_run_with_retry``) after the job completes.  The
+    TTL is a safety net in case the worker hard-crashes.
     """
     effective_id = job_id or job_name
     lock_key = f"job_lock:{effective_id}"
     try:
         pool = await get_redis_pool()
-        # ArqRedis extends redis.asyncio.Redis, so SET/DELETE work directly.
         # SET NX with TTL: only set if not already present.
-        # TTL of 300s (5 min) ensures the lock expires even if the worker crashes.
-        acquired = await pool.set(lock_key, "1", nx=True, ex=300)
+        # TTL of 90s is a worker-crash safety net — under normal operation
+        # the ARQ task wrapper releases the lock as soon as the job finishes.
+        # 90s is long enough for slow jobs (e.g. notification_check can take
+        # 10-20s on first run after restart) but short enough that the next
+        # scheduled tick (typically 30s-60s) recovers quickly after a crash.
+        acquired = await pool.set(lock_key, "1", nx=True, ex=90)
         if not acquired:
             logger.debug("Scheduler tick: skipping %s — already running/queued", effective_id)
             return
