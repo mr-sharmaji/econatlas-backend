@@ -64,7 +64,7 @@ Available tools:
 4. For screener queries, translate the user's natural language into SQL WHERE conditions
 5. If user writes in Hindi, respond in Hindi. Default is English.
 6. No disclaimers like "NFA", "consult a financial advisor", "do your own research"
-7. No markdown headers (#). Use plain flowing prose. Bullet points only for stock lists.
+7. Use markdown formatting: **bold** for key numbers/names, bullet points (- ) for lists, line breaks between sections
 8. Be opinionated — say if a stock looks strong, weak, overvalued, etc.
 9. When showing stock results, output [CARD:SYMBOL] markers for each stock to display mini cards
 10. For comparisons, show cards for all stocks and give a clear verdict
@@ -72,6 +72,14 @@ Available tools:
 12. You are knowledgeable about Indian markets, taxation, IPOs, mutual funds, and macroeconomics
 13. When user asks about "my stocks" or "my watchlist", use the watchlist tool
 14. Commodity prices are in USD and INR. FII/DII values are in Indian Rupees Crores (Cr).
+15. IMPORTANT: At the END of every response, add exactly 4 follow-up suggestions in this format:
+[SUGGESTIONS]
+- Follow-up question 1
+- Follow-up question 2
+- Follow-up question 3
+- Follow-up question 4
+[/SUGGESTIONS]
+Make follow-ups relevant to what was just discussed. Examples: if you discussed TCS, suggest "Compare TCS with Infosys", "Show TCS financials history", etc.
 """
 
 # ---------------------------------------------------------------------------
@@ -79,6 +87,7 @@ Available tools:
 # ---------------------------------------------------------------------------
 _TOOL_PATTERN = re.compile(r'\[TOOL:(\w+):(.*?)\]', re.DOTALL)
 _CARD_PATTERN = re.compile(r'\[CARD:(\S+)\]')
+_SUGGESTIONS_PATTERN = re.compile(r'\[SUGGESTIONS\](.*?)\[/SUGGESTIONS\]', re.DOTALL)
 
 
 async def _execute_tool(
@@ -577,54 +586,165 @@ async def generate_greeting() -> dict:
     return {"greeting": greeting}
 
 
-async def generate_suggestions() -> list[str]:
-    """Generate dynamic market-aware suggested prompts."""
+# Cache for LLM-generated suggestions: {cache_key: (suggestions, timestamp)}
+_suggestions_cache: dict[str, tuple[list[str], float]] = {}
+_SUGGESTIONS_CACHE_TTL = 4 * 3600  # 4 hours
+
+
+async def generate_suggestions(device_id: str | None = None) -> list[str]:
+    """Generate dynamic LLM-powered suggested prompts with watchlist context.
+
+    Caches per device_id (or global) for 4 hours to avoid excess LLM calls.
+    Falls back to time-based static suggestions on LLM failure.
+    """
+    cache_key = device_id or "_global"
+    now_ts = time.time()
+
+    # Check cache
+    if cache_key in _suggestions_cache:
+        cached, ts = _suggestions_cache[cache_key]
+        if now_ts - ts < _SUGGESTIONS_CACHE_TTL:
+            return cached
+
     try:
+        # Gather context for the LLM
         now = datetime.now(timezone.utc)
         ist_hour = (now.hour + 5) % 24 + (30 // 60)
 
-        # Base suggestions always available
-        suggestions = []
+        context_parts = []
 
+        # Time context
         if ist_hour < 9:
-            # Pre-market
-            suggestions = [
-                "How is Gift Nifty today?",
-                "Top 5 stocks by score",
-                "Any upcoming IPOs?",
-                "Best large cap mutual funds",
-            ]
+            context_parts.append("Time: Pre-market (before 9:15 AM IST)")
         elif ist_hour < 15:
-            # Market hours
-            suggestions = [
-                "Market summary",
-                "How are my watchlist stocks doing?",
-                "Top gainers today",
-                "Compare TCS vs Infosys",
-            ]
+            context_parts.append("Time: Market hours (9:15 AM - 3:30 PM IST)")
         elif ist_hour < 20:
-            # Post-market
-            suggestions = [
-                "How did the market close?",
-                "Best performing sectors today",
-                "IT stocks with ROE > 20%",
-                "Gold price today",
-            ]
+            context_parts.append("Time: Post-market (after 3:30 PM IST)")
         else:
-            # Evening
-            suggestions = [
-                "Top 5 stocks by score",
-                "Best SIP mutual funds",
-                "Calculate LTCG tax on ₹5L profit",
-                "India GDP growth trend",
-            ]
-        return suggestions
-    except Exception:
+            context_parts.append("Time: Evening")
+
+        # Market context
+        try:
+            from app.services.market_service import get_latest_prices
+            prices = await get_latest_prices()
+            nifty = None
+            for p in (prices or []):
+                if "NIFTY 50" in str(p.get("symbol", "")).upper():
+                    nifty = p
+                    break
+            if nifty:
+                change = nifty.get("percent_change", 0) or 0
+                direction = "up" if change >= 0 else "down"
+                context_parts.append(
+                    f"Nifty 50: ₹{nifty.get('last_price', 'N/A')} ({direction} {abs(change):.1f}%)"
+                )
+        except Exception:
+            pass
+
+        # Watchlist context
+        watchlist_symbols = []
+        if device_id:
+            try:
+                pool = await get_pool()
+                rows = await pool.fetch(
+                    "SELECT symbol FROM watchlist_items WHERE device_id = $1 LIMIT 10",
+                    device_id,
+                )
+                watchlist_symbols = [r["symbol"] for r in rows]
+                if watchlist_symbols:
+                    context_parts.append(f"User's watchlist: {', '.join(watchlist_symbols[:8])}")
+            except Exception:
+                pass
+
+        # Top movers for context
+        try:
+            pool = await get_pool()
+            top_mover = await pool.fetchrow(
+                "SELECT symbol, percent_change FROM discover_stock_snapshots "
+                "WHERE percent_change IS NOT NULL ORDER BY percent_change DESC LIMIT 1"
+            )
+            if top_mover:
+                context_parts.append(
+                    f"Today's top gainer: {top_mover['symbol']} ({top_mover['percent_change']:+.1f}%)"
+                )
+        except Exception:
+            pass
+
+        context_str = "\n".join(context_parts) if context_parts else "No additional context."
+
+        # Call LLM
+        api_key = _get_api_key()
+        if not api_key:
+            return _static_suggestions(ist_hour)
+
+        prompt_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You generate exactly 6 short suggested prompts for an Indian market AI chatbot called Artha. "
+                    "Each prompt should be a natural question a retail investor would ask. "
+                    "Make them diverse: mix stocks, MFs, macro, IPOs, tax, commodities. "
+                    "Make them contextual to the current time and market conditions. "
+                    "If the user has a watchlist, include 1-2 prompts about their stocks. "
+                    "Output ONLY the 6 prompts, one per line, no numbering, no bullets."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Current context:\n{context_str}\n\nGenerate 6 suggested prompts:",
+            },
+        ]
+
+        result = await _call_llm_blocking(api_key, prompt_messages, max_tokens=200)
+        if result:
+            lines = [
+                line.strip().lstrip("0123456789.-) ")
+                for line in result.strip().split("\n")
+                if line.strip() and len(line.strip()) > 5
+            ][:6]
+            if len(lines) >= 4:
+                _suggestions_cache[cache_key] = (lines, now_ts)
+                return lines
+
+        # Fallback
+        return _static_suggestions(ist_hour)
+
+    except Exception as e:
+        logger.warning("Failed to generate LLM suggestions: %s", e)
+        now = datetime.now(timezone.utc)
+        ist_hour = (now.hour + 5) % 24 + (30 // 60)
+        return _static_suggestions(ist_hour)
+
+
+def _static_suggestions(ist_hour: int) -> list[str]:
+    """Time-based static fallback suggestions."""
+    if ist_hour < 9:
+        return [
+            "How is Gift Nifty today?",
+            "Top 5 stocks by score",
+            "Any upcoming IPOs?",
+            "Best large cap mutual funds",
+        ]
+    elif ist_hour < 15:
+        return [
+            "Market summary",
+            "How are my watchlist stocks doing?",
+            "Top gainers today",
+            "Compare TCS vs Infosys",
+        ]
+    elif ist_hour < 20:
+        return [
+            "How did the market close?",
+            "Best performing sectors today",
+            "IT stocks with ROE > 20%",
+            "Gold price today",
+        ]
+    else:
         return [
             "Top 5 stocks by score",
-            "Market summary",
-            "Best mutual funds",
-            "Compare TCS vs Infosys",
+            "Best SIP mutual funds",
+            "Calculate LTCG tax on ₹5L profit",
+            "India GDP growth trend",
         ]
 
 
@@ -748,6 +868,18 @@ async def stream_chat_response(
     final_response = _TOOL_PATTERN.sub("", final_response).strip()
     final_response = _CARD_PATTERN.sub("", final_response).strip()
 
+    # Extract follow-up suggestions before streaming
+    follow_ups = []
+    suggestions_match = _SUGGESTIONS_PATTERN.search(final_response)
+    if suggestions_match:
+        raw = suggestions_match.group(1).strip()
+        follow_ups = [
+            line.lstrip("- ").strip()
+            for line in raw.split("\n")
+            if line.strip() and line.strip() != "-"
+        ][:4]
+        final_response = _SUGGESTIONS_PATTERN.sub("", final_response).strip()
+
     # Stream tokens (simulate word-by-word for now — real streaming when model supports it)
     words = final_response.split()
     buffer = ""
@@ -765,6 +897,10 @@ async def stream_chat_response(
     # Send MF cards
     for card in mf_cards[:5]:
         yield {"event": "mf_card", "data": card}
+
+    # Send follow-up suggestions
+    if follow_ups:
+        yield {"event": "suggestions", "data": {"suggestions": follow_ups}}
 
     # Save assistant message
     msg_id = await save_message(
@@ -803,7 +939,7 @@ async def _build_context(session_id: str, device_id: str) -> list[dict]:
     return messages
 
 
-async def _call_llm_blocking(api_key: str, messages: list[dict]) -> str | None:
+async def _call_llm_blocking(api_key: str, messages: list[dict], max_tokens: int | None = None) -> str | None:
     """Call OpenRouter LLM (blocking, not streaming). Returns text or None."""
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -820,7 +956,7 @@ async def _call_llm_blocking(api_key: str, messages: list[dict]) -> str | None:
                     headers=headers,
                     json={
                         "model": model,
-                        "max_tokens": MAX_TOKENS_CHAT,
+                        "max_tokens": max_tokens or MAX_TOKENS_CHAT,
                         "temperature": 0.7,
                         "messages": messages,
                     },

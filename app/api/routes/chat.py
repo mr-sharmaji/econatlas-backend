@@ -184,7 +184,7 @@ async def submit_feedback(req: ChatFeedbackRequest):
 async def get_greeting():
     """Get a context-aware greeting for new chat."""
     data = await chat_service.generate_greeting()
-    suggestions = await chat_service.generate_suggestions()
+    suggestions = await chat_service.generate_suggestions(device_id=None)
     return ChatGreetingResponse(
         greeting=data["greeting"],
         suggestions=suggestions,
@@ -192,9 +192,9 @@ async def get_greeting():
 
 
 @router.get("/suggestions", response_model=ChatSuggestionsResponse)
-async def get_suggestions():
-    """Get dynamic suggested prompts based on market hours."""
-    suggestions = await chat_service.generate_suggestions()
+async def get_suggestions(device_id: str = Query(None)):
+    """Get dynamic suggested prompts based on market hours and watchlist."""
+    suggestions = await chat_service.generate_suggestions(device_id=device_id)
     return ChatSuggestionsResponse(suggestions=suggestions)
 
 
@@ -204,6 +204,6 @@ async def get_suggestions():
 
 @router.get("/autocomplete", response_model=AutocompleteResponse)
 async def autocomplete_search(q: str = Query(..., min_length=1)):
-    """Search stocks and MFs for autocomplete (triggered by $ in input)."""
+    """Search stocks and MFs for autocomplete (triggered by @ in input)."""
     items = await chat_service.autocomplete(q.strip())
     return AutocompleteResponse(items=items)
