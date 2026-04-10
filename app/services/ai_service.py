@@ -266,20 +266,458 @@ async def generate_stock_narrative(stock_data: dict) -> str | None:
 # ---------------------------------------------------------------------------
 # Notification narrative (market open/close enrichment)
 # ---------------------------------------------------------------------------
+#
+# Each notification type has:
+#   1. A system prompt tailored to its domain (US tech vs India smallcaps
+#      vs commodity spike need different language and emphasis)
+#   2. A structured natural-language context builder that converts the raw
+#      market_data dict into a human-readable summary (instead of shipping
+#      raw JSON which leaks implementation details and confuses the LLM)
+#   3. A (max_tokens, temperature) pair appropriate for the complexity
+#      of the type
+#
+# Metrics: in-memory counters track per-type total / success / fallback /
+# cumulative latency so we can see which types are actually exercising the
+# LLM. Accessed via get_notification_ai_metrics() and exposed on /ops.
+# Lost on restart — not persisted (in-memory was the explicit choice).
 
-_NOTIFICATION_SYSTEM = """You are a concise market commentator for an Indian finance app.
-Rules:
-- Write exactly 1-2 sentences (max 30 words)
-- Use the data provided — be specific
-- No generic phrases like "investors should watch" or "markets remain volatile"
-- Capture the key theme of the session in a punchy, engaging way
-- For India close notifications: the three broad indices are Nifty 50 (large-caps),
-  Nifty Midcap 150 (midcaps), and Nifty Smallcap 250 (smallcaps). Reference at
-  least TWO of these tiers when their data is provided — the user wants to see
-  divergence across the market-cap spectrum, not just the large-cap headline.
-  Do NOT mention Sensex in the body — the title already covers the headline indices.
-- FII/DII values are in Indian Rupees Crores (Cr), not contracts
-- Commodity prices: USD and INR values as provided"""
+# Shared rules every type inherits (appended below each system prompt)
+_NOTIFICATION_COMMON_RULES = """
+- Write 1-2 short sentences, max 30 words total
+- Be specific: use the actual numbers from the context
+- No disclaimers, no "NFA", no "do your own research", no "consult an advisor"
+- No generic phrases like "investors should watch", "markets remain volatile"
+- Use Indian currency conventions: ₹ for Indian assets, $ for US/global
+- Percentages: 1 decimal place with explicit sign (+1.2%, -0.3%)"""
+
+
+_NOTIFICATION_PROMPTS: dict[str, str] = {
+    # ── INDIA ──
+    "india_close": """You are Artha, a concise Indian market commentator.
+Task: summarize the India market close in a punchy 1-2 sentence notification body.
+The three broad market-cap tiers are Nifty 50 (large-caps), Nifty Midcap 150 (midcaps),
+and Nifty Smallcap 250 (smallcaps). Always reference AT LEAST TWO tiers when their
+data is provided — the user wants to see cap-tier divergence at a glance. When the
+tiers diverge (e.g. smallcaps up 1.7% but Nifty only +0.3%), lead with the divergence
+story. Do NOT mention Sensex — the title already covers the headline index.""" + _NOTIFICATION_COMMON_RULES,
+
+    "india_open": """You are Artha, a concise Indian market commentator.
+Task: summarize the India market opening in a punchy 1-2 sentence body. Anchor on
+Gift Nifty (which drives the opening signal) and overnight global cues that Indian
+traders care about — US tech (NASDAQ), Nikkei trading live, and gold as a risk-off
+gauge. Don't list everything; pick the cue that most shaped the open.""" + _NOTIFICATION_COMMON_RULES,
+
+    # ── US / EUROPE / JAPAN ──
+    "us_close": """You are a concise global-markets commentator for an Indian finance app.
+Task: summarize the US market close in 1-2 sentences for Indian investors who follow
+Wall Street as a next-day signal. Lead with S&P 500; call out tech divergence
+(NASDAQ vs S&P) if present. If Gift Nifty is already trading with the news, end with
+the implied NSE outlook. No mention of after-hours futures unless they're in context.""" + _NOTIFICATION_COMMON_RULES,
+
+    "us_open": """You are a concise global-markets commentator for an Indian finance app.
+Task: summarize the US market opening in 1-2 sentences. Lead with S&P 500 and call
+out tech (NASDAQ) if it diverged. European close and crude-oil context matter for
+the narrative. This fires at ~19:00 IST.""" + _NOTIFICATION_COMMON_RULES,
+
+    "europe_close": """You are a concise European-markets commentator for an Indian finance app.
+Task: summarize the European close in 1-2 sentences. Reference FTSE, DAX, and CAC
+(the three main bourses) when available. Brent crude drives energy stocks — if Brent
+moved >1%, call that out. This fires at ~20:30 IST.""" + _NOTIFICATION_COMMON_RULES,
+
+    "europe_open": """You are a concise European-markets commentator for an Indian finance app.
+Task: summarize the European market opening in 1-2 sentences. Asia cues (Nikkei,
+Nifty) and Brent crude are the main drivers. This fires at ~13:30 IST while Indian
+markets are mid-session.""" + _NOTIFICATION_COMMON_RULES,
+
+    "japan_close": """You are a concise Japan-markets commentator for an Indian finance app.
+Task: summarize the Nikkei/TOPIX close in 1-2 sentences. JPY strength/weakness is
+the dominant macro variable for Japanese equities — always cite it when available
+because yen direction inverts with Nikkei direction. This fires at ~11:30 IST.""" + _NOTIFICATION_COMMON_RULES,
+
+    "japan_open": """You are a concise Japan-markets commentator for an Indian finance app.
+Task: summarize the Nikkei/TOPIX opening in 1-2 sentences. Wall Street close from
+the prior session is the primary overnight cue; JPY direction matters too. This
+fires at ~05:30 IST.""" + _NOTIFICATION_COMMON_RULES,
+
+    # ── INDIA-SPECIFIC SIGNALS ──
+    "pre_market": """You are Artha, a concise Indian market commentator.
+Task: write a 1-2 sentence pre-market summary at ~09:00 IST (15 minutes before
+NSE opens). Gift Nifty is the dominant signal. Overnight US close is the
+secondary driver; Asian session (Nikkei, Hang Seng) rounds it out. Give a clear
+opening outlook (gap-up / positive / flat / gap-down). Do NOT mention Europe
+— European markets are closed and don't open until 13:30 IST.""" + _NOTIFICATION_COMMON_RULES,
+
+    "gift_nifty_move": """You are Artha, a concise Indian market commentator.
+Task: Gift Nifty just moved >0.5% from the previous NSE close. Write a 1-2
+sentence alert explaining what it signals for the NSE opening. Be direct:
+"Gap-up signal" vs "negative signal" vs "weak handoff". Mention the absolute
+percent move and the implied direction.""" + _NOTIFICATION_COMMON_RULES,
+
+    "fii_dii": """You are Artha, a concise Indian market commentator.
+Task: summarize the day's FII/DII net cash activity in 1-2 sentences. All values
+are in INR Crores (Cr). The patterns you're looking for:
+- BOTH buying → "institutional support"
+- BOTH selling → "broad retreat"
+- FII sell + DII buy → domestic absorbing foreign exit (note whether DII fully offset)
+- FII buy + DII sell → rotation (rarer, usually indicates foreign re-entry)
+Use ₹X,XXX Cr format with Indian comma convention.""" + _NOTIFICATION_COMMON_RULES,
+
+    "commodity_spike": """You are Artha, a concise commodity-markets commentator for an Indian finance app.
+Task: a commodity just moved ±2% or more. Write a 1-2 sentence alert. Include
+both USD and INR price when both are provided (Indian users think in INR but
+global prices quote USD). If you know the typical driver for that commodity
+(e.g. gold on dollar weakness, crude on OPEC/inventory, natural gas on weather),
+add one word of context — but don't fabricate specific reasons you don't have.""" + _NOTIFICATION_COMMON_RULES,
+}
+
+
+# Per-type (max_tokens, temperature). Defaults used when type is missing.
+# Tighter tokens for simple alerts (commodity, gift_nifty); more headroom
+# for multi-index summaries (india_close, us_close).
+_NOTIFICATION_PARAMS: dict[str, tuple[int, float]] = {
+    "india_close":     (120, 0.5),
+    "india_open":      (100, 0.5),
+    "us_close":        (100, 0.5),
+    "us_open":         (100, 0.5),
+    "europe_close":    (100, 0.5),
+    "europe_open":     (100, 0.5),
+    "japan_close":     (100, 0.5),
+    "japan_open":      (100, 0.5),
+    "pre_market":      (100, 0.5),
+    "gift_nifty_move":  (70, 0.4),
+    "fii_dii":         (100, 0.4),
+    "commodity_spike":  (80, 0.5),
+}
+_DEFAULT_NOTIF_PARAMS = (80, 0.6)
+
+
+def _fmt_pct(value: Any) -> str:
+    """Format a number as a signed 1-decimal percentage."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    sign = "+" if v >= 0 else ""
+    return f"{sign}{v:.1f}%"
+
+
+def _fmt_inr_cr(value: Any) -> str:
+    """Format an INR Crores number with Indian comma convention."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    abs_val = abs(v)
+    # Indian comma: last 3 digits, then groups of 2
+    int_part = int(abs_val)
+    s = str(int_part)
+    if len(s) > 3:
+        last3 = s[-3:]
+        rest = s[:-3]
+        groups = []
+        while len(rest) > 2:
+            groups.insert(0, rest[-2:])
+            rest = rest[:-2]
+        if rest:
+            groups.insert(0, rest)
+        formatted = ",".join(groups) + "," + last3
+    else:
+        formatted = s
+    sign = "-" if v < 0 else ""
+    return f"{sign}₹{formatted} Cr"
+
+
+def _build_india_close_context(d: dict) -> str:
+    parts = [f"Nifty 50 closed {_fmt_pct(d.get('nifty_change_pct'))}"]
+    midcap = d.get("midcap_change_pct")
+    smallcap = d.get("smallcap_change_pct")
+    if midcap is not None:
+        parts.append(f"Nifty Midcap 150 {_fmt_pct(midcap)}")
+    if smallcap is not None:
+        parts.append(f"Nifty Smallcap 250 {_fmt_pct(smallcap)}")
+    line1 = ", ".join(parts) + "."
+
+    lines = [line1]
+
+    adv = d.get("advancers")
+    dec = d.get("decliners")
+    if adv is not None and dec is not None and (adv + dec) > 0:
+        lines.append(f"Breadth: {adv:,} advancers vs {dec:,} decliners.")
+
+    top_sec = d.get("top_sector")
+    top_pct = d.get("top_sector_pct")
+    bot_sec = d.get("bottom_sector")
+    bot_pct = d.get("bottom_sector_pct")
+    if top_sec and top_pct is not None:
+        lines.append(f"Top sector: {top_sec} {_fmt_pct(top_pct)}.")
+    if bot_sec and bot_pct is not None:
+        lines.append(f"Weakest sector: {bot_sec} {_fmt_pct(bot_pct)}.")
+
+    ctx = d.get("relative_context")
+    if ctx:
+        lines.append(f"Context: {ctx}.")
+    w52 = d.get("week52_context")
+    if w52:
+        lines.append(f"Nifty {w52}.")
+
+    return " ".join(lines)
+
+
+def _build_india_open_context(d: dict) -> str:
+    lines = [f"Nifty opens at {d.get('gift_nifty_price', 0):,.0f} ({_fmt_pct(d.get('gift_nifty_change_pct'))} from prev close)."]
+    us_sp = d.get("us_sp500_pct")
+    us_nas = d.get("us_nasdaq_pct")
+    overnight = []
+    if us_sp is not None:
+        overnight.append(f"S&P 500 {_fmt_pct(us_sp)}")
+    if us_nas is not None:
+        overnight.append(f"NASDAQ {_fmt_pct(us_nas)}")
+    if overnight:
+        lines.append(f"Overnight US: {', '.join(overnight)}.")
+    nikkei = d.get("nikkei_pct")
+    if nikkei is not None:
+        lines.append(f"Nikkei trading {_fmt_pct(nikkei)}.")
+    gold = d.get("gold_pct")
+    if gold is not None:
+        lines.append(f"Gold {_fmt_pct(gold)}.")
+    return " ".join(lines)
+
+
+def _build_us_close_context(d: dict) -> str:
+    parts = [f"S&P 500 closed {_fmt_pct(d.get('sp500_change_pct'))}"]
+    nas = d.get("nasdaq_change_pct")
+    dow = d.get("dow_change_pct")
+    if nas is not None:
+        parts.append(f"NASDAQ {_fmt_pct(nas)}")
+    if dow is not None:
+        parts.append(f"Dow {_fmt_pct(dow)}")
+    lines = [", ".join(parts) + "."]
+    ctx = d.get("relative_context")
+    if ctx:
+        lines.append(f"Context: {ctx}.")
+    w52 = d.get("week52_context")
+    if w52:
+        lines.append(f"S&P {w52}.")
+    gift_pct = d.get("gift_nifty_change_pct")
+    if gift_pct is not None:
+        lines.append(f"Gift Nifty at {d.get('gift_nifty_price', 0):,.0f} ({_fmt_pct(gift_pct)} from Nifty close) — implies NSE opening signal.")
+    return " ".join(lines)
+
+
+def _build_us_open_context(d: dict) -> str:
+    parts = [f"S&P 500 opens {_fmt_pct(d.get('sp500_pct'))}"]
+    nas = d.get("nasdaq_pct")
+    dow = d.get("dow_pct")
+    if nas is not None:
+        parts.append(f"NASDAQ {_fmt_pct(nas)}")
+    if dow is not None:
+        parts.append(f"Dow {_fmt_pct(dow)}")
+    lines = [", ".join(parts) + "."]
+    eu_parts = []
+    if d.get("ftse_pct") is not None:
+        eu_parts.append(f"FTSE {_fmt_pct(d.get('ftse_pct'))}")
+    if d.get("dax_pct") is not None:
+        eu_parts.append(f"DAX {_fmt_pct(d.get('dax_pct'))}")
+    if eu_parts:
+        lines.append(f"Europe closed: {', '.join(eu_parts)}.")
+    crude = d.get("crude_pct")
+    if crude is not None:
+        lines.append(f"Crude oil {_fmt_pct(crude)}.")
+    return " ".join(lines)
+
+
+def _build_europe_close_context(d: dict) -> str:
+    parts = []
+    if d.get("ftse_change_pct") is not None:
+        parts.append(f"FTSE closed {_fmt_pct(d.get('ftse_change_pct'))}")
+    if d.get("dax_change_pct") is not None:
+        parts.append(f"DAX {_fmt_pct(d.get('dax_change_pct'))}")
+    if d.get("cac_change_pct") is not None:
+        parts.append(f"CAC {_fmt_pct(d.get('cac_change_pct'))}")
+    lines = [", ".join(parts) + "."] if parts else []
+    brent = d.get("brent_change_pct")
+    if brent is not None:
+        lines.append(f"Brent crude {_fmt_pct(brent)}.")
+    ctx = d.get("relative_context")
+    if ctx:
+        lines.append(f"Context: {ctx}.")
+    return " ".join(lines)
+
+
+def _build_europe_open_context(d: dict) -> str:
+    parts = []
+    if d.get("ftse_pct") is not None:
+        parts.append(f"FTSE opens {_fmt_pct(d.get('ftse_pct'))}")
+    if d.get("dax_pct") is not None:
+        parts.append(f"DAX {_fmt_pct(d.get('dax_pct'))}")
+    if d.get("cac_pct") is not None:
+        parts.append(f"CAC {_fmt_pct(d.get('cac_pct'))}")
+    lines = [", ".join(parts) + "."] if parts else []
+    asia = []
+    if d.get("nikkei_pct") is not None:
+        asia.append(f"Nikkei {_fmt_pct(d.get('nikkei_pct'))}")
+    if d.get("nifty_pct") is not None:
+        asia.append(f"Nifty 50 {_fmt_pct(d.get('nifty_pct'))}")
+    if asia:
+        lines.append(f"Asia cues: {', '.join(asia)}.")
+    brent = d.get("brent_pct")
+    if brent is not None:
+        lines.append(f"Brent crude {_fmt_pct(brent)}.")
+    return " ".join(lines)
+
+
+def _build_japan_close_context(d: dict) -> str:
+    parts = [f"Nikkei closed {_fmt_pct(d.get('nikkei_change_pct'))}"]
+    topix = d.get("topix_change_pct")
+    if topix is not None:
+        parts.append(f"TOPIX {_fmt_pct(topix)}")
+    lines = [", ".join(parts) + "."]
+    jpy = d.get("jpy_inr_price")
+    jpy_pct = d.get("jpy_inr_change_pct")
+    if jpy is not None and jpy_pct is not None:
+        yen_dir = "strengthened" if jpy_pct > 0.1 else ("weakened" if jpy_pct < -0.1 else "flat")
+        lines.append(f"JPY/INR at {jpy:.4f} ({_fmt_pct(jpy_pct)}) — yen {yen_dir}.")
+    ctx = d.get("relative_context")
+    if ctx:
+        lines.append(f"Context: {ctx}.")
+    return " ".join(lines)
+
+
+def _build_japan_open_context(d: dict) -> str:
+    parts = [f"Nikkei opens {_fmt_pct(d.get('nikkei_pct'))}"]
+    topix = d.get("topix_pct")
+    if topix is not None:
+        parts.append(f"TOPIX {_fmt_pct(topix)}")
+    lines = [", ".join(parts) + "."]
+    us = []
+    if d.get("us_sp500_pct") is not None:
+        us.append(f"S&P 500 {_fmt_pct(d.get('us_sp500_pct'))}")
+    if d.get("us_nasdaq_pct") is not None:
+        us.append(f"NASDAQ {_fmt_pct(d.get('us_nasdaq_pct'))}")
+    if us:
+        lines.append(f"Overnight US: {', '.join(us)}.")
+    jpy_pct = d.get("jpy_inr_pct")
+    if jpy_pct is not None:
+        yen_dir = "strengthened" if jpy_pct > 0.1 else ("weakened" if jpy_pct < -0.1 else "flat")
+        lines.append(f"Yen {yen_dir} overnight ({_fmt_pct(jpy_pct)}).")
+    gold = d.get("gold_pct")
+    if gold is not None:
+        lines.append(f"Gold {_fmt_pct(gold)}.")
+    return " ".join(lines)
+
+
+def _build_pre_market_context(d: dict) -> str:
+    lines = [f"Gift Nifty at {d.get('gift_nifty_price', 0):,.0f} ({_fmt_pct(d.get('gift_nifty_pct'))} from yesterday's Nifty close)."]
+    outlook = d.get("outlook")
+    if outlook:
+        lines.append(f"Rule-based outlook: {outlook}.")
+    us = d.get("us_change") or {}
+    if isinstance(us, dict) and us:
+        us_parts = [f"{name} {_fmt_pct(pct)}" for name, pct in us.items()]
+        lines.append(f"Overnight US close: {', '.join(us_parts)}.")
+    asia = d.get("asia_change") or {}
+    if isinstance(asia, dict) and asia:
+        asia_parts = [f"{name} {_fmt_pct(pct)}" for name, pct in asia.items()]
+        lines.append(f"Asia live: {', '.join(asia_parts)}.")
+    return " ".join(lines)
+
+
+def _build_gift_nifty_move_context(d: dict) -> str:
+    return (
+        f"Gift Nifty moved {_fmt_pct(d.get('change_pct'))} — "
+        f"trading at {d.get('price', 0):,.0f}. "
+        f"Signal direction: {d.get('direction', 'unknown')}."
+    )
+
+
+def _build_fii_dii_context(d: dict) -> str:
+    fii = d.get("fii_net_cr", 0)
+    dii = d.get("dii_net_cr", 0)
+    net = d.get("net_cr", fii + dii)
+    fii_verb = "bought" if fii >= 0 else "sold"
+    dii_verb = "bought" if dii >= 0 else "sold"
+    net_label = "inflow" if net >= 0 else "outflow"
+    return (
+        f"FII net cash: FIIs {fii_verb} {_fmt_inr_cr(fii)}. "
+        f"DII net cash: DIIs {dii_verb} {_fmt_inr_cr(dii)}. "
+        f"Combined net {net_label}: {_fmt_inr_cr(net)}."
+    )
+
+
+def _build_commodity_spike_context(d: dict) -> str:
+    asset = d.get("asset", "Commodity")
+    pct = d.get("change_pct", 0)
+    price_usd = d.get("price_usd", 0)
+    unit = d.get("unit") or "unit"
+    usd_str = f"${price_usd:,.2f}" if price_usd < 10000 else f"${price_usd:,.0f}"
+    line = f"{asset} moved {_fmt_pct(pct)} — now at {usd_str}/{unit}."
+    inr_price = d.get("price_inr")
+    inr_unit = d.get("inr_unit")
+    if inr_price is not None and inr_unit:
+        line += f" (₹{inr_price:,.0f}/{inr_unit} for Indian buyers)."
+    return line
+
+
+_CONTEXT_BUILDERS: dict[str, Any] = {
+    "india_close":     _build_india_close_context,
+    "india_open":      _build_india_open_context,
+    "us_close":        _build_us_close_context,
+    "us_open":         _build_us_open_context,
+    "europe_close":    _build_europe_close_context,
+    "europe_open":     _build_europe_open_context,
+    "japan_close":     _build_japan_close_context,
+    "japan_open":      _build_japan_open_context,
+    "pre_market":      _build_pre_market_context,
+    "gift_nifty_move":  _build_gift_nifty_move_context,
+    "fii_dii":         _build_fii_dii_context,
+    "commodity_spike":  _build_commodity_spike_context,
+}
+
+
+# Fallback generic system prompt for unknown types (e.g. future additions
+# that haven't been wired through _NOTIFICATION_PROMPTS yet).
+_NOTIFICATION_SYSTEM_GENERIC = """You are a concise market commentator for an Indian finance app.
+Task: write a short, data-driven notification body.""" + _NOTIFICATION_COMMON_RULES
+
+
+# In-memory per-type metrics: lost on restart. Exposed via
+# get_notification_ai_metrics() for /ops observability.
+_notification_ai_metrics: dict[str, dict[str, float]] = {}
+
+
+def _get_metric_bucket(notification_type: str) -> dict[str, float]:
+    bucket = _notification_ai_metrics.get(notification_type)
+    if bucket is None:
+        bucket = {
+            "total": 0.0,
+            "success": 0.0,
+            "fallback": 0.0,
+            "latency_ms_sum": 0.0,
+        }
+        _notification_ai_metrics[notification_type] = bucket
+    return bucket
+
+
+def get_notification_ai_metrics() -> dict[str, dict[str, Any]]:
+    """Return a snapshot of notification-AI metrics for /ops endpoint.
+
+    Computes fallback_rate and avg_latency_ms on demand. Safe to call
+    from a request handler — does not mutate state.
+    """
+    snapshot: dict[str, dict[str, Any]] = {}
+    for ntype, bucket in _notification_ai_metrics.items():
+        total = int(bucket["total"])
+        success = int(bucket["success"])
+        fallback = int(bucket["fallback"])
+        latency_sum = bucket["latency_ms_sum"]
+        snapshot[ntype] = {
+            "total": total,
+            "success": success,
+            "fallback": fallback,
+            "fallback_rate": round(fallback / total, 3) if total else 0.0,
+            "avg_latency_ms": round(latency_sum / total, 1) if total else 0.0,
+        }
+    return snapshot
 
 
 async def generate_notification_narrative(
@@ -288,20 +726,71 @@ async def generate_notification_narrative(
 ) -> str | None:
     """Generate a short AI-enhanced notification body.
 
-    notification_type: "india_open", "india_close", "pre_market", etc.
-    market_data: dict with relevant numbers (nifty_pct, sensex_pct, etc.)
+    Routes to the per-type system prompt + context builder if the type is
+    registered in _NOTIFICATION_PROMPTS; otherwise falls back to the generic
+    prompt with a json.dumps of market_data. Updates the in-memory metric
+    counters on every call so fallback rates can be observed via /ops.
     """
+    bucket = _get_metric_bucket(notification_type)
+    bucket["total"] += 1
+
+    # Cache key incorporates type + payload hash (6-hour TTL, mostly useless
+    # for notifications since each fires once per day, but kept for safety
+    # in case the same notification is retried on a restart).
     data_hash = f"{notification_type}:{json.dumps(market_data, sort_keys=True, default=str)}"
     ck = _cache_key("notification", data_hash)
-
     cached = _check_cache(ck)
     if cached:
+        bucket["success"] += 1
         return cached
 
-    prompt = f"Notification type: {notification_type}\nMarket data: {json.dumps(market_data, default=str)}\n\nWrite a punchy 1-2 sentence notification body."
-    result = await _call_llm(_NOTIFICATION_SYSTEM, prompt, max_tokens=80, temperature=0.6)
+    # Pick per-type prompt + params, fall back to generic for unknown types.
+    system_prompt = _NOTIFICATION_PROMPTS.get(
+        notification_type, _NOTIFICATION_SYSTEM_GENERIC,
+    )
+    max_tokens, temperature = _NOTIFICATION_PARAMS.get(
+        notification_type, _DEFAULT_NOTIF_PARAMS,
+    )
+
+    # Build structured natural-language context. Fall back to json.dumps if
+    # the type doesn't have a registered builder (preserves old behaviour).
+    builder = _CONTEXT_BUILDERS.get(notification_type)
+    if builder is not None:
+        try:
+            context = builder(market_data)
+        except Exception:
+            logger.warning(
+                "notification_ai: context builder failed for %s, falling back to json",
+                notification_type, exc_info=True,
+            )
+            context = json.dumps(market_data, default=str)
+    else:
+        context = json.dumps(market_data, default=str)
+
+    user_prompt = f"Context:\n{context}\n\nWrite the notification body now."
+
+    t0 = time.monotonic()
+    result = await _call_llm(
+        system_prompt, user_prompt,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    bucket["latency_ms_sum"] += elapsed_ms
+
     if result:
+        bucket["success"] += 1
         _set_cache(ck, result)
+        logger.info(
+            "notification_ai: type=%s model_success latency_ms=%.0f",
+            notification_type, elapsed_ms,
+        )
+    else:
+        bucket["fallback"] += 1
+        logger.info(
+            "notification_ai: type=%s FALLBACK latency_ms=%.0f (all models failed)",
+            notification_type, elapsed_ms,
+        )
     return result
 
 

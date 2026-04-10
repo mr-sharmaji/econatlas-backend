@@ -85,6 +85,26 @@ async def _get_pool():
 
 
 # ═════════════════════════════════════════════════════════════════════
+# Notification AI metrics
+# ═════════════════════════════════════════════════════════════════════
+
+@router.get("/notification_ai_metrics")
+async def ops_notification_ai_metrics(
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Return per-type AI invocation counters for push notifications.
+
+    Each type shows total calls, success count, fallback count (when all
+    LLM models returned None and the rule-based body shipped instead),
+    fallback_rate (0.0–1.0), and avg_latency_ms. Counters are in-memory
+    and reset on process restart.
+    """
+    _authorize(x_ops_token)
+    from app.services.ai_service import get_notification_ai_metrics
+    return {"metrics": get_notification_ai_metrics()}
+
+
+# ═════════════════════════════════════════════════════════════════════
 # Logs
 # ═════════════════════════════════════════════════════════════════════
 
