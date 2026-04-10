@@ -31,6 +31,10 @@ _VALID_JOBS = {
     "notification_check", "ipo_notification",
     "gap_backfill",
     "news_embed",
+    # Artha semantic layer backfills
+    "stock_narrative_embed",
+    "economic_events_embed",
+    "educational_concepts_seed",
 }
 
 # Tables exposed for CRUD operations.
@@ -140,6 +144,21 @@ _DIRECT_RUN_JOBS: dict[str, tuple[str, str]] = {
     "discover_mf_holdings_moneycontrol": (
         "app.scheduler.discover_mf_holdings_job",
         "run_discover_mf_holdings_moneycontrol_job",
+    ),
+    # ── Artha semantic layer backfills ──
+    # These are run directly because they warm the fastembed model and
+    # can take minutes for large backfills (e.g. 176K economic_events).
+    "stock_narrative_embed": (
+        "app.scheduler.stock_narrative_embed_job",
+        "run_stock_narrative_embed_job",
+    ),
+    "economic_events_embed": (
+        "app.scheduler.economic_events_embed_job",
+        "run_economic_events_embed_job",
+    ),
+    "educational_concepts_seed": (
+        "app.scheduler.educational_concepts_seed_job",
+        "run_educational_concepts_seed_job",
     ),
 }
 

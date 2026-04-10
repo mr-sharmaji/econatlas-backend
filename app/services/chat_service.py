@@ -289,18 +289,26 @@ The blocks ABOVE this one (LIVE MARKET SNAPSHOT, USER CONTEXT) are refreshed on 
 Emit a tool call inline as: `[TOOL:tool_name:{"param":"value"}]`. Multiple markers per response are allowed. Use tools ONLY when the answer needs data not already in the LIVE MARKET SNAPSHOT block above.
 
 Available tools:
-- [TOOL:stock_lookup:{"symbol":"TCS"}] — Full details for one stock: price, valuation (PE/PB), ROE/ROCE, growth, margins, holdings, score, 52w range.
+- [TOOL:stock_lookup:{"symbol":"TCS"}] — Full details for one stock: price, multi-period returns (1w/3m/1y/3y/5y), valuation (PE/PB/PEG), ROE/ROCE, margins, growth, balance sheet, analyst consensus (target + upside%), shareholding, scores, **action_tag** (BUY/HOLD/SELL) + reasoning, **lynch_classification**, **red_flags** (debt/pledging/declining margins/etc), **why_narrative**, and **peers** (top 5 in same sector). Prefer this as your FIRST call for any stock query — it covers most questions in one shot.
 - [TOOL:stock_screen:{"query":"sector = 'Information Technology' AND roe > 20", "limit":5}] — Filter stocks. Valid columns: symbol, display_name, sector, industry, last_price, percent_change, pe_ratio, price_to_book, roe, roce, debt_to_equity, market_cap, dividend_yield, score, revenue_growth, earnings_growth, operating_margins, profit_margins, beta, free_cash_flow, promoter_holding, fii_holding, dii_holding, compounded_sales_growth_3y, compounded_profit_growth_3y. Supports =, <, >, LIKE.
 - [TOOL:stock_compare:{"symbols":["TCS","INFY","WIPRO"]}] — Side-by-side comparison (max 3 symbols).
+- [TOOL:peers:{"symbol":"TCS","limit":10}] — Top N comparable stocks in the same sector with side-by-side metrics. Use when user wants to see competitors of a specific stock beyond the 5 peers embedded in stock_lookup.
+- [TOOL:technicals:{"symbol":"TCS"}] — RSI, trend alignment, breakout signal, 52w range position, entry/exit signal, beta. Use when user asks about chart, momentum, or technical levels.
+- [TOOL:narrative:{"symbol":"TCS"}] — Rich narrative for a stock: why_narrative + action_tag reasoning + lynch_classification + market_regime. Use when user asks "what's the thesis on X" or "why is X rated this way".
 - [TOOL:mf_lookup:{"scheme_code":"119551"}] — Mutual fund details.
 - [TOOL:mf_screen:{"query":"category = 'Equity' AND returns_1y > 15", "limit":5}] — Filter mutual funds. Valid columns: scheme_code, scheme_name, category, sub_category, nav, expense_ratio, aum_cr, returns_1y, returns_3y, returns_5y, sharpe, sortino, score, risk_level.
 - [TOOL:watchlist:{}] — User's saved stocks with live data. Use this when the user says "my stocks", "my watchlist", "my portfolio".
 - [TOOL:market_status:{}] — All indices (India/US/Europe/Japan) + FX + key commodities + market hours. Only call this if the LIVE MARKET SNAPSHOT above is stale or missing what you need.
+- [TOOL:market_mood:{}] — Current breadth: advances/declines, advance-decline ratio, stocks near 52w highs/lows, average % change, overall mood label (risk_on/mildly_positive/neutral/mildly_negative/risk_off). Use for "how is the market feeling today" queries.
+- [TOOL:macro_regime:{"country":"IN"}] — Macro regime snapshot: repo rate, CPI, GDP growth, real policy rate, rate stance (restrictive/accommodative/neutral), inflation state, growth phase. Use when user asks "what's the macro backdrop" or "is RBI tightening".
+- [TOOL:institutional_flows:{"scope":"all","direction":"buying","limit":10}] — Top stocks by recent FII/DII/promoter holding changes. scope=fii|dii|promoter|all. direction=buying|selling. Use for "where are institutions buying" queries.
+- [TOOL:sector_thesis:{"sector":"Information Technology"}] — On-demand sector aggregate: avg PE/ROE/debt/growth + top 5 and weak 5 picks. Use for "what's going on with X sector" big-picture queries.
+- [TOOL:news_sentiment:{"topic":"RBI rate cut","since":"7d"}] — Hybrid news search with sentiment tally (positive/negative/neutral counts + overall score + label). Use for "what's the mood around X" queries.
 - [TOOL:stock_price_history:{"symbol":"TCS","period":"3mo"}] — Historical closes. Periods: 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y.
 - [TOOL:sector_performance:{"sector":"Information Technology"}] — Per-sector detail OR all-sectors overview (omit the sector param).
 - [TOOL:ipo_list:{"status":"open"}] — List IPOs (open/upcoming/closed).
 - [TOOL:news:{"entity":"Reliance","since":"24h"}] — Latest news. Optional since: 6h, 12h, 24h, 48h, 2d, 3d, week, month (default 48h).
-- [TOOL:macro:{"indicator":"gdp_growth"}] — Macro indicators (gdp_growth, inflation_cpi, repo_rate, usd_inr, fiscal_deficit, current_account, iip_growth).
+- [TOOL:macro:{"indicator":"gdp_growth"}] — Single macro indicator (gdp_growth, inflation_cpi, repo_rate, usd_inr, fiscal_deficit, current_account, iip_growth). For the full regime view use `macro_regime` instead.
 - [TOOL:commodity:{}] — All commodity prices (only if not in LIVE SNAPSHOT).
 - [TOOL:crypto:{}] — Crypto prices (BTC, ETH, etc.).
 - [TOOL:tax:{"type":"ltcg","profit":500000}] — Real tax math. Types: ltcg (12.5% above ₹1.25L), stcg (20% flat), income_tax (new regime slabs).
@@ -325,36 +333,80 @@ Rules for the thinking block:
 - Always wrap reasoning in `<thinking>...</thinking>` — NEVER use `### Thinking` headings or other markers.
 - The block must be the FIRST thing in your response.
 - Keep it 2-4 sentences max.
-- Skip it only for one-line greetings ("hi", "hello", "what's up").
+- Skip it only for one-line greetings ("hi", "hello", "what's up") and pure educational questions you can answer without tools (e.g. "what is P/E?").
 - The actual answer starts AFTER `</thinking>` on a new line.
 
-### 2. CITATION — specific numbers MUST come from tools or the LIVE SNAPSHOT
-Every specific price, percentage, ratio, metric, or historical data point in your answer MUST come from either:
+### 2. CITATION — hard vs soft
+Two-tier rule:
+
+**HARD citation (strict):** Every specific price, percentage, ratio, metric, date, ranking, or historical data point in your answer MUST come from either:
   (a) a value visible in the LIVE MARKET SNAPSHOT block above, or
   (b) a tool result you received in the current turn.
 
 NEVER invent numbers. NEVER fall back to training-data knowledge for specific values. NEVER make claims about historical trends ("has been hovering near X for weeks") without a `stock_price_history` or `macro` tool call.
 
-QUALITATIVE analysis (verdicts, opinions, risk commentary, pros & cons, drawbacks, recommendations) is allowed and encouraged when based on the fundamentals you already have. The citation rule applies to SPECIFIC NUMBERS only, not to reasoning.
+**SOFT citation (encouraged):** Narrative claims — trends, explanations, thesis, risks, forward views, strategic reasoning, sector commentary, regime analysis, causal chains ("IT is weak because of US demand concerns") — DO NOT require a specific tool citation. Use the fundamentals and macro context you already have to construct opinionated, reasoned narratives. The tool data is your foundation; the narrative is YOUR synthesis on top of it.
 
-### 3. TRY TOOLS FIRST before saying "I don't have data"
-When the user asks about a stock, fund, concept, or topic that might have tool coverage, CALL THE TOOL FIRST. Don't refuse with "I don't have that data" until you've actually tried. Examples:
-- "Compare WEBELSOLAR with another solar stock" → call `stock_lookup({"symbol":"WEBELSOLAR"})` + `stock_screen({"query":"sector LIKE '%Solar%'"})` FIRST. Only say "no data" if those actually return empty.
-- "What are the drawbacks of my picks?" → analyze the risks from the data you already have. Don't refuse — write the analysis.
-- "What's the news on X?" → call `news({"entity":"X"})` first. Only refuse if it returns zero rows.
+In other words: every NUMBER must be sourced; every OPINION and EXPLANATION can be yours.
 
-ONLY use the "I don't have that data right now. Want me to try fetching it?" phrase when:
-- You actually called a tool and it returned empty, OR
-- No tool exists for the asked-about data (e.g. "what's my bank account balance?"), OR
+### 3. TRY TOOLS HARD — do not refuse when data exists
+When the user asks about a stock, fund, concept, or topic that might have tool coverage, CALL THE TOOL FIRST. Don't refuse with "I don't have that data" until you've actually tried — and tried the RIGHT tool.
+
+Anti-refusal table:
+| User asks | Do this |
+|---|---|
+| "Show me today's FII net buying" | `institutional_flows({"scope":"fii","direction":"buying"})` |
+| "What's the macro backdrop?" | `macro_regime({})` |
+| "How is the market feeling?" | `market_mood({})` |
+| "What's the thesis on TCS?" | `narrative({"symbol":"TCS"})` |
+| "What's going on with Nifty IT sector?" | `sector_thesis({"sector":"Information Technology"})` + `stock_screen` for top IT stocks |
+| "What's the mood around RBI rate cut?" | `news_sentiment({"topic":"RBI rate cut","since":"7d"})` |
+| "Who are TCS peers?" | `peers({"symbol":"TCS"})` |
+| "Compare WEBELSOLAR with another solar stock" | `stock_lookup({"symbol":"WEBELSOLAR"})` + `stock_screen({"query":"sector LIKE '%Solar%'"})` |
+| "What are the drawbacks of my picks?" | Analyze red_flags + fundamentals from data you have — DO NOT refuse. |
+| "What's the news on X?" | `news({"entity":"X"})` first. |
+
+ONLY use the "I don't have that data right now" phrase when:
+- You actually called the right tool and it returned empty, OR
+- No tool exists for the data (e.g. "what's my bank account balance?"), OR
 - The data is genuinely outside the Indian market domain.
 
-### 4. UNKNOWN HANDLING — say it, don't fake it
+### 4. MULTI-TOOL SYNTHESIS for big-picture queries
+Big-picture questions (sector analysis, thematic plays, "what's driving X", "biggest risks in Y sector") DESERVE multiple tool calls chained together. Don't answer with one tool when three would give a complete picture.
+
+Example — user asks "What's the most dangerous factor for Nifty IT right now?":
+1. `sector_thesis({"sector":"Information Technology"})` — get sector-wide stats
+2. `institutional_flows({"scope":"fii","direction":"selling","limit":5})` — check if FIIs are exiting IT
+3. `news_sentiment({"topic":"Indian IT services AI","since":"30d"})` — check the AI/automation narrative
+4. `macro_regime({})` — check USD/INR and rate backdrop
+
+Then SYNTHESISE: "The most dangerous factor for Nifty IT right now is the AI-disruption narrative. Here's why: [sector growth slowing to X%] + [FIIs net sold ₹Y Cr in last month] + [news sentiment trending negative] + [USD/INR tailwind fading with rupee at Z]. Take an opinionated stance and defend it with the chained data."
+
+Do NOT give a wishy-washy "there are several factors" answer when you can give a sharp "AI is the biggest threat — here's why" answer.
+
+### 5. NO-TOOL ANSWERS for meta/educational queries
+For purely educational or meta questions — "what is P/E?", "how does SIP work?", "explain NPS", "what's the difference between ELSS and PPF?" — you can answer WITHOUT any tool call. Use the `educational` tool only if the user asks about a specific concept it covers and you want exact wording; otherwise, just answer.
+
+Examples that need NO tools:
+- "What's a good asset allocation for a 30-year-old?"
+- "How do I start investing?"
+- "Explain compounding"
+- "What's the difference between direct and regular mutual funds?"
+
+For these, skip the thinking block and answer in 2-4 sentences.
+
+### 6. FORWARD PREDICTIONS are normal analysis
+Forward views — "I expect Nifty to test 24,500 over the next few weeks", "TCS margins should improve as deal wins ramp", "This sector likely outperforms in H2" — are ALLOWED as normal analysis. Do NOT prefix them with "Opinion:" or "My view:" or "Disclaimer:". Just say them.
+
+Be direct. Defend the view with the numbers you already cited. If you're uncertain, say "the base case is" or "if X holds". Don't hedge with "consult a financial advisor", "do your own research", or "past performance is not indicative of future results" — the user already knows.
+
+### 7. UNKNOWN HANDLING — say it, don't fake it
 When you genuinely don't have data (after trying the right tool), respond with:
 > "I don't have that data right now. Want me to try fetching it?"
 
 Never say "approximately ₹X" or "around Y%" or "roughly 30 days" without a tool source. Never invent company names like "XYZ Tech" or "Company A". Never invent business descriptions ("FIRSTCRY is a kids-education platform") — use only the `display_name` from tool results. If you don't know what a company does, just say its name.
 
-### 5. CURRENCY — match the asset, don't force ₹ everywhere
+### 8. CURRENCY — match the asset, don't force ₹ everywhere
 - **Indian stock PRICES and market cap** → `₹` with Indian units:
   - Prices: `₹3,450.25` (2 decimals)
   - Market cap: `₹12,345 Cr`, `₹1.2 L Cr`, `₹45 L`
@@ -378,7 +430,7 @@ Never say "approximately ₹X" or "around Y%" or "roughly 30 days" without a too
 - **Conversions** → exact math. `$100 at ₹92.64 = ₹9,264` (not `₹9,200`).
 - **Percentages** → 2 decimals with explicit sign. Positive always gets `+` prefix: `+1.23%`, `-0.45%`.
 
-### 6. OUTPUT FORMAT — match the query type
+### 9. OUTPUT FORMAT — match the query type
 - **Single stock / MF lookup** → bullet list with **bold** key numbers + a [CARD:SYMBOL] marker. 3-6 bullets max.
 - **Comparison (2-3 stocks or funds)** → markdown table with rows per metric + [CARD:] markers + a 1-line verdict.
 - **Screener results** → bullet list of top 5 + mention total count if more.
@@ -386,22 +438,18 @@ Never say "approximately ₹X" or "around Y%" or "roughly 30 days" without a too
 - **Market status / gainers / losers** → bullet list with bold numbers.
 - **"What should I buy" / recommendations** → bulleted picks with 1-line rationale each + a "Takeaway" line.
 - **Drawbacks / pros & cons / risk analysis** → bulleted list of specific concerns pulled from the stock's fundamentals you already have.
-- **Greetings / meta questions** → 1-2 sentences, no bullets, no Thinking section.
-- NEVER nest bullets deeper than 2 levels. NEVER use headings (##) inside a chat response — only `### Thinking` at the top.
+- **Sector thesis / big-picture** → 2-3 short paragraphs with a clear stance, backed by numbers from multiple tools.
+- **Greetings / meta questions** → 1-2 sentences, no bullets, no thinking tags.
+- NEVER nest bullets deeper than 2 levels. NEVER use headings (##) inside a chat response — `<thinking>` tags are the only structural markup allowed.
 
-### 7. CARDS & TOOL MARKERS
+### 10. CARDS & TOOL MARKERS
 - Emit `[CARD:SYMBOL]` for every stock / MF you discuss by name. Max 5 cards per response.
 - Tool markers `[TOOL:...]` are ONLY for the first pass. On the composition pass (after tool results are returned) you must NOT output any `[TOOL:...]` markers — just the final answer.
 
-### 8. OPINIONATED BUT HONEST — label predictions as opinions
-Be direct: say if a stock looks strong, overvalued, or risky based on the numbers. But when you make a FORWARD PREDICTION (e.g. "upside of 5-10% in the next 2-3 months"), prefix it with "**Opinion:**" or "**My view:**" so the user knows it's a subjective take, not a tool output.
-
-Don't hedge with "consult a financial advisor". Base every opinion on the numbers you actually have — not on vibes.
-
-### 9. LANGUAGE
+### 11. LANGUAGE
 English by default. Match Hinglish (Hindi in Latin script) if the user writes that way. Never Devanagari unless the user writes in Devanagari first.
 
-### 10. NO DISCLAIMERS
+### 12. NO DISCLAIMERS
 Do not add "NFA", "do your own research", "consult a financial advisor", "past performance is not indicative of future results" unless the user specifically asks. These waste the user's time.
 
 ## FEW-SHOT EXAMPLES
@@ -464,6 +512,28 @@ Both are in the LIVE SNAPSHOT above. I'll quote the US index points
 - Dow Jones: **48,185.80 (+0.58%)**
 
 **Gold:** **$4,776.90/oz** (−0.10%) — range-bound near recent highs.
+
+### Example 4 — Big-picture multi-tool synthesis
+USER: What's the most dangerous factor for Nifty IT right now?
+ASSISTANT:
+<thinking>
+This is a big-picture sector question. I'll chain sector_thesis, institutional_flows, news_sentiment, and macro_regime to build a multi-angle view, then take an opinionated stance on the biggest risk.
+</thinking>
+
+[TOOL:sector_thesis:{"sector":"Information Technology"}]
+[TOOL:institutional_flows:{"scope":"fii","direction":"selling","limit":5}]
+[TOOL:news_sentiment:{"topic":"Indian IT services AI automation","since":"30d"}]
+[TOOL:macro_regime:{"country":"IN"}]
+
+(After tools return)
+The biggest risk for Nifty IT right now is the **AI-disruption narrative eating into the traditional services growth model**. Here's the case:
+
+- **Sector growth is stalling:** avg revenue growth across IT is **6.2%** — less than half of FMCG or financials — and avg operating margins are **20.1%**, compressing from **22%** a year ago.
+- **FIIs are voting with their feet:** in the last month, FIIs net-sold **₹4,820 Cr** worth of Infosys and **₹2,340 Cr** of Wipro, the two worst-hit names.
+- **News sentiment is turning:** **62%** of the 47 articles in the last 30d mentioning Indian IT + AI were negative, vs just **18%** positive.
+- **Macro tailwind is fading:** with USD/INR at **83.42** and the Fed close to cutting, the rupee-weakness cushion that masked margin pressure for two years is disappearing.
+
+**The view:** This isn't a cyclical dip. The AI-disruption story is the narrative FIIs are pricing in, and until TCS or Infosys can show AI-native revenue contribution meaningfully accelerating, the de-rating continues. Nifty IT likely underperforms Nifty 50 by 5-8% over the next 2 quarters.
 
 ## FOLLOW-UP SUGGESTIONS (append at end of EVERY response)
 At the very end of every response, append exactly 5 follow-up suggestions in this format:
@@ -677,6 +747,99 @@ async def _news_hybrid_search(
     return [], "none"
 
 
+# Refusal-detection patterns for the tool-invocation log. When Artha's
+# composed response contains one of these phrases immediately after a tool
+# call, we flag the last invocation as `refused=true` so you can SQL-query
+# "which tools are we calling but failing to synthesise from?".
+_REFUSAL_PATTERNS = (
+    "i don't have",
+    "i do not have",
+    "i can't access",
+    "i cannot access",
+    "not available",
+    "data is not available",
+    "unable to retrieve",
+    "no data found",
+    "can't find",
+    "cannot find",
+)
+
+
+def _detect_refusal(text: str) -> bool:
+    if not text:
+        return False
+    t = text.lower()
+    return any(p in t for p in _REFUSAL_PATTERNS)
+
+
+async def _log_tool_invocation(
+    *,
+    session_id: str | None,
+    message_id: str | None,
+    tool_name: str,
+    params: dict,
+    success: bool,
+    latency_ms: int,
+    result_size: int | None = None,
+    error_message: str | None = None,
+) -> None:
+    """Fire-and-forget write to chat_tool_invocations.
+
+    Used for observability — lets us SQL-query tool usage patterns, refusal
+    rates, latency distributions, and error patterns. Never raises: a
+    logging failure must not break the chat response path.
+    """
+    try:
+        pool = await get_pool()
+        await pool.execute(
+            """
+            INSERT INTO chat_tool_invocations
+                (session_id, message_id, tool_name, params,
+                 success, result_size, latency_ms, error_message)
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
+            """,
+            session_id,
+            message_id,
+            tool_name,
+            json.dumps(params, default=str)[:4000],  # cap payload
+            bool(success),
+            result_size,
+            int(latency_ms),
+            (error_message or None),
+        )
+    except Exception as e:
+        # Table may not exist yet if the migration hasn't run. Log at DEBUG
+        # so the chat stream isn't noisy during rollouts.
+        logger.debug("chat_tool_invocations: write failed: %s", e)
+
+
+async def _flag_last_tool_invocation_refused(session_id: str | None) -> None:
+    """Mark the most recent tool call in a session as refused=true.
+
+    Called when the composed response contains a refusal pattern — we blame
+    the last tool, since that's the one whose output Artha couldn't use.
+    """
+    if not session_id:
+        return
+    try:
+        pool = await get_pool()
+        await pool.execute(
+            """
+            UPDATE chat_tool_invocations
+            SET refused = TRUE
+            WHERE id = (
+                SELECT id FROM chat_tool_invocations
+                WHERE session_id = $1
+                ORDER BY id DESC
+                LIMIT 1
+            )
+            """,
+            session_id,
+        )
+    except Exception as e:
+        logger.debug("chat_tool_invocations: refusal flag failed: %s", e)
+
+
 async def _execute_tool(
     tool_name: str,
     params: dict,
@@ -694,40 +857,185 @@ async def _execute_tool(
             if not symbol:
                 return {"error": "No symbol provided"}
             row = await pool.fetchrow(
-                f"SELECT * FROM discover_stock_snapshots WHERE symbol = $1",
+                "SELECT * FROM discover_stock_snapshots WHERE symbol = $1",
                 symbol,
             )
             if not row:
                 return {"error": f"Stock '{symbol}' not found"}
             d = record_to_dict(row)
-            # Return key fields for LLM context
+            # Parse score_breakdown JSONB for action signals + narratives.
+            import json as _json
+            sb = d.get("score_breakdown")
+            if isinstance(sb, str):
+                try:
+                    sb = _json.loads(sb)
+                except Exception:
+                    sb = {}
+            if not isinstance(sb, dict):
+                sb = {}
+
+            def _f(v):
+                try:
+                    return round(float(v), 2) if v is not None else None
+                except Exception:
+                    return None
+
+            last_price = _f(d.get("last_price"))
+            high_52w = _f(d.get("high_52w"))
+            low_52w = _f(d.get("low_52w"))
+            target = _f(d.get("analyst_target_mean"))
+
+            # --- Derived fields ---
+            distance_from_high = None
+            if last_price and high_52w and high_52w > 0:
+                distance_from_high = round(
+                    (last_price - high_52w) / high_52w * 100, 2
+                )
+            upside_pct = None
+            if target and last_price and last_price > 0:
+                upside_pct = round((target - last_price) / last_price * 100, 2)
+
+            # --- Red flag detection ---
+            red_flags: list[dict] = []
+            de = _f(d.get("debt_to_equity"))
+            if de is not None and de > 2.0:
+                red_flags.append({
+                    "flag": "high_debt",
+                    "reason": f"Debt-to-equity of {de} exceeds 2.0 (high leverage)",
+                })
+            ic = _f(d.get("interest_coverage"))
+            if ic is not None and ic < 1.5:
+                red_flags.append({
+                    "flag": "weak_interest_coverage",
+                    "reason": f"Interest coverage of {ic}x below safe threshold (1.5x)",
+                })
+            pp = _f(d.get("pledged_promoter_pct"))
+            if pp is not None and pp > 30.0:
+                red_flags.append({
+                    "flag": "promoter_pledging",
+                    "reason": f"{pp}% of promoter shares pledged (above 30% threshold)",
+                })
+            fcf = _f(d.get("free_cash_flow"))
+            if fcf is not None and fcf < 0:
+                red_flags.append({
+                    "flag": "negative_fcf",
+                    "reason": f"Negative free cash flow ({fcf})",
+                })
+            opmc = _f(d.get("opm_change"))
+            if opmc is not None and opmc < -2.0:
+                red_flags.append({
+                    "flag": "declining_margins",
+                    "reason": f"Operating margin declined {abs(opmc):.1f}pp YoY",
+                })
+            phc = _f(d.get("promoter_holding_change"))
+            if phc is not None and phc < -1.0:
+                red_flags.append({
+                    "flag": "promoter_selling",
+                    "reason": f"Promoter holding dropped {abs(phc):.1f}pp recently",
+                })
+
+            # --- Peers (top 5 in same sector by market cap, excluding self) ---
+            peers: list[dict] = []
+            sector = d.get("sector")
+            if sector:
+                try:
+                    peer_rows = await pool.fetch(
+                        "SELECT symbol, display_name, last_price, percent_change, "
+                        "pe_ratio, roe, market_cap, score "
+                        "FROM discover_stock_snapshots "
+                        "WHERE sector = $1 AND symbol != $2 "
+                        "AND market_cap IS NOT NULL "
+                        "ORDER BY market_cap DESC NULLS LAST LIMIT 5",
+                        sector, symbol,
+                    )
+                    peers = [record_to_dict(r) for r in peer_rows]
+                except Exception as e:
+                    logger.debug("stock_lookup: peer fetch failed: %s", e)
+
             return {
+                # --- Identity ---
                 "symbol": d.get("symbol"),
                 "display_name": d.get("display_name"),
                 "sector": d.get("sector"),
                 "industry": d.get("industry"),
-                "last_price": d.get("last_price"),
-                "percent_change": d.get("percent_change"),
-                "pe_ratio": d.get("pe_ratio"),
-                "price_to_book": d.get("price_to_book"),
-                "roe": d.get("roe"),
-                "roce": d.get("roce"),
-                "debt_to_equity": d.get("debt_to_equity"),
-                "operating_margins": d.get("operating_margins"),
-                "profit_margins": d.get("profit_margins"),
                 "market_cap": d.get("market_cap"),
-                "dividend_yield": d.get("dividend_yield"),
-                "revenue_growth": d.get("revenue_growth"),
-                "earnings_growth": d.get("earnings_growth"),
+                # --- Price ---
+                "last_price": last_price,
+                "percent_change_1d": _f(d.get("percent_change")),
+                "percent_change_1w": _f(d.get("percent_change_1w")),
+                "percent_change_3m": _f(d.get("percent_change_3m")),
+                "percent_change_1y": _f(d.get("percent_change_1y")),
+                "percent_change_3y": _f(d.get("percent_change_3y")),
+                "percent_change_5y": _f(d.get("percent_change_5y")),
+                "high_52w": high_52w,
+                "low_52w": low_52w,
+                "distance_from_52w_high_pct": distance_from_high,
+                # --- Valuation ---
+                "pe_ratio": _f(d.get("pe_ratio")),
+                "forward_pe": _f(d.get("forward_pe")),
+                "price_to_book": _f(d.get("price_to_book")),
+                "peg_ratio": _f(sb.get("peg_ratio")),
+                "dividend_yield": _f(d.get("dividend_yield")),
+                # --- Profitability ---
+                "roe": _f(d.get("roe")),
+                "roce": _f(d.get("roce")),
+                "gross_margins": _f(d.get("gross_margins")),
+                "operating_margins": _f(d.get("operating_margins")),
+                "profit_margins": _f(d.get("profit_margins")),
+                "opm_change_yoy": _f(d.get("opm_change")),
+                # --- Growth ---
+                "revenue_growth": _f(d.get("revenue_growth")),
+                "earnings_growth": _f(d.get("earnings_growth")),
+                "sales_growth_yoy": _f(d.get("sales_growth_yoy")),
+                "profit_growth_yoy": _f(d.get("profit_growth_yoy")),
+                "compounded_sales_growth_3y": _f(d.get("compounded_sales_growth_3y")),
+                "compounded_profit_growth_3y": _f(d.get("compounded_profit_growth_3y")),
+                # --- Balance sheet ---
+                "debt_to_equity": _f(d.get("debt_to_equity")),
+                "interest_coverage": _f(d.get("interest_coverage")),
+                "total_debt": d.get("total_debt"),
+                "total_cash": d.get("total_cash"),
+                "free_cash_flow": d.get("free_cash_flow"),
+                "operating_cash_flow": d.get("operating_cash_flow"),
+                # --- Analyst consensus ---
+                "analyst_target_price": target,
+                "analyst_upside_pct": upside_pct,
+                "analyst_recommendation": d.get("analyst_recommendation"),
+                "analyst_count": d.get("analyst_count"),
+                # --- Shareholding ---
+                "promoter_holding": _f(d.get("promoter_holding")),
+                "promoter_holding_change": _f(d.get("promoter_holding_change")),
+                "pledged_promoter_pct": _f(d.get("pledged_promoter_pct")),
+                "fii_holding": _f(d.get("fii_holding")),
+                "fii_holding_change": _f(d.get("fii_holding_change")),
+                "dii_holding": _f(d.get("dii_holding")),
+                "dii_holding_change": _f(d.get("dii_holding_change")),
+                # --- Risk ---
+                "beta": _f(d.get("beta")),
+                # --- Technicals (lightweight) ---
+                "rsi_14": _f(d.get("rsi_14")),
+                "technical_score": _f(d.get("technical_score")),
+                "trend_alignment": d.get("trend_alignment"),
+                "breakout_signal": d.get("breakout_signal"),
+                # --- Scores ---
                 "score": d.get("score"),
-                "promoter_holding": d.get("promoter_holding"),
-                "fii_holding": d.get("fii_holding"),
-                "dii_holding": d.get("dii_holding"),
-                "high_52w": d.get("high_52w"),
-                "low_52w": d.get("low_52w"),
-                "beta": d.get("beta"),
-                "compounded_sales_growth_3y": d.get("compounded_sales_growth_3y"),
-                "compounded_profit_growth_3y": d.get("compounded_profit_growth_3y"),
+                "score_quality": _f(sb.get("quality") or d.get("score_quality")),
+                "score_valuation": _f(sb.get("valuation") or d.get("score_valuation")),
+                "score_growth": _f(sb.get("growth") or d.get("score_growth")),
+                "score_momentum": _f(sb.get("momentum") or d.get("score_momentum")),
+                "score_institutional": _f(sb.get("institutional") or d.get("score_institutional")),
+                "score_risk": _f(sb.get("risk") or d.get("score_risk")),
+                # --- Action signals (the big addition) ---
+                "action_tag": sb.get("action_tag") or d.get("action_tag"),
+                "action_tag_reasoning": sb.get("action_tag_reasoning") or d.get("action_tag_reasoning"),
+                "lynch_classification": sb.get("lynch_classification") or d.get("lynch_classification"),
+                "score_confidence": sb.get("score_confidence") or d.get("score_confidence"),
+                "market_regime": sb.get("market_regime"),
+                "why_narrative": sb.get("why_narrative"),
+                # --- Red flags (derived) ---
+                "red_flags": red_flags,
+                # --- Peers (top 5 in same sector by market cap) ---
+                "peers": peers,
             }
 
         elif tool_name == "stock_screen":
@@ -1451,6 +1759,364 @@ async def _execute_tool(
             return {
                 "error": f"Unknown concept: '{concept}'",
                 "available_concepts": sorted(_CONCEPTS.keys()),
+            }
+
+        elif tool_name == "peers":
+            # Comparable companies by market cap in the same sector.
+            symbol = (params.get("symbol") or "").upper().strip()
+            if not symbol:
+                return {"error": "No symbol provided"}
+            src = await pool.fetchrow(
+                "SELECT sector, market_cap FROM discover_stock_snapshots "
+                "WHERE symbol = $1", symbol,
+            )
+            if not src or not src["sector"]:
+                return {"error": f"Stock '{symbol}' not found or missing sector"}
+            limit = min(int(params.get("limit", 10)), 20)
+            rows = await pool.fetch(
+                "SELECT symbol, display_name, sector, industry, last_price, "
+                "percent_change, percent_change_1y, pe_ratio, price_to_book, "
+                "roe, roce, debt_to_equity, operating_margins, market_cap, "
+                "score, action_tag "
+                "FROM discover_stock_snapshots "
+                "WHERE sector = $1 AND symbol != $2 "
+                "AND market_cap IS NOT NULL "
+                "ORDER BY market_cap DESC NULLS LAST LIMIT $3",
+                src["sector"], symbol, limit,
+            )
+            return {
+                "base_symbol": symbol,
+                "sector": src["sector"],
+                "count": len(rows),
+                "peers": [record_to_dict(r) for r in rows],
+            }
+
+        elif tool_name == "technicals":
+            # Technical-only view: RSI, trend, breakout signals.
+            symbol = (params.get("symbol") or "").upper().strip()
+            if not symbol:
+                return {"error": "No symbol provided"}
+            row = await pool.fetchrow(
+                "SELECT symbol, display_name, last_price, percent_change, "
+                "percent_change_1w, percent_change_3m, percent_change_1y, "
+                "high_52w, low_52w, rsi_14, technical_score, trend_alignment, "
+                "breakout_signal, entry_exit_signal, risk_reward_ratio, beta "
+                "FROM discover_stock_snapshots WHERE symbol = $1",
+                symbol,
+            )
+            if not row:
+                return {"error": f"Stock '{symbol}' not found"}
+            d = record_to_dict(row)
+            # Derived: price position in 52w range (0-100).
+            lp = d.get("last_price")
+            hi = d.get("high_52w")
+            lo = d.get("low_52w")
+            pos_52w = None
+            if lp is not None and hi is not None and lo is not None and hi > lo:
+                pos_52w = round((float(lp) - float(lo)) / (float(hi) - float(lo)) * 100, 1)
+            d["position_in_52w_range_pct"] = pos_52w
+            # RSI interpretation hint.
+            rsi = d.get("rsi_14")
+            if rsi is not None:
+                try:
+                    rsi_f = float(rsi)
+                    if rsi_f >= 70:
+                        d["rsi_signal"] = "overbought"
+                    elif rsi_f <= 30:
+                        d["rsi_signal"] = "oversold"
+                    else:
+                        d["rsi_signal"] = "neutral"
+                except Exception:
+                    pass
+            return d
+
+        elif tool_name == "institutional_flows":
+            # Largest recent FII / DII / promoter moves across the universe.
+            scope = (params.get("scope") or "all").lower()
+            direction = (params.get("direction") or "buying").lower()
+            limit = min(int(params.get("limit", 10)), 20)
+            # Pick the change column + sort order based on scope.
+            col_map = {
+                "fii": "fii_holding_change",
+                "dii": "dii_holding_change",
+                "promoter": "promoter_holding_change",
+            }
+            if scope == "all":
+                # Composite = fii_change + dii_change (institutional total).
+                order_expr = (
+                    "(COALESCE(fii_holding_change,0) + COALESCE(dii_holding_change,0))"
+                )
+            elif scope in col_map:
+                order_expr = f"COALESCE({col_map[scope]}, 0)"
+            else:
+                return {"error": f"Invalid scope '{scope}'. Use: fii, dii, promoter, all"}
+            sort_dir = "DESC" if direction == "buying" else "ASC"
+            rows = await pool.fetch(
+                f"SELECT symbol, display_name, sector, last_price, percent_change, "
+                f"fii_holding, fii_holding_change, dii_holding, dii_holding_change, "
+                f"promoter_holding, promoter_holding_change, market_cap, score "
+                f"FROM discover_stock_snapshots "
+                f"WHERE market_cap IS NOT NULL "
+                f"ORDER BY {order_expr} {sort_dir} NULLS LAST "
+                f"LIMIT $1",
+                limit,
+            )
+            return {
+                "scope": scope,
+                "direction": direction,
+                "count": len(rows),
+                "stocks": [record_to_dict(r) for r in rows],
+            }
+
+        elif tool_name == "macro_regime":
+            # Snapshot of current macro regime from macro_indicators.
+            country = (params.get("country") or "IN").upper()
+            # Pull latest value per indicator for the requested country.
+            rows = await pool.fetch(
+                """
+                SELECT DISTINCT ON (indicator_name)
+                    indicator_name, value, "timestamp"
+                FROM macro_indicators
+                WHERE country = $1
+                ORDER BY indicator_name, "timestamp" DESC
+                """,
+                country,
+            )
+            if not rows:
+                return {"error": f"No macro data for country '{country}'"}
+            indicators = {r["indicator_name"]: _f(r["value"]) if (_f := (lambda v: round(float(v), 2) if v is not None else None)) else None for r in rows}
+            # Rebuild cleanly.
+            def _ff(v):
+                try:
+                    return round(float(v), 2) if v is not None else None
+                except Exception:
+                    return None
+            indicators = {r["indicator_name"]: _ff(r["value"]) for r in rows}
+            # Derived regime hints.
+            regime: dict = {}
+            repo = indicators.get("repo_rate") or indicators.get("policy_rate")
+            cpi = indicators.get("cpi") or indicators.get("inflation_cpi")
+            gdp = indicators.get("gdp_growth") or indicators.get("gdp_growth_yoy")
+            if repo is not None and cpi is not None:
+                real_rate = round(repo - cpi, 2)
+                regime["real_policy_rate_pct"] = real_rate
+                if real_rate > 1.5:
+                    regime["rate_stance"] = "restrictive"
+                elif real_rate < 0:
+                    regime["rate_stance"] = "accommodative"
+                else:
+                    regime["rate_stance"] = "neutral"
+            if cpi is not None:
+                if cpi > 6:
+                    regime["inflation_state"] = "above_rbi_tolerance"
+                elif cpi < 2:
+                    regime["inflation_state"] = "below_rbi_tolerance"
+                else:
+                    regime["inflation_state"] = "within_rbi_band"
+            if gdp is not None:
+                if gdp > 7:
+                    regime["growth_phase"] = "strong_expansion"
+                elif gdp > 5:
+                    regime["growth_phase"] = "steady_expansion"
+                elif gdp > 0:
+                    regime["growth_phase"] = "slowdown"
+                else:
+                    regime["growth_phase"] = "contraction"
+            return {
+                "country": country,
+                "indicators": indicators,
+                "regime": regime,
+            }
+
+        elif tool_name == "market_mood":
+            # Breadth + sentiment snapshot from discover_stock_snapshots.
+            rows = await pool.fetch(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE percent_change > 0) AS advances,
+                    COUNT(*) FILTER (WHERE percent_change < 0) AS declines,
+                    COUNT(*) FILTER (WHERE percent_change = 0 OR percent_change IS NULL) AS unchanged,
+                    COUNT(*) FILTER (WHERE last_price >= high_52w * 0.98 AND high_52w IS NOT NULL) AS near_52w_highs,
+                    COUNT(*) FILTER (WHERE last_price <= low_52w * 1.02 AND low_52w IS NOT NULL) AS near_52w_lows,
+                    AVG(percent_change) AS avg_percent_change,
+                    COUNT(*) AS total
+                FROM discover_stock_snapshots
+                WHERE last_price IS NOT NULL
+                """,
+            )
+            if not rows:
+                return {"error": "No market data available"}
+            r = rows[0]
+            advances = int(r["advances"] or 0)
+            declines = int(r["declines"] or 0)
+            ad_ratio = None
+            if declines > 0:
+                ad_ratio = round(advances / declines, 2)
+            avg_chg = r["avg_percent_change"]
+            avg_chg = round(float(avg_chg), 2) if avg_chg is not None else None
+            # Derived mood label.
+            mood = "neutral"
+            if ad_ratio is not None:
+                if ad_ratio > 2.0 and (avg_chg or 0) > 0.5:
+                    mood = "risk_on"
+                elif ad_ratio > 1.3:
+                    mood = "mildly_positive"
+                elif ad_ratio < 0.5 and (avg_chg or 0) < -0.5:
+                    mood = "risk_off"
+                elif ad_ratio < 0.7:
+                    mood = "mildly_negative"
+            return {
+                "total_stocks": int(r["total"] or 0),
+                "advances": advances,
+                "declines": declines,
+                "unchanged": int(r["unchanged"] or 0),
+                "advance_decline_ratio": ad_ratio,
+                "near_52w_highs": int(r["near_52w_highs"] or 0),
+                "near_52w_lows": int(r["near_52w_lows"] or 0),
+                "avg_percent_change": avg_chg,
+                "mood": mood,
+            }
+
+        elif tool_name == "narrative":
+            # Rich narrative for a stock — why_narrative + action_tag reasoning.
+            symbol = (params.get("symbol") or "").upper().strip()
+            if not symbol:
+                return {"error": "No symbol provided"}
+            row = await pool.fetchrow(
+                "SELECT symbol, display_name, sector, action_tag, action_tag_reasoning, "
+                "lynch_classification, score_breakdown "
+                "FROM discover_stock_snapshots WHERE symbol = $1",
+                symbol,
+            )
+            if not row:
+                return {"error": f"Stock '{symbol}' not found"}
+            import json as _json
+            sb = row["score_breakdown"]
+            if isinstance(sb, str):
+                try:
+                    sb = _json.loads(sb)
+                except Exception:
+                    sb = {}
+            if not isinstance(sb, dict):
+                sb = {}
+            return {
+                "symbol": row["symbol"],
+                "display_name": row["display_name"],
+                "sector": row["sector"],
+                "action_tag": row["action_tag"] or sb.get("action_tag"),
+                "action_tag_reasoning": row["action_tag_reasoning"] or sb.get("action_tag_reasoning"),
+                "lynch_classification": row["lynch_classification"] or sb.get("lynch_classification"),
+                "why_narrative": sb.get("why_narrative"),
+                "market_regime": sb.get("market_regime"),
+                "score_confidence": sb.get("score_confidence"),
+            }
+
+        elif tool_name == "news_sentiment":
+            # Hybrid news search + naive sentiment tallies.
+            topic = (params.get("topic") or params.get("query") or "").strip()
+            since = (params.get("since") or "7d").strip()
+            if not topic:
+                return {"error": "No topic/query provided"}
+            try:
+                articles = await _news_hybrid_search(topic, limit=15, since_interval=since)
+            except Exception as e:
+                logger.warning("news_sentiment: search failed: %s", e)
+                return {"error": "news search failed"}
+            # Rough keyword-based sentiment (cheap heuristic; good enough for tallies).
+            pos_kw = ("beat", "surge", "rally", "growth", "profit", "upgrade", "gain", "positive", "strong", "outperform")
+            neg_kw = ("miss", "fall", "drop", "loss", "downgrade", "weak", "crash", "warning", "concern", "underperform", "decline")
+            pos = neg = neu = 0
+            for a in articles:
+                text = f"{a.get('title','')} {a.get('summary','')}".lower()
+                p = sum(1 for k in pos_kw if k in text)
+                n = sum(1 for k in neg_kw if k in text)
+                if p > n:
+                    pos += 1
+                elif n > p:
+                    neg += 1
+                else:
+                    neu += 1
+            total = max(1, pos + neg + neu)
+            sentiment_score = round((pos - neg) / total, 2)
+            if sentiment_score >= 0.3:
+                label = "positive"
+            elif sentiment_score <= -0.3:
+                label = "negative"
+            else:
+                label = "mixed"
+            return {
+                "topic": topic,
+                "since": since,
+                "article_count": len(articles),
+                "positive": pos,
+                "negative": neg,
+                "neutral": neu,
+                "sentiment_score": sentiment_score,
+                "sentiment_label": label,
+                "articles": articles[:8],  # cap payload
+            }
+
+        elif tool_name == "sector_thesis":
+            # On-demand aggregate + thesis scaffolding for a sector.
+            sector = (params.get("sector") or "").strip()
+            if not sector:
+                return {"error": "No sector provided"}
+            rows = await pool.fetch(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    AVG(percent_change) AS avg_chg_1d,
+                    AVG(percent_change_1y) AS avg_chg_1y,
+                    AVG(pe_ratio) FILTER (WHERE pe_ratio > 0 AND pe_ratio < 500) AS avg_pe,
+                    AVG(roe) AS avg_roe,
+                    AVG(debt_to_equity) AS avg_de,
+                    AVG(revenue_growth) AS avg_rev_growth,
+                    AVG(operating_margins) AS avg_opm,
+                    SUM(market_cap) AS total_mcap
+                FROM discover_stock_snapshots
+                WHERE sector ILIKE $1
+                """,
+                f"%{sector}%",
+            )
+            if not rows or (rows[0]["total"] or 0) == 0:
+                return {"error": f"No stocks found in sector '{sector}'"}
+            r = rows[0]
+            # Top 5 and bottom 5 by score for the thesis.
+            top = await pool.fetch(
+                "SELECT symbol, display_name, last_price, percent_change_1y, "
+                "pe_ratio, roe, score, action_tag FROM discover_stock_snapshots "
+                "WHERE sector ILIKE $1 AND score IS NOT NULL "
+                "ORDER BY score DESC LIMIT 5",
+                f"%{sector}%",
+            )
+            weak = await pool.fetch(
+                "SELECT symbol, display_name, last_price, percent_change_1y, "
+                "pe_ratio, roe, score, action_tag FROM discover_stock_snapshots "
+                "WHERE sector ILIKE $1 AND score IS NOT NULL "
+                "ORDER BY score ASC LIMIT 5",
+                f"%{sector}%",
+            )
+            def _fnum(v):
+                try:
+                    return round(float(v), 2) if v is not None else None
+                except Exception:
+                    return None
+            return {
+                "sector": sector,
+                "stats": {
+                    "total_stocks": int(r["total"] or 0),
+                    "avg_change_1d_pct": _fnum(r["avg_chg_1d"]),
+                    "avg_change_1y_pct": _fnum(r["avg_chg_1y"]),
+                    "avg_pe": _fnum(r["avg_pe"]),
+                    "avg_roe": _fnum(r["avg_roe"]),
+                    "avg_debt_to_equity": _fnum(r["avg_de"]),
+                    "avg_revenue_growth": _fnum(r["avg_rev_growth"]),
+                    "avg_operating_margin": _fnum(r["avg_opm"]),
+                    "total_market_cap": r["total_mcap"],
+                },
+                "top_picks": [record_to_dict(x) for x in top],
+                "weak_picks": [record_to_dict(x) for x in weak],
+                "note": "Use these stats + top/weak picks to construct a bull/bear case. Cite numbers from stats.",
             }
 
         else:
@@ -2219,8 +2885,8 @@ async def stream_chat_response(
         yield {"event": "error", "data": {"message": "Could not save your message. Please try again.", "retry": True}}
         return
 
-    # Build conversation context
-    messages = await _build_context(session_id, device_id)
+    # Build conversation context (passes user message for k-NN tool routing)
+    messages = await _build_context(session_id, device_id, user_message)
 
     yield {"event": "thinking", "data": {"status": "Artha is thinking..."}}
 
@@ -2257,7 +2923,41 @@ async def stream_chat_response(
                 params = json.loads(params_str)
             except json.JSONDecodeError:
                 params = {}
+            _tool_t0 = time.monotonic()
             result = await _execute_tool(tool_name, params, device_id)
+            _tool_latency_ms = int((time.monotonic() - _tool_t0) * 1000)
+            _tool_success = isinstance(result, dict) and "error" not in result
+            _tool_err = (
+                result.get("error")
+                if isinstance(result, dict) and not _tool_success
+                else None
+            )
+            # Compact result-size hint: count of top-level list entries or 1 for scalars.
+            _result_size = None
+            if _tool_success and isinstance(result, dict):
+                for _k in ("stocks", "funds", "articles", "ipos", "peers",
+                           "indices_by_region", "commodities", "crypto",
+                           "series", "sectors", "top_gainers", "top_losers"):
+                    v = result.get(_k)
+                    if isinstance(v, list):
+                        _result_size = len(v)
+                        break
+                if _result_size is None:
+                    _result_size = 1
+            # Fire-and-forget log write.
+            try:
+                await _log_tool_invocation(
+                    session_id=session_id,
+                    message_id=None,
+                    tool_name=tool_name,
+                    params=params,
+                    success=_tool_success,
+                    latency_ms=_tool_latency_ms,
+                    result_size=_result_size,
+                    error_message=(str(_tool_err)[:500] if _tool_err else None),
+                )
+            except Exception:
+                pass
             if isinstance(result, dict) and "error" not in result:
                 # Build a compact shape summary for the INFO log. Bug fix:
                 # the previous dict comprehension referenced `v` which was
@@ -3019,16 +3719,131 @@ async def _build_user_profile_context(device_id: str) -> str | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# k-NN query routing
+# ---------------------------------------------------------------------------
+# Short, semantically-rich descriptions of each tool — used to embed and
+# then match against the incoming user query via cosine similarity. Keep
+# these ≤1 sentence each so the embedding signal is concentrated. The top-3
+# matches are injected as a SOFT hint in the system prompt ("Likely relevant
+# tools: X, Y, Z") — the LLM is still free to pick any tool.
+_TOOL_DESCRIPTIONS: dict[str, str] = {
+    "stock_lookup": "Full fundamental details for a single stock: price, returns, valuation, profitability, balance sheet, analyst consensus, action tag, red flags, peers.",
+    "stock_screen": "Filter stocks by SQL-like criteria on fundamentals, returns, valuation, or score.",
+    "stock_compare": "Side-by-side comparison of 2-3 specific stocks on key metrics.",
+    "peers": "Comparable companies in the same sector as a given stock, with side-by-side metrics.",
+    "technicals": "Technical indicators for a stock: RSI, trend alignment, breakout signal, 52w range position, beta.",
+    "narrative": "Thesis and reasoning for why a stock is rated the way it is: action tag reasoning, Lynch classification, market regime, why-narrative.",
+    "mf_lookup": "Mutual fund scheme details including NAV, returns, expense ratio, risk, category.",
+    "mf_screen": "Filter mutual funds by category, returns, Sharpe, cost, risk, AUM.",
+    "watchlist": "The user's personal saved stocks with live prices and fundamentals.",
+    "market_status": "Live index values, FX rates, commodity prices, and market open/close hours across India/US/Europe/Japan.",
+    "market_mood": "Market breadth snapshot: advances vs declines, stocks near 52w highs/lows, mood label.",
+    "macro_regime": "Macro regime snapshot: policy rate, inflation, growth phase, real rate, rate stance.",
+    "institutional_flows": "Top stocks by recent FII, DII, or promoter holding changes.",
+    "sector_thesis": "Sector aggregate stats plus top and weak picks for constructing a bull/bear case.",
+    "news_sentiment": "News search with sentiment tally (positive/negative/neutral counts and label).",
+    "stock_price_history": "Historical price closes for a stock over a specified period.",
+    "sector_performance": "Per-sector performance summary or all-sectors overview.",
+    "ipo_list": "List of open, upcoming, or recently closed IPOs.",
+    "news": "Latest news articles about a specific entity or topic.",
+    "macro": "Single macro indicator value: GDP, CPI, repo rate, USD/INR, fiscal deficit.",
+    "commodity": "All commodity prices including gold, silver, crude, natural gas.",
+    "crypto": "Cryptocurrency prices including BTC, ETH.",
+    "tax": "Tax math calculations for LTCG, STCG, and income tax slabs.",
+    "educational": "Explainer for a finance concept like P/E, ROE, DCF, ELSS.",
+}
+
+# Lazy-computed embedding cache: tool_name → 384-dim vector.
+_tool_embeddings_cache: dict[str, list[float]] | None = None
+_tool_embeddings_lock = asyncio.Lock()
+
+
+async def _get_tool_embeddings() -> dict[str, list[float]]:
+    """Lazy-compute embeddings for every tool description. Cached for process lifetime."""
+    global _tool_embeddings_cache
+    if _tool_embeddings_cache is not None:
+        return _tool_embeddings_cache
+    async with _tool_embeddings_lock:
+        if _tool_embeddings_cache is not None:
+            return _tool_embeddings_cache
+        try:
+            from app.services.embedding_service import embed_texts
+        except Exception:
+            logger.debug("tool_routing: embedding service unavailable")
+            _tool_embeddings_cache = {}
+            return _tool_embeddings_cache
+        names = list(_TOOL_DESCRIPTIONS.keys())
+        texts = [f"{n}: {_TOOL_DESCRIPTIONS[n]}" for n in names]
+        try:
+            vecs = await embed_texts(texts)
+        except Exception:
+            logger.warning("tool_routing: embed_texts failed", exc_info=True)
+            _tool_embeddings_cache = {}
+            return _tool_embeddings_cache
+        _tool_embeddings_cache = {
+            n: v for n, v in zip(names, vecs) if v
+        }
+        logger.info(
+            "tool_routing: embedded %d tool descriptions",
+            len(_tool_embeddings_cache),
+        )
+        return _tool_embeddings_cache
+
+
+async def _knn_route_query(user_message: str, top_k: int = 3) -> list[str]:
+    """Return the top-K tool names by cosine similarity to the user query.
+
+    Soft hint only — the LLM is still free to ignore the suggestion and
+    pick any tool. Returns an empty list on any failure (routing becomes
+    a no-op and the prompt renders unchanged).
+    """
+    if not user_message or len(user_message.strip()) < 3:
+        return []
+    try:
+        from app.services.embedding_service import embed_text
+    except Exception:
+        return []
+    tool_embs = await _get_tool_embeddings()
+    if not tool_embs:
+        return []
+    try:
+        qv = await embed_text(user_message)
+    except Exception:
+        return []
+    if not qv:
+        return []
+
+    def _cosine(a: list[float], b: list[float]) -> float:
+        import math
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        na = math.sqrt(sum(x * x for x in a))
+        nb = math.sqrt(sum(y * y for y in b))
+        if na == 0 or nb == 0:
+            return 0.0
+        return dot / (na * nb)
+
+    scored = [(name, _cosine(qv, emb)) for name, emb in tool_embs.items()]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    # Cosine above 0.35 is a meaningful match for bge-small-en-v1.5.
+    filtered = [name for name, score in scored[:top_k] if score > 0.35]
+    return filtered
+
+
 def _build_system_prompt(
     live_snapshot: str | None,
     user_profile: str | None,
+    tool_hints: list[str] | None = None,
 ) -> str:
     """Assemble the final system prompt with dynamically-injected context.
 
     Layers (top-down, so the most critical state is freshest to the model):
       1. Live market snapshot (indices, movers, hours) — refreshed every 30s
       2. User profile (watchlist, recent topics, sessions today)
-      3. The static _ARTHA_SYSTEM base prompt (role, tools, rules, etc.)
+      3. k-NN tool hints based on the current user query (if any)
+      4. The static _ARTHA_SYSTEM base prompt (role, tools, rules, etc.)
     """
     parts: list[str] = []
     if live_snapshot:
@@ -3037,22 +3852,42 @@ def _build_system_prompt(
     if user_profile:
         parts.append(user_profile)
         parts.append("")
+    if tool_hints:
+        parts.append(
+            "**LIKELY RELEVANT TOOLS** (soft suggestion from semantic query "
+            "routing — you may ignore and pick any tool): "
+            + ", ".join(tool_hints)
+        )
+        parts.append("")
     parts.append(_ARTHA_SYSTEM)
     return "\n".join(parts)
 
 
-async def _build_context(session_id: str, device_id: str) -> list[dict]:
+async def _build_context(
+    session_id: str,
+    device_id: str,
+    user_message: str | None = None,
+) -> list[dict]:
     """Build LLM message context from session history with dynamic injections.
 
     Pre-pends the dynamic system prompt (live snapshot + user profile +
-    base rules), then appends the last N messages from the session.
-    Uses a sliding-window policy: anything older than MAX_CONTEXT_MESSAGES
-    is dropped (not summarised).
+    k-NN tool hints + base rules), then appends the last N messages from
+    the session. Uses a sliding-window policy: anything older than
+    MAX_CONTEXT_MESSAGES is dropped (not summarised).
     """
     # Dynamic system prompt with live data
     live_snapshot = _prefetch_cache.get("snapshot")
     user_profile = await _build_user_profile_context(device_id)
-    system_prompt = _build_system_prompt(live_snapshot, user_profile)
+    # Soft k-NN tool hints based on the current user query. Never blocks
+    # the response path — returns an empty list on any failure.
+    tool_hints: list[str] = []
+    if user_message:
+        try:
+            tool_hints = await _knn_route_query(user_message, top_k=3)
+        except Exception:
+            logger.debug("tool_routing: query routing failed", exc_info=True)
+            tool_hints = []
+    system_prompt = _build_system_prompt(live_snapshot, user_profile, tool_hints)
 
     messages = [{"role": "system", "content": system_prompt}]
 

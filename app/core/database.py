@@ -572,6 +572,113 @@ async def init_pool() -> asyncpg.Pool:
             logger.info("news_articles trigram indexes ensured")
         except Exception as e:
             logger.warning("Failed to create news trigram indexes: %s", e)
+        # --- Artha semantic layer: embeddings on stock narratives + events ---
+        # Discover stock snapshots get two embedding columns (one per narrative
+        # column) so Artha can do semantic lookups against the pre-computed
+        # ai_narrative / why_narrative text when the user asks open-ended
+        # questions ("which IT stocks look defensive right now?").
+        try:
+            await conn.execute(
+                "ALTER TABLE discover_stock_snapshots "
+                "ADD COLUMN IF NOT EXISTS ai_narrative_embedding vector(384)"
+            )
+            await conn.execute(
+                "ALTER TABLE discover_stock_snapshots "
+                "ADD COLUMN IF NOT EXISTS why_narrative_embedding vector(384)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dss_ai_narrative_emb "
+                "ON discover_stock_snapshots USING hnsw "
+                "(ai_narrative_embedding vector_cosine_ops)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dss_why_narrative_emb "
+                "ON discover_stock_snapshots USING hnsw "
+                "(why_narrative_embedding vector_cosine_ops)"
+            )
+            logger.info("discover_stock_snapshots narrative embedding columns + HNSW indexes ensured")
+        except Exception as e:
+            logger.warning(
+                "Failed to create discover_stock_snapshots embedding columns "
+                "(pgvector missing?): %s", e,
+            )
+        # economic_events — 176K+ news_market_linked_signal rows. Embedding
+        # the event_type + entity + impact triple lets Artha answer
+        # "what macro events were triggered by RBI decisions last quarter?"
+        try:
+            await conn.execute(
+                "ALTER TABLE economic_events "
+                "ADD COLUMN IF NOT EXISTS event_embedding vector(384)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_economic_events_embedding_hnsw "
+                "ON economic_events USING hnsw (event_embedding vector_cosine_ops)"
+            )
+            logger.info("economic_events embedding column + HNSW index ensured")
+        except Exception as e:
+            logger.warning("Failed to create economic_events embedding: %s", e)
+        # artha_educational_concepts — seeded at startup with ~40 baseline
+        # finance/investing concepts (P/E, ROCE, SIP, NPS, etc.) so Artha
+        # can answer meta/educational queries without hitting an LLM tool.
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS artha_educational_concepts (
+                id BIGSERIAL PRIMARY KEY,
+                slug TEXT UNIQUE NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                category TEXT,
+                embedding vector(384),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        try:
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_edu_concepts_embedding_hnsw "
+                "ON artha_educational_concepts USING hnsw "
+                "(embedding vector_cosine_ops)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_edu_concepts_category "
+                "ON artha_educational_concepts (category)"
+            )
+        except Exception as e:
+            logger.warning("Failed to create edu concepts index: %s", e)
+        # chat_tool_invocations — lightweight observability for tool-usage
+        # patterns, refusals, and tool-level latency. Queryable via raw SQL,
+        # no dashboard endpoint (ship it later if needed).
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_tool_invocations (
+                id BIGSERIAL PRIMARY KEY,
+                session_id TEXT,
+                message_id TEXT,
+                tool_name TEXT NOT NULL,
+                params JSONB,
+                success BOOLEAN NOT NULL DEFAULT TRUE,
+                refused BOOLEAN NOT NULL DEFAULT FALSE,
+                result_size INTEGER,
+                latency_ms INTEGER,
+                error_message TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_inv_session "
+            "ON chat_tool_invocations (session_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_inv_tool "
+            "ON chat_tool_invocations (tool_name, created_at DESC)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_inv_refused "
+            "ON chat_tool_invocations (refused, created_at DESC) "
+            "WHERE refused = TRUE"
+        )
         logger.info("Idempotent indexes ensured")
     return _pool
 
