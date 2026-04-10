@@ -62,7 +62,7 @@ Available tools:
 2. Use specific numbers from tool results — never make up data
 3. When mentioning stocks, ALWAYS use the tool first to get current data
 4. For screener queries, translate the user's natural language into SQL WHERE conditions
-5. If user writes in Hindi, respond in Hindi. Default is English.
+5. Respond in English by default. You may match the user's style if they write in Hinglish.
 6. No disclaimers like "NFA", "consult a financial advisor", "do your own research"
 7. Use markdown formatting: **bold** for key numbers/names, bullet points (- ) for lists, line breaks between sections
 8. Be opinionated — say if a stock looks strong, weak, overvalued, etc.
@@ -248,16 +248,39 @@ async def _execute_tool(
 
         elif tool_name == "market_status":
             from app.services.market_service import get_latest_prices
+            from app.services.market_service import get_market_status as _mkt_status
             prices = await get_latest_prices(instrument_type="index")
+            # Asset names in DB are title-case: "Nifty 50", "Sensex", "Nifty Bank", etc.
+            # Match case-insensitively so the tool is resilient to naming changes.
+            _TARGET_INDICES = {
+                "nifty 50", "sensex", "nifty bank", "nifty it",
+                "nifty auto", "nifty pharma", "nifty metal",
+                "nifty midcap 150", "nifty smallcap 250", "nifty 500",
+                "gift nifty",
+            }
             indices = {}
             for p in prices:
-                name = p.get("asset", "")
-                if name in ("NIFTY 50", "SENSEX", "NIFTY BANK", "NIFTY IT"):
-                    indices[name] = {
-                        "price": p.get("close") or p.get("last_price"),
-                        "change_pct": p.get("change_percent"),
-                    }
-            return {"indices": indices, "timestamp": datetime.now(timezone.utc).isoformat()}
+                name = str(p.get("asset") or "")
+                if name.lower() not in _TARGET_INDICES:
+                    continue
+                indices[name] = {
+                    "price": p.get("price"),
+                    "previous_close": p.get("previous_close"),
+                    "change_pct": p.get("change_percent"),
+                    "timestamp": (
+                        p["timestamp"].isoformat()
+                        if p.get("timestamp") and hasattr(p["timestamp"], "isoformat")
+                        else p.get("timestamp")
+                    ),
+                }
+            status = _mkt_status(datetime.now(timezone.utc))
+            return {
+                "indices": indices,
+                "india_open": bool(status.get("nse_open")),
+                "us_open": bool(status.get("nyse_open")),
+                "count": len(indices),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
 
         elif tool_name == "ipo_list":
             from app.services.ipo_service import get_ipos
@@ -282,19 +305,48 @@ async def _execute_tool(
             }
 
         elif tool_name == "news":
-            from app.services.news_service import get_articles
-            entity = params.get("entity")
-            articles = await get_articles(entity=entity, limit=5)
+            # news_articles.primary_entity is a TOPIC category
+            # ("market_news", "dow_jones", "nifty_50", "sensex", "gold",
+            # "crude_oil", ...) — NOT a company ticker. So exact-match on
+            # entity fails for company names like "TCS" or "Reliance".
+            # Instead, search the title/summary/body text with ILIKE.
+            entity = (params.get("entity") or "").strip()
+            if not entity:
+                # No filter — return the most recent articles
+                rows = await pool.fetch(
+                    "SELECT title, summary, source, timestamp, url, primary_entity, impact "
+                    "FROM news_articles ORDER BY timestamp DESC LIMIT 5",
+                    timeout=5,
+                )
+            else:
+                pattern = f"%{entity}%"
+                rows = await pool.fetch(
+                    "SELECT title, summary, source, timestamp, url, primary_entity, impact "
+                    "FROM news_articles "
+                    "WHERE title ILIKE $1 OR summary ILIKE $1 OR body ILIKE $1 "
+                    "   OR primary_entity ILIKE $1 "
+                    "ORDER BY timestamp DESC LIMIT 5",
+                    pattern,
+                    timeout=5,
+                )
             return {
-                "count": len(articles),
+                "query": entity or None,
+                "count": len(rows),
                 "articles": [
                     {
-                        "title": a.get("title"),
-                        "source": a.get("source"),
-                        "published": a.get("published_at"),
-                        "summary": (a.get("content") or "")[:200],
+                        "title": r.get("title"),
+                        "source": r.get("source"),
+                        "published": (
+                            r["timestamp"].isoformat()
+                            if r.get("timestamp") and hasattr(r["timestamp"], "isoformat")
+                            else r.get("timestamp")
+                        ),
+                        "summary": (r.get("summary") or "")[:300],
+                        "url": r.get("url"),
+                        "topic": r.get("primary_entity"),
+                        "impact": r.get("impact"),
                     }
-                    for a in articles[:5]
+                    for r in rows
                 ],
             }
 
@@ -623,34 +675,35 @@ async def generate_suggestions(device_id: str | None = None) -> list[str]:
         else:
             context_parts.append("Time: Evening")
 
-        # Market context
+        # Market context — market_service returns asset/price/change_percent
         try:
             from app.services.market_service import get_latest_prices
-            prices = await get_latest_prices()
+            prices = await get_latest_prices(instrument_type="index")
             nifty = None
             for p in (prices or []):
-                if "NIFTY 50" in str(p.get("symbol", "")).upper():
+                if str(p.get("asset") or "").lower() == "nifty 50":
                     nifty = p
                     break
-            if nifty:
-                change = nifty.get("percent_change", 0) or 0
+            if nifty and nifty.get("price") is not None:
+                change = nifty.get("change_percent") or 0
                 direction = "up" if change >= 0 else "down"
                 context_parts.append(
-                    f"Nifty 50: ₹{nifty.get('last_price', 'N/A')} ({direction} {abs(change):.1f}%)"
+                    f"Nifty 50: {nifty.get('price'):.0f} ({direction} {abs(change):.1f}%)"
                 )
         except Exception:
             pass
 
-        # Watchlist context
+        # Watchlist context (table is device_watchlists, column is asset)
         watchlist_symbols = []
         if device_id:
             try:
                 pool = await get_pool()
                 rows = await pool.fetch(
-                    "SELECT symbol FROM watchlist_items WHERE device_id = $1 LIMIT 10",
+                    "SELECT asset FROM device_watchlists "
+                    "WHERE device_id = $1 ORDER BY position ASC LIMIT 10",
                     device_id,
                 )
-                watchlist_symbols = [r["symbol"] for r in rows]
+                watchlist_symbols = [r["asset"] for r in rows if r.get("asset")]
                 if watchlist_symbols:
                     context_parts.append(f"User's watchlist: {', '.join(watchlist_symbols[:8])}")
             except Exception:
@@ -681,17 +734,21 @@ async def generate_suggestions(device_id: str | None = None) -> list[str]:
             {
                 "role": "system",
                 "content": (
-                    "You generate exactly 6 short suggested prompts for an Indian market AI chatbot called Artha. "
+                    "You generate exactly 6 short suggested prompts in English for an "
+                    "Indian market AI chatbot called Artha. "
                     "Each prompt should be a natural question a retail investor would ask. "
                     "Make them diverse: mix stocks, MFs, macro, IPOs, tax, commodities. "
                     "Make them contextual to the current time and market conditions. "
                     "If the user has a watchlist, include 1-2 prompts about their stocks. "
-                    "Output ONLY the 6 prompts, one per line, no numbering, no bullets."
+                    "Output ONLY the 6 English prompts, one per line, no numbering, no bullets."
                 ),
             },
             {
                 "role": "user",
-                "content": f"Current context:\n{context_str}\n\nGenerate 6 suggested prompts:",
+                "content": (
+                    f"Current context:\n{context_str}\n\n"
+                    "Generate 6 suggested prompts in English:"
+                ),
             },
         ]
 
