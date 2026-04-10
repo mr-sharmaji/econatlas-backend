@@ -336,10 +336,12 @@ async def _execute_tool(
             limit = min(int(params.get("limit", 5)), 50)
             if not query_where:
                 return {"error": "No query provided"}
-            # Validate: only SELECT-safe WHERE conditions
-            safe = _validate_screen_query(query_where)
-            if not safe:
-                return {"error": "Invalid query — only filtering conditions allowed"}
+            # Auto-rewrite common alias mistakes (e.g. `name` → `display_name`)
+            query_where = _rewrite_column_aliases(query_where, _COLUMN_ALIASES_STOCK)
+            # Validate against the stock column whitelist
+            ok, err = _validate_screen_query(query_where, _STOCK_SCREEN_COLUMNS)
+            if not ok:
+                return {"error": err}
             rows = await pool.fetch(
                 f"SELECT symbol, display_name, sector, last_price, percent_change, "
                 f"pe_ratio, roe, roce, debt_to_equity, market_cap, score, "
@@ -404,9 +406,11 @@ async def _execute_tool(
             limit = min(int(params.get("limit", 5)), 50)
             if not query_where:
                 return {"error": "No query provided"}
-            safe = _validate_screen_query(query_where)
-            if not safe:
-                return {"error": "Invalid query"}
+            # Auto-rewrite aliases (e.g. `name` → `scheme_name`)
+            query_where = _rewrite_column_aliases(query_where, _COLUMN_ALIASES_MF)
+            ok, err = _validate_screen_query(query_where, _MF_SCREEN_COLUMNS)
+            if not ok:
+                return {"error": err}
             rows = await pool.fetch(
                 f"SELECT scheme_code, scheme_name, category, nav, "
                 f"returns_1y, returns_3y, returns_5y, expense_ratio, "
@@ -644,12 +648,101 @@ async def _execute_tool(
         return {"error": f"Tool failed: {str(e)[:100]}"}
 
 
-def _validate_screen_query(query: str) -> bool:
-    """Basic SQL injection prevention for screening queries.
+# Valid columns for each screener table. Any identifier in a WHERE clause
+# that isn't in this list (or a SQL keyword / literal) is rejected before
+# the query hits the DB, so the LLM gets a helpful error message instead
+# of a generic Postgres "column does not exist" failure.
+_STOCK_SCREEN_COLUMNS = {
+    "symbol", "display_name", "sector", "industry",
+    "last_price", "percent_change", "previous_close",
+    "pe_ratio", "price_to_book", "dividend_yield", "market_cap",
+    "roe", "roce", "debt_to_equity",
+    "operating_margins", "profit_margins",
+    "revenue_growth", "earnings_growth",
+    "compounded_sales_growth_3y", "compounded_profit_growth_3y",
+    "free_cash_flow", "beta",
+    "promoter_holding", "fii_holding", "dii_holding",
+    "high_52w", "low_52w", "score",
+}
 
-    Only allows WHERE-clause-style conditions. Blocks dangerous keywords.
+_MF_SCREEN_COLUMNS = {
+    "scheme_code", "scheme_name", "category", "sub_category",
+    "nav", "expense_ratio", "aum_cr",
+    "returns_1y", "returns_3y", "returns_5y",
+    "sharpe", "sortino", "score", "risk_level",
+    "fund_house", "fund_manager",
+}
+
+# Common LLM mistakes → correct column. We auto-rewrite before validation
+# so a query like "name LIKE '%Nifty%'" becomes "scheme_name LIKE '%Nifty%'".
+_COLUMN_ALIASES_STOCK = {
+    "name": "display_name",
+    "company": "display_name",
+    "company_name": "display_name",
+    "ticker": "symbol",
+    "pe": "pe_ratio",
+    "pb": "price_to_book",
+    "market_capitalization": "market_cap",
+    "de_ratio": "debt_to_equity",
+    "price": "last_price",
+    "change_pct": "percent_change",
+    "price_change": "percent_change",
+}
+
+_COLUMN_ALIASES_MF = {
+    "name": "scheme_name",
+    "fund_name": "scheme_name",
+    "code": "scheme_code",
+    "nav_value": "nav",
+    "aum": "aum_cr",
+    "returns_1_year": "returns_1y",
+    "returns_3_year": "returns_3y",
+    "returns_5_year": "returns_5y",
+    "return_1y": "returns_1y",
+    "return_3y": "returns_3y",
+    "return_5y": "returns_5y",
+    "expense": "expense_ratio",
+}
+
+# Regex to extract potential identifiers (col names, keywords) from a query.
+_IDENT_PATTERN = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b')
+
+# SQL keywords that may legitimately appear in a WHERE clause.
+_SQL_KEYWORDS = {
+    "and", "or", "not", "in", "is", "null", "like", "ilike", "between",
+    "true", "false", "asc", "desc", "where",
+    "any", "all", "exists", "distinct", "case", "when", "then", "else", "end",
+    "current_date", "current_time", "current_timestamp", "now",
+}
+
+
+def _rewrite_column_aliases(query: str, aliases: dict[str, str]) -> str:
+    """Auto-rewrite common column aliases to their canonical names."""
+    def _sub(match: re.Match) -> str:
+        ident = match.group(1)
+        canonical = aliases.get(ident.lower())
+        return canonical if canonical else ident
+    return _IDENT_PATTERN.sub(_sub, query)
+
+
+def _validate_screen_query(
+    query: str,
+    valid_columns: set[str] | None = None,
+) -> tuple[bool, str | None]:
+    """Validate a screener WHERE clause.
+
+    Returns ``(ok, error_message)``. When ``valid_columns`` is provided,
+    every identifier in the query must be either a valid column, a SQL
+    keyword, or a literal — unknown identifiers produce a clear error
+    message listing the column whitelist.
+
+    Blocks dangerous SQL keywords that shouldn't appear in a WHERE clause
+    at all (DROP, DELETE, UNION, etc.) to prevent injection attempts.
     """
-    upper = query.upper().strip()
+    if not query or not query.strip():
+        return False, "Query is empty"
+
+    upper = query.upper()
     # Block dangerous SQL keywords
     blocked = [
         "DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "CREATE",
@@ -658,11 +751,38 @@ def _validate_screen_query(query: str) -> bool:
     ]
     for kw in blocked:
         if kw in upper:
-            return False
-    # Must look like a WHERE condition
-    if not re.search(r'[=<>]', query):
-        return False
-    return True
+            return False, f"Blocked SQL keyword: {kw}"
+
+    # Must look like a filter — has at least one comparison operator OR a LIKE
+    if not (re.search(r'[=<>]', query) or re.search(r'\b(like|ilike|in|is)\b', query, re.IGNORECASE)):
+        return False, "Query must contain a filter condition (=, <, >, LIKE, IN, IS)"
+
+    # Column whitelist check
+    if valid_columns:
+        # Extract identifiers that aren't inside string literals.
+        # Simple approach: strip 'quoted strings' first.
+        stripped = re.sub(r"'[^']*'", "''", query)
+        stripped = re.sub(r'"[^"]*"', '""', stripped)
+        idents = _IDENT_PATTERN.findall(stripped)
+        unknown = []
+        for ident in idents:
+            low = ident.lower()
+            # Skip keywords
+            if low in _SQL_KEYWORDS:
+                continue
+            # Skip pure numerics (shouldn't match \b[a-z_] but just in case)
+            if ident.isdigit():
+                continue
+            if low not in {c.lower() for c in valid_columns}:
+                unknown.append(ident)
+        if unknown:
+            valid_list = ", ".join(sorted(valid_columns))
+            return False, (
+                f"Unknown column(s): {', '.join(sorted(set(unknown)))}. "
+                f"Valid columns: {valid_list}"
+            )
+
+    return True, None
 
 
 # ---------------------------------------------------------------------------
@@ -871,200 +991,332 @@ async def generate_greeting() -> dict:
     return {"greeting": greeting}
 
 
-# Cache for LLM-generated suggestions: {cache_key: (suggestions, timestamp)}
-_suggestions_cache: dict[str, tuple[list[str], float]] = {}
-_SUGGESTIONS_CACHE_TTL = 4 * 3600  # 4 hours — aggressive, suggestions barely change
-_SUGGESTIONS_SOFT_TTL = 30 * 60    # 30 min — serve stale while refreshing in bg
-# Track in-flight refresh tasks so we don't kick N concurrent LLM calls
-# for the same cache key.
+# Suggestion POOL strategy
+# ─────────────────────────
+# Instead of generating N suggestions per request, we maintain a POOL of
+# ~30 suggestions that gets refreshed in the background every few minutes
+# using live context (real top movers, real IPOs, real news). Each client
+# request picks N RANDOM items from the current pool, giving the feeling
+# of "fresh every app open" without hammering the LLM.
+#
+# Two pools exist:
+#   * _suggestions_pool["_global"]  — generated without device_id, seeded
+#     with market + news + IPO context, used for anonymous welcome requests
+#   * _suggestions_pool[device_id]  — per-device, also includes that
+#     device's watchlist. Lazily populated on first request.
+#
+# The pool refresh is throttled: if the pool is younger than
+# _POOL_FRESH_SECONDS we reuse it; older than that and a background
+# refresh is kicked. No client ever waits for the LLM.
+_suggestions_pool: dict[str, tuple[list[str], float]] = {}
+_POOL_FRESH_SECONDS = 3 * 60   # refresh pool every 3 minutes
+_POOL_MAX_AGE = 15 * 60        # pool older than 15 min is considered stale
+_POOL_SIZE = 30                # generate ~30 suggestions per pool refresh
+_DEFAULT_PICK = 10             # number of suggestions returned per request
+# Track in-flight refresh tasks to prevent concurrent duplicate LLM calls
 _suggestions_inflight: dict[str, asyncio.Task] = {}
 
 
-async def _refresh_suggestions_bg(device_id: str | None, cache_key: str) -> None:
-    """Background task: compute LLM suggestions and update the cache.
-
-    Runs outside the request path so the user never waits for the LLM.
-    """
+async def _refresh_pool_bg(device_id: str | None, pool_key: str) -> None:
+    """Background task: refresh a suggestions pool with live context."""
     try:
-        lines = await _compute_suggestions_llm(device_id)
-        if lines and len(lines) >= 4:
-            _suggestions_cache[cache_key] = (lines, time.time())
+        suggestions = await _compute_suggestions_llm(device_id)
+        if suggestions and len(suggestions) >= 6:
+            _suggestions_pool[pool_key] = (suggestions, time.time())
             logger.info(
-                "suggestions: cache refreshed key=%s count=%d",
-                cache_key, len(lines),
+                "suggestions: pool refreshed key=%s size=%d",
+                pool_key, len(suggestions),
             )
     except Exception:
-        logger.warning("suggestions: background refresh failed", exc_info=True)
+        logger.warning("suggestions: pool refresh failed", exc_info=True)
     finally:
-        _suggestions_inflight.pop(cache_key, None)
+        _suggestions_inflight.pop(pool_key, None)
 
 
-def _kick_background_refresh(device_id: str | None, cache_key: str) -> None:
-    """Start a background refresh if one isn't already running for this key."""
-    if cache_key in _suggestions_inflight:
+def _kick_pool_refresh(device_id: str | None, pool_key: str) -> None:
+    """Start a background refresh if one isn't already running for this pool."""
+    if pool_key in _suggestions_inflight:
         return
     try:
         loop = asyncio.get_running_loop()
-        task = loop.create_task(_refresh_suggestions_bg(device_id, cache_key))
-        _suggestions_inflight[cache_key] = task
+        task = loop.create_task(_refresh_pool_bg(device_id, pool_key))
+        _suggestions_inflight[pool_key] = task
     except RuntimeError:
-        # No running loop — can't schedule bg task, skip
         pass
 
 
-async def generate_suggestions(device_id: str | None = None) -> list[str]:
-    """Return suggested prompts with stale-while-revalidate semantics.
+async def generate_suggestions(
+    device_id: str | None = None,
+    count: int = _DEFAULT_PICK,
+) -> list[str]:
+    """Return a random sample of *count* suggestions from the pool.
 
-    Cache states:
-      * fresh  (< 30 min old)  → return cached, no refresh
-      * stale  (30 min - 4 h)  → return cached, kick background refresh
-      * missing (> 4 h or none)→ return static fallback, kick background refresh
-
-    The user NEVER waits for the LLM on this path. First request hits
-    the static fallback, subsequent requests hit the warm cache.
+    On every request we pick a FRESH random sample — no two consecutive
+    app opens should see the same set. The underlying pool is refreshed
+    every ~3 minutes in the background using live market / news / IPO
+    context, so the user feels like they get a new batch each time
+    without paying the LLM latency per request.
     """
-    cache_key = device_id or "_global"
+    import random
+
+    pool_key = device_id or "_global"
     now_ts = time.time()
     now = datetime.now(timezone.utc)
     ist_hour = (now.hour + 5) % 24 + (30 // 60)
 
-    # Fresh cache hit — return immediately
-    if cache_key in _suggestions_cache:
-        cached, ts = _suggestions_cache[cache_key]
-        age = now_ts - ts
-        if age < _SUGGESTIONS_SOFT_TTL:
-            logger.debug("suggestions: fresh cache hit key=%s age=%.0fs", cache_key, age)
-            return cached
-        if age < _SUGGESTIONS_CACHE_TTL:
-            # Stale — serve cached, refresh in background
-            logger.info(
-                "suggestions: stale cache hit key=%s age=%.0fs — refreshing in bg",
-                cache_key, age,
-            )
-            _kick_background_refresh(device_id, cache_key)
-            return cached
+    pool_entry = _suggestions_pool.get(pool_key)
 
-    # Cold cache — kick background refresh and return static immediately
+    if pool_entry is not None:
+        pool_items, ts = pool_entry
+        age = now_ts - ts
+        if age >= _POOL_FRESH_SECONDS:
+            # Pool is getting old — refresh in background but serve from
+            # current pool right now. No user wait.
+            _kick_pool_refresh(device_id, pool_key)
+        if age < _POOL_MAX_AGE and pool_items:
+            sample_size = min(count, len(pool_items))
+            picks = random.sample(pool_items, sample_size)
+            logger.debug(
+                "suggestions: pool pick key=%s age=%.0fs size=%d pick=%d",
+                pool_key, age, len(pool_items), sample_size,
+            )
+            return picks
+
+    # No pool or too stale — fire a bg refresh and return static fallback
+    # this one time. Subsequent requests (within ~15s) hit the warm pool.
     logger.info(
-        "suggestions: cache MISS key=%s — returning static, refreshing in bg",
-        cache_key,
+        "suggestions: pool MISS key=%s — returning static, refreshing in bg",
+        pool_key,
     )
-    _kick_background_refresh(device_id, cache_key)
-    return _static_suggestions(ist_hour)
+    _kick_pool_refresh(device_id, pool_key)
+    static = _static_suggestions(ist_hour)
+    # Extend static with a few more so the "cold" fallback doesn't feel thin
+    return static[:count]
 
 
 async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
-    """Actually call the LLM to generate suggestions. Never blocks the
-    request path — only invoked from the background refresh task."""
+    """Generate a POOL of ~30 suggestions using live context.
+
+    Never called from the request path — only from the background
+    refresh task. Latency here doesn't affect users.
+    """
     try:
-        # Gather context for the LLM
+        context_parts: list[str] = []
+        real_names: list[str] = []  # tracker for "only use these names" guardrail
+
         now = datetime.now(timezone.utc)
         ist_hour = (now.hour + 5) % 24 + (30 // 60)
 
-        context_parts = []
-
-        # Time context
+        # ── 1. Time-of-day context ─────────────────────────────────
         if ist_hour < 9:
-            context_parts.append("Time: Pre-market (before 9:15 AM IST)")
+            context_parts.append("Time: Pre-market (before 9:15 AM IST) — Gift Nifty is active")
         elif ist_hour < 15:
-            context_parts.append("Time: Market hours (9:15 AM - 3:30 PM IST)")
+            context_parts.append("Time: Indian markets OPEN (9:15 AM – 3:30 PM IST)")
         elif ist_hour < 20:
-            context_parts.append("Time: Post-market (after 3:30 PM IST)")
+            context_parts.append("Time: Post-market (after 3:30 PM IST) — US pre-market starting")
         else:
-            context_parts.append("Time: Evening")
+            context_parts.append("Time: Late evening — US markets active")
 
-        # Market context — market_service returns asset/price/change_percent
+        # ── 2. Indian indices snapshot ─────────────────────────────
         try:
             from app.services.market_service import get_latest_prices
             prices = await get_latest_prices(instrument_type="index")
-            nifty = None
+            snaps = []
+            wanted = {"nifty 50", "sensex", "nifty bank", "nifty it", "nifty auto", "nifty pharma"}
             for p in (prices or []):
-                if str(p.get("asset") or "").lower() == "nifty 50":
-                    nifty = p
-                    break
-            if nifty and nifty.get("price") is not None:
-                change = nifty.get("change_percent") or 0
-                direction = "up" if change >= 0 else "down"
-                context_parts.append(
-                    f"Nifty 50: {nifty.get('price'):.0f} ({direction} {abs(change):.1f}%)"
-                )
+                name = str(p.get("asset") or "")
+                if name.lower() in wanted and p.get("price") is not None:
+                    pct = p.get("change_percent") or 0
+                    snaps.append(f"{name} {pct:+.2f}%")
+            if snaps:
+                context_parts.append("Indian indices: " + ", ".join(snaps))
         except Exception:
             pass
 
-        # Watchlist context (table is device_watchlists, column is asset)
-        watchlist_symbols = []
+        # ── 3. Top 5 gainers + top 5 losers (REAL symbols) ──────────
+        try:
+            pool_conn = await get_pool()
+            top_gainers = await pool_conn.fetch(
+                "SELECT symbol, display_name, percent_change FROM discover_stock_snapshots "
+                "WHERE percent_change IS NOT NULL "
+                "ORDER BY percent_change DESC LIMIT 5"
+            )
+            top_losers = await pool_conn.fetch(
+                "SELECT symbol, display_name, percent_change FROM discover_stock_snapshots "
+                "WHERE percent_change IS NOT NULL "
+                "ORDER BY percent_change ASC LIMIT 5"
+            )
+            if top_gainers:
+                gs = ", ".join(f"{r['symbol']} ({r['percent_change']:+.1f}%)" for r in top_gainers)
+                context_parts.append(f"Top gainers today: {gs}")
+                real_names.extend(r["symbol"] for r in top_gainers)
+                real_names.extend(str(r.get("display_name") or "") for r in top_gainers)
+            if top_losers:
+                ls = ", ".join(f"{r['symbol']} ({r['percent_change']:+.1f}%)" for r in top_losers)
+                context_parts.append(f"Top losers today: {ls}")
+                real_names.extend(r["symbol"] for r in top_losers)
+                real_names.extend(str(r.get("display_name") or "") for r in top_losers)
+        except Exception:
+            pass
+
+        # ── 4. Real open/upcoming IPOs ─────────────────────────────
+        try:
+            from app.services.ipo_service import get_ipos
+            ipo_data = await get_ipos(status="open", limit=5)
+            open_ipos = [i for i in (ipo_data.get("items") or []) if i.get("company_name")]
+            if not open_ipos:
+                ipo_data = await get_ipos(status="upcoming", limit=5)
+                open_ipos = [i for i in (ipo_data.get("items") or []) if i.get("company_name")]
+            if open_ipos:
+                names = [str(i["company_name"]) for i in open_ipos[:5]]
+                context_parts.append(f"Current IPOs: {', '.join(names)}")
+                real_names.extend(names)
+        except Exception:
+            pass
+
+        # ── 5. User's watchlist ─────────────────────────────────────
         if device_id:
             try:
-                pool = await get_pool()
-                rows = await pool.fetch(
+                pool_conn = await get_pool()
+                rows = await pool_conn.fetch(
                     "SELECT asset FROM device_watchlists "
                     "WHERE device_id = $1 ORDER BY position ASC LIMIT 10",
                     device_id,
                 )
                 watchlist_symbols = [r["asset"] for r in rows if r.get("asset")]
                 if watchlist_symbols:
-                    context_parts.append(f"User's watchlist: {', '.join(watchlist_symbols[:8])}")
+                    context_parts.append(
+                        f"User's watchlist: {', '.join(watchlist_symbols[:8])}"
+                    )
+                    real_names.extend(watchlist_symbols[:8])
             except Exception:
                 pass
 
-        # Top movers for context
+        # ── 6. Recent news headlines (from news_articles, top 5) ────
         try:
-            pool = await get_pool()
-            top_mover = await pool.fetchrow(
-                "SELECT symbol, percent_change FROM discover_stock_snapshots "
-                "WHERE percent_change IS NOT NULL ORDER BY percent_change DESC LIMIT 1"
+            pool_conn = await get_pool()
+            news_rows = await pool_conn.fetch(
+                "SELECT title, primary_entity FROM news_articles "
+                "WHERE timestamp > NOW() - INTERVAL '24 hours' "
+                "  AND title IS NOT NULL "
+                "ORDER BY timestamp DESC LIMIT 5"
             )
-            if top_mover:
-                context_parts.append(
-                    f"Today's top gainer: {top_mover['symbol']} ({top_mover['percent_change']:+.1f}%)"
-                )
+            if news_rows:
+                heads = [
+                    f"\"{(r['title'] or '')[:90]}\""
+                    for r in news_rows
+                ]
+                context_parts.append("Recent news:\n- " + "\n- ".join(heads))
+        except Exception:
+            pass
+
+        # ── 7. Macro snapshot (latest inflation / repo / GDP) ──────
+        try:
+            pool_conn = await get_pool()
+            macro_rows = await pool_conn.fetch(
+                "SELECT indicator_name, country, value FROM macro_indicators "
+                "WHERE country IN ('India', 'IN') "
+                "  AND indicator_name IN ('inflation_cpi', 'repo_rate', 'gdp_growth') "
+                "ORDER BY timestamp DESC LIMIT 6"
+            )
+            if macro_rows:
+                seen: set[str] = set()
+                parts = []
+                for r in macro_rows:
+                    ind = str(r["indicator_name"])
+                    if ind in seen:
+                        continue
+                    seen.add(ind)
+                    parts.append(f"{ind}={r['value']}")
+                if parts:
+                    context_parts.append("India macro: " + ", ".join(parts))
         except Exception:
             pass
 
         context_str = "\n".join(context_parts) if context_parts else "No additional context."
 
-        # Call LLM
+        # ── LLM call ────────────────────────────────────────────────
         api_key = _get_api_key()
         if not api_key:
             return _static_suggestions(ist_hour)
 
+        # Build a crisp guardrail listing real names we want the model to use
+        real_name_list = ", ".join(sorted(set(n for n in real_names if n)))[:500]
+
+        system = (
+            "You generate a POOL of exactly 30 short, diverse suggested "
+            "prompts for an Indian market AI chatbot called Artha. These "
+            "are questions a retail investor would type into the app. "
+            "\n\n"
+            "STRICT RULES:\n"
+            "1. Every prompt MUST reference REAL data from the live context "
+            "below. Never invent company names. Never use placeholders like "
+            "'XYZ', 'ABC', 'Company X', 'Stock A'. If you don't know a real "
+            "name, ask a generic market question instead.\n"
+            "2. Max 12 words per prompt. Conversational tone, no instructional "
+            "verbs like 'Ask for...' or 'Check...'. Write as if the user is "
+            "typing the question.\n"
+            "3. English only, first-person, no numbering, no bullets.\n"
+            "4. DIVERSE: mix stocks, mutual funds, macro, IPOs, tax, "
+            "commodities, crypto, news reactions, sector views, watchlist "
+            "references.\n"
+            "5. Output exactly 30 prompts, one per line. No headings."
+        )
+        user_msg = (
+            f"Live market context (use only these real names):\n{context_str}\n\n"
+        )
+        if real_name_list:
+            user_msg += (
+                f"Approved entity names (pick from these for stock/IPO "
+                f"mentions): {real_name_list}\n\n"
+            )
+        user_msg += "Generate 30 diverse prompts NOW (one per line):"
+
         prompt_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You generate exactly 6 short suggested prompts in English for an "
-                    "Indian market AI chatbot called Artha. "
-                    "Each prompt should be a natural question a retail investor would ask. "
-                    "Make them diverse: mix stocks, MFs, macro, IPOs, tax, commodities. "
-                    "Make them contextual to the current time and market conditions. "
-                    "If the user has a watchlist, include 1-2 prompts about their stocks. "
-                    "Output ONLY the 6 English prompts, one per line, no numbering, no bullets."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Current context:\n{context_str}\n\n"
-                    "Generate 6 suggested prompts in English:"
-                ),
-            },
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_msg},
         ]
 
-        result = await _call_llm_blocking(api_key, prompt_messages, max_tokens=200)
-        if result:
-            lines = [
-                line.strip().lstrip("0123456789.-) ")
-                for line in result.strip().split("\n")
-                if line.strip() and len(line.strip()) > 5
-            ][:6]
-            if len(lines) >= 4:
-                return lines
+        result = await _call_llm_blocking(api_key, prompt_messages, max_tokens=900)
+        if not result:
+            return _static_suggestions(ist_hour)
 
-        # Fallback
+        raw_lines = [
+            line.strip().lstrip("0123456789.-) *•")
+            for line in result.strip().split("\n")
+        ]
+        # Filter: non-empty, minimum length, and reject obvious placeholders
+        placeholder_markers = (
+            "xyz", "abc ", "company x", "company y", "stock a", "stock b",
+            "<company>", "<stock>", "[company]", "[stock]", "placeholder",
+        )
+        cleaned: list[str] = []
+        for line in raw_lines:
+            if not line or len(line) < 6:
+                continue
+            low = line.lower()
+            if any(p in low for p in placeholder_markers):
+                logger.debug("suggestions: filtered placeholder line: %r", line)
+                continue
+            cleaned.append(line)
+
+        # Dedup (case-insensitive)
+        seen_low: set[str] = set()
+        unique: list[str] = []
+        for line in cleaned:
+            k = line.lower()
+            if k in seen_low:
+                continue
+            seen_low.add(k)
+            unique.append(line)
+
+        if len(unique) >= 6:
+            return unique[:_POOL_SIZE]
+
         return _static_suggestions(ist_hour)
 
     except Exception as e:
-        logger.warning("Failed to generate LLM suggestions: %s", e)
+        logger.warning("suggestions: compute_llm failed: %s", e, exc_info=True)
         now = datetime.now(timezone.utc)
         ist_hour = (now.hour + 5) % 24 + (30 // 60)
         return _static_suggestions(ist_hour)

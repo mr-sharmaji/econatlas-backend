@@ -45,25 +45,35 @@ def _configure_logging(level_name: str | None) -> int:
 
 
 async def _warm_artha_cache() -> None:
-    """Warm the Artha suggestions cache in the background so the first
-    real client request hits a populated cache instead of the ~7s cold
-    LLM path. Non-fatal — failures just mean the first request uses
-    the static fallback."""
+    """Warm the Artha suggestions POOL in the background so the first
+    real client request picks 10 random items from a populated pool
+    instead of falling back to the static list. Non-fatal — failures
+    just mean the first request uses the static fallback until the
+    next background refresh completes."""
     try:
         import asyncio as _asyncio
         # Delay slightly so it runs after the pool + worker are fully up
         await _asyncio.sleep(2)
-        from app.services.chat_service import _compute_suggestions_llm, _suggestions_cache
+        from app.services.chat_service import (
+            _compute_suggestions_llm,
+            _suggestions_pool,
+        )
         import time as _time
-        logger.info("artha: warming suggestions cache…")
-        lines = await _compute_suggestions_llm(device_id=None)
-        if lines and len(lines) >= 4:
-            _suggestions_cache["_global"] = (lines, _time.time())
-            logger.info("artha: cache warmed with %d suggestions", len(lines))
+        logger.info("artha: warming suggestions pool…")
+        suggestions = await _compute_suggestions_llm(device_id=None)
+        if suggestions and len(suggestions) >= 6:
+            _suggestions_pool["_global"] = (suggestions, _time.time())
+            logger.info(
+                "artha: suggestions pool warmed with %d items",
+                len(suggestions),
+            )
         else:
-            logger.warning("artha: cache warmup returned empty result")
+            logger.warning(
+                "artha: pool warmup returned only %d items (<6) — static fallback",
+                len(suggestions) if suggestions else 0,
+            )
     except Exception:
-        logger.warning("artha: cache warmup failed", exc_info=True)
+        logger.warning("artha: pool warmup failed", exc_info=True)
 
 
 @asynccontextmanager
