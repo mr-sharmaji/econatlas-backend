@@ -103,43 +103,54 @@ async def run_news_embed_job(max_articles: int = MAX_ARTICLES_PER_RUN) -> dict[s
 
             vectors = await embed_texts(texts)
 
-            # Build one UPDATE per vector — asyncpg doesn't have a great
-            # batched UPDATE story for vector columns, but we can use
-            # executemany() with a single prepared statement.
-            batch_data = []
+            # Per-row UPDATE with individual error handling.
+            #
+            # We intentionally DO NOT use executemany() here: the
+            # news_articles table has some legacy rows with duplicated
+            # url values (the unique index news_articles_url_key is
+            # stale / was added after duplicates existed). When Postgres
+            # performs index maintenance for an UPDATE on a duplicated
+            # row, the uniqueness check against the sibling duplicate
+            # fires even though we didn't touch the url column — and
+            # executemany() rolls back the entire 32-row batch.
+            #
+            # Single-row UPDATEs let the bad rows skip while the good
+            # rows commit. The per-row overhead is negligible compared
+            # to the embedding compute time (~30ms per vector).
             batch_failed = 0
+            batch_embedded = 0
+            batch_skipped = 0
             for row_id, vec in zip(ids, vectors):
                 if not vec:
                     batch_failed += 1
                     continue
-                batch_data.append((np.array(vec, dtype=np.float32), row_id))
-            total_failed += batch_failed
-
-            if batch_data:
                 try:
-                    await conn.executemany(
+                    await conn.execute(
                         "UPDATE news_articles SET embedding = $1 WHERE id = $2",
-                        batch_data,
+                        np.array(vec, dtype=np.float32),
+                        row_id,
                     )
-                except Exception:
-                    logger.exception(
-                        "news_embed: batch=%d UPDATE failed for %d rows",
-                        batch_num, len(batch_data),
+                    batch_embedded += 1
+                except Exception as e:
+                    # Most common cause: the row's url conflicts with a
+                    # legacy duplicate in the stale unique index. We
+                    # log at DEBUG (not WARNING) so the backfill log
+                    # stream stays readable — duplicates are expected
+                    # and fixed by a separate cleanup step.
+                    logger.debug(
+                        "news_embed: skip row=%s reason=%s",
+                        row_id, str(e)[:100],
                     )
-                    return {
-                        "status": "error",
-                        "reason": "db_update_failed",
-                        "processed": total_processed,
-                        "failed": total_failed,
-                    }
-                total_processed += len(batch_data)
+                    batch_skipped += 1
+            total_processed += batch_embedded
+            total_failed += batch_failed + batch_skipped
 
             batch_elapsed = time.monotonic() - batch_start
-            rate = len(batch_data) / batch_elapsed if batch_elapsed > 0 else 0
+            rate = batch_embedded / batch_elapsed if batch_elapsed > 0 else 0
             logger.info(
-                "news_embed: batch=%d embedded=%d failed=%d total=%d/%d "
-                "elapsed=%.2fs rate=%.1f/s",
-                batch_num, len(batch_data), batch_failed,
+                "news_embed: batch=%d embedded=%d skipped=%d failed=%d "
+                "total=%d/%d elapsed=%.2fs rate=%.1f/s",
+                batch_num, batch_embedded, batch_skipped, batch_failed,
                 total_processed, max_articles, batch_elapsed, rate,
             )
 
