@@ -72,38 +72,36 @@ Available tools:
 12. You are knowledgeable about Indian markets, taxation, IPOs, mutual funds, and macroeconomics
 13. When user asks about "my stocks" or "my watchlist", use the watchlist tool
 14. Commodity prices are in USD and INR. FII/DII values are in Indian Rupees Crores (Cr).
-15. IMPORTANT: At the END of every response, add exactly 4 follow-up suggestions in this format:
+15. IMPORTANT: At the END of every response, add exactly 3 follow-up suggestions in this format:
 [SUGGESTIONS]
 - Follow-up question 1
 - Follow-up question 2
 - Follow-up question 3
-- Follow-up question 4
 [/SUGGESTIONS]
 
-RULES for follow-up suggestions:
+STRICT RULES for follow-up suggestions:
+- MAXIMUM 6 WORDS per suggestion — count them, no exceptions
 - Write each as if the USER is asking YOU — first person from the user's perspective
-- Keep them SHORT (4-10 words), natural, and conversational
-- Make them relevant to what was JUST discussed
-- DO NOT write instructional verbs like "Ask for...", "Inquire about...", "Check...", "Request...", "Get..." — those sound like instructions to the user, not questions
-- DO write direct questions the user would type
+- Punchy, natural, conversational
+- Relevant to what was JUST discussed
+- DO NOT start with instructional verbs ("Ask for...", "Inquire about...", "Check...", "Request...", "Get...", "See...", "Show me how...")
+- DO write direct short questions/commands
 
-GOOD examples (if the topic was TCS):
-- "Compare TCS with Infosys"
-- "Show TCS 5-year returns"
-- "What's TCS fair value?"
-- "Any TCS news today?"
-
-GOOD examples (if the topic was market status):
-- "Top gainers today"
-- "How are IT stocks doing?"
-- "Nifty vs Sensex trend"
-- "Best performing sector today"
+GOOD examples (≤6 words, first-person):
+- "Compare TCS with Infosys"          (4 words ✓)
+- "TCS 5-year returns?"               (3 words ✓)
+- "TCS fair value?"                   (3 words ✓)
+- "Any TCS news today?"               (4 words ✓)
+- "Top gainers today"                 (3 words ✓)
+- "How are IT stocks?"                (4 words ✓)
+- "Best sector this week"             (4 words ✓)
+- "FII flow trend"                    (3 words ✓)
 
 BAD examples (DO NOT write these):
-- "Ask for the top gainers" ← instructional
-- "Inquire about sector performance" ← instructional
-- "Check the macro indicators" ← instructional
-- "Request the latest news" ← instructional
+- "Ask for the top gainers and losers in Nifty 50"    ← instructional + too long
+- "Show a side-by-side comparison of Reliance and HDFC Bank"  ← too long (10 words)
+- "Check the FII/DII flow trends after major earnings releases this month"  ← instructional + too long
+- "Get the latest analyst consensus EPS for Infosys and Tata Motors"  ← instructional + too long
 """
 
 # ---------------------------------------------------------------------------
@@ -1173,27 +1171,55 @@ async def stream_chat_response(
     final_response = _TOOL_PATTERN.sub("", final_response).strip()
     final_response = _CARD_PATTERN.sub("", final_response).strip()
 
-    # Extract follow-up suggestions before streaming
+    # Extract follow-up suggestions before streaming.
+    # Server-side enforcement: max 3 chips, max 6 words each (hard cap
+    # so the UI chips stay single-line regardless of LLM compliance).
     follow_ups = []
     suggestions_match = _SUGGESTIONS_PATTERN.search(final_response)
     if suggestions_match:
         raw = suggestions_match.group(1).strip()
-        follow_ups = [
-            line.lstrip("- ").strip()
-            for line in raw.split("\n")
-            if line.strip() and line.strip() != "-"
-        ][:4]
+        for line in raw.split("\n"):
+            cleaned = line.lstrip("- *•").strip().strip('"').strip()
+            if not cleaned or cleaned == "-":
+                continue
+            # Hard-cap to 6 words — truncate mid-sentence and add ellipsis
+            # only if the LLM ignored the prompt limit.
+            words = cleaned.split()
+            if len(words) > 6:
+                cleaned = " ".join(words[:6]).rstrip(",.;:") + "…"
+            follow_ups.append(cleaned)
+            if len(follow_ups) >= 3:
+                break
         final_response = _SUGGESTIONS_PATTERN.sub("", final_response).strip()
+        if follow_ups:
+            logger.info(
+                "chat_stream: follow_ups extracted count=%d preview=%r",
+                len(follow_ups), follow_ups,
+            )
 
-    # Stream tokens (simulate word-by-word for now — real streaming when model supports it)
-    words = final_response.split()
+    # Stream tokens — preserve newlines, tabs, and all whitespace so
+    # markdown structures (tables, bullet lists, paragraphs) render
+    # correctly on the client. The previous implementation used
+    # .split() + " ".join() which collapsed ALL whitespace (including
+    # newlines) to a single space, breaking every table and list.
+    #
+    # Strategy: split on whitespace but KEEP the separators as their
+    # own tokens via re.split(r'(\s+)', ...), then re-emit in chunks of
+    # ~4 word-tokens so the stream still feels smooth.
+    tokens = re.split(r'(\s+)', final_response)
     buffer = ""
-    for i, word in enumerate(words):
-        buffer += word + " "
-        # Send in chunks of ~3-5 words for smooth UX
-        if len(buffer.split()) >= 4 or i == len(words) - 1:
+    word_count = 0
+    for tok in tokens:
+        buffer += tok
+        # Only non-whitespace tokens count toward the word quota
+        if tok and not tok.isspace():
+            word_count += 1
+        if word_count >= 4:
             yield {"event": "token", "data": {"text": buffer}}
             buffer = ""
+            word_count = 0
+    if buffer:
+        yield {"event": "token", "data": {"text": buffer}}
 
     # Send stock cards
     for card in stock_cards[:5]:
