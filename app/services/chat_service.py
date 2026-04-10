@@ -916,19 +916,71 @@ async def _execute_tool(
             }
 
         elif tool_name == "macro":
-            indicator = params.get("indicator", "")
+            # Fetch macro indicator readings. Defaults to India but
+            # accepts an explicit country param (IN, US, EU, JP, CN).
+            #
+            # Bug fix: the old query was `ORDER BY timestamp DESC
+            # LIMIT 5` without a country filter, which returned the
+            # 5 most-recent rows globally. ECB (EU) updates daily but
+            # RBI (IN) updates monthly, so `repo_rate` always returned
+            # EU data and the LLM then said "no India data". Now we
+            # default to India and allow country override.
+            indicator = str(params.get("indicator", "") or "").strip()
             if not indicator:
-                return {"error": "No indicator specified"}
+                return {
+                    "error": "No indicator specified",
+                    "hint": "Valid indicators: repo_rate, inflation_cpi, gdp_growth, usd_inr, fiscal_deficit, current_account, iip_growth",
+                }
+            country_raw = str(params.get("country", "") or "").strip().upper()
+            # Normalise common aliases
+            country_map = {
+                "": "IN",          # default to India
+                "INDIA": "IN",
+                "INR": "IN",
+                "US": "US",
+                "USA": "US",
+                "AMERICA": "US",
+                "EU": "EU",
+                "EUROPE": "EU",
+                "EUROZONE": "EU",
+                "JP": "JP",
+                "JAPAN": "JP",
+                "CN": "CN",
+                "CHINA": "CN",
+            }
+            country = country_map.get(country_raw, country_raw or "IN")
+
             rows = await pool.fetch(
                 "SELECT indicator_name, country, value, timestamp "
                 "FROM macro_indicators "
                 "WHERE indicator_name ILIKE $1 "
-                "ORDER BY timestamp DESC LIMIT 5",
+                "  AND country = $2 "
+                "ORDER BY timestamp DESC LIMIT 12",
                 f"%{indicator}%",
+                country,
             )
+            if not rows:
+                return {
+                    "error": f"No {indicator} data found for {country}",
+                    "indicator": indicator,
+                    "country": country,
+                    "hint": "Try a different country (US, EU, JP) or indicator name",
+                }
+            data = [record_to_dict(r) for r in rows]
+            latest = data[0]
+            prev = data[1] if len(data) > 1 else None
+            change = None
+            if prev and latest.get("value") is not None and prev.get("value") is not None:
+                change = float(latest["value"]) - float(prev["value"])
             return {
                 "indicator": indicator,
-                "data": [record_to_dict(r) for r in rows],
+                "country": country,
+                "latest_value": latest.get("value"),
+                "latest_date": latest.get("timestamp"),
+                "prev_value": prev.get("value") if prev else None,
+                "change_vs_prev": change,
+                "history": data[:12],
+                "count": len(data),
             }
 
         elif tool_name == "commodity":
