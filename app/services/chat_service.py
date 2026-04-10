@@ -4686,15 +4686,40 @@ async def generate_suggestions(
             )
             return picks
 
-    # No pool or too stale — fire a bg refresh and return static fallback
-    # this one time. Subsequent requests (within ~15s) hit the warm pool.
+    # No device-specific pool — kick a background refresh for NEXT time,
+    # but don't leave the user with stale static strings on THIS call.
+    # Fall back to the _global pool (warmed at app startup by
+    # _warm_artha_cache) which contains ~30 live-context LLM suggestions.
+    # That way a cold-start device gets the same quality suggestions as
+    # /chat/greeting, just without the device-specific watchlist tint.
+    if pool_key != "_global":
+        _kick_pool_refresh(device_id, pool_key)
+        global_entry = _suggestions_pool.get("_global")
+        if global_entry is not None:
+            global_items, global_ts = global_entry
+            global_age = now_ts - global_ts
+            if global_age < _POOL_MAX_AGE and global_items:
+                sample_size = min(count, len(global_items))
+                picks = random.sample(global_items, sample_size)
+                logger.info(
+                    "suggestions: device pool cold key=%s, serving from _global "
+                    "(age=%.0fs size=%d pick=%d)",
+                    pool_key, global_age, len(global_items), sample_size,
+                )
+                return picks
+
+    # Both pools cold (first-ever request or warmup hasn't completed).
+    # Return the static fallback — now guaranteed to have ≥10 items
+    # per time bucket so a request for 10 is always satisfied.
     logger.info(
-        "suggestions: pool MISS key=%s — returning static, refreshing in bg",
+        "suggestions: pool MISS key=%s and _global also empty — returning static, "
+        "refreshing in bg",
         pool_key,
     )
     _kick_pool_refresh(device_id, pool_key)
+    if pool_key != "_global":
+        _kick_pool_refresh(None, "_global")
     static = _static_suggestions(ist_hour)
-    # Extend static with a few more so the "cold" fallback doesn't feel thin
     return static[:count]
 
 
@@ -4943,27 +4968,57 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
 
 
 def _static_suggestions(ist_hour: int) -> list[str]:
-    """Time-based static fallback suggestions."""
+    """Time-based static fallback suggestions.
+
+    Each bucket returns at least 12 items so a request for 10 never
+    falls short.  Previously each bucket had only 4 items, which meant
+    the cold-start /chat/suggestions request returned 4 even though the
+    caller asked for 10.
+    """
     if ist_hour < 9:
         return [
             "How is Gift Nifty today?",
-            "Any upcoming IPOs?",
-            "Best flexi cap mutual funds",
             "What is the market setup today?",
+            "Any upcoming IPOs to watch?",
+            "Best flexi cap mutual funds",
+            "How did US markets close overnight?",
+            "Top momentum stocks for today",
+            "How are my watchlist stocks shaping up?",
+            "What's the Fed doing this week?",
+            "FII/DII flows for yesterday",
+            "How much SIP for 1 crore in 10 years?",
+            "Best EV stocks right now",
+            "Pre-market macro summary for India",
         ]
     elif ist_hour < 15:
         return [
             "How is Nifty doing today?",
             "How are my watchlist stocks doing?",
             "Which sectors are leading today?",
-            "Compare TCS vs Infosys",
+            "Compare TCS vs Infosys vs HCL",
+            "Top 5 Nifty IT heavyweights today",
+            "FII net buying in Indian equities today",
+            "What's the market mood right now?",
+            "Best flexi cap mutual funds",
+            "Upcoming IPOs open for subscription",
+            "Which stocks hit 52-week highs today?",
+            "Any red flags in my watchlist?",
+            "Best EV / renewable energy stocks",
         ]
     elif ist_hour < 20:
         return [
-            "How did the market close?",
+            "How did the market close today?",
             "Best performing sectors today",
-            "Best flexi cap mutual funds",
+            "Top gainers and losers",
+            "How did my watchlist do today?",
+            "FII/DII flows for the day",
             "Calculate LTCG tax on ₹5L profit",
+            "Best flexi cap mutual funds",
+            "Should I trim any of my stocks?",
+            "Which stocks are rotating in?",
+            "What's on tomorrow's calendar?",
+            "How much SIP for retirement at 60?",
+            "Top 5 dividend yield stocks",
         ]
     else:
         return [
@@ -4971,6 +5026,14 @@ def _static_suggestions(ist_hour: int) -> list[str]:
             "India GDP growth trend",
             "Any upcoming IPOs?",
             "Best flexi cap mutual funds",
+            "How is the US market doing right now?",
+            "Compare TCS vs Infosys",
+            "How much SIP for 1 crore in 10 years?",
+            "Best EV stocks in India",
+            "What's my watchlist diversification?",
+            "Best dividend yield stocks",
+            "Asset allocation for a 30 year old",
+            "Upcoming RBI policy meeting date",
         ]
 
 
