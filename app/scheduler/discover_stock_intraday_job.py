@@ -64,8 +64,14 @@ from typing import Any
 import httpx
 
 from app.core.database import get_pool
+from app.scheduler.trading_calendar import is_trading_day_markets
 
 logger = logging.getLogger(__name__)
+
+# Below this fraction of successful updates we log an ERROR so the
+# ops dashboard / log pipeline picks up the degradation. Normal runs
+# should be ≥ 98 %. Sustained < 80 % = something is broken upstream.
+_LOW_UPDATE_RATIO_THRESHOLD = 0.80
 
 # ── NSE configuration ───────────────────────────────────────────────
 _NSE_HOME_URL = "https://www.nseindia.com"
@@ -128,6 +134,39 @@ def _in_pipeline_exclusion_window() -> bool:
     end = 16 * 60 + 45
     now = h * 60 + m
     return start <= now < end
+
+
+def _in_live_market_window() -> bool:
+    """True if current IST is 09:15-15:30 inclusive (live trading).
+
+    NSE pre-open auction (09:00-09:15) returns previous-day closing
+    data so running the fetch then just rewrites stale values as
+    "today". Post-close (> 15:30) the exchange returns the closing
+    print which is captured by the explicit 15:45 close cron. This
+    gate keeps every routine tick inside the actual live session.
+    """
+    h, m = _ist_hour_minute()
+    start = 9 * 60 + 15
+    end = 15 * 60 + 30
+    now = h * 60 + m
+    return start <= now <= end
+
+
+def _is_trading_day_today() -> bool:
+    """Check the shared trading calendar so we skip holidays.
+
+    Mon-Fri cron alone doesn't cover Holi, Diwali, Republic Day, etc.
+    On holidays NSE returns stale close data that would overwrite
+    whatever fresh values we have. The daily pipeline uses the same
+    calendar helper.
+    """
+    try:
+        return is_trading_day_markets(datetime.now(timezone.utc))
+    except Exception:
+        logger.debug("intraday: trading calendar check failed", exc_info=True)
+        # Fail-open: if the calendar raises, we'd rather run (stale
+        # data is harmless) than silently skip trading days.
+        return True
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -385,14 +424,39 @@ async def _fetch_yahoo_fallback(
 async def run_discover_stock_intraday_job() -> None:
     """Refresh live-price columns for the full Indian universe.
 
+    Stage 0: Trading-day / market-hours gates.
     Stage 1: NSE bulk index endpoints (primary, ~6 calls, ~3s).
     Stage 2: Yahoo v7 batch fallback for whatever NSE missed.
     Stage 3: UPDATE snapshots + INSERT intraday ticks + prune old ticks.
+    Stage 4: Low-update-ratio ERROR log for ops observability.
     """
+    # ── Gate 1: NSE/BSE holiday calendar ────────────────────────────
+    if not _is_trading_day_today():
+        logger.info(
+            "discover_stock_intraday: skipping — not a trading day per "
+            "trading_calendar (holiday or weekend)",
+        )
+        return
+
+    # ── Gate 2: daily pipeline exclusion window ─────────────────────
     if _in_pipeline_exclusion_window():
         logger.info(
             "discover_stock_intraday: skipping — inside 15:55-16:45 IST "
             "heavy pipeline window",
+        )
+        return
+
+    # ── Gate 3: live-market window ──────────────────────────────────
+    # The scheduler fires 30-min slots in 09:00-15:45 IST but only
+    # 09:15-15:30 is the true live session. The explicit 15:45 close
+    # cron is allowed through by bypassing this gate (it's scheduled
+    # separately so _force_close=True via env var is unnecessary).
+    h, m = _ist_hour_minute()
+    is_close_tick = (h == 15 and m == 45)
+    if not is_close_tick and not _in_live_market_window():
+        logger.info(
+            "discover_stock_intraday: skipping — outside live market "
+            "window (09:15-15:30 IST). Now=%02d:%02d IST", h, m,
         )
         return
 
@@ -459,7 +523,7 @@ async def run_discover_stock_intraday_job() -> None:
                     percent_change = COALESCE($4, percent_change),
                     volume = COALESCE($5, volume),
                     traded_value = COALESCE($6, traded_value),
-                    updated_at = NOW()
+                    ingested_at = NOW()
                 WHERE symbol = $1
                 """,
                 symbol,
@@ -503,9 +567,24 @@ async def run_discover_stock_intraday_job() -> None:
     except Exception:
         logger.debug("intraday: prune failed", exc_info=True)
 
-    logger.info(
-        "discover_stock_intraday: done in %.1fs — "
-        "updated=%d (nse=%d yahoo=%d) skipped=%d errors=%d",
-        time.monotonic() - t0,
-        updated, nse_count, yahoo_count, skipped, errors,
+    elapsed = time.monotonic() - t0
+    total = len(symbols)
+    ratio = updated / total if total else 0.0
+    log_fn = (
+        logger.error
+        if ratio < _LOW_UPDATE_RATIO_THRESHOLD
+        else logger.info
     )
+    log_fn(
+        "discover_stock_intraday: done in %.1fs — "
+        "updated=%d/%d (%.0f%%) nse=%d yahoo=%d skipped=%d errors=%d",
+        elapsed, updated, total, ratio * 100,
+        nse_count, yahoo_count, skipped, errors,
+    )
+    if ratio < _LOW_UPDATE_RATIO_THRESHOLD and total >= 100:
+        logger.error(
+            "discover_stock_intraday: LOW UPDATE RATIO — only %.0f%% of "
+            "symbols updated this tick. Check NSE cookie session and "
+            "Yahoo reachability.",
+            ratio * 100,
+        )

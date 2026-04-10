@@ -3939,11 +3939,15 @@ async def _fetch_yahoo_intraday(symbol: str) -> list[dict]:
 async def get_stock_intraday_history(*, symbol: str) -> list[dict]:
     """Return today's intraday ticks for a stock (30-min or 5-min granularity).
 
-    Hybrid source:
-    1. Stored table `discover_stock_intraday` for persistent 30-min ticks.
-    2. On-demand Yahoo 5-min fetch if the stored table has fewer than 3
-       points for today.
-    3. 5-minute process-local cache keyed by symbol to absorb bursts.
+    Hybrid source (four-level fallback):
+    1. Stored ``discover_stock_intraday`` table — today's 30-min ticks.
+    2. On-demand Yahoo 5-min fetch if the stored table has < 3 points
+       (pre-market, cold start).
+    3. Previous trading session's ticks from the same ``discover_stock_intraday``
+       table (labeled as "yesterday's session") if both today's stored
+       and today's Yahoo fetch came up empty — so the 1D chart is
+       never blank when the user opens a stock at 07:00 IST.
+    4. 5-minute process-local cache keyed by symbol to absorb bursts.
     """
     key = symbol.upper().strip()
     now = _time.time()
@@ -3952,29 +3956,45 @@ async def get_stock_intraday_history(*, symbol: str) -> list[dict]:
         return cached[1]
 
     pool = await get_pool()
+    # Level 1: today's stored ticks.
     rows = await pool.fetch(
         """
         SELECT ts, price, volume, percent_change
         FROM discover_stock_intraday
         WHERE symbol = $1
-          AND ts >= CURRENT_DATE AT TIME ZONE 'Asia/Kolkata'
+          AND ts >= (CURRENT_DATE AT TIME ZONE 'Asia/Kolkata')::timestamptz
         ORDER BY ts ASC
         """,
         key,
     )
     points = [record_to_dict(r) for r in rows]
 
-    # If the stored table has fewer than 3 ticks (start of day, before
-    # the first scheduler run), fall back to Yahoo 5-min ticks.
+    # Level 2: Yahoo 5-min fallback if the stored table is thin.
     if len(points) < 3:
         yahoo_points = await _fetch_yahoo_intraday(key)
         if yahoo_points:
             points = yahoo_points
 
+    # Level 3: previous session's ticks if both levels above returned
+    # nothing (typical on pre-market open or when the scheduler hasn't
+    # fired yet today). The tick table keeps 2 days of retention so
+    # yesterday's session is still there.
+    if not points:
+        yday_rows = await pool.fetch(
+            """
+            SELECT ts, price, volume, percent_change
+            FROM discover_stock_intraday
+            WHERE symbol = $1
+              AND ts >= NOW() - INTERVAL '24 hours'
+            ORDER BY ts ASC
+            """,
+            key,
+        )
+        points = [record_to_dict(r) for r in yday_rows]
+
     _INTRADAY_CACHE[key] = (now, points)
     # Bound the cache size to prevent unbounded growth.
     if len(_INTRADAY_CACHE) > 2000:
-        # Drop the 500 oldest entries (by insertion order in Python 3.7+).
         for k in list(_INTRADAY_CACHE.keys())[:500]:
             _INTRADAY_CACHE.pop(k, None)
     return points
