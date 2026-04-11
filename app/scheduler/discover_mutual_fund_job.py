@@ -305,6 +305,68 @@ class DiscoverMutualFundScraper(BaseScraper):
                 return href
         return None
 
+    # Direct-plan expense-ratio sanity ceilings per sub-category. A
+    # direct-plan Arbitrage fund charging 2.45% TER is impossible —
+    # that's the SEBI equity-category cap, not an actual per-fund fee,
+    # and the scraper has been picking up a generic header/footer cell
+    # or a regulatory-cap JSON field and attributing it to every fund.
+    # When the parser returns a value above these ceilings for a
+    # Direct plan, we treat the value as corrupt and drop it so the
+    # downstream cost-score / tag pipeline doesn't poison its rankings
+    # with bogus 2.45% rows.
+    _DIRECT_TER_CEILING: dict[str, float] = {
+        "arbitrage": 0.8,
+        "arbitrage fund": 0.8,
+        "overnight": 0.3,
+        "overnight fund": 0.3,
+        "liquid": 0.4,
+        "liquid fund": 0.4,
+        "ultra short": 0.6,
+        "ultra short duration fund": 0.6,
+        "low duration": 0.7,
+        "low duration fund": 0.7,
+        "money market": 0.5,
+        "money market fund": 0.5,
+        "short duration": 0.8,
+        "short duration fund": 0.8,
+        "banking and psu": 0.8,
+        "banking & psu": 0.8,
+        "index funds": 0.6,
+        "index fund": 0.6,
+        "etf": 0.5,
+    }
+    # Absolute ceiling for any direct plan. Real direct-plan TERs are
+    # almost always < 1.5%; anything at or above 2.0% is essentially
+    # guaranteed to be a scraping artefact (regulatory cap, generic
+    # banner value, or cross-contamination from a regular-plan row).
+    _DIRECT_TER_HARD_CEILING = 2.0
+
+    @classmethod
+    def _sanity_check_direct_expense(
+        cls,
+        expense: float | None,
+        sub_category: str | None,
+    ) -> tuple[float | None, str | None]:
+        """Return (value, rejection_reason). Reason is None when value
+        is kept, otherwise a short string used for logging.
+        """
+        if expense is None:
+            return None, None
+        try:
+            value = float(expense)
+        except (TypeError, ValueError):
+            return None, "not_a_number"
+        if value <= 0:
+            return None, "non_positive"
+        sub_low = (sub_category or "").strip().lower()
+        # Sub-category-specific ceiling
+        for key, ceiling in cls._DIRECT_TER_CEILING.items():
+            if key in sub_low and value > ceiling:
+                return None, f"above_direct_ceiling_{key}_{ceiling}"
+        if value >= cls._DIRECT_TER_HARD_CEILING:
+            return None, "above_direct_hard_ceiling"
+        return value, None
+
     def _parse_etmoney_detail_page(self, html: str, rel_link: str) -> dict | None:
         slug = self._slug_from_detail_link(rel_link)
         if not slug:
@@ -382,9 +444,31 @@ class DiscoverMutualFundScraper(BaseScraper):
         except Exception:
             pass
 
+        is_direct = "direct" in slug_low
+        if is_direct:
+            # Defensive validation: drop any suspect direct-plan TER.
+            sanity_category_hint = None
+            # We don't know sub_category at this point (it's resolved
+            # during merge), so use the display name as a weak hint.
+            lower_name = display_name.lower()
+            for key in self._DIRECT_TER_CEILING:
+                if key in lower_name:
+                    sanity_category_hint = key
+                    break
+            cleaned, reject_reason = self._sanity_check_direct_expense(
+                expense, sanity_category_hint
+            )
+            if reject_reason:
+                logger.warning(
+                    "etmoney: rejecting suspect direct-plan TER for %s: "
+                    "raw=%s reason=%s",
+                    display_name, expense, reject_reason,
+                )
+            expense = cleaned
+
         return {
             "_name_key": name_key,
-            "_is_direct": "direct" in slug_low,
+            "_is_direct": is_direct,
             "_slug": slug,
             "scheme_name": display_name,
             "option_type": option_type,
@@ -537,17 +621,26 @@ class DiscoverMutualFundScraper(BaseScraper):
                         amc = obj.get("amc") or obj.get("amcName") or obj.get("fundHouse")
                         option_type = obj.get("optionType") or obj.get("planOption")
 
+                        sub_text = (
+                            str(sub_category).strip() if sub_category else None
+                        )
+                        raw_expense = self._to_float(
+                            obj.get("expenseRatio") or obj.get("expense_ratio")
+                        )
+                        cleaned_expense, _reason = self._sanity_check_direct_expense(
+                            raw_expense, sub_text
+                        )
                         row = {
                             "scheme_code": code_text,
                             "scheme_name": name_text,
                             "amc": str(amc).strip() if amc else None,
                             "category": str(category).strip() if category else None,
-                            "sub_category": str(sub_category).strip() if sub_category else None,
+                            "sub_category": sub_text,
                             "plan_type": "direct",
                             "option_type": str(option_type).strip() if option_type else None,
                             "nav": nav,
                             "nav_date": obj.get("navDate") or obj.get("nav_date"),
-                            "expense_ratio": self._to_float(obj.get("expenseRatio") or obj.get("expense_ratio")),
+                            "expense_ratio": cleaned_expense,
                             "aum_cr": self._to_float(obj.get("aum") or obj.get("aumCr") or obj.get("aum_cr")),
                             "risk_level": self._normalize_risk(obj.get("risk") or obj.get("riskLevel") or obj.get("risk_profile")),
                             "returns_1y": self._to_float(obj.get("return1Y") or obj.get("returns1y") or obj.get("return_1y")),
