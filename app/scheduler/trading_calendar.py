@@ -326,7 +326,19 @@ def _fetch_india_session_from_nse(now_utc: datetime) -> dict | None:
     message = str(cap.get("marketStatusMessage") or "").strip() or None
 
     windows = _extract_windows_from_message(message)
-    is_trading_day = bool((trade_dt is not None and trade_dt.date() == today_ist) or is_open or windows)
+    # A non-empty `windows` list only means NSE's status message
+    # mentioned session hours — that's true on weekends too ("Next
+    # trading session: 09:15..."). Only treat today as a trading day
+    # when the NSE API's own tradeDate field matches today or the
+    # market is actively open. Then defer to XBOM as a sanity gate —
+    # XBOM knows Indian exchange holidays.
+    is_trading_day = bool(
+        (trade_dt is not None and trade_dt.date() == today_ist) or is_open
+    )
+    if is_trading_day:
+        cal = _get_nse()
+        if cal is not None and not cal.is_session(today_ist):
+            is_trading_day = False
 
     return {
         "source": "nse_api",
@@ -396,17 +408,39 @@ def _fetch_india_session_from_google(now_utc: datetime) -> dict | None:
         return None
 
     is_open = any(_in_window(local_now.timetz().replace(tzinfo=None), start, end) for start, end in windows)
+    # Google Finance shows session hours even on weekends and holidays
+    # (the "next session" display), so the mere presence of a window is
+    # NOT proof that today is a trading day. Cross-check against the
+    # XBOM exchange calendar: if the calendar says today is not a
+    # session, trust it over Google's optimistic window.
+    cal = _get_nse()
+    xbom_is_session = cal.is_session(today_ist) if cal is not None else None
+    if xbom_is_session is False:
+        is_trading_day = False
+        trade_date_val: date | None = None
+    elif xbom_is_session is True:
+        is_trading_day = True
+        trade_date_val = today_ist
+    else:
+        # No calendar available — fall back to weekday heuristic.
+        is_trading_day = today_ist.weekday() < 5
+        trade_date_val = today_ist if is_trading_day else None
+
     return {
         "source": "google_quote",
-        "is_open": is_open,
-        "windows": windows,
-        "window_source": "google_quote",
+        "is_open": is_open and is_trading_day,
+        "windows": windows if is_trading_day else [],
+        "window_source": "google_quote" if is_trading_day else None,
         "ist_date": today_ist,
-        "is_trading_day": True,
-        "trade_date": today_ist,
-        "fallback_reason": None,
-        "next_transition_utc": _next_transition_utc(now, ist_date=today_ist, windows=windows),
-        "window_label": _window_label(windows),
+        "is_trading_day": is_trading_day,
+        "trade_date": trade_date_val,
+        "fallback_reason": None if is_trading_day else "xbom_not_a_session",
+        "next_transition_utc": _next_transition_utc(
+            now,
+            ist_date=today_ist,
+            windows=windows if is_trading_day else [],
+        ),
+        "window_label": _window_label(windows) if is_trading_day else None,
         "message": None,
     }
 
@@ -466,17 +500,24 @@ def get_india_session_info(utc_now: datetime | None = None) -> dict:
             if not info.get("windows"):
                 google_info = _fetch_india_session_from_google(now)
                 if google_info and google_info.get("windows"):
-                    info["windows"] = list(google_info.get("windows") or [])
-                    info["window_source"] = "google_quote"
-                    info["window_label"] = _window_label(info["windows"])
-                    info["next_transition_utc"] = _next_transition_utc(
-                        now,
-                        ist_date=info["ist_date"],
-                        windows=info["windows"],
-                    )
-                    if not info.get("is_trading_day"):
-                        info["is_trading_day"] = bool(google_info.get("is_trading_day"))
-                    info["fallback_reason"] = "nse_window_unavailable"
+                    # Only merge Google's windows when XBOM (via the
+                    # already-sanitized google_info.is_trading_day)
+                    # confirms today is actually a session. Otherwise
+                    # we'd mark Saturdays/holidays as trading days just
+                    # because Google displayed tomorrow's hours.
+                    google_is_trading = bool(google_info.get("is_trading_day"))
+                    if google_is_trading:
+                        info["windows"] = list(google_info.get("windows") or [])
+                        info["window_source"] = "google_quote"
+                        info["window_label"] = _window_label(info["windows"])
+                        info["next_transition_utc"] = _next_transition_utc(
+                            now,
+                            ist_date=info["ist_date"],
+                            windows=info["windows"],
+                        )
+                        if not info.get("is_trading_day"):
+                            info["is_trading_day"] = True
+                        info["fallback_reason"] = "nse_window_unavailable"
         else:
             google_info = _fetch_india_session_from_google(now)
             if google_info is not None:
