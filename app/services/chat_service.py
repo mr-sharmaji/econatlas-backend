@@ -6487,9 +6487,21 @@ async def increment_rate_limit(device_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def generate_greeting() -> dict:
-    """Generate a context-aware greeting using live market data."""
+    """Generate a context-aware greeting using live market data.
+
+    Date-aware: on weekends and NSE holidays the greeting switches
+    from "Nifty is up X% today" (which would be wrong — markets
+    aren't trading) to a closed-market phrasing that references the
+    last session's move.
+    """
     try:
         from app.services.market_service import get_latest_prices
+        from app.scheduler.trading_calendar import (
+            is_trading_day_markets,
+            get_india_session_info,
+        )
+        from app.services.market_service import get_market_status
+
         prices = await get_latest_prices(instrument_type="index")
         nifty = None
         for p in prices:
@@ -6498,7 +6510,9 @@ async def generate_greeting() -> dict:
                 break
 
         now = datetime.now(timezone.utc)
-        ist_hour = (now.hour + 5) % 24 + (30 // 60)  # rough IST
+        from zoneinfo import ZoneInfo
+        ist = now.astimezone(ZoneInfo("Asia/Kolkata"))
+        ist_hour = ist.hour
 
         if ist_hour < 12:
             tod = "Good morning"
@@ -6507,14 +6521,50 @@ async def generate_greeting() -> dict:
         else:
             tod = "Good evening"
 
+        mkt_status = get_market_status(now)
+        nse_open = bool(mkt_status.get("nse_open"))
+        is_trading_day = is_trading_day_markets(now)
+        india_info = get_india_session_info(now)
+        last_session_date = india_info.get("trade_date")
+
         if nifty:
-            change = nifty.get("change_percent", 0) or 0
+            change = float(nifty.get("change_percent") or 0)
             direction = "up" if change > 0 else "down" if change < 0 else "flat"
-            greeting = f"{tod}! Nifty 50 is {direction} {abs(change):.1f}% today. What would you like to know?"
+            if nse_open:
+                greeting = (
+                    f"{tod}! Nifty 50 is {direction} {abs(change):.1f}% today. "
+                    "What would you like to know?"
+                )
+            else:
+                if last_session_date is not None:
+                    ls = last_session_date.strftime("%a")
+                    when = f"at {ls}'s close"
+                else:
+                    when = "at the last close"
+                closed_reason = (
+                    "Markets are closed for the weekend"
+                    if ist.weekday() >= 5
+                    else (
+                        "Markets are closed today"
+                        if not is_trading_day
+                        else "Markets are closed right now"
+                    )
+                )
+                greeting = (
+                    f"{tod}! {closed_reason} — Nifty 50 finished "
+                    f"{direction} {abs(change):.1f}% {when}. "
+                    "What would you like to know?"
+                )
         else:
-            greeting = f"{tod}! I'm Artha, your market analyst. Ask me anything about stocks, mutual funds, or the economy."
+            greeting = (
+                f"{tod}! I'm Artha, your market analyst. Ask me anything "
+                "about stocks, mutual funds, or the economy."
+            )
     except Exception:
-        greeting = "Namaste! I'm Artha, your market analyst. Ask me anything about Indian markets."
+        greeting = (
+            "Namaste! I'm Artha, your market analyst. Ask me anything "
+            "about Indian markets."
+        )
 
     return {"greeting": greeting}
 
@@ -6638,6 +6688,18 @@ async def generate_suggestions(
     now_ts = time.time()
     now = datetime.now(timezone.utc)
     ist_hour = (now.hour + 5) % 24 + (30 // 60)
+    try:
+        from app.scheduler.trading_calendar import is_trading_day_markets
+        from app.services.market_service import get_market_status
+        _session_closed = not bool(get_market_status(now).get("nse_open"))
+        _is_trading = bool(is_trading_day_markets(now))
+        # "Session closed" for the purpose of static suggestions means
+        # either non-trading day OR outside 9:15–15:30 IST on a trading
+        # day. Non-trading-day is what swaps the whole bucket to the
+        # closed-market static set.
+        _closed_for_statics = not _is_trading
+    except Exception:
+        _closed_for_statics = False
 
     pool_entry = _suggestions_pool.get(pool_key)
 
@@ -6686,7 +6748,7 @@ async def generate_suggestions(
     _kick_pool_refresh(device_id, pool_key)
     if pool_key != "_global":
         _kick_pool_refresh(None, "_global")
-    static = _static_suggestions(ist_hour)
+    static = _static_suggestions(ist_hour, session_closed=_closed_for_statics)
     return static[:count]
 
 
@@ -6714,6 +6776,30 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
         is_friday = ist_now.weekday() == 4
         is_monday = ist_now.weekday() == 0
 
+        # Proper trading-day detection via the exchange calendar.
+        # This catches NSE holidays (Holi, Diwali, Republic Day, ...)
+        # in addition to weekends, so the LLM never generates
+        # "top gainers today" / "live session mood" prompts on days
+        # when NSE is actually closed.
+        try:
+            from app.scheduler.trading_calendar import (
+                is_trading_day_markets,
+                get_india_session_info,
+            )
+            from app.services.market_service import get_market_status
+            _is_trading_day = bool(is_trading_day_markets(now))
+            _nse_open = bool(get_market_status(now).get("nse_open"))
+            _india_info = get_india_session_info(now)
+            _last_session_date = _india_info.get("trade_date")
+        except Exception:
+            _is_trading_day = not is_weekend
+            _nse_open = False
+            _last_session_date = None
+
+        is_holiday = (not _is_trading_day) and not is_weekend
+        session_is_closed = not _nse_open
+        pct_label = "today" if _nse_open else "last session"
+
         # ── 1. Date-of-day + weekday context ───────────────────────
         context_parts.append(
             f"Today is {day_name} {date_str} IST (day {day_of_month} of {month_name})"
@@ -6721,10 +6807,37 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
 
         day_note: list[str] = []
         if is_weekend:
-            day_note.append("Market is CLOSED for the weekend")
-        if is_friday:
+            day_note.append(
+                "Market is CLOSED for the weekend — do NOT generate "
+                "'live session' / 'right now' / 'today's movers' prompts. "
+                "Lean into education, planning, review and recap topics."
+            )
+        elif is_holiday:
+            day_note.append(
+                "Market is CLOSED for an NSE trading holiday — do NOT "
+                "generate 'live session' / 'right now' / 'today's movers' "
+                "prompts. Focus on education, planning, recap, and "
+                "questions about what moved in the LAST session."
+            )
+        elif not _nse_open:
+            day_note.append(
+                "Trading day, but NSE is currently CLOSED (pre-open or "
+                "post-close window). 'Right now' prompts should be rare; "
+                "lean into 'how did the market close', 'what's the setup "
+                "for tomorrow' phrasing."
+            )
+        else:
+            day_note.append("NSE is OPEN — live session is in progress")
+
+        if _last_session_date is not None and session_is_closed:
+            day_note.append(
+                "Last completed trading session was "
+                f"{_last_session_date.strftime('%a, %d %b %Y')}"
+            )
+
+        if is_friday and _is_trading_day:
             day_note.append("Last trading day of the week — end-of-week recap is relevant")
-        if is_monday:
+        if is_monday and _is_trading_day:
             day_note.append("First trading day of the week — Monday momentum is relevant")
         if day_of_month >= 25 and month_name == "March":
             day_note.append("FY end approaching — tax-saving ELSS / 80C / LTCG harvesting are hot topics")
@@ -6733,14 +6846,15 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
         if day_of_month >= 25 and month_name == "July":
             day_note.append("ITR filing deadline 31 July approaching — capital gains tax is hot topic")
 
-        if ist_hour < 9:
-            day_note.append("Pre-market (before 9:15 AM IST) — Gift Nifty is the leading indicator")
-        elif ist_hour < 15:
-            day_note.append("Indian markets OPEN (9:15 AM – 3:30 PM IST)")
-        elif ist_hour < 20:
-            day_note.append("Post-market (after 3:30 PM IST) — US pre-market starting")
-        else:
-            day_note.append("Late evening IST — US markets active")
+        if _nse_open:
+            if ist_hour < 9:
+                day_note.append("Pre-market (before 9:15 AM IST) — Gift Nifty is the leading indicator")
+            elif ist_hour < 15:
+                day_note.append("Indian markets OPEN (9:15 AM – 3:30 PM IST)")
+            elif ist_hour < 20:
+                day_note.append("Post-market (after 3:30 PM IST) — US pre-market starting")
+            else:
+                day_note.append("Late evening IST — US markets active")
         context_parts.append("Session notes: " + "; ".join(day_note))
 
         # ── 2. Indian indices snapshot ─────────────────────────────
@@ -6775,12 +6889,12 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
                 )
                 if top_gainers:
                     gs = ", ".join(f"{r['symbol']} ({r['percent_change']:+.1f}%)" for r in top_gainers)
-                    context_parts.append(f"Top gainers today: {gs}")
+                    context_parts.append(f"Top gainers ({pct_label}): {gs}")
                     real_names.extend(r["symbol"] for r in top_gainers)
                     real_names.extend(str(r.get("display_name") or "") for r in top_gainers)
                 if top_losers:
                     ls = ", ".join(f"{r['symbol']} ({r['percent_change']:+.1f}%)" for r in top_losers)
-                    context_parts.append(f"Top losers today: {ls}")
+                    context_parts.append(f"Top losers ({pct_label}): {ls}")
                     real_names.extend(r["symbol"] for r in top_losers)
                     real_names.extend(str(r.get("display_name") or "") for r in top_losers)
             except Exception:
@@ -6954,7 +7068,9 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
         # ── LLM call ────────────────────────────────────────────────
         api_key = _get_api_key()
         if not api_key:
-            return _static_suggestions(ist_hour)
+            return _static_suggestions(
+                ist_hour, session_closed=not _is_trading_day
+            )
 
         # Build a crisp guardrail listing real names we want the model to use
         real_name_list = ", ".join(sorted(set(n for n in real_names if n)))[:500]
@@ -7059,12 +7175,22 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
             "do dividends work?', 'Active vs passive funds?')\n"
             "   - 2-3: US / global market reactions relevant to "
             "India\n"
-            "7. **Weekday / date awareness** — when the session notes "
-            "mention 'Friday', include end-of-week recap questions "
-            "('How did the market close this week?'). When Monday, "
-            "include Monday-open questions ('What's the setup for "
-            "the week?'). On weekends, skip live market questions "
-            "entirely and lean on education + planning topics.\n"
+            "7. **Weekday / date / session awareness** — **always read "
+            "the Session notes block above before writing prompts.** "
+            "When it says 'Market is CLOSED for the weekend' OR "
+            "'Market is CLOSED for an NSE trading holiday', you MUST "
+            "skip every 'live session' / 'right now' / 'today's "
+            "movers' / 'how is the market moving' prompt entirely. "
+            "Phrasings like 'Which sectors are up today?', 'Why is "
+            "Nifty down today?', 'What's the market mood right now?' "
+            "are FORBIDDEN on closed days — use 'How did the market "
+            "close on Friday?', 'What drove this week's rally?', "
+            "'Recap last session's top movers' instead. When the "
+            "session notes mention 'Friday', include end-of-week "
+            "recap questions. When Monday (trading day), include "
+            "Monday-open questions. On closed days, lean heavily on "
+            "education, planning, recaps, SIP/MF/tax topics, and "
+            "forward-looking questions about the next session.\n"
             f"8. Output exactly {_POOL_SIZE} prompts, one per line. "
             "No headings, no quotes, no numbering, no blank lines."
         )
@@ -7090,7 +7216,9 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
         # max_tokens sized for 60 prompts × ~14 tokens/prompt + headroom
         result = await _call_llm_blocking(api_key, prompt_messages, max_tokens=1800)
         if not result:
-            return _static_suggestions(ist_hour)
+            return _static_suggestions(
+                ist_hour, session_closed=not _is_trading_day
+            )
 
         raw_lines = [
             line.strip().lstrip("0123456789.-) *•").strip('"').strip("'")
@@ -7140,16 +7268,68 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
         if len(unique) >= 6:
             return unique[:_POOL_SIZE]
 
-        return _static_suggestions(ist_hour)
+        return _static_suggestions(
+            ist_hour, session_closed=not _is_trading_day
+        )
 
     except Exception as e:
         logger.warning("suggestions: compute_llm failed: %s", e, exc_info=True)
         now = datetime.now(timezone.utc)
         ist_hour = (now.hour + 5) % 24 + (30 // 60)
-        return _static_suggestions(ist_hour)
+        try:
+            from app.scheduler.trading_calendar import is_trading_day_markets
+            _closed = not bool(is_trading_day_markets(now))
+        except Exception:
+            _closed = now.weekday() >= 5
+        return _static_suggestions(ist_hour, session_closed=_closed)
 
 
-def _static_suggestions(ist_hour: int) -> list[str]:
+def _closed_market_static_suggestions() -> list[str]:
+    """Fallback suggestions for weekends + NSE holidays.
+
+    Completely avoids 'right now' / 'today's movers' / 'live session'
+    phrasing — leans on education, planning, recap, and forward-
+    looking prompts so a Saturday user doesn't get 'How is Nifty
+    doing right now?' as a suggestion.
+    """
+    return [
+        # beginner / education
+        "How do I start investing?",
+        "What are mutual funds in simple terms?",
+        "Explain PE ratio in simple words",
+        "What is a SIP and how does it work?",
+        "Large cap vs mid cap vs small cap",
+        "Active vs passive mutual funds",
+        "How do I save tax on investments?",
+        "What is asset allocation?",
+        # planning + portfolio
+        "Help me plan an SIP",
+        "Asset allocation for a 30 year old",
+        "Retirement planning basics for India",
+        "How to build an emergency fund",
+        "Best beginner investment options",
+        "Step up SIP — how does it work?",
+        # recap / last session
+        "How did the market close on Friday?",
+        "What drove this week's rally?",
+        "Recap last session's top movers",
+        "How did IT stocks close this week?",
+        "How did banks perform this week?",
+        "What sectors led last week?",
+        # forward-looking
+        "What's the setup for next week?",
+        "Any big events coming up next week?",
+        "Upcoming IPOs this month",
+        "What earnings are expected next week?",
+        # educational + concepts
+        "How do dividends actually work?",
+        "What is a flexi cap fund?",
+        "Explain LTCG and STCG in simple words",
+        "How are mutual funds taxed in India?",
+    ]
+
+
+def _static_suggestions(ist_hour: int, session_closed: bool = False) -> list[str]:
     """Beginner-to-intermediate time-based fallback suggestions.
 
     Short plain-English phrasings (4-9 words), jargon-free primary
@@ -7159,7 +7339,13 @@ def _static_suggestions(ist_hour: int) -> list[str]:
     Mix target per bucket (approximate): ~35% beginner basics,
     ~55% intermediate live-market questions, ~10% slightly advanced
     retail-friendly. No actionable mutation phrasing.
+
+    When `session_closed=True` (weekend or NSE holiday) we return the
+    closed-market bucket regardless of ist_hour so the user never sees
+    "Top gainers today" on a Saturday.
     """
+    if session_closed:
+        return _closed_market_static_suggestions()
     if ist_hour < 9:
         return [
             # beginner
