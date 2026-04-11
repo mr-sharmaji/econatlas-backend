@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from datetime import date, datetime, timezone
 from typing import Literal
 
 from app.core.database import get_pool, parse_ts, record_to_dict
+
+logger = logging.getLogger(__name__)
 
 STOCK_TABLE = "discover_stock_snapshots"
 MF_TABLE = "discover_mutual_fund_snapshots"
