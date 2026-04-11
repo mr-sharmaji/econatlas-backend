@@ -314,7 +314,7 @@ Available tools:
 - [TOOL:ipo_list:{"status":"open"}] — List IPOs (open/upcoming/closed).
 - [TOOL:news:{"entity":"Reliance","since":"24h"}] — Latest news. Optional since: 6h, 12h, 24h, 48h, 2d, 3d, week, month (default 48h).
 - [TOOL:macro:{"indicator":"gdp_growth"}] — Single macro indicator (gdp_growth, inflation_cpi, repo_rate, usd_inr, fiscal_deficit, current_account, iip_growth). For the full regime view use `macro_regime` instead.
-- [TOOL:commodity:{}] — All commodity prices (only if not in LIVE SNAPSHOT).
+- [TOOL:commodity:{}] — All commodity prices. Each item includes BOTH `price_usd` (raw international quote) AND `price_inr` + `inr_unit` (converted for Indian retail users — ₹/10g for gold, ₹/kg for silver, ₹/bbl for crude, ₹/MMBtu for gas). **Always LEAD with the INR figure** — never report gold as "$4,771 /oz" to an Indian user when ₹142,650 /10g is available. Use USD only as a parenthetical reference ("gold at ₹1,42,650 /10g (reference: $4,771 /oz internationally)"). Only if `price_inr` is null fall back to USD and explicitly note the conversion is unavailable.
 - [TOOL:crypto:{}] — Crypto prices (BTC, ETH, etc.).
 - [TOOL:tax:{"type":"ltcg","profit":500000}] — Real tax math. Types: ltcg (12.5% above ₹1.25L), stcg (20% flat), income_tax (new regime slabs).
 - [TOOL:educational:{"concept":"pe_ratio"}] — Explainer. Concepts: pe_ratio, pb_ratio, roe, roce, ebitda, dcf, ltcg, stcg, debt_to_equity, dividend_yield.
@@ -403,6 +403,8 @@ Anti-refusal table (these tools exist — use them):
 ### 3a. ZERO-RESULT HANDLING
 
 **Units — `market_cap`, `total_debt`, `total_cash`, `total_revenue`, `total_assets`, `free_cash_flow`, `operating_cash_flow`, `aum_cr` are all in ₹ Crores** (max real value ≈ 1.9 million). `market_cap > 50000` means ₹50k Cr. Writing `50000000000` is wrong — a sanitizer will rewrite and log a warning. MF `returns_1y` / `returns_3y` / `returns_5y` are **percent** (`11.17` = 11.17%), never decimal.
+
+**Commodities — lead with ₹, not $.** Gold, silver, crude, natural gas, copper etc. come back from the `commodity` tool with BOTH `price_usd` + `price_inr` (plus `inr_unit` like `₹/10g` or `₹/bbl`). Every Indian retail answer MUST use the INR figure first. Writing "Gold is $4,771 per ounce today" is FORBIDDEN — say "Gold is ₹1,42,650 per 10g today ($4,771 / oz internationally)" instead. The only exception is when `price_inr` is null, in which case you may fall back to USD but must note that the INR conversion is unavailable. This rule applies to every commodity reference — spot prices, spike alerts, "what's driving X" answers, comparisons, the lot.
 
 **Single-token input** (`HEXT`, `CDSL`, `TATA` — 2–12 alphanumeric chars) is almost always a ticker. Call `stock_lookup` immediately, do not ask for clarification.
 
@@ -4547,19 +4549,85 @@ async def _execute_tool(
                     str(p.get("asset") or "").lower(), 99
                 ),
             )
+
+            # Fetch the USD/INR spot rate so we can convert every USD
+            # quote into an INR-per-common-unit figure. Without this
+            # the LLM surfaces "$4,771 /oz" for gold, which is correct
+            # in raw terms but wrong for an Indian retail user who
+            # expects ₹/10g. We return BOTH and tell the LLM to lead
+            # with the INR view.
+            usd_inr_rate: float | None = None
+            try:
+                fx_rows = await pool.fetch(
+                    "SELECT price FROM market_prices "
+                    "WHERE asset = 'USD/INR' "
+                    "ORDER BY \"timestamp\" DESC LIMIT 1"
+                )
+                if fx_rows:
+                    usd_inr_rate = float(fx_rows[0]["price"] or 0) or None
+            except Exception:
+                usd_inr_rate = None
+
+            def _to_inr(asset_name: str, usd_price: float) -> tuple[float | None, str | None]:
+                """Convert a USD commodity quote to an INR-per-common-unit
+                figure. Returns (inr_value, inr_unit) or (None, None) when
+                no conversion rule exists or the FX rate is unavailable.
+                """
+                if usd_inr_rate is None or usd_price <= 0:
+                    return (None, None)
+                a = (asset_name or "").strip().lower()
+                if a in ("gold", "platinum", "palladium"):
+                    # USD/troy oz → INR/10g (1 troy oz ≈ 31.1035 g)
+                    return (usd_price * usd_inr_rate / 31.1035 * 10, "₹/10g")
+                if a == "silver":
+                    # USD/troy oz → INR/kg
+                    return (usd_price * usd_inr_rate / 31.1035 * 1000, "₹/kg")
+                if a in ("crude oil", "brent crude"):
+                    # USD/bbl → INR/bbl
+                    return (usd_price * usd_inr_rate, "₹/bbl")
+                if a == "natural gas":
+                    # USD/MMBtu → INR/MMBtu
+                    return (usd_price * usd_inr_rate, "₹/MMBtu")
+                if a in ("copper", "aluminum", "zinc"):
+                    # USD/lb → INR/kg (1 kg ≈ 2.20462 lb)
+                    return (usd_price * usd_inr_rate * 2.20462, "₹/kg")
+                # Default: passthrough with a generic unit
+                return (usd_price * usd_inr_rate, "₹")
+
+            items: list[dict] = []
+            for p in sorted_prices[:12]:
+                if p.get("price") is None:
+                    continue
+                usd_price = float(p.get("price") or 0)
+                inr_val, inr_unit = _to_inr(
+                    str(p.get("asset") or ""), usd_price
+                )
+                items.append({
+                    "name": p.get("asset"),
+                    "price_usd": usd_price,
+                    "price_inr": round(inr_val, 2) if inr_val is not None else None,
+                    "inr_unit": inr_unit,
+                    "usd_unit": p.get("unit"),
+                    # Back-compat: keep `price` + `unit` for old prompt paths
+                    # that haven't been rewritten yet.
+                    "price": usd_price,
+                    "unit": p.get("unit"),
+                    "previous_close": p.get("previous_close"),
+                    "change_pct": p.get("change_percent"),
+                })
             return {
-                "count": len(sorted_prices),
-                "commodities": [
-                    {
-                        "name": p.get("asset"),
-                        "price": p.get("price"),
-                        "previous_close": p.get("previous_close"),
-                        "change_pct": p.get("change_percent"),
-                        "unit": p.get("unit"),
-                    }
-                    for p in sorted_prices[:12]
-                    if p.get("price") is not None
-                ],
+                "count": len(items),
+                "commodities": items,
+                "usd_inr_rate": usd_inr_rate,
+                "display_note": (
+                    "Commodities are quoted in USD globally. For Indian "
+                    "retail users, LEAD with the `price_inr` + `inr_unit` "
+                    "figures (₹/10g for gold, ₹/kg for silver, ₹/bbl for "
+                    "crude, etc.). Mention the USD reference only as a "
+                    "parenthetical. If `price_inr` is null, fall back to "
+                    "the USD figure and note that the INR conversion is "
+                    "unavailable."
+                ),
             }
 
         elif tool_name == "crypto":
@@ -8822,13 +8890,47 @@ def _render_prefetch_snapshot(
             pairs.append(f"{pair} ₹{data['price']:.2f} ({sign}{data['change_pct']:.2f}%)")
         lines.append("**FX:** " + " | ".join(pairs))
 
-    # Commodities
+    # Commodities — show BOTH USD (the wire format) and an INR/common-
+    # unit conversion so the LLM has something it can quote without
+    # doing manual math. Uses the USD/INR rate from `fx_majors` if
+    # available, otherwise falls back to ~₹83/$.
     if commodities:
+        _usd_inr = None
+        try:
+            for pair, d in (fx_majors or {}).items():
+                if str(pair).strip().upper() == "USD/INR":
+                    _usd_inr = float(d.get("price") or 0) or None
+                    break
+        except Exception:
+            _usd_inr = None
+
+        def _fmt_inr(name: str, usd: float) -> str | None:
+            if _usd_inr is None or usd <= 0:
+                return None
+            n = name.strip().lower()
+            if n in ("gold", "platinum", "palladium"):
+                v = usd * _usd_inr / 31.1035 * 10
+                return f"₹{v:,.0f}/10g"
+            if n == "silver":
+                v = usd * _usd_inr / 31.1035 * 1000
+                return f"₹{v:,.0f}/kg"
+            if n in ("crude oil", "brent crude"):
+                return f"₹{usd * _usd_inr:,.0f}/bbl"
+            if n == "natural gas":
+                return f"₹{usd * _usd_inr:,.0f}/MMBtu"
+            return None
+
         items = []
         for name, data in commodities.items():
             sign = "+" if data["change_pct"] >= 0 else ""
-            items.append(f"{name.title()} ${data['price']:,.2f} ({sign}{data['change_pct']:.2f}%)")
-        lines.append("**Commodities:** " + " | ".join(items))
+            usd_frag = f"${data['price']:,.2f}"
+            inr_frag = _fmt_inr(name, float(data.get("price") or 0))
+            lead = inr_frag or usd_frag
+            ref = f" (ref {usd_frag})" if inr_frag else ""
+            items.append(
+                f"{name.title()} {lead}{ref} ({sign}{data['change_pct']:.2f}%)"
+            )
+        lines.append("**Commodities (lead with ₹ for Indian users):** " + " | ".join(items))
 
     return "\n".join(lines)
 
