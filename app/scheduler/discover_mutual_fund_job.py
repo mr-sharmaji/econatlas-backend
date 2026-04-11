@@ -1839,15 +1839,72 @@ class DiscoverMutualFundScraper(BaseScraper):
 
         return out
 
+    _GROWW_SITEMAP_URL = "https://groww.in/mf-sitemap.xml"
+
+    def _fetch_groww_sitemap_slugs(self) -> list[str]:
+        """Download Groww's MF sitemap and return every fund slug.
+
+        The sitemap is the authoritative list of URLs Groww considers
+        canonical. Most popular funds are there, and every URL is
+        guaranteed to return a valid NEXT_DATA blob. ~1900 funds
+        typically listed.
+        """
+        try:
+            xml = self._get_text(self._GROWW_SITEMAP_URL, timeout=20)
+        except Exception:
+            logger.warning("groww: sitemap fetch failed", exc_info=True)
+            return []
+        slugs = re.findall(
+            r"<loc>https://groww\.in/mutual-funds/([a-z0-9-]+)</loc>",
+            xml,
+        )
+        logger.info("groww: sitemap returned %d slugs", len(slugs))
+        return slugs
+
+    def _fetch_groww_blob_by_slug(self, slug: str) -> dict | None:
+        """Fetch a fund page by known-good slug and return the
+        scheme blob. Lower-level helper that skips the slug-
+        derivation step in _fetch_groww_scheme_data."""
+        if not slug:
+            return None
+        url = f"{self._GROWW_BASE}/{slug}"
+        try:
+            html = self._get_text(url, timeout=12, retries=0)
+        except Exception:
+            return None
+        if not html or "expense_ratio" not in html:
+            return None
+        match = self._GROWW_NEXT_DATA_REGEX.search(html)
+        if not match:
+            return None
+        try:
+            payload = json.loads(match.group(1))
+        except Exception:
+            return None
+        return self._walk_for_scheme_blob(payload)
+
     def _enrich_from_groww(self, rows: dict[str, dict]) -> None:
         """Primary Groww enrichment pass — fills missing fields on
         every scraped fund (TER, holdings, managers, benchmark,
         turnover, exit load, quality flags) without overwriting
-        non-null ETMoney values. Rate-limited to ~2 req/sec.
+        non-null ETMoney values.
 
-        Runs across ALL direct-plan rows, not just the null-TER
-        subset, because Groww consistently returns richer payloads
-        than the ETMoney scrape can parse.
+        Strategy (two phases):
+          1. **Sitemap-indexed sweep.** Parse `mf-sitemap.xml` once,
+             fetch each canonical slug, extract the blob, and key it
+             by `direct_scheme_code` (the AMFI scheme code). Every
+             hit goes into a `by_code` dict.
+          2. **Apply by scheme_code.** For every AMFI row in our
+             universe, look up its scheme_code in `by_code`. Merge
+             the Groww data into the row.
+          3. **Deterministic-slug fallback.** For rows that had no
+             scheme_code match, try deriving a slug from the scheme
+             name (old behaviour) and fetching directly. This catches
+             funds Groww serves via URL but didn't list in the
+             sitemap.
+
+        Rate-limited to ~2 req/sec. Total wall-clock on a cold run
+        is ~20 min (1900 sitemap fetches + up to 4500 slug fallbacks).
         """
         targets = [
             (code, row) for code, row in rows.items()
@@ -1855,43 +1912,97 @@ class DiscoverMutualFundScraper(BaseScraper):
         ]
         if not targets:
             return
+
+        # Phase 1: build a scheme_code → blob index from the sitemap.
+        slugs = self._fetch_groww_sitemap_slugs()
+        by_code: dict[str, dict] = {}
+        sitemap_failures = 0
+        for i, slug in enumerate(slugs):
+            blob = self._fetch_groww_blob_by_slug(slug)
+            if blob is None:
+                sitemap_failures += 1
+                time.sleep(0.2)
+                continue
+            sc = str(blob.get("direct_scheme_code") or blob.get("scheme_code") or "").strip()
+            if sc:
+                by_code[sc] = blob
+            time.sleep(0.35)
+            if (i + 1) % 200 == 0:
+                logger.info(
+                    "groww: sitemap sweep %d/%d — indexed=%d fail=%d",
+                    i + 1, len(slugs), len(by_code), sitemap_failures,
+                )
         logger.info(
-            "groww: enriching %d funds from groww.in __NEXT_DATA__",
-            len(targets),
+            "groww: sitemap sweep done — indexed=%d fail=%d",
+            len(by_code), sitemap_failures,
         )
-        # Per-field counter so we can see how much Groww actually
-        # contributed vs just ran.
+
+        # Phase 2: apply sitemap-indexed data by scheme_code.
         filled: dict[str, int] = {}
-        failures = 0
+        applied_from_index = 0
+        slug_fallback_targets: list[tuple[str, dict]] = []
         for code, row in targets:
+            blob = by_code.get(str(code))
+            if blob is None:
+                slug_fallback_targets.append((code, row))
+                continue
+            self._apply_groww_blob(row, blob, filled)
+            applied_from_index += 1
+
+        logger.info(
+            "groww: indexed apply done — applied=%d slug_fallback_targets=%d",
+            applied_from_index, len(slug_fallback_targets),
+        )
+
+        # Phase 3: slug-derivation fallback for the rest.
+        fallback_hits = 0
+        for code, row in slug_fallback_targets:
             blob = self._fetch_groww_scheme_data(str(row.get("scheme_name") or ""))
             if blob is None:
-                failures += 1
                 time.sleep(0.3)
                 continue
-            data = self._extract_groww_enrichment(blob)
-            for field, value in data.items():
-                if field == "_groww_quality":
-                    # Merge into existing tags_v2 dict without
-                    # clobbering ETMoney tags.
-                    existing_tags = row.get("tags_v2") or {}
-                    if not isinstance(existing_tags, dict):
-                        existing_tags = {}
-                    merged_quality = {**existing_tags, **value}
-                    row["tags_v2"] = merged_quality
-                    filled["tags_v2"] = filled.get("tags_v2", 0) + 1
-                    continue
-                # Only fill when the existing value is None / empty.
-                existing = row.get(field)
-                if existing is None or existing == "" or existing == []:
-                    row[field] = value
-                    filled[field] = filled.get(field, 0) + 1
-            time.sleep(0.5)
+            # Sanity check: confirm the blob is for our scheme (the
+            # slug-based lookup can return a related fund if our slug
+            # happens to match a different AMFI code).
+            blob_code = str(
+                blob.get("direct_scheme_code") or blob.get("scheme_code") or ""
+            ).strip()
+            if blob_code and blob_code != str(code):
+                time.sleep(0.4)
+                continue
+            self._apply_groww_blob(row, blob, filled)
+            fallback_hits += 1
+            time.sleep(0.4)
+
         logger.info(
-            "groww: enrichment done — failures=%d filled=%s",
-            failures,
-            {k: v for k, v in sorted(filled.items(), key=lambda x: -x[1])},
+            "groww: enrichment done — indexed_hits=%d fallback_hits=%d "
+            "misses=%d filled_fields=%s",
+            applied_from_index, fallback_hits,
+            len(targets) - applied_from_index - fallback_hits,
+            {k: v for k, v in sorted(filled.items(), key=lambda x: -x[1])[:15]},
         )
+
+    def _apply_groww_blob(
+        self,
+        row: dict,
+        blob: dict,
+        filled: dict[str, int],
+    ) -> None:
+        """Merge a Groww scheme blob into a target row (fills nulls
+        only, never overwrites non-null ETMoney values)."""
+        data = self._extract_groww_enrichment(blob)
+        for field, value in data.items():
+            if field == "_groww_quality":
+                existing_tags = row.get("tags_v2") or {}
+                if not isinstance(existing_tags, dict):
+                    existing_tags = {}
+                row["tags_v2"] = {**existing_tags, **value}
+                filled["tags_v2"] = filled.get("tags_v2", 0) + 1
+                continue
+            existing = row.get(field)
+            if existing is None or existing == "" or existing == []:
+                row[field] = value
+                filled[field] = filled.get(field, 0) + 1
 
     def _enrich_from_mfapi(self, rows: dict[str, dict]) -> None:
         """Enrich fund_age_years, returns, and risk metrics from mfapi.in for funds missing data.
