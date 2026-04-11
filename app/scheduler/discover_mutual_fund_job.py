@@ -5,7 +5,10 @@ import json
 import logging
 import math
 import re
+import threading
+import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from html import unescape
 from typing import Any
@@ -465,6 +468,20 @@ class DiscoverMutualFundScraper(BaseScraper):
         *,
         max_pages: int = 5000,
     ) -> dict[str, dict]:
+        """BFS crawl of ETMoney detail pages, parallelised in
+        generations (batches).
+
+        We can't simply ThreadPool the whole queue because each page
+        can yield a new "counterpart" link that may or may not have
+        been seen yet. Instead we process a generation at a time:
+          1. Snapshot the current queue into a batch.
+          2. Fetch the whole batch in parallel (4 workers × 0.3s
+             pacing ≈ 13 req/sec — conservative for an anti-bot
+             scraping target).
+          3. Merge the results back, extract new counterpart links,
+             append them to the queue for the next generation.
+          4. Repeat until the queue is empty or max_pages reached.
+        """
         if not detail_links:
             return {}
         base = self.settings.discover_mf_primary_url.rstrip("/")
@@ -473,48 +490,83 @@ class DiscoverMutualFundScraper(BaseScraper):
         seen: set[str] = set()
         out: dict[str, dict] = {}
 
-        while queue and len(seen) < max_pages:
-            rel_link = queue.popleft()
-            queued.discard(rel_link)
-            if rel_link in seen:
-                continue
-            seen.add(rel_link)
-
+        def _fetch_detail(rel_link: str) -> tuple[str, str | None]:
+            """Return (rel_link, html_or_None)."""
             url = f"{base}{rel_link}"
             try:
-                html = self._get_text(url, timeout=8, retries=0)
+                return rel_link, self._get_text(url, timeout=8, retries=0)
             except Exception:
-                logger.debug("ET Money detail fetch failed url=%s", url, exc_info=True)
-                continue
+                return rel_link, None
 
-            counterpart = self._extract_counterpart_link(html)
-            if (
-                counterpart
-                and "direct" in counterpart.lower()
-                and counterpart not in seen
-                and counterpart not in queued
-            ):
-                queue.appendleft(counterpart)
-                queued.add(counterpart)
+        BATCH = 48  # pairs nicely with 4 workers × 0.3s
+        while queue and len(seen) < max_pages:
+            # Snapshot up to BATCH items for this generation.
+            batch: list[str] = []
+            while queue and len(batch) < BATCH and len(seen) + len(batch) < max_pages:
+                rel_link = queue.popleft()
+                queued.discard(rel_link)
+                if rel_link in seen:
+                    continue
+                batch.append(rel_link)
+                seen.add(rel_link)
+            if not batch:
+                break
 
-            detail = self._parse_etmoney_detail_page(html, rel_link)
-            if not detail or not detail.get("_is_direct"):
-                continue
-            key = str(detail.get("_name_key") or "").strip()
-            if not key:
-                continue
+            # Fetch the whole generation in parallel.
+            results = self._parallel_map(
+                host="www.etmoney.com",
+                workers=4,
+                per_call_delay=0.3,
+                items=batch,
+                fetch_fn=_fetch_detail,
+            )
 
-            prior = out.get(key)
-            if prior is None or self._detail_completeness(detail) > self._detail_completeness(prior):
-                out[key] = detail
+            # Merge results + extract counterpart links for the next gen.
+            for pair in results:
+                if pair is None:
+                    continue
+                rel_link, html = pair
+                if html is None:
+                    continue
+                try:
+                    counterpart = self._extract_counterpart_link(html)
+                except Exception:
+                    counterpart = None
+                if (
+                    counterpart
+                    and "direct" in counterpart.lower()
+                    and counterpart not in seen
+                    and counterpart not in queued
+                ):
+                    queue.append(counterpart)
+                    queued.add(counterpart)
+
+                try:
+                    detail = self._parse_etmoney_detail_page(html, rel_link)
+                except Exception:
+                    detail = None
+                if not detail or not detail.get("_is_direct"):
+                    continue
+                key = str(detail.get("_name_key") or "").strip()
+                if not key:
+                    continue
+
+                prior = out.get(key)
+                if (
+                    prior is None
+                    or self._detail_completeness(detail)
+                    > self._detail_completeness(prior)
+                ):
+                    out[key] = detail
 
         if queue:
-            logger.info("ET Money detail enrichment hit max_pages=%d; remaining=%d", max_pages, len(queue))
+            logger.info(
+                "ET Money detail enrichment hit max_pages=%d; remaining=%d",
+                max_pages, len(queue),
+            )
         logger.info(
             "ET Money detail enrichment scanned=%d direct_rows=%d seed_links=%d",
-            len(seen),
-            len(out),
-            len(detail_links),
+            len(seen), len(out), len(detail_links),
         )
         return out
 
@@ -1839,6 +1891,130 @@ class DiscoverMutualFundScraper(BaseScraper):
 
         return out
 
+    # ── Concurrent fetch helpers ─────────────────────────────────
+    #
+    # Every scraping target has its own rate-limit budget. We keep
+    # worker counts low, use a short per-call sleep to smooth bursts,
+    # and back off for a full minute when a call returns 429 / 503.
+    #
+    # Per-host backoff state: if a host is 429'd we pause ALL workers
+    # for that host for `_RATE_BACKOFF_SEC` before retrying. Shared
+    # between threads via threading.Lock.
+
+    _RATE_BACKOFF_SEC = 60
+    _rate_backoff_until: dict[str, float] = {}
+    _rate_backoff_lock = threading.Lock()
+
+    @classmethod
+    def _check_rate_backoff(cls, host: str) -> None:
+        """Block the caller until the host's backoff window expires."""
+        while True:
+            with cls._rate_backoff_lock:
+                until = cls._rate_backoff_until.get(host, 0.0)
+            remaining = until - time.monotonic()
+            if remaining <= 0:
+                return
+            # Sleep in 2-second chunks so callers that import this
+            # module aren't stuck on a single 60s sleep they can't
+            # interrupt cleanly.
+            time.sleep(min(2.0, remaining))
+
+    @classmethod
+    def _mark_rate_limited(cls, host: str) -> None:
+        """Record that this host rate-limited us; subsequent calls to
+        _check_rate_backoff(host) will pause until the window
+        expires."""
+        with cls._rate_backoff_lock:
+            cls._rate_backoff_until[host] = (
+                time.monotonic() + cls._RATE_BACKOFF_SEC
+            )
+        logger.warning(
+            "rate_limit: backing off %s for %d s",
+            host, cls._RATE_BACKOFF_SEC,
+        )
+
+    def _parallel_map(
+        self,
+        host: str,
+        workers: int,
+        per_call_delay: float,
+        items: list,
+        fetch_fn,
+    ) -> list:
+        """Run `fetch_fn(item)` for every item with bounded concurrency.
+
+        Thread-pool based (the underlying `_get_text` uses a sync
+        requests.Session so asyncio doesn't help here). Each worker:
+          1. Checks the host-level backoff state before its call.
+          2. Calls fetch_fn(item). If fetch_fn returns a tuple where
+             the first element is `"__RATE_LIMITED__"`, we invoke
+             _mark_rate_limited(host) and drop that item's result.
+          3. Sleeps for `per_call_delay` to smooth bursts.
+
+        Returns the list of results in the same order as `items`.
+        Exceptions in one worker do NOT abort the others — they're
+        caught and substituted with None + logged at ERROR with the
+        first 3 tracebacks.
+        """
+        import traceback
+        if not items:
+            return []
+        results: list = [None] * len(items)
+        errors = 0
+        errors_lock = threading.Lock()
+
+        def _worker(idx: int, item) -> None:
+            nonlocal errors
+            self._check_rate_backoff(host)
+            try:
+                out = fetch_fn(item)
+                if isinstance(out, tuple) and out and out[0] == "__RATE_LIMITED__":
+                    self._mark_rate_limited(host)
+                    return
+                results[idx] = out
+            except requests.HTTPError as http_err:
+                resp = getattr(http_err, "response", None)
+                if resp is not None and resp.status_code in (429, 503):
+                    self._mark_rate_limited(host)
+                    return
+                with errors_lock:
+                    errors += 1
+                    if errors <= 3:
+                        logger.error(
+                            "parallel_map(%s) raised http %s:\n%s",
+                            host, getattr(resp, "status_code", "?"),
+                            traceback.format_exc(),
+                        )
+            except Exception:
+                with errors_lock:
+                    errors += 1
+                    if errors <= 3:
+                        logger.error(
+                            "parallel_map(%s) raised:\n%s",
+                            host, traceback.format_exc(),
+                        )
+            finally:
+                if per_call_delay > 0:
+                    time.sleep(per_call_delay)
+
+        with ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix=f"mfpar-{host.split('.')[0]}",
+        ) as pool:
+            futures = [pool.submit(_worker, i, x) for i, x in enumerate(items)]
+            for f in as_completed(futures):
+                # Let exceptions from inside the worker bubble up to
+                # the generic except above — here we just wait.
+                try:
+                    f.result()
+                except Exception:
+                    pass
+        logger.warning(
+            "parallel_map(%s) done — %d items, %d errors",
+            host, len(items), errors,
+        )
+        return results
+
     _GROWW_SITEMAP_URL = "https://groww.in/mf-sitemap.xml"
 
     def _fetch_groww_sitemap_slugs(self) -> list[str]:
@@ -1919,6 +2095,9 @@ class DiscoverMutualFundScraper(BaseScraper):
             return
 
         # Phase 1: build a scheme_code → blob index from the sitemap.
+        # Parallel: 6 workers × 0.15s pacing ≈ 40 req/sec aggregate,
+        # well under Groww's observed tolerance. Automatic 60s backoff
+        # on any 429/503 via _parallel_map.
         try:
             slugs = self._fetch_groww_sitemap_slugs()
         except Exception:
@@ -1928,50 +2107,33 @@ class DiscoverMutualFundScraper(BaseScraper):
             slugs = []
 
         by_code: dict[str, dict] = {}
-        sitemap_failures = 0
-        sitemap_iter_errors = 0
-        for i, slug in enumerate(slugs):
-            try:
-                blob = self._fetch_groww_blob_by_slug(slug)
-            except Exception:
-                sitemap_iter_errors += 1
-                if sitemap_iter_errors <= 3:
-                    logger.error(
-                        "groww: sitemap iter raised for slug=%r:\n%s",
-                        slug, traceback.format_exc(),
-                    )
-                time.sleep(0.2)
-                continue
-            if blob is None:
-                sitemap_failures += 1
-                time.sleep(0.2)
-                continue
-            try:
-                sc = str(
-                    blob.get("direct_scheme_code")
-                    or blob.get("scheme_code")
-                    or ""
-                ).strip()
-                if sc:
-                    by_code[sc] = blob
-            except Exception:
-                sitemap_iter_errors += 1
-                if sitemap_iter_errors <= 3:
-                    logger.error(
-                        "groww: blob indexing raised for slug=%r:\n%s",
-                        slug, traceback.format_exc(),
-                    )
-            time.sleep(0.35)
-            if (i + 1) % 200 == 0:
-                logger.warning(
-                    "groww: sitemap sweep %d/%d — indexed=%d fail=%d iter_err=%d",
-                    i + 1, len(slugs), len(by_code),
-                    sitemap_failures, sitemap_iter_errors,
-                )
-        logger.warning(
-            "groww: sitemap sweep done — indexed=%d fail=%d iter_err=%d",
-            len(by_code), sitemap_failures, sitemap_iter_errors,
-        )
+        if slugs:
+            blobs = self._parallel_map(
+                host="groww.in",
+                workers=6,
+                per_call_delay=0.15,
+                items=slugs,
+                fetch_fn=self._fetch_groww_blob_by_slug,
+            )
+            sitemap_failures = 0
+            for blob in blobs:
+                if blob is None:
+                    sitemap_failures += 1
+                    continue
+                try:
+                    sc = str(
+                        blob.get("direct_scheme_code")
+                        or blob.get("scheme_code")
+                        or ""
+                    ).strip()
+                    if sc:
+                        by_code[sc] = blob
+                except Exception:
+                    pass
+            logger.warning(
+                "groww: sitemap sweep done — indexed=%d fail=%d of %d",
+                len(by_code), sitemap_failures, len(slugs),
+            )
 
         # Phase 2: apply sitemap-indexed data by scheme_code.
         filled: dict[str, int] = {}
@@ -1999,35 +2161,56 @@ class DiscoverMutualFundScraper(BaseScraper):
             applied_from_index, len(slug_fallback_targets), apply_errors,
         )
 
-        # Phase 3: slug-derivation fallback for the rest.
+        # Phase 3: slug-derivation fallback for the rest. Parallel
+        # with the same 6/0.15 profile as phase 1. We collect blobs
+        # first (parallel) then apply them sequentially (fast, pure
+        # Python work, no IO).
         fallback_hits = 0
         fallback_errors = 0
-        for code, row in slug_fallback_targets:
-            try:
-                blob = self._fetch_groww_scheme_data(
-                    str(row.get("scheme_name") or "")
+        if slug_fallback_targets:
+            def _fetch_one(item):
+                _code, _row = item
+                return (
+                    _code,
+                    self._fetch_groww_scheme_data(
+                        str(_row.get("scheme_name") or "")
+                    ),
                 )
+
+            fetched = self._parallel_map(
+                host="groww.in",
+                workers=6,
+                per_call_delay=0.15,
+                items=slug_fallback_targets,
+                fetch_fn=_fetch_one,
+            )
+            targets_by_code = {code: row for code, row in slug_fallback_targets}
+            for pair in fetched:
+                if pair is None:
+                    continue
+                code, blob = pair
                 if blob is None:
-                    time.sleep(0.3)
                     continue
-                blob_code = str(
-                    blob.get("direct_scheme_code")
-                    or blob.get("scheme_code")
-                    or ""
-                ).strip()
-                if blob_code and blob_code != str(code):
-                    time.sleep(0.4)
-                    continue
-                self._apply_groww_blob(row, blob, filled)
-                fallback_hits += 1
-            except Exception:
-                fallback_errors += 1
-                if fallback_errors <= 3:
-                    logger.error(
-                        "groww: fallback raised for code=%r:\n%s",
-                        code, traceback.format_exc(),
-                    )
-            time.sleep(0.4)
+                try:
+                    blob_code = str(
+                        blob.get("direct_scheme_code")
+                        or blob.get("scheme_code")
+                        or ""
+                    ).strip()
+                    if blob_code and blob_code != str(code):
+                        continue
+                    row = targets_by_code.get(code)
+                    if row is None:
+                        continue
+                    self._apply_groww_blob(row, blob, filled)
+                    fallback_hits += 1
+                except Exception:
+                    fallback_errors += 1
+                    if fallback_errors <= 3:
+                        logger.error(
+                            "groww: fallback apply raised for code=%r:\n%s",
+                            code, traceback.format_exc(),
+                        )
 
         logger.warning(
             "groww: enrichment done — indexed_hits=%d fallback_hits=%d "
@@ -2101,13 +2284,52 @@ class DiscoverMutualFundScraper(BaseScraper):
         except Exception as e:
             logger.warning("Failed to load Nifty 50 benchmark: %s", e)
 
+        # Parallel pre-fetch: hit mfapi.in with 8 workers × 0.1s
+        # pacing ≈ 80 req/sec aggregate. mfapi.in is a documented
+        # public API designed for backfill use and handles this
+        # comfortably. Cache responses into a dict keyed by code so
+        # the existing sequential body below can operate over them
+        # without any IO. Drops the mfapi phase from ~19 min
+        # sequential (0.5s/call) to ~30 seconds.
+        def _fetch_mfapi(code: str) -> dict | None:
+            try:
+                resp = requests.get(
+                    f"https://api.mfapi.in/mf/{code}", timeout=10,
+                )
+                if resp.status_code in (429, 503):
+                    return ("__RATE_LIMITED__",)
+                if resp.status_code != 200:
+                    return None
+                return resp.json()
+            except Exception:
+                return None
+
+        logger.warning(
+            "mfapi.in: parallel pre-fetch of %d funds (8 workers)",
+            len(to_enrich),
+        )
+        fetched_data = self._parallel_map(
+            host="api.mfapi.in",
+            workers=8,
+            per_call_delay=0.1,
+            items=to_enrich,
+            fetch_fn=_fetch_mfapi,
+        )
+        mfapi_cache: dict[str, dict] = {}
+        for code, payload in zip(to_enrich, fetched_data):
+            if isinstance(payload, dict):
+                mfapi_cache[code] = payload
+        logger.warning(
+            "mfapi.in: pre-fetch done — %d / %d cached",
+            len(mfapi_cache), len(to_enrich),
+        )
+
         enriched = 0
         for i, code in enumerate(to_enrich):
             try:
-                resp = requests.get(f"https://api.mfapi.in/mf/{code}", timeout=10)
-                if resp.status_code != 200:
+                data = mfapi_cache.get(code)
+                if data is None:
                     continue
-                data = resp.json()
                 meta = data.get("meta", {})
                 nav_data = data.get("data", [])
 
@@ -2313,9 +2535,9 @@ class DiscoverMutualFundScraper(BaseScraper):
                     logger.info("mfapi.in enrichment progress: %d / %d", i + 1, len(to_enrich))
 
             except Exception:
-                logger.debug("mfapi.in fetch failed for %s", code)
-
-            time.sleep(0.5)  # Rate limit
+                logger.debug("mfapi.in process failed for %s", code)
+            # No inter-iteration sleep: the HTTP calls already happened
+            # in the parallel pre-fetch above; this loop is pure CPU.
 
         logger.info("mfapi.in enrichment complete: %d funds enriched", enriched)
 
