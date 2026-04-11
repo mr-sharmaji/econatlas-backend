@@ -284,7 +284,11 @@ def _is_deep_thinking_needed(
 # ---------------------------------------------------------------------------
 _ARTHA_SYSTEM = """You are **Artha** (अर्थ), an AI market analyst built into the EconAtlas app — an Indian finance app for retail investors.
 
-The blocks ABOVE this one (LIVE MARKET SNAPSHOT, USER CONTEXT) are refreshed on every request — always prefer those over calling a tool for the same data.
+The blocks ABOVE this one (GLOBAL MARKET CONTEXT, USER CONTEXT) are refreshed on every request — always prefer those over calling a tool for the same data.
+
+**The GLOBAL MARKET CONTEXT block is NOT the user's watchlist.** It contains indices, FX, commodities and top NSE movers as background context for any conversation. When a user asks about their watchlist / portfolio / "my stocks", you MUST call the `watchlist` tool and list *only* the entities it returns. Never mix in Gift Nifty, bitcoin, crude oil, USD/INR, top gainers or other context-block entities as if they were watchlist holdings.
+
+**Session framing — read the Session line before phrasing any % change.** If the snapshot says "NSE CLOSED — last session: Fri, 10 Apr 2026", every percent figure in the block reflects Friday's close, NOT live data. In your reply say "on Friday" / "at last close" / "in the last session" — NEVER "today" or "up today" when markets are closed. The same rule applies to the `watchlist` tool result: it includes a `session_note`, `pct_basis` (`today` vs `last session`), and `as_of` field — use them literally.
 
 ## Your tools
 Emit a tool call inline as: `[TOOL:tool_name:{"param":"value"}]`. Multiple markers per response are allowed. Use tools ONLY when the answer needs data not already in the LIVE MARKET SNAPSHOT block above.
@@ -298,7 +302,7 @@ Available tools:
 - [TOOL:narrative:{"symbol":"TCS"}] — Rich narrative for a stock: why_narrative + action_tag reasoning + lynch_classification + market_regime. Use when user asks "what's the thesis on X" or "why is X rated this way".
 - [TOOL:mf_lookup:{"scheme_name":"Parag Parikh Flexi Cap Fund - Direct Plan - Growth"}] — Mutual fund details. Accepts either `scheme_code` or `scheme_name`.
 - [TOOL:mf_screen:{"query":"category = 'Equity' AND returns_1y > 15", "limit":5}] — Filter mutual funds. Valid columns: scheme_code, scheme_name, category, sub_category, nav, expense_ratio, aum_cr, returns_1y, returns_3y, returns_5y, sharpe, sortino, score, risk_level.
-- [TOOL:watchlist:{}] — User's saved stocks AND mutual funds with live data. Each entity may also include a `news` array with 0-2 recent, RELEVANT articles (hybrid-search filtered — if `news` is absent or empty, there is no related news worth mentioning). When the user asks "check my watchlist" / "how are my stocks" / "what's happening with my portfolio", surface the attached news inline per entity when present; do NOT invent headlines if `news` is missing.
+- [TOOL:watchlist:{}] — User's saved stocks AND mutual funds with live data. Returns `{stocks, mutual_funds, session_note, pct_basis, as_of, nse_open}`. You MUST list every single entity from BOTH `stocks` and `mutual_funds` arrays — do not truncate, do not say "third holding missing", do not drop MFs when the user said "watchlist". Each entity may include a `news` array with 0-2 recent, RELEVANT articles (strict vector+entity-match filter — if `news` is absent or empty, there is no related news worth mentioning; do NOT invent headlines or reach for unrelated articles). Use `session_note` verbatim as framing when markets are closed and `pct_basis` to decide between "today" and "last session" phrasing.
 - [TOOL:market_status:{}] — All indices (India/US/Europe/Japan) + FX + key commodities + market hours. Only call this if the LIVE MARKET SNAPSHOT above is stale or missing what you need.
 - [TOOL:market_mood:{}] — Current breadth: advances/declines, advance-decline ratio, stocks near 52w highs/lows, average % change, overall mood label (risk_on/mildly_positive/neutral/mildly_negative/risk_off). Use for "how is the market feeling today" queries.
 - [TOOL:macro_regime:{"country":"IN"}] — Macro regime snapshot: repo rate, CPI, GDP growth, real policy rate, rate stance (restrictive/accommodative/neutral), inflation state, growth phase. Use when user asks "what's the macro backdrop" or "is RBI tightening".
@@ -404,7 +408,7 @@ Anti-refusal table (these tools exist — use them):
 
 **`stock_lookup` fuzzy fallback**: a miss returns `status: "not_found_exact"` plus up to 3 `candidates`. If one is an obvious typo match, re-lookup with that symbol. Otherwise say the company isn't in the universe and pivot to general knowledge — tagged.
 
-**Theme queries are cross-sector.** Renewable / solar / wind / EV / defence / railways / AI / semis / new-age tech / PSU banks / private banks / specialty chem / metals / cement / fintech / auto ancillaries — use `theme_screen({"theme":"<key>"})`, never `sector = 'Renewable'` (no such sector). The curated allow-list is the single source of truth.
+**Theme queries are cross-sector.** Infrastructure / renewable / solar / wind / EV / defence / railways / AI / semis / new-age tech / PSU banks / private banks / specialty chem / metals / cement / fintech / auto ancillaries / nuclear — use `theme_screen({"theme":"<key>"})`, never `sector = 'Infrastructure'` or `sector = 'Renewable'` (no such sectors exist in our taxonomy). The curated allow-list of themes is the single source of truth. If `theme_screen` also returns empty, fall back to a qualitative answer tagged `*General context (not from live data):*` — **never** tell the user "I couldn't retrieve infrastructure data" and stop; that's a dead-end response.
 
 **When a tool returns zero rows**: (1) check for a units bug, (2) check for a wrong sector literal (Banking → Financials, Pharma → Healthcare), (3) look for `relaxed: true` and acknowledge the relaxation, (4) if the data is genuinely missing, say so plainly and then pivot to general market knowledge — prefixed with `*General context (not from live data):*`.
 
@@ -415,6 +419,8 @@ Anti-refusal table (these tools exist — use them):
 - **Entity identities** (company names, tickers, fund schemes, sector labels) require either a tool source OR the user having typed them first. Never "the companies you highlighted" unless the user actually highlighted them.
 - **Qualitative claims** (ranges, sector framing, historical typicals) are fine IF tagged `*General context (not from live data):*`.
 - **Personal-data questions** (watchlist, portfolio, user preferences) can ONLY be answered from tool results. If the tool failed, say so and stop — do not guess at what the user probably watches.
+- **Watchlist completeness is mandatory.** The `watchlist` tool returns a complete list of the user's holdings in `stocks` and `mutual_funds`. You MUST render every single row. Never write "third holding missing", "data truncated", "the tool returned only two", "[Third stock data truncated]", or any variant of it — the tool is not truncated, and those phrases are a fabrication. If you counted wrong, recount.
+- **Never conflate the GLOBAL MARKET CONTEXT snapshot with the watchlist tool result.** Bitcoin, crude oil, gold, Gift Nifty, USD/INR, Nifty 50 and top NSE gainers/losers live in the context block — they are NOT watchlist holdings. If none of them appear in `watchlist.stocks` or `watchlist.mutual_funds`, do not mention them in a watchlist answer.
 
 **NEVER redirect the user to another app feature.** Phrases like "open the EconAtlas Screener tab", "check the app", "use the dashboard", or "consult a financial advisor" are FORBIDDEN. You ARE the feature. If you can't answer, say so directly and ask what other data would help.
 
@@ -3813,7 +3819,44 @@ async def _execute_tool(
                     "hint": "Call stock_compare with a symbols array",
                     "example": {"symbols": ["TCS", "INFY", "WIPRO"]},
                 }
-            symbols = [s.upper().strip() for s in raw_symbols if s][:3]
+            # Canonicalize each entry: aliases first (HEXT→HEXAWARE),
+            # then company name → ticker ("Infosys" → INFY,
+            # "Wipro Limited" → WIPRO). Without this, follow-ups like
+            # "Compare with Infosys and Wipro" turn into a DB lookup for
+            # 'INFOSYS' and return empty.
+            def _canon_one(raw: str) -> str:
+                s = str(raw or "").strip()
+                if not s:
+                    return ""
+                upper = _resolve_symbol_alias(s)
+                if upper and upper != s.upper():
+                    return upper
+                # Try exact + prefix match against the company-name map.
+                key = upper.lower()
+                if key in _COMPANY_NAME_TO_TICKER:
+                    return _COMPANY_NAME_TO_TICKER[key]
+                # Strip common suffixes ("Limited", "Ltd", "Industries")
+                key_short = (
+                    key.replace(" limited", "")
+                    .replace(" ltd", "")
+                    .replace(" industries", "")
+                    .replace(" corporation", "")
+                    .replace(" corp", "")
+                    .replace(" & co", "")
+                    .replace(".", "")
+                    .strip()
+                )
+                if key_short in _COMPANY_NAME_TO_TICKER:
+                    return _COMPANY_NAME_TO_TICKER[key_short]
+                # First word lookup as a last-ditch match ("Bajaj Auto"
+                # → "bajaj" → BAJFINANCE only if no better hit).
+                head = key_short.split()[0] if key_short.split() else ""
+                if head and head in _COMPANY_NAME_TO_TICKER:
+                    return _COMPANY_NAME_TO_TICKER[head]
+                return upper
+
+            symbols = [_canon_one(s) for s in raw_symbols if s]
+            symbols = [s for s in symbols if s][:3]
             if len(symbols) < 2:
                 return {
                     "error": (
@@ -4027,24 +4070,64 @@ async def _execute_tool(
                 )
 
             # Enrich each watchlist entity with 1-2 recent news items
-            # *if* hybrid search finds something relevant. We run the
-            # searches concurrently and cap the universe to keep latency
-            # predictable. News is only attached when the hybrid search
-            # returns ≥1 row — the threshold logic inside
-            # _news_hybrid_search (vector distance < 0.6, trigram %,
-            # ILIKE) already filters out off-topic matches, so an empty
-            # result here just means "no related news" and we drop the
-            # field entirely rather than show unrelated articles.
-            async def _fetch_news_for(query_name: str) -> list[dict]:
+            # *if* vector search finds a CLOSE semantic match OR the
+            # article's primary_entity matches the stock name. We
+            # deliberately skip the trigram/ILIKE fallback path used by
+            # the general `news` tool — those would pull in bitcoin /
+            # crude oil / generic fund news that has nothing to do with
+            # a specific Indian stock or scheme. If nothing passes the
+            # relevance bar we drop the `news` field entirely.
+            async def _fetch_news_for(
+                query_name: str,
+                match_terms: list[str],
+            ) -> list[dict]:
                 if not query_name:
                     return []
                 try:
-                    rows, _mode = await _news_hybrid_search(
-                        pool,
-                        query_name,
-                        limit=2,
-                        since_interval="7 days",
-                    )
+                    from app.services.embedding_service import embed_text
+                    from app.core.database import ensure_vector_registered
+
+                    query_vec = await embed_text(query_name)
+                    if not query_vec:
+                        return []
+                    async with pool.acquire() as conn:
+                        registered = await ensure_vector_registered(conn)
+                        if not registered:
+                            return []
+                        import numpy as np
+                        vec = np.array(query_vec, dtype=np.float32)
+                        rows = await conn.fetch(
+                            "SELECT title, summary, source, timestamp, url, "
+                            "primary_entity, impact, "
+                            "(embedding <=> $1) AS distance "
+                            "FROM news_articles "
+                            "WHERE embedding IS NOT NULL "
+                            "  AND timestamp > NOW() - INTERVAL '14 days' "
+                            "  AND (embedding <=> $1) < 0.42 "
+                            "ORDER BY embedding <=> $1 "
+                            "LIMIT 4",
+                            vec,
+                        )
+                    if not rows:
+                        return []
+                    lower_terms = [
+                        t.lower() for t in match_terms if t and len(t) >= 3
+                    ]
+                    filtered: list[dict] = []
+                    for r in rows:
+                        title = (r.get("title") or "").lower()
+                        summary = (r.get("summary") or "").lower()
+                        primary = (r.get("primary_entity") or "").lower()
+                        blob = f"{title} {summary} {primary}"
+                        # Require at least one of the entity's distinctive
+                        # terms to actually appear in the article. Without
+                        # this check vector search can surface "Reliance"
+                        # news for a query about "Reliance Industries Ltd"
+                        # vs "Reliance Power" etc.
+                        if not lower_terms or any(t in blob for t in lower_terms):
+                            filtered.append(r)
+                        if len(filtered) >= 2:
+                            break
                     return [
                         {
                             "title": r.get("title"),
@@ -4058,7 +4141,7 @@ async def _execute_tool(
                             "url": r.get("url"),
                             "impact": r.get("impact"),
                         }
-                        for r in rows
+                        for r in filtered
                     ]
                 except Exception:
                     logger.debug(
@@ -4068,35 +4151,108 @@ async def _execute_tool(
                     )
                     return []
 
-            # Cap enrichment to the first 12 entities (stocks+MFs) so a
-            # 50-stock watchlist doesn't stall the SSE stream for 10s.
-            entities_to_enrich: list[tuple[str, str, dict]] = []
-            for row in stock_rows[:8]:
+            def _stock_match_terms(row: dict) -> list[str]:
+                terms: list[str] = []
+                sym = str(row.get("symbol") or "").strip()
+                name = str(row.get("display_name") or "").strip()
+                if sym:
+                    terms.append(sym)
+                if name:
+                    # Drop generic suffixes so "Housing & Urban Development
+                    # Corporation Ltd" still matches "HUDCO" news.
+                    short = (
+                        name.replace(" Ltd", "")
+                        .replace(" Limited", "")
+                        .replace(" Corporation", "")
+                        .strip()
+                    )
+                    terms.append(short)
+                    head = short.split()[0] if short.split() else ""
+                    if head and len(head) >= 4:
+                        terms.append(head)
+                return terms
+
+            def _mf_match_terms(row: dict) -> list[str]:
+                name = str(
+                    row.get("display_name") or row.get("scheme_name") or ""
+                ).strip()
+                if not name:
+                    return []
+                # Use the AMC prefix (first 2-3 words) — e.g. "Parag Parikh
+                # Flexi Cap Fund" → ["Parag Parikh", "Flexi Cap"]. This is
+                # tighter than matching the whole scheme name.
+                parts = name.split()
+                return [" ".join(parts[:2])] if len(parts) >= 2 else [name]
+
+            # Run news enrichment over the FULL watchlist (no cap) so
+            # users with larger portfolios still get relevant context.
+            # Fetches run concurrently — pgvector + asyncpg handle the
+            # fan-out well and the distance filter keeps each query cheap.
+            entities_to_enrich: list[tuple[str, list[str], dict]] = []
+            for row in stock_rows:
                 name = str(row.get("display_name") or row.get("symbol") or "").strip()
                 if name:
-                    entities_to_enrich.append(("stock", name, row))
-            for row in mf_rows[:4]:
+                    entities_to_enrich.append((name, _stock_match_terms(row), row))
+            for row in mf_rows:
                 name = str(
                     row.get("display_name") or row.get("scheme_name") or ""
                 ).strip()
                 if name:
-                    entities_to_enrich.append(("mf", name, row))
+                    entities_to_enrich.append((name, _mf_match_terms(row), row))
 
             if entities_to_enrich:
                 news_results = await asyncio.gather(
-                    *[_fetch_news_for(name) for _, name, _ in entities_to_enrich],
+                    *[
+                        _fetch_news_for(name, terms)
+                        for name, terms, _ in entities_to_enrich
+                    ],
                     return_exceptions=False,
                 )
-                for (_kind, _name, row), articles in zip(
+                for (_n, _t, row), articles in zip(
                     entities_to_enrich, news_results
                 ):
                     if articles:
                         row["news"] = articles
 
+            # Session framing so the LLM never says "+5% today" on a
+            # Saturday. When NSE is closed we label the percent change
+            # as last session's move and include the ISO trade_date.
+            from app.scheduler.trading_calendar import get_india_session_info
+            from app.services.market_service import get_market_status as _ms
+            _now = datetime.now(timezone.utc)
+            _status = _ms(_now)
+            _nse_open = bool(_status.get("nse_open"))
+            _india_info = get_india_session_info(_now)
+            _trade_date = _india_info.get("trade_date")
+            if _nse_open:
+                session_note = "Markets open — prices are live."
+                pct_basis = "today"
+            else:
+                if _trade_date is not None:
+                    ls = _trade_date.strftime("%a, %d %b %Y")
+                    session_note = (
+                        f"NSE is closed. All prices and % changes below "
+                        f"reflect the last trading session ({ls}), not "
+                        f"live intraday data."
+                    )
+                else:
+                    session_note = (
+                        "NSE is closed. All prices and % changes below "
+                        "reflect the most recent trading session, not "
+                        "live intraday data."
+                    )
+                pct_basis = "last session"
+
             return {
                 "count": len(stock_rows) + len(mf_rows),
                 "stocks": stock_rows,
                 "mutual_funds": mf_rows,
+                "session_note": session_note,
+                "pct_basis": pct_basis,
+                "as_of": (
+                    _trade_date.isoformat() if _trade_date else _now.isoformat()
+                ),
+                "nse_open": _nse_open,
             }
 
         elif tool_name == "market_status":
@@ -8381,15 +8537,51 @@ def _render_prefetch_snapshot(
     market_hours: dict,
 ) -> str:
     """Render the prefetch data as a compact markdown block suitable
-    for injection into the system prompt. Aim for < 600 tokens."""
+    for injection into the system prompt. Aim for < 600 tokens.
+
+    IMPORTANT framing: this block is **global market context** only —
+    it is NOT the user's watchlist / portfolio. When NSE is closed we
+    explicitly label the prices as the last session's close so the LLM
+    doesn't say "today" for Saturday/Sunday/holiday queries.
+    """
+    from app.scheduler.trading_calendar import (
+        is_trading_day_markets,
+        get_india_session_info,
+    )
+
     now_utc = datetime.now(timezone.utc)
     now_ist = now_utc + timedelta(hours=5, minutes=30)
     ts = now_ist.strftime("%d %b %Y, %H:%M IST")
 
-    lines = [f"**LIVE MARKET SNAPSHOT** — {ts}"]
+    # Session context — is the NSE open right now? If not, are we
+    # looking at last session's close (common on weekends, holidays,
+    # or after the 15:30 IST close) or live pre-market data?
+    hrs = market_hours
+    nse_open = bool(hrs.get("india_open"))
+    try:
+        india_info = get_india_session_info(now_utc)
+        last_session_date = india_info.get("trade_date")
+    except Exception:
+        last_session_date = None
+
+    if nse_open:
+        session_label = f"LIVE (NSE open, {ts})"
+        pct_label = "today"
+    else:
+        if last_session_date is not None:
+            ls = last_session_date.strftime("%a, %d %b %Y")
+            session_label = f"NSE CLOSED — last session: {ls}"
+        else:
+            session_label = "NSE CLOSED"
+        pct_label = "last session"
+
+    lines = [
+        "**GLOBAL MARKET CONTEXT** "
+        "(indices / FX / commodities — NOT the user's watchlist) — " + ts,
+        f"Session: {session_label}",
+    ]
 
     # Market hours
-    hrs = market_hours
     status_bits = []
     status_bits.append(f"NSE {'OPEN' if hrs.get('india_open') else 'CLOSED'}")
     status_bits.append(f"NYSE {'OPEN' if hrs.get('us_open') else 'CLOSED'}")
@@ -8415,20 +8607,21 @@ def _render_prefetch_snapshot(
             sign = "+" if data["change_pct"] >= 0 else ""
             # Index values are POINTS, not currency — no ₹/$ prefix.
             lines.append(
-                f"- {name}: {data['price']:,.2f} ({sign}{data['change_pct']:.2f}%)"
+                f"- {name}: {data['price']:,.2f} "
+                f"({sign}{data['change_pct']:.2f}% {pct_label})"
             )
         lines.append("")
 
     # Top movers
     if top_gainers:
-        lines.append("**Top Gainers (NSE):**")
+        lines.append(f"**Top Gainers (NSE, {pct_label}):**")
         for g in top_gainers[:5]:
             lines.append(
                 f"- {g['symbol']} ({g['name']}): ₹{g['price']:,.2f} (+{g['change_pct']:.2f}%)"
             )
         lines.append("")
     if top_losers:
-        lines.append("**Top Losers (NSE):**")
+        lines.append(f"**Top Losers (NSE, {pct_label}):**")
         for l in top_losers[:5]:
             lines.append(
                 f"- {l['symbol']} ({l['name']}): ₹{l['price']:,.2f} ({l['change_pct']:+.2f}%)"
