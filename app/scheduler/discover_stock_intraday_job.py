@@ -60,11 +60,14 @@ import os
 import time
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from app.core.database import get_pool
 from app.scheduler.trading_calendar import is_trading_day_markets
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 logger = logging.getLogger(__name__)
 
@@ -119,12 +122,9 @@ _INDEX_HEADER_SYMBOLS: frozenset[str] = frozenset({
 
 
 def _ist_hour_minute() -> tuple[int, int]:
-    """Return the current hour:minute in IST (UTC+05:30)."""
-    now_utc = datetime.now(timezone.utc)
-    offset_min = 5 * 60 + 30
-    total = now_utc.hour * 60 + now_utc.minute + offset_min
-    total %= 24 * 60
-    return total // 60, total % 60
+    """Return the current hour:minute in IST (Asia/Kolkata)."""
+    ist_now = datetime.now(_IST)
+    return ist_now.hour, ist_now.minute
 
 
 def _in_pipeline_exclusion_window() -> bool:
@@ -430,27 +430,19 @@ async def run_discover_stock_intraday_job() -> None:
     Stage 3: UPDATE snapshots + INSERT intraday ticks + prune old ticks.
     Stage 4: Low-update-ratio ERROR log for ops observability.
     """
-    # ── Gate 1: NSE/BSE holiday calendar ────────────────────────────
     if not _is_trading_day_today():
-        logger.info(
-            "discover_stock_intraday: skipping — not a trading day per "
-            "trading_calendar (holiday or weekend)",
-        )
+        logger.info("discover_stock_intraday: skipping — not a trading day")
         return
 
-    # ── Gate 2: daily pipeline exclusion window ─────────────────────
     if _in_pipeline_exclusion_window():
         logger.info(
             "discover_stock_intraday: skipping — inside 15:55-16:45 IST "
-            "heavy pipeline window",
+            "daily pipeline window",
         )
         return
 
-    # ── Gate 3: live-market window ──────────────────────────────────
-    # The scheduler fires 30-min slots in 09:00-15:45 IST but only
-    # 09:15-15:30 is the true live session. The explicit 15:45 close
-    # cron is allowed through by bypassing this gate (it's scheduled
-    # separately so _force_close=True via env var is unnecessary).
+    # The explicit 15:45 close cron is allowed through the live-market
+    # gate so we capture the closing print before the 16:00 rescore.
     h, m = _ist_hour_minute()
     is_close_tick = (h == 15 and m == 45)
     if not is_close_tick and not _in_live_market_window():
@@ -489,7 +481,6 @@ async def run_discover_stock_intraday_job() -> None:
         timeout=_NSE_TIMEOUT_SEC,
         follow_redirects=True,
     ) as client:
-        # ── Stage 1: NSE bulk ─────────────────────────────────────────
         nse_quotes = await _fetch_nse_bulk_quotes(client)
         nse_count = len(nse_quotes)
         logger.info(
@@ -497,7 +488,6 @@ async def run_discover_stock_intraday_job() -> None:
             nse_count, time.monotonic() - t0,
         )
 
-        # ── Stage 2: Yahoo fallback for whatever NSE missed ──────────
         missing = [s for s in symbols if s not in nse_quotes]
         yahoo_quotes: dict[str, dict[str, Any]] = {}
         if missing and time.monotonic() - t0 < _INTRADAY_TOTAL_TIMEOUT_SEC:
@@ -508,64 +498,72 @@ async def run_discover_stock_intraday_job() -> None:
             yahoo_quotes = await _fetch_yahoo_fallback(client, missing)
             yahoo_count = len(yahoo_quotes)
 
-    # ── Stage 3: Write both outputs back to Postgres ──────────────────
+    # Bulk-write via executemany inside one transaction — the naive
+    # per-symbol loop did ~4000 sequential round-trips (~60s). Batched
+    # executemany collapses that to two statements (~2s).
+    update_rows: list[tuple] = []
+    insert_rows: list[tuple] = []
     for symbol in symbols:
         q = nse_quotes.get(symbol) or yahoo_quotes.get(symbol)
         if not q or q.get("last_price") is None:
             skipped += 1
             continue
+        update_rows.append((
+            symbol,
+            q.get("last_price"),
+            q.get("point_change"),
+            q.get("percent_change"),
+            q.get("volume"),
+            q.get("traded_value"),
+        ))
+        insert_rows.append((
+            symbol,
+            q.get("last_price"),
+            q.get("volume"),
+            q.get("percent_change"),
+        ))
+
+    if update_rows:
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.executemany(
+                        """
+                        UPDATE discover_stock_snapshots
+                        SET last_price = $2,
+                            point_change = COALESCE($3, point_change),
+                            percent_change = COALESCE($4, percent_change),
+                            volume = COALESCE($5, volume),
+                            traded_value = COALESCE($6, traded_value),
+                            ingested_at = NOW()
+                        WHERE symbol = $1
+                        """,
+                        update_rows,
+                    )
+                    await conn.executemany(
+                        """
+                        INSERT INTO discover_stock_intraday
+                            (symbol, ts, price, volume, percent_change)
+                        VALUES ($1, NOW(), $2, $3, $4)
+                        ON CONFLICT (symbol, ts) DO NOTHING
+                        """,
+                        insert_rows,
+                    )
+            updated = len(update_rows)
+        except Exception:
+            logger.exception("intraday: bulk write transaction failed")
+            errors = len(update_rows)
+            updated = 0
+
+    # Prune runs once per trading day at the close tick.
+    if is_close_tick:
         try:
             await pool.execute(
-                """
-                UPDATE discover_stock_snapshots
-                SET last_price = $2,
-                    point_change = COALESCE($3, point_change),
-                    percent_change = COALESCE($4, percent_change),
-                    volume = COALESCE($5, volume),
-                    traded_value = COALESCE($6, traded_value),
-                    ingested_at = NOW()
-                WHERE symbol = $1
-                """,
-                symbol,
-                q.get("last_price"),
-                q.get("point_change"),
-                q.get("percent_change"),
-                q.get("volume"),
-                q.get("traded_value"),
+                "DELETE FROM discover_stock_intraday "
+                "WHERE ts < NOW() - INTERVAL '2 days'"
             )
-            try:
-                await pool.execute(
-                    """
-                    INSERT INTO discover_stock_intraday
-                        (symbol, ts, price, volume, percent_change)
-                    VALUES ($1, NOW(), $2, $3, $4)
-                    ON CONFLICT (symbol, ts) DO NOTHING
-                    """,
-                    symbol,
-                    q.get("last_price"),
-                    q.get("volume"),
-                    q.get("percent_change"),
-                )
-            except Exception:
-                logger.debug(
-                    "intraday: tick insert failed for %s",
-                    symbol, exc_info=True,
-                )
-            updated += 1
         except Exception:
-            logger.debug(
-                "intraday: UPDATE failed for %s", symbol, exc_info=True,
-            )
-            errors += 1
-
-    # Prune intraday ticks older than 2 trading days.
-    try:
-        await pool.execute(
-            "DELETE FROM discover_stock_intraday "
-            "WHERE ts < NOW() - INTERVAL '2 days'"
-        )
-    except Exception:
-        logger.debug("intraday: prune failed", exc_info=True)
+            logger.debug("intraday: prune failed", exc_info=True)
 
     elapsed = time.monotonic() - t0
     total = len(symbols)

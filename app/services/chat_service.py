@@ -396,36 +396,19 @@ Anti-refusal table (these tools exist — use them):
 
 **AUTO-RELAX awareness**: `stock_screen` AND `mf_screen` now auto-relax filters when a query returns 0 rows. Response will include `"relaxed": true` and a `relaxation_trail`. When you see this, acknowledge it naturally: "No stocks met your strict criteria, but relaxing the filter shows these candidates instead…"
 
-### 3a. CRITICAL — ZERO-RESULT HANDLING + UNIT RULES + FUZZY LOOKUP + LLM FALLBACK
+### 3a. ZERO-RESULT HANDLING
 
-**UNITS (hammer this into every `stock_screen` query):**
-- `market_cap`, `total_debt`, `total_cash`, `total_revenue`, `total_assets`, `free_cash_flow`, `operating_cash_flow` are ALL stored in **₹ Crores**. Max real value in the DB is ~1.9 million (HDFC Bank at ₹19 L Cr). NEVER write `market_cap > 50000000000` (that's 50 billion Cr = ₹500 trillion, impossible). For "large-cap > ₹50k Cr" write `market_cap > 50000`. For "mid-cap > ₹10k Cr" write `market_cap > 10000`. A unit sanitizer will auto-rewrite absurd values and log a warning, but you should write them correctly in the first place.
-- `aum_cr` (mutual fund AUM) is also in ₹ Crores.
-- MF `returns_1y` / `returns_3y` / `returns_5y` are stored as **percent** (11.17 means 11.17%). For "above 12%" write `returns_1y > 12`, NOT `returns_1y > 0.12`.
+**Units — `market_cap`, `total_debt`, `total_cash`, `total_revenue`, `total_assets`, `free_cash_flow`, `operating_cash_flow`, `aum_cr` are all in ₹ Crores** (max real value ≈ 1.9 million). `market_cap > 50000` means ₹50k Cr. Writing `50000000000` is wrong — a sanitizer will rewrite and log a warning. MF `returns_1y` / `returns_3y` / `returns_5y` are **percent** (`11.17` = 11.17%), never decimal.
 
-**SINGLE-TOKEN TICKER RULE:** If the user's message is a single alphanumeric token 2–12 characters long (e.g. `HEXT`, `CDSL`, `TATA`, `INFY`), that's almost certainly a ticker. Call `stock_lookup({"symbol":"<THAT_TOKEN>"})` IMMEDIATELY. Do NOT ask "could you clarify?" — call the tool and let the result speak.
+**Single-token input** (`HEXT`, `CDSL`, `TATA` — 2–12 alphanumeric chars) is almost always a ticker. Call `stock_lookup` immediately, do not ask for clarification.
 
-**FUZZY LOOKUP AWARENESS:** When `stock_lookup` returns `status: "not_found_exact"`, it means the exact symbol wasn't in our universe but the response includes up to 3 `candidates` that match by substring/prefix. READ the candidates and:
-1. If ONE candidate is an obvious match for what the user meant (same company name or clear typo), call `stock_lookup` again with that candidate's symbol.
-2. If NO candidate fits OR the company is recently-listed / unlisted (e.g. NSDL listed July 2025 and may still be onboarding), say so plainly: *"NSDL isn't in our live data feed yet (listed July 2025, onboarding in progress)."* Then continue with qualitative commentary from general market knowledge — but **clearly label such facts as "general context, not live data"** and **never invent specific numbers** (market cap, PE, revenue, etc.). Ranges are OK ("depositories typically trade at 30–40x PE"), exact figures are NOT.
+**`stock_lookup` fuzzy fallback**: a miss returns `status: "not_found_exact"` plus up to 3 `candidates`. If one is an obvious typo match, re-lookup with that symbol. Otherwise say the company isn't in the universe and pivot to general knowledge — tagged.
 
-**THEME QUERIES ARE CROSS-SECTOR.** Queries about "renewable", "green energy", "solar", "wind", "EV", "defence", "railways", "AI", "semis", "new-age tech", "PSU banks", "private banks", "specialty chem", "metals", "cement", "fintech", "auto ancillaries" — these **CANNOT** be answered with `sector = '...'` or `industry LIKE '%...%'` because the matching stocks span 4–6 different sectors and industries. Example: renewable energy spans Energy (ADANIGREEN, NTPCGREEN), Industrials (WAAREEENER, SUZLON, INOXWIND), Financials (IREDA), Utilities (ACMESOLAR, KPIGREEN), Commodities (SOLARINDS). Use `theme_screen({"theme":"renewable_energy"})` — it has curated symbol allow-lists for each theme and is the ONLY correct tool for these questions. Other supported themes: see the quick-reference table above.
+**Theme queries are cross-sector.** Renewable / solar / wind / EV / defence / railways / AI / semis / new-age tech / PSU banks / private banks / specialty chem / metals / cement / fintech / auto ancillaries — use `theme_screen({"theme":"<key>"})`, never `sector = 'Renewable'` (no such sector). The curated allow-list is the single source of truth.
 
-**ZERO RESULTS FROM A TOOL — the decision tree:**
-1. **Did the filter have a units bug?** (`market_cap > 50000000000` etc.) — The sanitizer will catch and rewrite it, but double-check before re-querying.
-2. **Did you use the wrong column/sector name?** — Common traps: `sector = 'Banking'` (correct: `'Financials'`), `sector = 'Pharma'` (correct: `'Healthcare'`), `sector = 'Renewable'` (no such sector — use `theme_screen`).
-3. **Was the threshold genuinely too strict?** — The auto-relax will kick in and return partial matches with `relaxed: true`. Acknowledge the relaxation in your response.
-4. **Is the data genuinely missing from our universe?** (e.g. newly-listed NSDL, or a micro-cap outside the discover feed) — Say so plainly and then pivot to **LLM general knowledge** to answer qualitatively: "NSDL isn't in our live feed yet. From public reports, NSDL listed on 30 July 2025, market cap estimated around ₹30,000 Cr, business model is depository services similar to CDSL but handles the institutional/FII segment…" **Tag the general-knowledge section clearly** (e.g. "*General context (not from live data):*") and never fabricate precise numbers — use ranges or "approximately" language.
-5. **NEVER** silently substitute general-knowledge numbers for missing tool data. NEVER write "NSDL market cap ~₹30 Cr" as if it were a tool result. If you are reasoning from general knowledge, tag it explicitly.
+**When a tool returns zero rows**: (1) check for a units bug, (2) check for a wrong sector literal (Banking → Financials, Pharma → Healthcare), (3) look for `relaxed: true` and acknowledge the relaxation, (4) if the data is genuinely missing, say so plainly and then pivot to general market knowledge — prefixed with `*General context (not from live data):*`.
 
-**NO-FABRICATION GATE:** If you have not seen a specific number in a tool result or in your prior assistant turns in THIS session, you may not present it as a fact. You CAN:
-- Quote ranges ("trades at roughly 30–40x PE historically")
-- Use qualitative language ("strong cash flows", "high-margin business")
-- Say "approximately" / "around" when citing general-knowledge figures
-You CANNOT:
-- Write "CDSL market cap is ₹23,671 Cr" without having seen it in a tool result
-- Invent ownership / allocation percentages ("Parag Parikh holds 30-35% large-cap core")
-- Report a "recent earnings beat of 12%" without a tool-sourced number
+**No fabrication**: if you haven't seen a specific number in a tool result or prior assistant turn in this session, you may not present it as a fact. Ranges, qualitative language, and `~approximately` framings are fine. Exact figures (market cap, PE, holding percentages, earnings beats) require a tool source.
 
 **NEVER redirect the user to another app feature.** Phrases like "open the EconAtlas Screener tab", "check the app", "use the dashboard", or "consult a financial advisor" are FORBIDDEN. You ARE the feature. If you can't answer, say so directly and ask what other data would help.
 
@@ -1778,6 +1761,55 @@ def _canonicalize_mf_screen_query(query: str | None) -> str:
     return _MF_LITERAL_RE.sub(_replace, query)
 
 
+_AND_SPLIT_RE = re.compile(r"\s+AND\s+", re.IGNORECASE)
+
+
+async def _auto_relax_screen_query(
+    *,
+    pool: Any,
+    select_sql: str,
+    order_by_limit: str,
+    where: str,
+    max_iters: int = 5,
+    validator: Any = None,
+) -> tuple[list[Any], list[str]]:
+    """Progressively drop trailing AND-clauses until a query returns rows.
+
+    Shared by `stock_screen` and `mf_screen`. The LLM's most common
+    failure mode is over-tight filter combinations (e.g. `roe > 25 AND
+    pe < 15 AND sector = 'IT'`) with zero intersection. We peel off
+    the rightmost clause repeatedly; the caller owns any deeper
+    fallback (like `stock_screen`'s sector-only last-resort query).
+
+    Returns ``(rows, trail)`` where ``trail`` is the ordered list of
+    dropped clauses. Rows may be empty if relaxation never found any.
+    """
+    trail: list[str] = []
+    relaxed = where
+    for _ in range(max_iters):
+        parts = _AND_SPLIT_RE.split(relaxed)
+        if len(parts) <= 1:
+            break
+        dropped = parts[-1].strip()
+        candidate = " AND ".join(parts[:-1])
+        trail.append(dropped)
+        relaxed = candidate
+        if validator is not None:
+            ok, _err = validator(candidate)
+            if not ok:
+                continue
+        try:
+            rows = await pool.fetch(
+                f"{select_sql}WHERE {candidate} {order_by_limit}",
+                timeout=5,
+            )
+        except Exception:
+            continue
+        if rows:
+            return list(rows), trail
+    return [], trail
+
+
 def _canonicalize_tool_params(tool_name: str, params: dict[str, Any] | None) -> dict[str, Any]:
     """Normalize common entity variants before tool dispatch."""
     normalized = dict(params or {})
@@ -3092,39 +3124,23 @@ async def _execute_tool(
                 f"LIMIT {limit}",
                 timeout=5,
             )
-            # --- AUTO-RELAX: if the strict query returned 0, try relaxing ---
-            # Drop numeric threshold filters one at a time. The LLM's most
-            # common failure mode is over-tight filters (roe > 25, pe < 15)
-            # that have zero intersection. Removing the tightest first
-            # gives the user the closest match to their intent.
             relaxation_trail: list[str] = []
             if len(rows) == 0:
-                import re as _re
-                relaxed_query = query_where
-                # Progressive relaxation: drop trailing AND-clauses one at a time.
-                clauses = _re.split(r"\s+AND\s+", query_where, flags=_re.IGNORECASE)
-                for i in range(len(clauses) - 1, 0, -1):
-                    relaxed = " AND ".join(clauses[:i])
-                    relaxation_trail.append(relaxed)
-                    try:
-                        ok_r, _ = _validate_screen_query(relaxed, _STOCK_SCREEN_COLUMNS)
-                        if not ok_r:
-                            continue
-                        rows = await pool.fetch(
-                            f"{select_cols}WHERE {relaxed} "
-                            f"ORDER BY score DESC NULLS LAST LIMIT {limit}",
-                            timeout=5,
-                        )
-                        if rows:
-                            relaxed_query = relaxed
-                            break
-                    except Exception:
-                        continue
-                # Final fallback: drop filters entirely, just return top scores in sector
+                relaxed_rows, relaxation_trail = await _auto_relax_screen_query(
+                    pool=pool,
+                    select_sql=select_cols,
+                    order_by_limit=f"ORDER BY score DESC NULLS LAST LIMIT {limit}",
+                    where=query_where,
+                    validator=lambda q: _validate_screen_query(q, _STOCK_SCREEN_COLUMNS),
+                )
+                rows = relaxed_rows
+                # Last-resort: if every clause dropped and we have a
+                # sector literal, return the sector's top-scored names
+                # rather than nothing at all.
                 if len(rows) == 0 and "sector" in query_where.lower():
-                    sector_match = _re.search(
+                    sector_match = re.search(
                         r"sector\s*(?:=|LIKE)\s*['\"]([^'\"]+)['\"]",
-                        query_where, _re.IGNORECASE,
+                        query_where, re.IGNORECASE,
                     )
                     if sector_match:
                         fallback_sector = sector_match.group(1)
@@ -3253,43 +3269,23 @@ async def _execute_tool(
                 f"LIMIT {limit}",
                 timeout=5,
             )
-            # --- AUTO-RELAX: mirror the stock_screen behaviour.
-            # When the strict query returns 0 rows, progressively drop
-            # the trailing AND-clauses one at a time until we find the
-            # closest match. Returns `relaxed: true` + `relaxation_trail`
-            # so Artha can explain what was dropped.  Without this, "best
-            # flexi cap fund above 12% 1y returns" returns zero (max
-            # Flexi Cap 1y in the DB right now is 11.17%) and the user
-            # gets a flat "no results" answer.
+            # Progressive AND-clause drop via the shared helper.
+            # See _auto_relax_screen_query for rationale.
             relaxation_trail: list[str] = []
             if len(rows) == 0:
-                import re as _re
-                relaxed_query = query_where
-                for _ in range(5):
-                    _parts = _re.split(
-                        r"\s+AND\s+", relaxed_query, flags=_re.IGNORECASE,
+                relaxed_rows, relaxation_trail = await _auto_relax_screen_query(
+                    pool=pool,
+                    select_sql=_mf_select,
+                    order_by_limit=f"ORDER BY score DESC NULLS LAST LIMIT {limit}",
+                    where=query_where,
+                )
+                rows = relaxed_rows
+                if rows and relaxation_trail:
+                    logger.info(
+                        "mf_screen: auto-relaxed after dropping %d clauses: %s",
+                        len(relaxation_trail),
+                        " | ".join(relaxation_trail),
                     )
-                    if len(_parts) <= 1:
-                        break
-                    dropped = _parts[-1].strip()
-                    relaxed_query = " AND ".join(_parts[:-1])
-                    relaxation_trail.append(dropped)
-                    try:
-                        rows = await pool.fetch(
-                            f"{_mf_select}WHERE {relaxed_query} "
-                            f"ORDER BY score DESC NULLS LAST "
-                            f"LIMIT {limit}",
-                            timeout=5,
-                        )
-                    except Exception:
-                        continue
-                    if len(rows) > 0:
-                        logger.info(
-                            "mf_screen: auto-relaxed after dropping %d clauses: %s",
-                            len(relaxation_trail),
-                            " | ".join(relaxation_trail),
-                        )
-                        break
             return {
                 "count": len(rows),
                 "funds": [record_to_dict(r) for r in rows],

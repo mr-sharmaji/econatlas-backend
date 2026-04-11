@@ -3866,20 +3866,11 @@ async def get_stock_price_history(*, symbol: str, days: int = 365) -> list[dict]
     return [record_to_dict(r) for r in rows]
 
 
-# ---------------------------------------------------------------------------
-# Intraday 1D chart data: hybrid source.
-#   1. Primary: `discover_stock_intraday` table (30-min ticks written by the
-#      scheduler during market hours).
-#   2. On-demand fallback: Yahoo chart `interval=5m&range=1d` — triggered
-#      when the stored table has fewer than 3 points (e.g. pre-market on
-#      Monday before the first scheduler tick).
-#   3. Process-local 5-min cache keyed on (symbol, minute bucket) so a
-#      burst of app opens doesn't hammer Yahoo.
-# ---------------------------------------------------------------------------
-
 import time as _time
 
-_INTRADAY_CACHE_TTL = 300  # 5 minutes
+# 60s is short enough to expose a fresh 30-min tick soon after it lands,
+# long enough to absorb app-open bursts without hammering Yahoo.
+_INTRADAY_CACHE_TTL = 60
 _INTRADAY_CACHE: dict[str, tuple[float, list[dict]]] = {}
 
 
