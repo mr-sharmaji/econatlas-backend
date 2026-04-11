@@ -624,7 +624,11 @@ async def run_discover_stock_intraday_job() -> None:
 _BACKFILL_CONCURRENCY = 2
 _BACKFILL_PER_SYMBOL_TIMEOUT_SEC = 6
 _BACKFILL_INTER_CALL_DELAY_SEC = 0.3
-_BACKFILL_TOTAL_TIMEOUT_SEC = 900  # 15 min hard ceiling
+# Generous ceiling — Upstox-based backfill for ~2300 stocks with 6
+# concurrent workers + 0.1s pacing completes in ~5 minutes, but on a
+# cold run + slow network we want headroom so the whole universe
+# always finishes inside one invocation.
+_BACKFILL_TOTAL_TIMEOUT_SEC = 2400  # 40 min hard ceiling
 
 
 # ── Upstox primary source ───────────────────────────────────────────
@@ -652,7 +656,12 @@ _UPSTOX_HISTORICAL_URL = (
     "https://api.upstox.com/v2/historical-candle/{key}/30minute/{to_date}/{from_date}"
 )
 _UPSTOX_PER_CALL_TIMEOUT_SEC = 10
-_UPSTOX_INTER_CALL_DELAY_SEC = 0.8
+# 6 concurrent workers × 0.1 s inter-call pacing ≈ 60 req/sec, well
+# within Upstox's ~100 req/min-per-IP soft limit while cutting
+# wall-clock from ~30 min (sequential @ 0.8 s) down to ~5 min for
+# the full 2300-stock universe.
+_UPSTOX_CONCURRENCY = 6
+_UPSTOX_INTER_CALL_DELAY_SEC = 0.1
 # Cache the instrument master for 24h inside the worker process —
 # rebuild takes ~5s and is only needed when Upstox adds new listings.
 _upstox_instrument_cache: dict[str, str] = {}
@@ -911,23 +920,28 @@ async def run_discover_stock_intraday_backfill() -> None:
                 "falling back to Yahoo for every symbol",
             )
 
+        # Concurrent Upstox fetch — bounded by _UPSTOX_CONCURRENCY.
+        # Each worker honours the shared deadline and appends to the
+        # shared all_rows list under a simple counter (GIL-safe for
+        # list.append + integer increment).
+        upstox_sem = asyncio.Semaphore(_UPSTOX_CONCURRENCY)
         missing_upstox: list[str] = []
-        for symbol in symbols:
+        missing_lock = asyncio.Lock()
+
+        async def _upstox_worker(symbol: str) -> None:
+            nonlocal fetched_ok, fetched_empty, fetched_upstox
             if time.monotonic() > deadline:
-                logger.warning(
-                    "intraday_backfill: wall-clock deadline hit, "
-                    "processed=%d/%d",
-                    fetched_ok + fetched_empty, len(symbols),
-                )
-                break
+                return
             key = instr_map.get(symbol)
             if key is None:
-                missing_upstox.append(symbol)
-                continue
-            points = await _fetch_upstox_30m_for_symbol(
-                client, key, from_date, to_date,
-            )
-            await asyncio.sleep(_UPSTOX_INTER_CALL_DELAY_SEC)
+                async with missing_lock:
+                    missing_upstox.append(symbol)
+                return
+            async with upstox_sem:
+                points = await _fetch_upstox_30m_for_symbol(
+                    client, key, from_date, to_date,
+                )
+                await asyncio.sleep(_UPSTOX_INTER_CALL_DELAY_SEC)
             if points:
                 fetched_ok += 1
                 fetched_upstox += 1
@@ -935,7 +949,13 @@ async def run_discover_stock_intraday_backfill() -> None:
                     all_rows.append((symbol, ts_utc, price, vol))
             else:
                 fetched_empty += 1
-                missing_upstox.append(symbol)
+                async with missing_lock:
+                    missing_upstox.append(symbol)
+
+        await asyncio.gather(
+            *(_upstox_worker(s) for s in symbols),
+            return_exceptions=True,
+        )
 
         logger.warning(
             "intraday_backfill: Upstox pass done — upstox_ok=%d missing=%d",
