@@ -3950,6 +3950,8 @@ async def _fetch_yahoo_intraday(symbol: str) -> list[dict]:
     if not isinstance(payload, dict) or payload.get("status") != "success":
         return []
     candles = (payload.get("data") or {}).get("candles") or []
+    from zoneinfo import ZoneInfo
+    _IST = ZoneInfo("Asia/Kolkata")
     out: list[dict] = []
     for row in candles:
         if not isinstance(row, list) or len(row) < 5:
@@ -3966,6 +3968,21 @@ async def _fetch_yahoo_intraday(symbol: str) -> list[dict]:
             "percent_change": None,
         })
     out.sort(key=lambda p: p["ts"])
+    # "1D" must mean exactly ONE trading session, not 2-3 days of
+    # candles — the app renders intraday on an HH:MM axis and the
+    # user rightly reported that a chart spanning Apr 8 → Apr 10
+    # isn't "today's chart". Keep only candles whose IST trade-date
+    # matches the most recent one in the response. This gives us
+    # Friday's session on a Saturday, Thursday's on a Friday pre-
+    # market, etc.
+    if out:
+        latest_date = max(
+            p["ts"].astimezone(_IST).date() for p in out
+        )
+        out = [
+            p for p in out
+            if p["ts"].astimezone(_IST).date() == latest_date
+        ]
     return out
 
 
@@ -4015,18 +4032,26 @@ async def _get_upstox_instrument_map() -> dict[str, str]:
 
 
 async def get_stock_intraday_history(*, symbol: str) -> list[dict]:
-    """Return today's intraday ticks for a stock (30-min or 5-min granularity).
+    """Return the most-recent trading session's intraday ticks.
 
-    Hybrid source (four-level fallback):
-    1. Stored ``discover_stock_intraday`` table — today's 30-min ticks.
-    2. On-demand Yahoo 5-min fetch if the stored table has < 3 points
-       (pre-market, cold start).
-    3. Previous trading session's ticks from the same ``discover_stock_intraday``
-       table (labeled as "yesterday's session") if both today's stored
-       and today's Yahoo fetch came up empty — so the 1D chart is
-       never blank when the user opens a stock at 07:00 IST.
-    4. 5-minute process-local cache keyed by symbol to absorb bursts.
+    "1D" in the UI means ONE trading session — not N calendar days —
+    so on a Saturday or holiday we return Friday's close, on a pre-
+    market Monday we return Friday's candles, and during a live
+    session we return today's ticks. The app renders the x-axis as
+    HH:MM, so returning a multi-day span (what the previous code
+    did) produced a garbled chart spanning Apr 8 → Apr 10.
+
+    Strategy:
+    1. Stored ``discover_stock_intraday`` table for the last 3 days.
+       Group by IST trade-date, keep only the rows whose date is the
+       most recent one in the slice.
+    2. If the table is empty / thin, fall back to the Upstox live
+       fetch (which also self-filters to the latest session).
+    3. 60-second process-local cache keyed by symbol to absorb bursts.
     """
+    from zoneinfo import ZoneInfo
+    _IST = ZoneInfo("Asia/Kolkata")
+
     key = symbol.upper().strip()
     now = _time.time()
     cached = _INTRADAY_CACHE.get(key)
@@ -4034,41 +4059,37 @@ async def get_stock_intraday_history(*, symbol: str) -> list[dict]:
         return cached[1]
 
     pool = await get_pool()
-    # Level 1: today's stored ticks.
+    # Level 1: the last 3 days of stored ticks. We'll pick the most
+    # recent day below so weekends / holidays still surface Friday.
     rows = await pool.fetch(
         """
         SELECT ts, price, volume, percent_change
         FROM discover_stock_intraday
         WHERE symbol = $1
-          AND ts >= (CURRENT_DATE AT TIME ZONE 'Asia/Kolkata')::timestamptz
+          AND ts >= NOW() - INTERVAL '4 days'
         ORDER BY ts ASC
         """,
         key,
     )
     points = [record_to_dict(r) for r in rows]
 
-    # Level 2: Yahoo 5-min fallback if the stored table is thin.
+    # Level 2: live Upstox fetch when the stored table has almost
+    # nothing. Upstox path already filters to the latest session.
     if len(points) < 3:
-        yahoo_points = await _fetch_yahoo_intraday(key)
-        if yahoo_points:
-            points = yahoo_points
+        upstox_points = await _fetch_yahoo_intraday(key)
+        if upstox_points:
+            points = upstox_points
 
-    # Level 3: previous session's ticks if both levels above returned
-    # nothing (typical on pre-market open or when the scheduler hasn't
-    # fired yet today). The tick table keeps 2 days of retention so
-    # yesterday's session is still there.
-    if not points:
-        yday_rows = await pool.fetch(
-            """
-            SELECT ts, price, volume, percent_change
-            FROM discover_stock_intraday
-            WHERE symbol = $1
-              AND ts >= NOW() - INTERVAL '24 hours'
-            ORDER BY ts ASC
-            """,
-            key,
+    # Filter the combined set to only the most recent IST session
+    # so "1D" is truly one day's worth of ticks.
+    if points:
+        latest_date = max(
+            p["ts"].astimezone(_IST).date() for p in points
         )
-        points = [record_to_dict(r) for r in yday_rows]
+        points = [
+            p for p in points
+            if p["ts"].astimezone(_IST).date() == latest_date
+        ]
 
     _INTRADAY_CACHE[key] = (now, points)
     # Bound the cache size to prevent unbounded growth.
