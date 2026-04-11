@@ -1892,93 +1892,148 @@ class DiscoverMutualFundScraper(BaseScraper):
         Strategy (two phases):
           1. **Sitemap-indexed sweep.** Parse `mf-sitemap.xml` once,
              fetch each canonical slug, extract the blob, and key it
-             by `direct_scheme_code` (the AMFI scheme code). Every
-             hit goes into a `by_code` dict.
+             by `direct_scheme_code` (the AMFI scheme code).
           2. **Apply by scheme_code.** For every AMFI row in our
-             universe, look up its scheme_code in `by_code`. Merge
-             the Groww data into the row.
+             universe, look up its scheme_code in `by_code`. Merge.
           3. **Deterministic-slug fallback.** For rows that had no
              scheme_code match, try deriving a slug from the scheme
-             name (old behaviour) and fetching directly. This catches
-             funds Groww serves via URL but didn't list in the
-             sitemap.
+             name and fetch directly.
 
-        Rate-limited to ~2 req/sec. Total wall-clock on a cold run
-        is ~20 min (1900 sitemap fetches + up to 4500 slug fallbacks).
+        Every phase is wrapped in per-iteration try/except with
+        ERROR-level tracebacks via traceback.format_exc() so one bad
+        slug / one malformed blob never aborts the whole sweep.
         """
+        import traceback
+
+        logger.warning(
+            "groww: ENTER _enrich_from_groww — %d input rows",
+            len(rows),
+        )
+
         targets = [
             (code, row) for code, row in rows.items()
             if row.get("scheme_name")
         ]
         if not targets:
+            logger.warning("groww: no targets — skipping")
             return
 
         # Phase 1: build a scheme_code → blob index from the sitemap.
-        slugs = self._fetch_groww_sitemap_slugs()
+        try:
+            slugs = self._fetch_groww_sitemap_slugs()
+        except Exception:
+            logger.error(
+                "groww: sitemap fetch raised:\n%s", traceback.format_exc(),
+            )
+            slugs = []
+
         by_code: dict[str, dict] = {}
         sitemap_failures = 0
+        sitemap_iter_errors = 0
         for i, slug in enumerate(slugs):
-            blob = self._fetch_groww_blob_by_slug(slug)
+            try:
+                blob = self._fetch_groww_blob_by_slug(slug)
+            except Exception:
+                sitemap_iter_errors += 1
+                if sitemap_iter_errors <= 3:
+                    logger.error(
+                        "groww: sitemap iter raised for slug=%r:\n%s",
+                        slug, traceback.format_exc(),
+                    )
+                time.sleep(0.2)
+                continue
             if blob is None:
                 sitemap_failures += 1
                 time.sleep(0.2)
                 continue
-            sc = str(blob.get("direct_scheme_code") or blob.get("scheme_code") or "").strip()
-            if sc:
-                by_code[sc] = blob
+            try:
+                sc = str(
+                    blob.get("direct_scheme_code")
+                    or blob.get("scheme_code")
+                    or ""
+                ).strip()
+                if sc:
+                    by_code[sc] = blob
+            except Exception:
+                sitemap_iter_errors += 1
+                if sitemap_iter_errors <= 3:
+                    logger.error(
+                        "groww: blob indexing raised for slug=%r:\n%s",
+                        slug, traceback.format_exc(),
+                    )
             time.sleep(0.35)
             if (i + 1) % 200 == 0:
-                logger.info(
-                    "groww: sitemap sweep %d/%d — indexed=%d fail=%d",
-                    i + 1, len(slugs), len(by_code), sitemap_failures,
+                logger.warning(
+                    "groww: sitemap sweep %d/%d — indexed=%d fail=%d iter_err=%d",
+                    i + 1, len(slugs), len(by_code),
+                    sitemap_failures, sitemap_iter_errors,
                 )
-        logger.info(
-            "groww: sitemap sweep done — indexed=%d fail=%d",
-            len(by_code), sitemap_failures,
+        logger.warning(
+            "groww: sitemap sweep done — indexed=%d fail=%d iter_err=%d",
+            len(by_code), sitemap_failures, sitemap_iter_errors,
         )
 
         # Phase 2: apply sitemap-indexed data by scheme_code.
         filled: dict[str, int] = {}
         applied_from_index = 0
         slug_fallback_targets: list[tuple[str, dict]] = []
+        apply_errors = 0
         for code, row in targets:
-            blob = by_code.get(str(code))
-            if blob is None:
-                slug_fallback_targets.append((code, row))
-                continue
-            self._apply_groww_blob(row, blob, filled)
-            applied_from_index += 1
+            try:
+                blob = by_code.get(str(code))
+                if blob is None:
+                    slug_fallback_targets.append((code, row))
+                    continue
+                self._apply_groww_blob(row, blob, filled)
+                applied_from_index += 1
+            except Exception:
+                apply_errors += 1
+                if apply_errors <= 3:
+                    logger.error(
+                        "groww: apply raised for code=%r:\n%s",
+                        code, traceback.format_exc(),
+                    )
 
-        logger.info(
-            "groww: indexed apply done — applied=%d slug_fallback_targets=%d",
-            applied_from_index, len(slug_fallback_targets),
+        logger.warning(
+            "groww: indexed apply done — applied=%d slug_fallback=%d apply_err=%d",
+            applied_from_index, len(slug_fallback_targets), apply_errors,
         )
 
         # Phase 3: slug-derivation fallback for the rest.
         fallback_hits = 0
+        fallback_errors = 0
         for code, row in slug_fallback_targets:
-            blob = self._fetch_groww_scheme_data(str(row.get("scheme_name") or ""))
-            if blob is None:
-                time.sleep(0.3)
-                continue
-            # Sanity check: confirm the blob is for our scheme (the
-            # slug-based lookup can return a related fund if our slug
-            # happens to match a different AMFI code).
-            blob_code = str(
-                blob.get("direct_scheme_code") or blob.get("scheme_code") or ""
-            ).strip()
-            if blob_code and blob_code != str(code):
-                time.sleep(0.4)
-                continue
-            self._apply_groww_blob(row, blob, filled)
-            fallback_hits += 1
+            try:
+                blob = self._fetch_groww_scheme_data(
+                    str(row.get("scheme_name") or "")
+                )
+                if blob is None:
+                    time.sleep(0.3)
+                    continue
+                blob_code = str(
+                    blob.get("direct_scheme_code")
+                    or blob.get("scheme_code")
+                    or ""
+                ).strip()
+                if blob_code and blob_code != str(code):
+                    time.sleep(0.4)
+                    continue
+                self._apply_groww_blob(row, blob, filled)
+                fallback_hits += 1
+            except Exception:
+                fallback_errors += 1
+                if fallback_errors <= 3:
+                    logger.error(
+                        "groww: fallback raised for code=%r:\n%s",
+                        code, traceback.format_exc(),
+                    )
             time.sleep(0.4)
 
-        logger.info(
+        logger.warning(
             "groww: enrichment done — indexed_hits=%d fallback_hits=%d "
-            "misses=%d filled_fields=%s",
+            "apply_err=%d fallback_err=%d filled_fields=%s",
             applied_from_index, fallback_hits,
-            len(targets) - applied_from_index - fallback_hits,
+            apply_errors, fallback_errors,
             {k: v for k, v in sorted(filled.items(), key=lambda x: -x[1])[:15]},
         )
 
@@ -2431,14 +2486,19 @@ class DiscoverMutualFundScraper(BaseScraper):
         # blob. ETMoney values are still preferred when non-null —
         # Groww only fills gaps.
         try:
+            import traceback as _tb
             rows_by_code: dict[str, dict] = {
                 str(row.get("scheme_code") or ""): row
                 for row in rows
                 if row.get("scheme_code")
             }
             self._enrich_from_groww(rows_by_code)
-        except Exception:
-            logger.warning("groww: enrichment failed", exc_info=True)
+        except Exception as _exc:
+            import traceback as _tb2
+            logger.error(
+                "groww: enrichment wrapper raised: %s\n%s",
+                _exc, _tb2.format_exc(),
+            )
 
         return self._compute_scores(rows)
 
