@@ -3906,6 +3906,16 @@ _INTRADAY_CACHE_TTL = 60
 _INTRADAY_CACHE: dict[str, tuple[float, list[dict]]] = {}
 
 
+def _point_timestamp(point: dict) -> datetime | None:
+    """Return a timezone-aware timestamp for an intraday point."""
+    ts = parse_ts(point.get("ts"))
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
 async def _fetch_yahoo_intraday(symbol: str) -> list[dict]:
     """Fetch 30-min ticks for the last 2 sessions from Upstox.
 
@@ -3976,12 +3986,19 @@ async def _fetch_yahoo_intraday(symbol: str) -> list[dict]:
     # Friday's session on a Saturday, Thursday's on a Friday pre-
     # market, etc.
     if out:
-        latest_date = max(
-            p["ts"].astimezone(_IST).date() for p in out
-        )
+        dated_points = [
+            (point, _point_timestamp(point))
+            for point in out
+        ]
+        dated_points = [
+            (point, ts) for point, ts in dated_points if ts is not None
+        ]
+        if not dated_points:
+            return []
+        latest_date = max(ts.astimezone(_IST).date() for _, ts in dated_points)
         out = [
-            p for p in out
-            if p["ts"].astimezone(_IST).date() == latest_date
+            point for point, ts in dated_points
+            if ts.astimezone(_IST).date() == latest_date
         ]
     return out
 
@@ -4083,12 +4100,19 @@ async def get_stock_intraday_history(*, symbol: str) -> list[dict]:
     # Filter the combined set to only the most recent IST session
     # so "1D" is truly one day's worth of ticks.
     if points:
-        latest_date = max(
-            p["ts"].astimezone(_IST).date() for p in points
-        )
+        dated_points = [
+            (point, _point_timestamp(point))
+            for point in points
+        ]
+        dated_points = [
+            (point, ts) for point, ts in dated_points if ts is not None
+        ]
+        if not dated_points:
+            return []
+        latest_date = max(ts.astimezone(_IST).date() for _, ts in dated_points)
         points = [
-            p for p in points
-            if p["ts"].astimezone(_IST).date() == latest_date
+            point for point, ts in dated_points
+            if ts.astimezone(_IST).date() == latest_date
         ]
 
     _INTRADAY_CACHE[key] = (now, points)
