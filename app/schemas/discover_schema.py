@@ -382,7 +382,13 @@ class DiscoverHomeResponse(BaseModel):
 # --- Chart History ---
 
 class PriceHistoryPoint(BaseModel):
-    date: date
+    # Widened to `datetime` so the same model can carry both daily
+    # history points (midnight of the trade date) AND 30-min intraday
+    # ticks (which need the full timestamp). The Dart client uses
+    # `DateTime.parse` which handles both flavours of ISO 8601 string,
+    # and Pydantic promotes bare `date` inputs from the daily-history
+    # path to midnight `datetime`s automatically.
+    date: datetime
     value: float
 
 

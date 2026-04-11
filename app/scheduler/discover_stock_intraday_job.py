@@ -656,12 +656,15 @@ _UPSTOX_HISTORICAL_URL = (
     "https://api.upstox.com/v2/historical-candle/{key}/30minute/{to_date}/{from_date}"
 )
 _UPSTOX_PER_CALL_TIMEOUT_SEC = 10
-# 6 concurrent workers × 0.1 s inter-call pacing ≈ 60 req/sec, well
-# within Upstox's ~100 req/min-per-IP soft limit while cutting
-# wall-clock from ~30 min (sequential @ 0.8 s) down to ~5 min for
-# the full 2300-stock universe.
-_UPSTOX_CONCURRENCY = 6
-_UPSTOX_INTER_CALL_DELAY_SEC = 0.1
+# Upstox v2 historical-candle soft limits are ~25 req/sec / ~250
+# req/min per IP. The previous 6-worker × 0.1s config yielded an
+# aggregate of ~60 req/sec which triggered Upstox rate-limiting and
+# only 1108/2302 symbols came back with data. New config:
+#   3 concurrent workers × 0.18 s inter-call delay ≈ 16 req/sec
+#   aggregate — well under the 25/sec ceiling AND under the 250/min
+#   rolling cap. 2300 stocks complete in ~150 s.
+_UPSTOX_CONCURRENCY = 3
+_UPSTOX_INTER_CALL_DELAY_SEC = 0.18
 # Cache the instrument master for 24h inside the worker process —
 # rebuild takes ~5s and is only needed when Upstox adds new listings.
 _upstox_instrument_cache: dict[str, str] = {}
