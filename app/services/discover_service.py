@@ -2570,7 +2570,8 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     max_drawdown, rolling_return_consistency,
                     alpha, beta, score_alpha, score_beta,
                     score_performance, score_category_fit, sub_category_percentile, fund_classification,
-                    tags_v2, fund_managers, fund_type
+                    tags_v2, fund_managers, fund_type,
+                    top_holdings, holdings_as_of, sector_allocation, asset_allocation
                 )
                 VALUES (
                     $1, $2, $3, $4, $5, $6, $7,
@@ -2583,7 +2584,8 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     $33, $34,
                     $35, $36, $37, $38,
                     $39, $40, $41, $42,
-                    $43, $44, $45
+                    $43, $44, $45,
+                    $46, $47, $48, $49
                 )
                 ON CONFLICT (scheme_code)
                 DO UPDATE SET
@@ -2631,7 +2633,17 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                     fund_classification = EXCLUDED.fund_classification,
                     tags_v2 = EXCLUDED.tags_v2,
                     fund_managers = COALESCE(EXCLUDED.fund_managers, discover_mutual_fund_snapshots.fund_managers),
-                    fund_type = EXCLUDED.fund_type
+                    fund_type = EXCLUDED.fund_type,
+                    -- Groww enrichment fields were missing from the
+                    -- original UPSERT, so Groww's holdings / sector
+                    -- / asset allocation data silently disappeared
+                    -- on every run. COALESCE keeps existing values
+                    -- when a Groww fetch failed mid-sweep so we
+                    -- don't blow away yesterday's holdings snapshot.
+                    top_holdings = COALESCE(EXCLUDED.top_holdings, discover_mutual_fund_snapshots.top_holdings),
+                    holdings_as_of = COALESCE(EXCLUDED.holdings_as_of, discover_mutual_fund_snapshots.holdings_as_of),
+                    sector_allocation = COALESCE(EXCLUDED.sector_allocation, discover_mutual_fund_snapshots.sector_allocation),
+                    asset_allocation = COALESCE(EXCLUDED.asset_allocation, discover_mutual_fund_snapshots.asset_allocation)
                 """,
                 str(row.get("scheme_code") or ""),
                 str(row.get("scheme_name") or ""),
@@ -2675,9 +2687,13 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 _to_float(row.get("score_category_fit")),
                 _to_float(row.get("sub_category_percentile")),
                 row.get("fund_classification"),
-                _to_jsonb(row.get("tags_v2"), []),                                    # $40
-                _to_jsonb(row.get("fund_managers"), None),                             # $41
-                row.get("fund_type"),                                                  # $42
+                _to_jsonb(row.get("tags_v2"), []),                                    # $43
+                _to_jsonb(row.get("fund_managers"), None),                             # $44
+                row.get("fund_type"),                                                  # $45
+                _to_jsonb(row.get("top_holdings"), None),                              # $46
+                _to_date(row.get("holdings_as_of")),                                   # $47
+                _to_jsonb(row.get("sector_allocation"), None),                         # $48
+                _to_jsonb(row.get("asset_allocation"), None),                          # $49
             )
             count += 1
     return count

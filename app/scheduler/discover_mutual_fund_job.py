@@ -2228,20 +2228,132 @@ class DiscoverMutualFundScraper(BaseScraper):
         filled: dict[str, int],
     ) -> None:
         """Merge a Groww scheme blob into a target row (fills nulls
-        only, never overwrites non-null ETMoney values)."""
+        only, never overwrites non-null ETMoney values).
+
+        `tags_v2` is SAFE from overwrite: the existing ETMoney pipeline
+        writes it as a list of TagV2 dicts, and we previously clobbered
+        the entire list with a flat dict of Groww quality signals —
+        which then serialised to the JSONB column as a dict and broke
+        every downstream reader (screener tags, score pipeline). Now
+        we convert each quality signal (groww_rating, crisil_rating,
+        exit_load, portfolio_turnover_pct, min_sip_investment,
+        min_lumpsum_investment, launch_date, benchmark) into a tag
+        dict and APPEND to the existing list. Rating-style values
+        get category='quality' + severity='positive'; scalar facts
+        get category='context' + severity='neutral'.
+        """
         data = self._extract_groww_enrichment(blob)
         for field, value in data.items():
             if field == "_groww_quality":
-                existing_tags = row.get("tags_v2") or {}
-                if not isinstance(existing_tags, dict):
-                    existing_tags = {}
-                row["tags_v2"] = {**existing_tags, **value}
-                filled["tags_v2"] = filled.get("tags_v2", 0) + 1
+                self._merge_groww_quality_into_tags(row, value, filled)
                 continue
             existing = row.get(field)
             if existing is None or existing == "" or existing == []:
                 row[field] = value
                 filled[field] = filled.get(field, 0) + 1
+
+    @staticmethod
+    def _merge_groww_quality_into_tags(
+        row: dict,
+        quality: dict,
+        filled: dict[str, int],
+    ) -> None:
+        """Append Groww quality signals to the existing tags_v2 list
+        without destroying any ETMoney-produced tags."""
+        existing = row.get("tags_v2")
+        if not isinstance(existing, list):
+            existing = []
+        else:
+            # Shallow copy so we don't mutate the ETMoney row in-place
+            # for callers holding the previous reference.
+            existing = list(existing)
+
+        appended = 0
+        if quality.get("groww_rating") is not None:
+            existing.append({
+                "tag": f"Groww Rating {quality['groww_rating']:.0f}/5",
+                "category": "quality",
+                "severity": "positive"
+                if quality['groww_rating'] >= 4
+                else "neutral",
+                "priority": 5,
+                "confidence": 1.0,
+                "explanation": (
+                    "Groww's in-house 1-5 star rating blending returns, "
+                    "risk, expense and fund manager tenure."
+                ),
+            })
+            appended += 1
+        if quality.get("crisil_rating"):
+            existing.append({
+                "tag": f"CRISIL {quality['crisil_rating']}",
+                "category": "quality",
+                "severity": "positive",
+                "priority": 5,
+                "confidence": 1.0,
+                "explanation": "CRISIL independent agency rating.",
+            })
+            appended += 1
+        if quality.get("benchmark"):
+            existing.append({
+                "tag": f"Benchmark: {quality['benchmark']}",
+                "category": "context",
+                "severity": "neutral",
+                "priority": 3,
+                "confidence": 1.0,
+                "explanation": (
+                    "The index this fund tracks or benchmarks against."
+                ),
+            })
+            appended += 1
+        if quality.get("portfolio_turnover_pct") is not None:
+            pct = quality["portfolio_turnover_pct"]
+            existing.append({
+                "tag": f"Turnover {pct:.0f}%",
+                "category": "context",
+                "severity": "negative" if pct > 100 else "neutral",
+                "priority": 3,
+                "confidence": 1.0,
+                "explanation": (
+                    "Portfolio turnover — higher means more churn + "
+                    "hidden transaction costs."
+                ),
+            })
+            appended += 1
+        if quality.get("exit_load"):
+            existing.append({
+                "tag": "Exit Load",
+                "category": "context",
+                "severity": "neutral",
+                "priority": 2,
+                "confidence": 1.0,
+                "explanation": str(quality["exit_load"])[:200],
+            })
+            appended += 1
+        if quality.get("min_sip_investment") is not None:
+            existing.append({
+                "tag": f"Min SIP ₹{quality['min_sip_investment']:.0f}",
+                "category": "context",
+                "severity": "neutral",
+                "priority": 2,
+                "confidence": 1.0,
+                "explanation": "Minimum SIP installment accepted.",
+            })
+            appended += 1
+        if quality.get("launch_date"):
+            existing.append({
+                "tag": f"Launched {quality['launch_date']}",
+                "category": "context",
+                "severity": "neutral",
+                "priority": 1,
+                "confidence": 1.0,
+                "explanation": "Scheme inception date (NFO).",
+            })
+            appended += 1
+
+        if appended:
+            row["tags_v2"] = existing
+            filled["tags_v2"] = filled.get("tags_v2", 0) + appended
 
     def _enrich_from_mfapi(self, rows: dict[str, dict]) -> None:
         """Enrich fund_age_years, returns, and risk metrics from mfapi.in for funds missing data.
