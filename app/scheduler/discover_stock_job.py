@@ -5197,13 +5197,32 @@ class DiscoverStockScraper(BaseScraper):
             return None
         return self._build_snapshot_row(stock, quote, quote_source)
 
-    def fetch_raw_rows(self, on_batch: "Callable[[list[dict]], None] | None" = None, batch_size: int = 50) -> list[dict]:
+    def fetch_raw_rows(
+        self,
+        on_batch: "Callable[[list[dict]], None] | None" = None,
+        batch_size: int = 50,
+        skip_symbols: set[str] | None = None,
+    ) -> list[dict]:
         """Fetch quotes + fundamentals (sync I/O). Does NOT score.
 
         If *on_batch* is provided, it is called every *batch_size* rows with
         the latest batch for incremental DB visibility.
+
+        If *skip_symbols* is provided, any NSE symbol in that set is
+        skipped entirely — used for idempotent resume so a deploy that
+        killed the job mid-run can pick up where it left off instead of
+        redoing all 2000+ symbols. Run-progress is already persisted via
+        the incremental upsert path, so skipping is safe.
         """
         universe = self._build_effective_universe()
+        if skip_symbols:
+            skipped_count = sum(1 for s in universe if s.nse_symbol in skip_symbols)
+            universe = tuple(s for s in universe if s.nse_symbol not in skip_symbols)
+            logger.info(
+                "Discover stock: resume mode — skipping %d already-fresh symbols, "
+                "processing %d remaining",
+                skipped_count, len(universe),
+            )
         bulk_quotes, _ = self._fetch_latest_bhavcopy_quotes()
         raw_rows: list[dict] = []
         # Counters for progress / diagnostic logging
@@ -5383,6 +5402,36 @@ async def run_discover_stock_job() -> None:
     try:
         job_t0 = time_mod.time()
 
+        # 0. Idempotent resume — if a prior run of this job was killed
+        # mid-flight (deploy, OOM, manual restart), partial rows are
+        # already in the snapshot table with fresh `ingested_at`. Read
+        # those symbols now and skip them in the fetch loop so we pick
+        # up exactly where we left off instead of redoing work. Resume
+        # window is 6 hours: anything older is treated as stale and
+        # re-fetched.
+        from app.core.database import get_pool as _get_pool_for_resume
+        already_fresh: set[str] = set()
+        try:
+            _resume_pool = await _get_pool_for_resume()
+            _resume_rows = await _resume_pool.fetch(
+                "SELECT symbol FROM discover_stock_snapshots "
+                "WHERE market = 'IN' "
+                "AND ingested_at > NOW() - INTERVAL '6 hours'"
+            )
+            already_fresh = {r["symbol"] for r in _resume_rows if r.get("symbol")}
+            if already_fresh:
+                logger.info(
+                    "Discover stock: resume — %d symbols already fresh in "
+                    "last 6h, will skip",
+                    len(already_fresh),
+                )
+        except Exception as _resume_exc:
+            logger.warning(
+                "Discover stock: resume-check failed, running full pass: %s",
+                _resume_exc,
+            )
+            already_fresh = set()
+
         # 1. Pre-fetch volatility data from PostgreSQL (async).
         volatility_data = await discover_service.get_bulk_stock_volatility_data()
         logger.info(
@@ -5424,6 +5473,7 @@ async def run_discover_stock_job() -> None:
             lambda: _scraper.fetch_raw_rows(
                 on_batch=_incremental_upsert,
                 batch_size=_INCREMENTAL_BATCH_SIZE,
+                skip_symbols=already_fresh,
             ),
         )
         fetch_elapsed = time_mod.time() - job_t0

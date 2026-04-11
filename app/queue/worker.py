@@ -66,6 +66,16 @@ async def _clear_stale_arq_state() -> None:
         await pool.delete(key)
         cleared += 1
 
+    # 5. Clear abort flags left over from /ops/jobs/abort calls or
+    #    crashed runs. These have a 600s TTL so they usually expire on
+    #    their own, but a fresh worker startup should never inherit a
+    #    prior abort request. Without this, the newly-started
+    #    discover_stock would see the stale flag, read-and-delete it at
+    #    symbol #100, and kill itself. Rare but catastrophic.
+    async for key in pool.scan_iter(match="job:abort:*"):
+        await pool.delete(key)
+        cleared += 1
+
     if cleared:
         logger.info("Cleared %d stale ARQ keys on startup", cleared)
 

@@ -233,6 +233,58 @@ async def trigger_job(
                     "job_name": job_name,
                     "message": "Job is already running. Use force=true to start another.",
                 }
+
+        # Pre-flight: clear any stale ARQ in-progress lock + abort flag
+        # for this job family. Without this, a prior deploy may have
+        # left a stale lock that blocks APScheduler's next cron tick
+        # from spawning a backup ARQ run, AND a prior /ops/jobs/abort
+        # call may have left a `job:abort:{name}` key that the new run
+        # would pick up and kill itself at the first check.
+        try:
+            from arq.constants import (
+                default_queue_name,
+                in_progress_key_prefix,
+                job_key_prefix,
+            )
+            from app.queue.redis_pool import get_redis_pool
+            from app.queue.settings import expand_job_family_ids
+
+            redis_pool = await get_redis_pool()
+            family_ids = expand_job_family_ids(job_name)
+            cleared_preflight = 0
+            # Remove from the queue-level in-progress set
+            raw_members = await redis_pool.smembers(
+                in_progress_key_prefix + default_queue_name
+            )
+            for raw_id in raw_members or set():
+                jid = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
+                if jid in family_ids:
+                    await redis_pool.srem(
+                        in_progress_key_prefix + default_queue_name, raw_id
+                    )
+                    cleared_preflight += 1
+            # Delete per-job in-progress keys
+            for fid in family_ids:
+                async for k in redis_pool.scan_iter(match=f"{in_progress_key_prefix}{fid}*"):
+                    await redis_pool.delete(k)
+                    cleared_preflight += 1
+                async for k in redis_pool.scan_iter(match=f"{job_key_prefix}{fid}*"):
+                    await redis_pool.delete(k)
+                    cleared_preflight += 1
+            # Delete abort flag so the new run isn't killed on the first
+            # _check_abort() call inside the job body.
+            await redis_pool.delete(f"job:abort:{job_name}")
+            if cleared_preflight:
+                logger.info(
+                    "Direct-run pre-flight cleared %d stale ARQ keys for %s",
+                    cleared_preflight, job_name,
+                )
+        except Exception:
+            logger.warning(
+                "Direct-run pre-flight stale-clear failed for %s",
+                job_name, exc_info=True,
+            )
+
         module_path, func_name = _DIRECT_RUN_JOBS[job_name]
         task = asyncio.create_task(
             _direct_run_wrapper(job_name, module_path, func_name),
