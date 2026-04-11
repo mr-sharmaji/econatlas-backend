@@ -5734,8 +5734,15 @@ async def generate_greeting() -> dict:
 _suggestions_pool: dict[str, tuple[list[str], float]] = {}
 _POOL_FRESH_SECONDS = 3 * 60   # refresh pool every 3 minutes
 _POOL_MAX_AGE = 15 * 60        # pool older than 15 min is considered stale
-_POOL_SIZE = 30                # generate ~30 suggestions per pool refresh
+_POOL_SIZE = 60                # ~60 suggestions so consecutive picks rarely overlap
 _DEFAULT_PICK = 10             # number of suggestions returned per request
+
+# Per-pool "recently served" set so /chat/suggestions on "new chat" never
+# returns the exact items the previous call already showed. On each
+# pick we union the new sample into this set; when the set reaches
+# 2× _DEFAULT_PICK we reset it so we always have enough fresh items to
+# draw from.
+_suggestions_recent: dict[str, set[str]] = {}
 # Track in-flight refresh tasks to prevent concurrent duplicate LLM calls
 _suggestions_inflight: dict[str, asyncio.Task] = {}
 
@@ -5768,17 +5775,53 @@ def _kick_pool_refresh(device_id: str | None, pool_key: str) -> None:
         pass
 
 
+def _pick_fresh(
+    pool_key: str,
+    pool_items: list[str],
+    count: int,
+) -> list[str]:
+    """Draw *count* items from the pool, avoiding repeats across calls.
+
+    Uses a per-pool "recently served" set. Items are drawn from
+    `pool_items \\ recently_served`. When the exclusion set is large
+    enough to starve the pool, it resets. On every call we union the
+    fresh picks back into the recently-served set so consecutive calls
+    (e.g. opening a new chat twice in a row) get genuinely different
+    lists. Ensures the exact overlap between two back-to-back calls
+    is as close to zero as pool size allows.
+    """
+    import random
+
+    recent = _suggestions_recent.setdefault(pool_key, set())
+    candidates = [p for p in pool_items if p not in recent]
+
+    if len(candidates) < count:
+        recent.clear()
+        candidates = list(pool_items)
+
+    sample_size = min(count, len(candidates))
+    picks = random.sample(candidates, sample_size) if candidates else []
+    recent.update(picks)
+
+    _MAX_RECENT = max(_DEFAULT_PICK * 3, int(len(pool_items) * 0.6))
+    if len(recent) > _MAX_RECENT:
+        keep = random.sample(list(recent), _DEFAULT_PICK)
+        recent.clear()
+        recent.update(keep)
+
+    return picks
+
+
 async def generate_suggestions(
     device_id: str | None = None,
     count: int = _DEFAULT_PICK,
 ) -> list[str]:
     """Return a random sample of *count* suggestions from the pool.
 
-    On every request we pick a FRESH random sample — no two consecutive
-    app opens should see the same set. The underlying pool is refreshed
-    every ~3 minutes in the background using live market / news / IPO
-    context, so the user feels like they get a new batch each time
-    without paying the LLM latency per request.
+    Consecutive calls serve different items via `_pick_fresh`, so
+    tapping "new chat" back-to-back doesn't recycle the same prompts.
+    The underlying pool is refreshed every ~3 minutes in the background
+    using live market / news / IPO context.
     """
     import random
 
@@ -5793,15 +5836,12 @@ async def generate_suggestions(
         pool_items, ts = pool_entry
         age = now_ts - ts
         if age >= _POOL_FRESH_SECONDS:
-            # Pool is getting old — refresh in background but serve from
-            # current pool right now. No user wait.
             _kick_pool_refresh(device_id, pool_key)
         if age < _POOL_MAX_AGE and pool_items:
-            sample_size = min(count, len(pool_items))
-            picks = random.sample(pool_items, sample_size)
+            picks = _pick_fresh(pool_key, pool_items, count)
             logger.debug(
                 "suggestions: pool pick key=%s age=%.0fs size=%d pick=%d",
-                pool_key, age, len(pool_items), sample_size,
+                pool_key, age, len(pool_items), len(picks),
             )
             return picks
 
@@ -5818,12 +5858,11 @@ async def generate_suggestions(
             global_items, global_ts = global_entry
             global_age = now_ts - global_ts
             if global_age < _POOL_MAX_AGE and global_items:
-                sample_size = min(count, len(global_items))
-                picks = random.sample(global_items, sample_size)
+                picks = _pick_fresh(pool_key, global_items, count)
                 logger.info(
                     "suggestions: device pool cold key=%s, serving from _global "
                     "(age=%.0fs size=%d pick=%d)",
-                    pool_key, global_age, len(global_items), sample_size,
+                    pool_key, global_age, len(global_items), len(picks),
                 )
                 return picks
 
@@ -5854,17 +5893,46 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
         stock_health = await _get_discover_stock_health()
 
         now = datetime.now(timezone.utc)
-        ist_hour = (now.hour + 5) % 24 + (30 // 60)
+        from zoneinfo import ZoneInfo
+        _IST_TZ = ZoneInfo("Asia/Kolkata")
+        ist_now = now.astimezone(_IST_TZ)
+        ist_hour = ist_now.hour
+        day_name = ist_now.strftime("%A")           # e.g. "Friday"
+        date_str = ist_now.strftime("%d %b %Y")     # e.g. "11 Apr 2026"
+        month_name = ist_now.strftime("%B")
+        day_of_month = ist_now.day
+        is_weekend = ist_now.weekday() >= 5
+        is_friday = ist_now.weekday() == 4
+        is_monday = ist_now.weekday() == 0
 
-        # ── 1. Time-of-day context ─────────────────────────────────
+        # ── 1. Date-of-day + weekday context ───────────────────────
+        context_parts.append(
+            f"Today is {day_name} {date_str} IST (day {day_of_month} of {month_name})"
+        )
+
+        day_note: list[str] = []
+        if is_weekend:
+            day_note.append("Market is CLOSED for the weekend")
+        if is_friday:
+            day_note.append("Last trading day of the week — end-of-week recap is relevant")
+        if is_monday:
+            day_note.append("First trading day of the week — Monday momentum is relevant")
+        if day_of_month >= 25 and month_name == "March":
+            day_note.append("FY end approaching — tax-saving ELSS / 80C / LTCG harvesting are hot topics")
+        if day_of_month <= 7 and month_name == "April":
+            day_note.append("New financial year — portfolio rebalance and SIP review are hot topics")
+        if day_of_month >= 25 and month_name == "July":
+            day_note.append("ITR filing deadline 31 July approaching — capital gains tax is hot topic")
+
         if ist_hour < 9:
-            context_parts.append("Time: Pre-market (before 9:15 AM IST) — Gift Nifty is active")
+            day_note.append("Pre-market (before 9:15 AM IST) — Gift Nifty is the leading indicator")
         elif ist_hour < 15:
-            context_parts.append("Time: Indian markets OPEN (9:15 AM – 3:30 PM IST)")
+            day_note.append("Indian markets OPEN (9:15 AM – 3:30 PM IST)")
         elif ist_hour < 20:
-            context_parts.append("Time: Post-market (after 3:30 PM IST) — US pre-market starting")
+            day_note.append("Post-market (after 3:30 PM IST) — US pre-market starting")
         else:
-            context_parts.append("Time: Late evening — US markets active")
+            day_note.append("Late evening IST — US markets active")
+        context_parts.append("Session notes: " + "; ".join(day_note))
 
         # ── 2. Indian indices snapshot ─────────────────────────────
         try:
@@ -5969,6 +6037,86 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
         except Exception:
             pass
 
+        # ── 7a. Commodities + FX snapshot ──────────────────────────
+        try:
+            from app.services.market_service import get_latest_prices as _get_prices
+            commodities = await _get_prices(instrument_type="commodity")
+            wanted_comm = {"gold", "silver", "crude oil", "brent", "wti"}
+            comm_snaps = []
+            for p in (commodities or []):
+                name = str(p.get("asset") or "").lower()
+                if name in wanted_comm and p.get("price") is not None:
+                    pct = p.get("change_percent") or 0
+                    comm_snaps.append(f"{p.get('asset')} {pct:+.2f}%")
+            if comm_snaps:
+                context_parts.append("Commodities: " + ", ".join(comm_snaps))
+
+            fx = await _get_prices(instrument_type="currency")
+            fx_snaps = []
+            for p in (fx or []):
+                name = str(p.get("asset") or "")
+                if "INR" in name and p.get("price") is not None:
+                    pct = p.get("change_percent") or 0
+                    fx_snaps.append(f"{name} {p.get('price'):.2f} ({pct:+.2f}%)")
+            if fx_snaps:
+                context_parts.append("FX vs INR: " + ", ".join(fx_snaps[:4]))
+        except Exception:
+            pass
+
+        # ── 7b. Top mutual funds (Flexi Cap / Small Cap / ELSS) ────
+        try:
+            pool_conn = await get_pool()
+            mf_rows = await pool_conn.fetch(
+                """
+                SELECT scheme_name, sub_category, returns_1y, returns_3y
+                FROM discover_mutual_fund_snapshots
+                WHERE sub_category IN (
+                    'Flexi Cap Fund', 'Small Cap Fund', 'ELSS',
+                    'Mid Cap Fund', 'Large Cap Fund'
+                )
+                AND returns_3y IS NOT NULL
+                ORDER BY returns_3y DESC
+                LIMIT 8
+                """
+            )
+            if mf_rows:
+                mf_parts = [
+                    f"{(r['scheme_name'] or '')[:40]} ({r['sub_category']}, 3y {r['returns_3y']:.1f}%)"
+                    for r in mf_rows[:4]
+                ]
+                context_parts.append(
+                    "Strong mutual funds right now: " + " | ".join(mf_parts)
+                )
+                real_names.extend(
+                    str(r.get("scheme_name") or "") for r in mf_rows[:4]
+                )
+        except Exception:
+            pass
+
+        # ── 7c. Upcoming economic events (next 7 days) ─────────────
+        try:
+            pool_conn = await get_pool()
+            events = await pool_conn.fetch(
+                """
+                SELECT title, timestamp, country
+                FROM economic_events
+                WHERE timestamp BETWEEN NOW() AND NOW() + INTERVAL '7 days'
+                  AND (country IN ('India', 'IN', 'United States', 'US') OR country IS NULL)
+                ORDER BY timestamp ASC
+                LIMIT 5
+                """
+            )
+            if events:
+                ev_parts = [
+                    f"{r['timestamp'].strftime('%a %d %b')}: {(r['title'] or '')[:60]}"
+                    for r in events
+                ]
+                context_parts.append(
+                    "Upcoming events this week:\n- " + "\n- ".join(ev_parts)
+                )
+        except Exception:
+            pass
+
         # ── 7. Macro snapshot (latest inflation / repo / GDP) ──────
         try:
             pool_conn = await get_pool()
@@ -6003,11 +6151,13 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
         real_name_list = ", ".join(sorted(set(n for n in real_names if n)))[:500]
 
         system = (
-            "You generate a POOL of exactly 30 short, diverse suggested "
-            "prompts for an Indian-market AI chatbot called Artha. These "
-            "are questions a NEW or CURIOUS retail investor would type "
-            "into the app — NOT a fund manager. Keep the vocabulary "
-            "deliberately simple and plain-English.\n\n"
+            f"You generate a POOL of exactly {_POOL_SIZE} short, diverse "
+            "suggested prompts for an Indian-market AI chatbot called "
+            "Artha. These are questions a NEW or CURIOUS retail investor "
+            "would type into the app — NOT a fund manager. Keep the "
+            "vocabulary deliberately simple and plain-English. The pool "
+            "is sampled randomly for each user session, so broader "
+            "diversity = less repetition between back-to-back chats.\n\n"
             "STYLE — keep prompts EASY to read:\n"
             "- **Target length: 4 to 8 words.** Max 10. Anything longer is "
             "too intimidating for a beginner.\n"
@@ -6049,8 +6199,34 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
             "investing?', 'What are mutual funds?', 'Is TCS a good "
             "buy?'), ~30% intermediate (live market questions), ~10% "
             "advanced.\n"
-            "6. Output exactly 30 prompts, one per line. No headings, "
-            "no quotes, no numbering."
+            "6. **Coverage diversity — spread your 60 prompts across "
+            "these categories so back-to-back new chats never feel "
+            "samey**. Target distribution (approximate):\n"
+            "   - 12-15: live market / today's movers / session mood\n"
+            "   - 6-8: mutual funds, SIP planning, beginner fund picks\n"
+            "   - 5-7: specific Indian stocks (from the top gainers/"
+            "losers/watchlist lists above)\n"
+            "   - 4-6: sectors + themes (banks, IT, EV, renewable)\n"
+            "   - 3-5: IPOs (open, upcoming)\n"
+            "   - 3-5: macro / India economy (inflation, rates, GDP)\n"
+            "   - 3-5: commodities (gold, crude) and FX (USD/INR) "
+            "relevance to Indian investors\n"
+            "   - 3-5: tax basics (LTCG, STCG, 80C, ELSS, ITR) — "
+            "ESPECIALLY if the session notes mention Mar/Apr/Jul "
+            "deadlines\n"
+            "   - 2-4: upcoming events from the 'Upcoming events' "
+            "context list (RBI policy, Fed meetings, earnings)\n"
+            "   - 2-4: educational concepts ('What is PE?', 'How do "
+            "dividends work?', 'Active vs passive funds?')\n"
+            "   - 2-3: US / global market reactions relevant to India\n"
+            "7. **Weekday / date awareness** — when the session notes "
+            "mention 'Friday', include end-of-week recap questions "
+            "('How did the market close this week?'). When Monday, "
+            "include Monday-open questions ('What's the setup for "
+            "the week?'). On weekends, skip live market questions "
+            "entirely and lean on education + planning topics.\n"
+            f"8. Output exactly {_POOL_SIZE} prompts, one per line. "
+            "No headings, no quotes, no numbering, no blank lines."
         )
         user_msg = (
             f"Live market context (use only these real names):\n{context_str}\n\n"
@@ -6060,14 +6236,19 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
                 f"Approved entity names (pick from these for stock/IPO "
                 f"mentions): {real_name_list}\n\n"
             )
-        user_msg += "Generate 30 diverse prompts NOW (one per line):"
+        user_msg += (
+            f"Generate {_POOL_SIZE} diverse prompts NOW, one per line. "
+            "Remember the coverage distribution, the session notes, and "
+            "the beginner-friendly tone rules."
+        )
 
         prompt_messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user_msg},
         ]
 
-        result = await _call_llm_blocking(api_key, prompt_messages, max_tokens=900)
+        # max_tokens sized for 60 prompts × ~12 tokens/prompt + headroom
+        result = await _call_llm_blocking(api_key, prompt_messages, max_tokens=1800)
         if not result:
             return _static_suggestions(ist_hour)
 
