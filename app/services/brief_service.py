@@ -17,13 +17,25 @@ async def upsert_stock_snapshots(rows: list[dict]) -> int:
     if not rows:
         return 0
     pool = await get_pool()
-    # Prepare all rows as tuples for a single batch upsert.
-    prepared: list[tuple] = []
+    # Dedupe by (market, symbol) keeping the LAST occurrence. A
+    # single executemany batch with two rows sharing the same
+    # conflict key raises UniqueViolationError / "cannot affect
+    # row a second time" because Postgres's ON CONFLICT only
+    # handles conflicts against already-committed rows, not
+    # against other rows in the same batch. The brief job's
+    # Yahoo-movers feed occasionally emits duplicate symbols
+    # (e.g. MARUTI.NS showing in both gainers and some other
+    # slice) and that was aborting the whole batch.
+    dedup: dict[tuple[str, str], tuple] = {}
     for r in rows:
-        prepared.append((
-            _normalize_market(r.get("market")),
-            str(r.get("symbol") or ""),
-            str(r.get("display_name") or r.get("symbol") or ""),
+        market = _normalize_market(r.get("market"))
+        symbol = str(r.get("symbol") or "")
+        if not symbol:
+            continue
+        dedup[(market, symbol)] = (
+            market,
+            symbol,
+            str(r.get("display_name") or symbol),
             r.get("sector"),
             float(r.get("last_price") or 0.0),
             float(r.get("point_change")) if r.get("point_change") is not None else None,
@@ -32,7 +44,10 @@ async def upsert_stock_snapshots(rows: list[dict]) -> int:
             float(r.get("traded_value")) if r.get("traded_value") is not None else None,
             parse_ts(r.get("source_timestamp")) or datetime.now(timezone.utc),
             r.get("source"),
-        ))
+        )
+    prepared: list[tuple] = list(dedup.values())
+    if not prepared:
+        return 0
     async with pool.acquire() as conn:
         await conn.executemany(
             f"""

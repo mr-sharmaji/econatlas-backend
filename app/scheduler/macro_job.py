@@ -119,6 +119,12 @@ class MacroScraper(BaseScraper):
         except (TypeError, ValueError):
             logger.debug("Macro drop invalid value: %s/%s value=%s", country, indicator, value)
             return
+        # Unit normalization: trading_economics reports forex
+        # reserves in USD millions (India ≈ 697120), while our
+        # sanity range assumes USD billions (India ≈ 697). Scale
+        # down if the value is obviously in millions.
+        if indicator == "forex_reserves" and value_f > 10_000:
+            value_f = value_f / 1000.0
         if not self._is_value_valid(indicator, value_f):
             logger.warning(
                 "Macro drop out-of-range value: %s/%s source=%s value=%s",
