@@ -700,6 +700,16 @@ async def init_pool() -> asyncpg.Pool:
             "ALTER TABLE chat_messages "
             "ADD COLUMN IF NOT EXISTS follow_up_suggestions JSONB"
         )
+        # --- chat_messages.data_cards column for native structured cards ---
+        # Stores the list of `data_card` payloads (kind = comparison /
+        # ranked_list / metric_grid) emitted for each assistant message so
+        # the Flutter widget can re-render them when a historical session
+        # is reopened. Replaces the markdown tables that were unreadable
+        # on mobile.
+        await conn.execute(
+            "ALTER TABLE chat_messages "
+            "ADD COLUMN IF NOT EXISTS data_cards JSONB"
+        )
         # --- discover_stock_intraday: 30-min live ticks for 1D charts ---
         # Populated by the intraday scheduler job (Mon-Fri 09:00-15:45
         # IST). Each row is a lightweight tick (price/volume/timestamp).

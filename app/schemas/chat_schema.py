@@ -75,6 +75,9 @@ class ChatMessageResponse(BaseModel):
     # Persisted follow-up chips. When a historical session is reopened,
     # these are the exact suggestions the user saw the first time.
     follow_up_suggestions: list[str] = Field(default_factory=list)
+    # Structured data cards (comparison, ranked_list, metric_grid) that
+    # the native Flutter widget renders instead of markdown tables.
+    data_cards: list[dict[str, Any]] = Field(default_factory=list)
     feedback: int | None = None
     created_at: datetime
 

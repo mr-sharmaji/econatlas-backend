@@ -581,16 +581,29 @@ order book, ANDA pipeline, etc.), say so directly and pivot to the
 visible proxy in `sector_notes` rather than inventing a number.
 
 ### 9. OUTPUT FORMAT — match the query type
-- **Single stock / MF lookup** → bullet list with **bold** key numbers + a [CARD:SYMBOL] marker. 3-6 bullets max.
-- **Comparison (2-3 stocks or funds)** → markdown table with rows per metric + [CARD:] markers + a 1-line verdict.
-- **Screener results** → bullet list of top 5 + mention total count if more.
+
+**⚠️ NEVER emit markdown tables (`| col | col |`). The app's markdown
+renderer on mobile mangles them with horizontal scroll. When your
+tool call is one of `stock_compare`, `peers`, `stock_screen`,
+`mf_screen`, `theme_screen`, `sector_thesis`, `institutional_flows`,
+the backend emits a structured `data_card` payload and the Flutter
+app renders it as a NATIVE widget (responsive stacked blocks on
+mobile, side-by-side on tablets, with colour-coded winners). Your
+text should be a 1-2 sentence VERDICT, NOT the full data — the
+card is the primary visual. Writing a markdown table on top of the
+card duplicates the content and makes the reply unreadable.**
+
+- **Single stock / MF lookup** → 3-6 bullets with **bold** key numbers + a [CARD:SYMBOL] marker.
+- **Comparison (2-3 stocks or funds)** → 1-2 sentence verdict picking the winner per dimension (profitability / valuation / growth / momentum). The `data_card` does the side-by-side, you do the synthesis. NO markdown tables. Example: *"TCS leads on profitability (ROE 52% vs 29% and 14%) and is cheapest on PE. Infosys has the best 1-day move. Wipro trails everywhere."*
+- **Screener results** → 1-line framing ("Here are the top 5 flexi cap funds by 3y return") + 1 sentence on what sets the top pick apart. The `data_card` lists the rows with highlighted metrics — don't repeat them in text.
 - **Macro / educational** → short prose (2-3 sentences) + 1-2 key bullets.
-- **Market status / gainers / losers** → bullet list with bold numbers.
-- **"What should I buy" / recommendations** → exactly 3 ranked picks by default (unless the user asked for a different count), limited to Indian stocks + mutual funds unless the user explicitly asks wider. Keep each rationale to one line + a short "Takeaway" line.
-- **Drawbacks / pros & cons / risk analysis** → bulleted list of specific concerns pulled from the stock's fundamentals you already have.
-- **Sector thesis / big-picture** → 2-3 short paragraphs with a clear stance, backed by numbers from multiple tools.
+- **Market status / gainers / losers** → 1-line framing, card carries the list.
+- **"What should I buy" / recommendations** → exactly 3 ranked picks by default, limited to Indian stocks + mutual funds. Each rationale is one line. "Takeaway" line at the end.
+- **Drawbacks / pros & cons / risk analysis** → bulleted list of specific concerns pulled from the stock's fundamentals.
+- **Sector thesis / big-picture** → 2-3 short paragraphs with a clear stance. The `data_card` shows the aggregate numbers; your text is the narrative.
 - **Greetings / meta questions** → 1-2 sentences, no bullets, no thinking tags.
-- NEVER nest bullets deeper than 2 levels. NEVER use headings (##) inside a chat response — `<thinking>` tags are the only structural markup allowed.
+- NEVER nest bullets deeper than 2 levels. NEVER use `##` headings inside a chat response.
+- NEVER emit `| col | col |` markdown tables regardless of query type.
 
 ### 10. CARDS & TOOL MARKERS
 - Emit `[CARD:SYMBOL]` for every stock / MF you discuss by name. Max 5 cards per response.
@@ -2878,6 +2891,360 @@ async def _flag_last_tool_invocation_refused(session_id: str | None) -> None:
 
 def _tool_call_succeeded(result: Any) -> bool:
     return isinstance(result, dict) and "error" not in result
+
+
+# ---------------------------------------------------------------------------
+# data_card builders — structured output for the native Flutter widget
+# ---------------------------------------------------------------------------
+#
+# Each tool result is inspected and converted into zero or more `data_card`
+# payloads (kind = "comparison" | "ranked_list" | "metric_grid"). The
+# Flutter app renders these with a single widget that branches on `kind`,
+# replacing markdown tables that were unreadable on mobile.
+#
+# Shape:
+#   comparison:
+#     {
+#       "kind": "comparison",
+#       "title": str,
+#       "entity_type": "stock" | "mutual_fund" | ...,
+#       "entities": [{"id": str, "name": str, "subtitle": str?, ...}, ...],
+#       "metrics": [{"label": str, "values": [v1, v2, ...],
+#                    "higher_is_better": bool | None, "format": str}, ...]
+#     }
+#
+#   ranked_list:
+#     {
+#       "kind": "ranked_list",
+#       "title": str,
+#       "entity_type": str,
+#       "primary_metric": {"label": str, "format": str},
+#       "items": [{"id": str, "name": str, "subtitle": str?,
+#                  "primary_value": Any, "pills": [{"label", "value", "tone"}]}, ...]
+#     }
+#
+#   metric_grid:
+#     {
+#       "kind": "metric_grid",
+#       "title": str,
+#       "subtitle": str?,
+#       "sections": [{"heading": str, "metrics": [{"label","value","tone"?}, ...]}]
+#     }
+#
+# `tone` is one of: "positive" | "negative" | "neutral" | "warn" — the
+# widget uses it to colour the value chip.
+
+
+def _fmt_pct(v: Any, signed: bool = False) -> str | None:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    sign = ("+" if f >= 0 else "") if signed else ""
+    return f"{sign}{f:.2f}%"
+
+
+def _fmt_crore(v: Any) -> str | None:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f >= 100000:
+        return f"₹{f / 100000:.2f} L Cr"
+    if f >= 1000:
+        return f"₹{f / 1000:.1f} K Cr"
+    return f"₹{f:.0f} Cr"
+
+
+def _fmt_ratio(v: Any, digits: int = 2) -> str | None:
+    if v is None:
+        return None
+    try:
+        return f"{float(v):.{digits}f}"
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt_price(v: Any) -> str | None:
+    if v is None:
+        return None
+    try:
+        return f"₹{float(v):.2f}"
+    except (TypeError, ValueError):
+        return None
+
+
+def _tone_for_pct(v: Any) -> str:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "neutral"
+    if f > 0:
+        return "positive"
+    if f < 0:
+        return "negative"
+    return "neutral"
+
+
+def _build_stock_comparison_card(stocks: list[dict]) -> dict | None:
+    """Convert a stock_compare / peers tool result into a comparison card."""
+    if not stocks or len(stocks) < 2:
+        return None
+    stocks = stocks[:4]
+
+    def _f(v: Any) -> float | None:
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    entities = [
+        {
+            "id": str(s.get("symbol") or ""),
+            "name": str(s.get("display_name") or s.get("symbol") or ""),
+            "subtitle": str(s.get("sector") or ""),
+            "last_price": _f(s.get("last_price")),
+            "percent_change": _f(s.get("percent_change")),
+        }
+        for s in stocks
+    ]
+
+    metrics: list[dict] = []
+    for label, key, fmt, hib in (
+        ("Price", "last_price", "price", None),
+        ("1D change", "percent_change", "percent_signed", True),
+        ("PE ratio", "pe_ratio", "ratio", False),
+        ("ROE %", "roe", "percent", True),
+        ("ROCE %", "roce", "percent", True),
+        ("Debt / Equity", "debt_to_equity", "ratio", False),
+        ("Revenue growth", "revenue_growth", "percent_signed", True),
+        ("Op margin", "operating_margins", "percent", True),
+        ("Dividend yield", "dividend_yield", "percent", True),
+        ("Market cap", "market_cap", "crore", None),
+        ("Score", "score", "ratio", True),
+    ):
+        raw_values = [s.get(key) for s in stocks]
+        if all(v is None for v in raw_values):
+            continue
+        numeric = [_f(v) for v in raw_values]
+        if fmt == "percent":
+            display = [_fmt_pct(v) for v in numeric]
+        elif fmt == "percent_signed":
+            display = [_fmt_pct(v, signed=True) for v in numeric]
+        elif fmt == "crore":
+            display = [_fmt_crore(v) for v in numeric]
+        elif fmt == "price":
+            display = [_fmt_price(v) for v in numeric]
+        else:
+            display = [_fmt_ratio(v) for v in numeric]
+        metrics.append(
+            {
+                "label": label,
+                "values": display,
+                "numeric": numeric,
+                "higher_is_better": hib,
+                "format": fmt,
+            }
+        )
+
+    title = " vs ".join(
+        str(s.get("symbol") or s.get("display_name") or "?") for s in stocks
+    )
+    return {
+        "kind": "comparison",
+        "title": title,
+        "entity_type": "stock",
+        "entities": entities,
+        "metrics": metrics,
+    }
+
+
+def _build_screener_list_card(
+    items: list[dict],
+    title: str,
+    entity_type: str,
+) -> dict | None:
+    if not items:
+        return None
+    items = items[:10]
+
+    def _f(v: Any) -> float | None:
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    card_items: list[dict] = []
+    for s in items:
+        is_stock = entity_type == "stock"
+        if is_stock:
+            sid = str(s.get("symbol") or "")
+            name = str(s.get("display_name") or sid)
+            subtitle = str(s.get("sector") or s.get("industry") or "")
+        else:
+            sid = str(s.get("scheme_code") or "")
+            name = str(s.get("scheme_name") or s.get("display_name") or "")
+            subtitle = str(s.get("category") or s.get("sub_category") or "")
+
+        primary_label = "1D" if is_stock else "1y return"
+        primary_value = _f(s.get("percent_change") if is_stock else s.get("returns_1y"))
+        primary_display = _fmt_pct(primary_value, signed=True)
+
+        pills: list[dict] = []
+        if is_stock:
+            if s.get("pe_ratio") is not None:
+                pills.append({"label": "PE", "value": _fmt_ratio(s.get("pe_ratio")), "tone": "neutral"})
+            if s.get("score") is not None:
+                pills.append({"label": "Score", "value": _fmt_ratio(s.get("score"), digits=0), "tone": "neutral"})
+            if s.get("market_cap") is not None:
+                pills.append({"label": "Cap", "value": _fmt_crore(s.get("market_cap")), "tone": "neutral"})
+        else:
+            if s.get("returns_3y") is not None:
+                pills.append({"label": "3y CAGR", "value": _fmt_pct(s.get("returns_3y")), "tone": "neutral"})
+            if s.get("expense_ratio") is not None:
+                pills.append({"label": "Expense", "value": _fmt_pct(s.get("expense_ratio")), "tone": "neutral"})
+            if s.get("aum_cr") is not None:
+                pills.append({"label": "AUM", "value": _fmt_crore(s.get("aum_cr")), "tone": "neutral"})
+
+        card_items.append(
+            {
+                "id": sid,
+                "name": name,
+                "subtitle": subtitle,
+                "primary_value": primary_display,
+                "primary_tone": _tone_for_pct(primary_value) if is_stock else "neutral",
+                "pills": pills,
+            }
+        )
+
+    return {
+        "kind": "ranked_list",
+        "title": title,
+        "entity_type": entity_type,
+        "primary_metric": {
+            "label": "1D" if entity_type == "stock" else "1y return",
+            "format": "percent_signed" if entity_type == "stock" else "percent",
+        },
+        "items": card_items,
+    }
+
+
+def _build_sector_thesis_card(result: dict) -> dict | None:
+    sector = str(result.get("sector") or "")
+    if not sector:
+        return None
+    sections: list[dict] = []
+
+    aggregate: list[dict] = []
+    for label, key, fmt in (
+        ("Total stocks", "total_stocks", "int"),
+        ("Avg 1D change", "avg_change_pct", "percent_signed"),
+        ("Median PE", "median_pe", "ratio"),
+        ("Avg PE (trimmed)", "avg_pe", "ratio"),
+        ("Avg ROE", "avg_roe", "percent"),
+        ("Avg D/E", "avg_de", "ratio"),
+        ("Avg revenue growth", "avg_rev_growth", "percent_signed"),
+        ("Avg operating margin", "avg_opm", "percent"),
+        ("Total market cap", "total_mcap", "crore"),
+    ):
+        v = result.get(key)
+        if v is None:
+            continue
+        if fmt == "percent":
+            disp = _fmt_pct(v)
+        elif fmt == "percent_signed":
+            disp = _fmt_pct(v, signed=True)
+        elif fmt == "crore":
+            disp = _fmt_crore(v)
+        elif fmt == "int":
+            try:
+                disp = f"{int(v)}"
+            except Exception:
+                disp = None
+        else:
+            disp = _fmt_ratio(v)
+        if disp is not None:
+            aggregate.append({"label": label, "value": disp, "tone": "neutral"})
+
+    if aggregate:
+        sections.append({"heading": "Sector aggregate", "metrics": aggregate})
+
+    if not sections:
+        return None
+    return {
+        "kind": "metric_grid",
+        "title": f"{sector} sector",
+        "subtitle": "Aggregate stats across the sector",
+        "sections": sections,
+    }
+
+
+def _build_data_cards(
+    tool_name: str, params: dict, result: dict,
+) -> list[dict]:
+    """Dispatch: tool result → list of data_card payloads."""
+    cards: list[dict] = []
+
+    if tool_name == "stock_compare":
+        stocks = result.get("stocks") or []
+        if len(stocks) >= 2:
+            card = _build_stock_comparison_card(stocks)
+            if card:
+                cards.append(card)
+
+    elif tool_name == "peers":
+        # peers tool returns {"base": {...}, "peers": [...]}
+        base = result.get("base") or result.get("stock")
+        peers = result.get("peers") or []
+        if base and peers:
+            merged = [base] + peers[:3]
+            card = _build_stock_comparison_card(merged)
+            if card:
+                card["title"] = f"{base.get('symbol')} vs peers"
+                cards.append(card)
+
+    elif tool_name in ("stock_screen", "theme_screen"):
+        items = result.get("stocks") or []
+        if items:
+            title = "Top picks"
+            if tool_name == "theme_screen" and result.get("display"):
+                title = f"{result['display']} stocks"
+            card = _build_screener_list_card(items, title, "stock")
+            if card:
+                cards.append(card)
+
+    elif tool_name == "mf_screen":
+        items = result.get("funds") or []
+        if items:
+            title = "Top mutual funds"
+            card = _build_screener_list_card(items, title, "mutual_fund")
+            if card:
+                cards.append(card)
+
+    elif tool_name == "sector_thesis":
+        card = _build_sector_thesis_card(result)
+        if card:
+            cards.append(card)
+
+    elif tool_name == "institutional_flows":
+        for k in ("top_gainers", "top_losers", "top_buyers", "top_sellers"):
+            items = result.get(k) or []
+            if items:
+                title = {
+                    "top_gainers": "Top FII gainers",
+                    "top_losers": "Top FII losers",
+                    "top_buyers": "Top institutional buyers",
+                    "top_sellers": "Top institutional sellers",
+                }.get(k, k.replace("_", " ").title())
+                card = _build_screener_list_card(items, title, "stock")
+                if card:
+                    cards.append(card)
+
+    return cards
 
 
 def _format_compose_metric(value: Any, *, digits: int = 2) -> str | None:
@@ -5710,7 +6077,7 @@ async def get_session_messages(session_id: str, device_id: str) -> list[dict]:
     out: list[dict] = []
     for r in rows:
         d = record_to_dict(r)
-        for k in ("stock_cards", "mf_cards", "tool_calls", "follow_up_suggestions"):
+        for k in ("stock_cards", "mf_cards", "tool_calls", "follow_up_suggestions", "data_cards"):
             v = d.get(k)
             if isinstance(v, str):
                 try:
@@ -5743,6 +6110,7 @@ async def save_message(
     mf_cards: list[dict] | None = None,
     tool_calls: list[dict] | None = None,
     follow_up_suggestions: list[str] | None = None,
+    data_cards: list[dict] | None = None,
 ) -> str:
     """Save a message and return its ID."""
     pool = await get_pool()
@@ -5751,9 +6119,14 @@ async def save_message(
         """
         INSERT INTO chat_messages (
             id, session_id, role, content, thinking_text,
-            stock_cards, mf_cards, tool_calls, follow_up_suggestions, created_at
+            stock_cards, mf_cards, tool_calls, follow_up_suggestions,
+            data_cards, created_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, NOW())
+        VALUES (
+            $1, $2, $3, $4, $5,
+            $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb,
+            $10::jsonb, NOW()
+        )
         """,
         msg_id,
         session_id,
@@ -5764,6 +6137,7 @@ async def save_message(
         json.dumps(mf_cards) if mf_cards else None,
         json.dumps(tool_calls) if tool_calls else None,
         json.dumps(follow_up_suggestions) if follow_up_suggestions else None,
+        json.dumps(data_cards) if data_cards else None,
     )
     # Update session title from first user message
     if role == "user":
@@ -6906,12 +7280,16 @@ async def stream_chat_response(
     tool_entries: list[dict[str, Any]] = []
     stock_cards: list[dict] = []
     mf_cards: list[dict] = []
+    # Structured `data_card` payloads for the native Flutter widget.
+    # Each card has a `kind` field: "comparison" / "ranked_list" /
+    # "metric_grid". Replaces markdown tables in the text stream.
+    data_cards: list[dict] = []
     tools_used: list[dict] = []
 
     async def _run_tool_markers(markers: list[tuple[str, str]]) -> bool:
         """Execute a batch of [TOOL:...] markers. Returns True if at
         least one tool errored (so caller can decide to retry)."""
-        nonlocal tool_results, stock_cards, mf_cards, tools_used
+        nonlocal tool_results, stock_cards, mf_cards, data_cards, tools_used
         any_error = False
         for tool_name, params_str in markers:
             try:
@@ -7064,6 +7442,30 @@ async def stream_chat_response(
                             "returns_1y": f.get("returns_1y"),
                             "score": f.get("score"),
                         })
+
+            # data_card extraction — structured data for the native
+            # Flutter widget. Emits kinds:
+            #   - "comparison"  : stock_compare, peers
+            #   - "ranked_list" : stock_screen, mf_screen, theme_screen,
+            #                     institutional_flows, ipo_list,
+            #                     watchlist, sector_performance,
+            #                     watchlist_alerts, fixed_income
+            #   - "metric_grid" : sector_thesis, market_status,
+            #                     market_mood, watchlist_diversification,
+            #                     historical_valuation, factor_decomposition
+            # Widget branches on kind: stacked/side-by-side for
+            # comparison, vertical cards for ranked_list, 2-col labeled
+            # grid for metric_grid. Replaces the markdown tables that
+            # were unreadable on mobile.
+            if isinstance(result, dict) and "error" not in result:
+                try:
+                    cards = _build_data_cards(tool_name, params, result)
+                    for c in cards:
+                        data_cards.append(c)
+                except Exception:
+                    logger.debug(
+                        "data_card build failed for %s", tool_name, exc_info=True,
+                    )
         return any_error
 
     if tool_markers:
@@ -7577,13 +7979,18 @@ async def stream_chat_response(
     for card in mf_cards[:5]:
         yield {"event": "mf_card", "data": card}
 
+    # Send data cards (native comparison / ranked-list / metric-grid
+    # widgets — replace markdown tables on mobile).
+    for card in data_cards[:3]:
+        yield {"event": "data_card", "data": card}
+
     # Send follow-up suggestions
     if follow_ups:
         yield {"event": "suggestions", "data": {"suggestions": follow_ups}}
 
-    # Save assistant message (includes follow_up_suggestions so that
-    # reopening this session later restores the exact chips the user
-    # saw the first time).
+    # Save assistant message (includes follow_up_suggestions + data_cards
+    # so that reopening this session later restores the exact chips and
+    # native cards the user saw the first time).
     try:
         msg_id = await save_message(
             session_id,
@@ -7594,6 +8001,7 @@ async def stream_chat_response(
             mf_cards=mf_cards if mf_cards else None,
             tool_calls=tools_used if tools_used else None,
             follow_up_suggestions=follow_ups if follow_ups else None,
+            data_cards=data_cards if data_cards else None,
         )
     except Exception:
         logger.exception("chat_stream: failed to save assistant message")
