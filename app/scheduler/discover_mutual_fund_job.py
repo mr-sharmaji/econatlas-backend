@@ -1590,6 +1590,309 @@ class DiscoverMutualFundScraper(BaseScraper):
         )
         return out
 
+    # ── Groww primary enrichment source ───────────────────────────
+    #
+    # Groww embeds the full scheme payload in a NextJS `__NEXT_DATA__`
+    # script tag — a single per-fund dict with expense_ratio, aum,
+    # benchmark, holdings (441 rows for Kotak Arbitrage!), fund
+    # manager, portfolio turnover, exit load, peer comparison, return
+    # stats (alpha/beta/cat returns), groww_rating, crisil_rating,
+    # risk bucket and more. Slugs are deterministic from the scheme
+    # name (e.g. "Kotak Arbitrage Fund - Direct Plan - Growth" →
+    # "kotak-arbitrage-fund-direct-growth").
+    #
+    # We use Groww primarily to fill gaps in ETMoney's scrape (TER,
+    # holdings, fund manager experience, benchmark name, exit load,
+    # portfolio turnover) but never overwrite a non-null value that
+    # ETMoney already committed — ETMoney is the source of truth for
+    # cost/score/AUM, Groww just fills in nulls.
+    _GROWW_BASE = "https://groww.in/mutual-funds"
+    _GROWW_NEXT_DATA_REGEX = re.compile(
+        r'<script\s+id="__NEXT_DATA__"[^>]*>(\{.*?\})</script>',
+        re.DOTALL,
+    )
+
+    @classmethod
+    def _groww_slug_for_scheme(cls, scheme_name: str) -> str | None:
+        """Deterministic Groww URL slug from an AMFI scheme name.
+
+        "Kotak Arbitrage Fund - Direct Plan - Growth" →
+          "kotak-arbitrage-fund-direct-growth"
+        """
+        if not scheme_name:
+            return None
+        name = scheme_name.lower().strip()
+        strip_phrases = [
+            "direct plan", "regular plan", "plan",
+            "growth option", "dividend option",
+            "idcw payout", "idcw reinvestment",
+            "- payout", "- reinvestment",
+            "reinvestment of income distribution",
+            "cum capital withdrawal option",
+        ]
+        for phrase in strip_phrases:
+            name = name.replace(phrase, "")
+        name = re.sub(r"[^a-z0-9]+", "-", name).strip("-")
+        name = re.sub(r"-{2,}", "-", name)
+        return name or None
+
+    @staticmethod
+    def _walk_for_scheme_blob(obj: Any, depth: int = 0) -> dict | None:
+        """Recursively walk a NextJS JSON tree looking for the dict
+        that has both `expense_ratio` and `scheme_name` — that's the
+        single per-fund payload Groww renders on a fund page."""
+        if depth > 8:
+            return None
+        if isinstance(obj, dict):
+            if "expense_ratio" in obj and "scheme_name" in obj:
+                return obj
+            for v in obj.values():
+                hit = DiscoverMutualFundScraper._walk_for_scheme_blob(
+                    v, depth + 1,
+                )
+                if hit is not None:
+                    return hit
+        elif isinstance(obj, list):
+            for v in obj:
+                hit = DiscoverMutualFundScraper._walk_for_scheme_blob(
+                    v, depth + 1,
+                )
+                if hit is not None:
+                    return hit
+        return None
+
+    def _fetch_groww_scheme_data(self, scheme_name: str) -> dict | None:
+        """Fetch the full Groww NEXT_DATA scheme blob for a fund.
+
+        Returns a dict with every field Groww exposes, or None on
+        any failure (bad slug, 404, rate-limit, parse failure). The
+        returned dict is the raw `scheme` object — callers pick
+        whatever fields they need.
+        """
+        slug = self._groww_slug_for_scheme(scheme_name)
+        if not slug:
+            return None
+        url = f"{self._GROWW_BASE}/{slug}"
+        try:
+            html = self._get_text(url, timeout=12, retries=0)
+        except Exception:
+            return None
+        if not html or "expense_ratio" not in html:
+            return None
+        match = self._GROWW_NEXT_DATA_REGEX.search(html)
+        if not match:
+            return None
+        try:
+            payload = json.loads(match.group(1))
+        except Exception:
+            return None
+        return self._walk_for_scheme_blob(payload)
+
+    @staticmethod
+    def _groww_to_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _extract_groww_enrichment(cls, blob: dict) -> dict:
+        """Flatten a Groww scheme blob into the subset of fields we
+        actually persist in discover_mutual_fund_snapshots."""
+        out: dict[str, Any] = {}
+
+        # --- TER + absolute cap sanity ---
+        ter = cls._groww_to_float(blob.get("expense_ratio"))
+        if ter is not None and 0 < ter <= 3.5:
+            out["expense_ratio"] = ter
+
+        # --- AUM in crore ---
+        aum = cls._groww_to_float(blob.get("aum"))
+        if aum is not None and aum > 0:
+            out["aum_cr"] = aum
+
+        # --- NAV + date ---
+        nav = cls._groww_to_float(blob.get("nav"))
+        if nav is not None and nav > 0:
+            out["nav"] = nav
+        nav_date = blob.get("nav_date")
+        if isinstance(nav_date, str) and nav_date:
+            out["nav_date"] = nav_date
+
+        # --- Category / sub_category (Groww is authoritative) ---
+        if isinstance(blob.get("category"), str) and blob["category"]:
+            out["category"] = blob["category"].strip()
+        if isinstance(blob.get("sub_category"), str) and blob["sub_category"]:
+            out["sub_category"] = blob["sub_category"].strip()
+
+        # --- Risk bucket ---
+        nfo_risk = blob.get("nfo_risk")
+        if isinstance(nfo_risk, str) and nfo_risk:
+            out["risk_level"] = cls._normalize_risk(nfo_risk)
+
+        # --- Stats (sharpe / sortino / std_dev) ---
+        stats = blob.get("stats") or []
+        if isinstance(stats, list):
+            for stat in stats:
+                if not isinstance(stat, dict):
+                    continue
+                name = str(stat.get("name") or stat.get("label") or "").lower()
+                val = cls._groww_to_float(stat.get("value"))
+                if val is None:
+                    continue
+                if "sharpe" in name:
+                    out["sharpe"] = val
+                elif "sortino" in name:
+                    out["sortino"] = val
+                elif "standard" in name or "std" in name or "deviation" in name:
+                    out["std_dev"] = val
+
+        # --- Fund managers ---
+        fm_list = blob.get("fund_manager_details") or []
+        fm_fallback = blob.get("fund_manager")
+        managers: list[dict] = []
+        if isinstance(fm_list, list) and fm_list:
+            for fm in fm_list:
+                if not isinstance(fm, dict):
+                    continue
+                name = fm.get("name") or fm.get("fund_manager_name")
+                if not name:
+                    continue
+                managers.append({
+                    "name": str(name).strip(),
+                    "experience": str(
+                        fm.get("experience")
+                        or fm.get("fund_manager_experience")
+                        or ""
+                    ).strip(),
+                })
+        if not managers and isinstance(fm_fallback, str) and fm_fallback.strip():
+            managers.append({"name": fm_fallback.strip(), "experience": ""})
+        if managers:
+            out["fund_managers"] = managers
+
+        # --- Holdings ---
+        holdings = blob.get("holdings") or []
+        if isinstance(holdings, list) and holdings:
+            top_holdings = []
+            for h in holdings[:15]:
+                if not isinstance(h, dict):
+                    continue
+                top_holdings.append({
+                    "company_name": (
+                        h.get("company_name")
+                        or h.get("name")
+                        or h.get("stock_name")
+                    ),
+                    "sector": h.get("sector") or h.get("industry"),
+                    "corpus_per": cls._groww_to_float(
+                        h.get("corpus_per") or h.get("percentage")
+                    ),
+                    "market_value_crore": cls._groww_to_float(
+                        h.get("market_value")
+                        or h.get("market_value_crore")
+                    ),
+                    "isin": h.get("isin"),
+                    "asset_type": h.get("asset_type"),
+                })
+            top_holdings = [
+                h for h in top_holdings
+                if h.get("company_name") and h.get("corpus_per") is not None
+            ]
+            if top_holdings:
+                out["top_holdings"] = top_holdings
+                # Holdings asof — use nav_date as a proxy when no
+                # explicit disclosure date is provided.
+                if isinstance(nav_date, str) and nav_date:
+                    out["holdings_as_of"] = nav_date
+
+        # --- Scalar quality signals (stored inside tags_v2 blob) ---
+        quality: dict[str, Any] = {}
+        groww_rating = cls._groww_to_float(blob.get("groww_rating"))
+        if groww_rating is not None:
+            quality["groww_rating"] = groww_rating
+        crisil_rating = blob.get("crisil_rating")
+        if crisil_rating:
+            quality["crisil_rating"] = crisil_rating
+        turnover = cls._groww_to_float(blob.get("portfolio_turnover"))
+        if turnover is not None:
+            quality["portfolio_turnover_pct"] = turnover
+        exit_load = blob.get("exit_load")
+        if isinstance(exit_load, str) and exit_load.strip():
+            quality["exit_load"] = exit_load.strip()
+        benchmark = blob.get("benchmark_name") or blob.get("benchmark")
+        if isinstance(benchmark, str) and benchmark.strip():
+            quality["benchmark"] = benchmark.strip()
+        min_sip = cls._groww_to_float(blob.get("min_sip_investment"))
+        if min_sip is not None and min_sip > 0:
+            quality["min_sip_investment"] = min_sip
+        min_lumpsum = cls._groww_to_float(blob.get("min_investment_amount"))
+        if min_lumpsum is not None and min_lumpsum > 0:
+            quality["min_lumpsum_investment"] = min_lumpsum
+        launch_date = blob.get("launch_date")
+        if isinstance(launch_date, str) and launch_date:
+            quality["launch_date"] = launch_date
+        if quality:
+            out["_groww_quality"] = quality
+
+        return out
+
+    def _enrich_from_groww(self, rows: dict[str, dict]) -> None:
+        """Primary Groww enrichment pass — fills missing fields on
+        every scraped fund (TER, holdings, managers, benchmark,
+        turnover, exit load, quality flags) without overwriting
+        non-null ETMoney values. Rate-limited to ~2 req/sec.
+
+        Runs across ALL direct-plan rows, not just the null-TER
+        subset, because Groww consistently returns richer payloads
+        than the ETMoney scrape can parse.
+        """
+        targets = [
+            (code, row) for code, row in rows.items()
+            if row.get("scheme_name")
+        ]
+        if not targets:
+            return
+        logger.info(
+            "groww: enriching %d funds from groww.in __NEXT_DATA__",
+            len(targets),
+        )
+        # Per-field counter so we can see how much Groww actually
+        # contributed vs just ran.
+        filled: dict[str, int] = {}
+        failures = 0
+        for code, row in targets:
+            blob = self._fetch_groww_scheme_data(str(row.get("scheme_name") or ""))
+            if blob is None:
+                failures += 1
+                time.sleep(0.3)
+                continue
+            data = self._extract_groww_enrichment(blob)
+            for field, value in data.items():
+                if field == "_groww_quality":
+                    # Merge into existing tags_v2 dict without
+                    # clobbering ETMoney tags.
+                    existing_tags = row.get("tags_v2") or {}
+                    if not isinstance(existing_tags, dict):
+                        existing_tags = {}
+                    merged_quality = {**existing_tags, **value}
+                    row["tags_v2"] = merged_quality
+                    filled["tags_v2"] = filled.get("tags_v2", 0) + 1
+                    continue
+                # Only fill when the existing value is None / empty.
+                existing = row.get(field)
+                if existing is None or existing == "" or existing == []:
+                    row[field] = value
+                    filled[field] = filled.get(field, 0) + 1
+            time.sleep(0.5)
+        logger.info(
+            "groww: enrichment done — failures=%d filled=%s",
+            failures,
+            {k: v for k, v in sorted(filled.items(), key=lambda x: -x[1])},
+        )
+
     def _enrich_from_mfapi(self, rows: dict[str, dict]) -> None:
         """Enrich fund_age_years, returns, and risk metrics from mfapi.in for funds missing data.
 
@@ -2009,6 +2312,22 @@ class DiscoverMutualFundScraper(BaseScraper):
                 row["sub_category"] = "Large Cap Index"
             elif "total market" in name_lower:
                 row["sub_category"] = "Multi Cap Index"
+
+        # ── Primary Groww enrichment pass ──────────────────────────
+        # Pulls TER, holdings, fund managers, benchmark, portfolio
+        # turnover, exit load, risk bucket, category and quality
+        # signals (groww / crisil ratings) from Groww's NextJS JSON
+        # blob. ETMoney values are still preferred when non-null —
+        # Groww only fills gaps.
+        try:
+            rows_by_code: dict[str, dict] = {
+                str(row.get("scheme_code") or ""): row
+                for row in rows
+                if row.get("scheme_code")
+            }
+            self._enrich_from_groww(rows_by_code)
+        except Exception:
+            logger.warning("groww: enrichment failed", exc_info=True)
 
         return self._compute_scores(rows)
 
