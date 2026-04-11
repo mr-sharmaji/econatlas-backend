@@ -23,6 +23,8 @@ _VALID_JOBS = {
     "market", "commodity", "crypto", "brief", "macro", "news",
     "discover_stock", "discover_mutual_funds",
     "discover_stock_price", "discover_mf_nav",
+    "discover_stock_intraday",
+    "discover_stock_intraday_backfill",
     "discover_mf_holdings",
     "discover_mf_holdings_etmoney",
     "discover_mf_holdings_moneycontrol",
@@ -164,6 +166,10 @@ _DIRECT_RUN_JOBS: dict[str, tuple[str, str]] = {
     "discover_mf_holdings_moneycontrol": (
         "app.scheduler.discover_mf_holdings_job",
         "run_discover_mf_holdings_moneycontrol_job",
+    ),
+    "discover_stock_intraday_backfill": (
+        "app.scheduler.discover_stock_intraday_job",
+        "run_discover_stock_intraday_backfill",
     ),
     # ── Artha semantic layer backfills ──
     # These are run directly because they warm the fastembed model and

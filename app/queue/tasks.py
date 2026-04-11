@@ -161,6 +161,25 @@ async def task_discover_stock_intraday(ctx: dict) -> None:
     )
 
 
+async def task_discover_stock_intraday_backfill(ctx: dict) -> None:
+    """One-shot: backfill today's 5-min intraday ticks from Yahoo.
+
+    Idempotent (ON CONFLICT DO NOTHING). Triggered manually via
+    /ops/jobs/trigger/discover_stock_intraday_backfill after a first
+    deploy or whenever the ticks table needs to be repopulated with
+    historical intraday data for the last trading day.
+    """
+    from app.scheduler.discover_stock_intraday_job import (
+        run_discover_stock_intraday_backfill,
+    )
+
+    await _run_with_retry(
+        ctx,
+        "discover_stock_intraday_backfill",
+        run_discover_stock_intraday_backfill,
+    )
+
+
 async def task_discover_mf_nav(ctx: dict) -> None:
     from app.scheduler.discover_mf_nav_job import run_discover_mf_nav_job
 

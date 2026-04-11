@@ -586,3 +586,188 @@ async def run_discover_stock_intraday_job() -> None:
             "Yahoo reachability.",
             ratio * 100,
         )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# One-shot backfill: populate discover_stock_intraday from Yahoo's
+# 5-minute chart history for the last trading day.
+#
+# Purpose
+# -------
+# The routine 30-min intraday scheduler only starts writing rows from
+# the next 09:15 IST market open. On first deploy (or after a fresh
+# migration), the table is empty, so every stock detail screen opens
+# with a blank 1D chart until the scheduler has had time to paint
+# enough ticks.
+#
+# This backfill:
+#   * Fetches Yahoo chart `interval=5m&range=1d` per symbol (~78 ticks
+#     per stock for today's session)
+#   * Parses each tick into (symbol, ts_utc, price, volume)
+#   * Bulk-inserts with `ON CONFLICT (symbol, ts) DO NOTHING` so it's
+#     safe to re-run and won't clobber live scheduler rows (different
+#     timestamps entirely — scheduler uses NOW() round to the tick,
+#     backfill uses Yahoo's 5-minute bucket boundaries)
+#   * Bounded concurrency (8 workers, ~5 min wall-clock for 2000 stocks)
+#
+# Triggered manually via `/ops/jobs/trigger/discover_stock_intraday_backfill`.
+# NOT on the scheduler — this is a one-shot recovery tool, not a
+# recurring job.
+# ─────────────────────────────────────────────────────────────────────
+
+_BACKFILL_CONCURRENCY = 8
+_BACKFILL_PER_SYMBOL_TIMEOUT_SEC = 6
+_BACKFILL_TOTAL_TIMEOUT_SEC = 900  # 15 min hard ceiling
+
+
+async def _fetch_yahoo_5m_for_day(
+    client: httpx.AsyncClient,
+    symbol: str,
+) -> list[tuple[datetime, float, int | None]]:
+    """Fetch Yahoo's 5-min chart for the last day for one symbol.
+
+    Returns a list of (ts_utc, price, volume). Empty list on any error.
+    """
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS"
+        "?interval=5m&range=1d"
+    )
+    try:
+        resp = await client.get(
+            url,
+            headers=_BROWSER_HEADERS,
+            timeout=_BACKFILL_PER_SYMBOL_TIMEOUT_SEC,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception:
+        return []
+
+    try:
+        result = (payload.get("chart") or {}).get("result") or []
+        if not result:
+            return []
+        r0 = result[0]
+        timestamps = r0.get("timestamp") or []
+        quote = (r0.get("indicators") or {}).get("quote") or [{}]
+        closes = quote[0].get("close") or []
+        volumes = quote[0].get("volume") or []
+    except Exception:
+        return []
+
+    out: list[tuple[datetime, float, int | None]] = []
+    for i, ts in enumerate(timestamps):
+        if i >= len(closes):
+            break
+        close = closes[i]
+        if close is None:
+            continue
+        try:
+            price = float(close)
+        except (TypeError, ValueError):
+            continue
+        try:
+            ts_utc = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        vol: int | None = None
+        if i < len(volumes) and volumes[i] is not None:
+            try:
+                vol = int(volumes[i])
+            except (TypeError, ValueError):
+                vol = None
+        out.append((ts_utc, price, vol))
+    return out
+
+
+async def run_discover_stock_intraday_backfill() -> None:
+    """One-shot: backfill today's 5-min intraday ticks from Yahoo.
+
+    Safe to re-run: the ON CONFLICT (symbol, ts) DO NOTHING clause
+    makes repeated executions idempotent. Does NOT touch any field
+    on discover_stock_snapshots — only inserts into the ticks table.
+    """
+    t0 = time.monotonic()
+    pool = await get_pool()
+
+    rows = await pool.fetch(
+        "SELECT symbol FROM discover_stock_snapshots "
+        "WHERE market = 'IN' "
+        "ORDER BY market_cap DESC NULLS LAST",
+    )
+    symbols: list[str] = [r["symbol"] for r in rows if r["symbol"]]
+    if not symbols:
+        logger.info("intraday_backfill: no symbols to backfill")
+        return
+
+    logger.info(
+        "intraday_backfill: fetching Yahoo 5m range=1d for %d symbols",
+        len(symbols),
+    )
+
+    sem = asyncio.Semaphore(_BACKFILL_CONCURRENCY)
+    all_rows: list[tuple[str, datetime, float, int | None]] = []
+    deadline = time.monotonic() + _BACKFILL_TOTAL_TIMEOUT_SEC
+    fetched_ok = 0
+    fetched_empty = 0
+
+    async with httpx.AsyncClient(
+        timeout=_BACKFILL_PER_SYMBOL_TIMEOUT_SEC,
+        follow_redirects=True,
+    ) as client:
+
+        async def _worker(symbol: str) -> None:
+            nonlocal fetched_ok, fetched_empty
+            async with sem:
+                if time.monotonic() > deadline:
+                    return
+                points = await _fetch_yahoo_5m_for_day(client, symbol)
+            if points:
+                fetched_ok += 1
+                for ts_utc, price, vol in points:
+                    all_rows.append((symbol, ts_utc, price, vol))
+            else:
+                fetched_empty += 1
+
+        await asyncio.gather(
+            *(_worker(s) for s in symbols),
+            return_exceptions=True,
+        )
+
+    fetch_elapsed = time.monotonic() - t0
+    logger.info(
+        "intraday_backfill: fetch done in %.1fs — "
+        "ok=%d empty=%d total_ticks=%d",
+        fetch_elapsed, fetched_ok, fetched_empty, len(all_rows),
+    )
+
+    if not all_rows:
+        logger.warning("intraday_backfill: no ticks collected, nothing to insert")
+        return
+
+    # Bulk INSERT with ON CONFLICT DO NOTHING. Chunk at 5k rows to keep
+    # any single statement under Postgres' parameter-binding limits.
+    insert_sql = (
+        "INSERT INTO discover_stock_intraday "
+        "(symbol, ts, price, volume, percent_change) "
+        "VALUES ($1, $2, $3, $4, NULL) "
+        "ON CONFLICT (symbol, ts) DO NOTHING"
+    )
+    inserted = 0
+    chunk_size = 5000
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                for i in range(0, len(all_rows), chunk_size):
+                    chunk = all_rows[i:i + chunk_size]
+                    await conn.executemany(insert_sql, chunk)
+                    inserted += len(chunk)
+    except Exception:
+        logger.exception("intraday_backfill: bulk insert failed")
+        return
+
+    logger.info(
+        "intraday_backfill: DONE in %.1fs — symbols_ok=%d symbols_empty=%d "
+        "rows_queued=%d (dedup on conflict)",
+        time.monotonic() - t0, fetched_ok, fetched_empty, inserted,
+    )

@@ -35,6 +35,9 @@ JOB_RETRY_POLICIES: dict[str, tuple[int, int]] = {
     # tick is only 30 min away and we never want two copies to pile up
     # and race the heavy daily pipeline at 16:00 IST.
     "discover_stock_intraday": (0, 0),
+    # One-shot ops tool — no auto-retry because it's idempotent and
+    # manually triggered. If it fails, re-trigger explicitly.
+    "discover_stock_intraday_backfill": (0, 0),
     "discover_mf_nav": (3, 60),
     "discover_mf_holdings": (3, 60),
     "market_score": (2, 60),
@@ -80,6 +83,7 @@ def get_arq_functions() -> list:
         task_discover_mutual_funds,
         task_discover_stock,
         task_discover_stock_intraday,
+        task_discover_stock_intraday_backfill,
         task_discover_stock_price,
         task_econ_calendar,
         task_gap_backfill,
@@ -112,6 +116,12 @@ def get_arq_functions() -> list:
         func(task_discover_stock_price, name="discover_stock_price", timeout=7200),
         # Intraday is capped at 5 minutes — lightweight UPDATE only.
         func(task_discover_stock_intraday, name="discover_stock_intraday", timeout=300),
+        # Backfill can legitimately run up to 15 min over ~2000 symbols.
+        func(
+            task_discover_stock_intraday_backfill,
+            name="discover_stock_intraday_backfill",
+            timeout=1200,
+        ),
         func(task_discover_mf_nav, name="discover_mf_nav", timeout=7200),
         func(task_discover_mf_holdings, name="discover_mf_holdings", timeout=7200),
         func(task_rescore_stock, name="rescore_stock", timeout=600),
