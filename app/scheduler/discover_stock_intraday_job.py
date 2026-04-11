@@ -615,8 +615,15 @@ async def run_discover_stock_intraday_job() -> None:
 # recurring job.
 # ─────────────────────────────────────────────────────────────────────
 
-_BACKFILL_CONCURRENCY = 8
+# Yahoo's v8 chart endpoint rate-limits at ~2000 req/hour/IP for
+# unauthenticated clients. At 8 concurrent workers we hit that in
+# seconds and every subsequent call returns HTTP 429. Throttle to 2
+# concurrent + deliberate inter-call pacing so we stay well under the
+# quota: 2 × ~3 req/sec ≈ 360 req/min, completing 2274 symbols in
+# ~6-7 min while staying within ~2000/hour.
+_BACKFILL_CONCURRENCY = 2
 _BACKFILL_PER_SYMBOL_TIMEOUT_SEC = 6
+_BACKFILL_INTER_CALL_DELAY_SEC = 0.3
 _BACKFILL_TOTAL_TIMEOUT_SEC = 900  # 15 min hard ceiling
 
 
@@ -628,9 +635,13 @@ async def _fetch_yahoo_5m_for_day(
 
     Returns a list of (ts_utc, price, volume). Empty list on any error.
     """
+    # range=2d instead of 1d so we always capture at least the previous
+    # trading session. On a weekend / holiday morning, range=1d returns
+    # nothing (no active session today) while range=2d still has Friday's
+    # 5-minute ticks. We keep the 5m granularity for dense chart data.
     url = (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS"
-        "?interval=5m&range=1d"
+        "?interval=5m&range=2d"
     )
     try:
         resp = await client.get(
@@ -722,6 +733,10 @@ async def run_discover_stock_intraday_backfill() -> None:
                 if time.monotonic() > deadline:
                     return
                 points = await _fetch_yahoo_5m_for_day(client, symbol)
+                # Deliberate pacing to stay well under Yahoo's 2000/hr
+                # rate limit. Runs inside the semaphore so concurrency is
+                # bounded regardless.
+                await asyncio.sleep(_BACKFILL_INTER_CALL_DELAY_SEC)
             if points:
                 fetched_ok += 1
                 for ts_utc, price, vol in points:
