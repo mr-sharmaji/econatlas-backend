@@ -2207,39 +2207,68 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     tags_v2, growth_ranges
                 )
                 VALUES (
+                    -- 1-7: market, symbol, display_name, sector, last_price, point_change, percent_change
                     $1, $2, $3, $4, $5, $6, $7,
+                    -- 8-15: volume, traded_value, pe_ratio, roe, roce, debt_to_equity, price_to_book, eps
                     $8, $9, $10, $11, $12, $13, $14, $15,
+                    -- 16-24: score, score_momentum, score_liquidity, score_fundamentals,
+                    --        score_volatility, score_growth,
+                    --        score_ownership, score_financial_health, score_analyst
                     $16, $17, NULL, NULL,
                     NULL, $18,
                     NULL, NULL, NULL,
-                    $19, $20,
-                    $21, $22,
-                    $23, $24, $25, NOW(),
-                    $26, $27,
-                    $28, $29, $30, $31,
-                    $32, $33, $34, $35, $36,
-                    $37, $38, $39, $40,
-                    $41, $42, $43, $44, $45, $46,
-                    $47, $48, $49,
-                    $50, $51, $52,
-                    $53, $54, $55, $56,
-                    $57, $58,
-                    $59,
-                    $60, $61, $62, $63,
-                    $64, $65,
-                    $66, $67, $68, $69, $70,
-                    $71, $72, $73,
-                    $74, $75,
-                    $76,
-                    $77, NULL, NULL,
-                    $78, $79, $80,
-                    $81,
-                    $82, $83, $84,
-                    $85, $86, $87,
-                    $88, $89, $90, $91,
-                    $92, $93, $94,
-                    COALESCE($95, '[]'::jsonb),
-                    $96
+                    -- 25-30: percent_change_1w, _1m, _3m, _6m, _1y, _3y
+                    $19, $20, $21, $22, $23, $24,
+                    -- 31-34: score_breakdown, source_status, source_timestamp, ingested_at
+                    $25, $26, $27, NOW(),
+                    -- 35-36: primary_source, secondary_source
+                    $28, $29,
+                    -- 37-40: high_52w, low_52w, market_cap, dividend_yield
+                    $30, $31, $32, $33,
+                    -- 41-45: promoter_holding, fii_holding, dii_holding, government_holding, public_holding
+                    $34, $35, $36, $37, $38,
+                    -- 46-49: num_shareholders, promoter_holding_change, fii_holding_change, dii_holding_change
+                    $39, $40, $41, $42,
+                    -- 50-55: beta, free_cash_flow, operating_cash_flow, total_cash, total_debt, total_revenue
+                    $43, $44, $45, $46, $47, $48,
+                    -- 56-58: gross_margins, operating_margins, profit_margins
+                    $49, $50, $51,
+                    -- 59-61: revenue_growth, earnings_growth, forward_pe
+                    $52, $53, $54,
+                    -- 62-65: analyst_target_mean, analyst_count, analyst_recommendation, analyst_recommendation_mean
+                    $55, $56, $57, $58,
+                    -- 66-67: industry, payout_ratio
+                    $59, $60,
+                    -- 68: pledged_promoter_pct
+                    $61,
+                    -- 69-72: sales_growth_yoy, profit_growth_yoy, opm_change, interest_coverage
+                    $62, $63, $64, $65,
+                    -- 73-74: compounded_sales_growth_3y, compounded_profit_growth_3y
+                    $66, $67,
+                    -- 75-79: total_assets, asset_growth_yoy, reserves_growth, debt_direction, cwip
+                    $68, $69, $70, $71, $72,
+                    -- 80-82: cash_from_operations, cash_from_investing, cash_from_financing
+                    $73, $74, $75,
+                    -- 83-84: num_shareholders_change_qoq, num_shareholders_change_yoy
+                    $76, $77,
+                    -- 85-88: synthetic_forward_pe, score_valuation,
+                    --        score_earnings_quality, score_smart_money
+                    $78, $79, NULL, NULL,
+                    -- 89-91: pl_annual, bs_annual, cf_annual
+                    $80, $81, $82,
+                    -- 92: shareholding_quarterly
+                    $83,
+                    -- 93-95: score_quality, score_institutional, score_risk
+                    $84, $85, $86,
+                    -- 96-98: sector_percentile, lynch_classification, percent_change_5y
+                    $87, $88, $89,
+                    -- 99-102: technical_score, rsi_14, action_tag, action_tag_reasoning
+                    $90, $91, $92, $93,
+                    -- 103-105: score_confidence, trend_alignment, breakout_signal
+                    $94, $95, $96,
+                    -- 106-107: tags_v2, growth_ranges
+                    COALESCE($97, '[]'::jsonb),
+                    $98
                 )
                 ON CONFLICT (symbol)
                 DO UPDATE SET
