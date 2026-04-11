@@ -2554,8 +2554,17 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
         return 0
     pool = await get_pool()
     count = 0
+    failed = 0
     async with pool.acquire() as conn:
         for row in rows:
+          # IMPORTANT: wrap each execute in its own try/except so a
+          # single malformed row can't abort the whole upsert loop.
+          # Previously one poison pill (bad jsonb cast, a _to_float
+          # choking on stringified NaN, etc.) would break out of
+          # the for-loop and silently skip every remaining fund,
+          # leaving the low-score tail of the list stuck on the
+          # prior day's snapshot.
+          try:
             await conn.execute(
                 f"""
                 INSERT INTO {MF_TABLE}
@@ -2696,6 +2705,17 @@ async def upsert_discover_mutual_fund_snapshots(rows: list[dict]) -> int:
                 _to_jsonb(row.get("asset_allocation"), None),                          # $49
             )
             count += 1
+          except Exception as exc:
+            failed += 1
+            logger.warning(
+                "mf upsert skipped scheme_code=%s: %s",
+                row.get("scheme_code"),
+                exc,
+            )
+    if failed:
+        logger.warning(
+            "mf upsert completed with %d failures out of %d rows", failed, len(rows)
+        )
     return count
 
 
