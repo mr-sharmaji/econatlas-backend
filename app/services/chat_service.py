@@ -408,7 +408,13 @@ Anti-refusal table (these tools exist — use them):
 
 **When a tool returns zero rows**: (1) check for a units bug, (2) check for a wrong sector literal (Banking → Financials, Pharma → Healthcare), (3) look for `relaxed: true` and acknowledge the relaxation, (4) if the data is genuinely missing, say so plainly and then pivot to general market knowledge — prefixed with `*General context (not from live data):*`.
 
-**No fabrication**: if you haven't seen a specific number in a tool result or prior assistant turn in this session, you may not present it as a fact. Ranges, qualitative language, and `~approximately` framings are fine. Exact figures (market cap, PE, holding percentages, earnings beats) require a tool source.
+**When a tool fails with an infrastructure error** (SQL errors, "column does not exist", "Tool failed:", connection errors, empty watchlist/stock_lookup results on a personal-data query): DO NOT silently substitute a freestyle answer. Tell the user plainly: *"I couldn't read your watchlist right now — the data backend had an error."* Then ask if they want to retry. You are FORBIDDEN from inventing entities the user didn't name — no "HUDCL", "GSFC", "the three companies you highlighted" when the tool never returned them.
+
+**No fabrication gate (hard)**: if you haven't seen a specific entity in a tool result or in the user's own message, you may not present it as a fact:
+- **Numbers** (market cap, PE, returns, holdings, prices, dates) require a tool source — NO exceptions.
+- **Entity identities** (company names, tickers, fund schemes, sector labels) require either a tool source OR the user having typed them first. Never "the companies you highlighted" unless the user actually highlighted them.
+- **Qualitative claims** (ranges, sector framing, historical typicals) are fine IF tagged `*General context (not from live data):*`.
+- **Personal-data questions** (watchlist, portfolio, user preferences) can ONLY be answered from tool results. If the tool failed, say so and stop — do not guess at what the user probably watches.
 
 **NEVER redirect the user to another app feature.** Phrases like "open the EconAtlas Screener tab", "check the app", "use the dashboard", or "consult a financial advisor" are FORBIDDEN. You ARE the feature. If you can't answer, say so directly and ask what other data would help.
 
@@ -3367,13 +3373,19 @@ async def _execute_tool(
             if mf_ids:
                 placeholders = ", ".join(f"${i + 1}" for i in range(len(mf_ids)))
                 mf_records = await pool.fetch(
-                    f"SELECT scheme_code, scheme_name, display_name, category, "
+                    f"SELECT scheme_code, scheme_name, category, "
                     f"nav, returns_1y, score "
                     f"FROM discover_mutual_fund_snapshots "
                     f"WHERE scheme_code IN ({placeholders})",
                     *mf_ids,
                 )
                 mf_rows = [record_to_dict(r) for r in mf_records]
+                # Downstream UI expects `display_name` on every MF card,
+                # but the MF table only stores `scheme_name`. Alias it
+                # here so chat responses and the /sessions route render
+                # cleanly without a second coercion pass.
+                for row in mf_rows:
+                    row.setdefault("display_name", row.get("scheme_name"))
                 mf_rank = {scheme_code: index for index, scheme_code in enumerate(mf_ids)}
                 mf_rows.sort(
                     key=lambda row: (
@@ -6423,13 +6435,47 @@ async def stream_chat_response(
         # ── Retry loop: if any tool errored, feed the errors back to
         # the fast model ONCE and let it regenerate the tool call.
         # Catches LLM mistakes like wrong column names that our
-        # whitelist/alias layer couldn't auto-fix.
+        # whitelist/alias layer couldn't auto-fix. Skips "infrastructure"
+        # errors (SQL crashes, missing columns, DB downtime) because
+        # the LLM can't fix those — only engineering can. For those we
+        # fall straight through to the compose phase which has the
+        # "all tools failed" no-fabrication guidance.
+        def _is_infrastructure_error(err_msg: str) -> bool:
+            if not err_msg:
+                return False
+            lowered = err_msg.lower()
+            return any(
+                marker in lowered
+                for marker in (
+                    "tool failed:",        # bare exception wrapper
+                    "does not exist",      # undefined column / table
+                    "connection",          # DB / network
+                    "timeout",             # DB / HTTP timeout
+                    "no such",             # generic resource missing
+                    "internal error",
+                )
+            )
+
         if had_error:
             error_summary_lines = []
+            infrastructure_errors = 0
+            llm_fixable_errors = 0
             for tn, tr in tool_results.items():
                 if isinstance(tr, dict) and "error" in tr:
-                    error_summary_lines.append(f"[{tn}] → {tr['error']}")
-            if error_summary_lines:
+                    err = tr["error"]
+                    error_summary_lines.append(f"[{tn}] → {err}")
+                    if _is_infrastructure_error(err):
+                        infrastructure_errors += 1
+                    else:
+                        llm_fixable_errors += 1
+
+            if infrastructure_errors and not llm_fixable_errors:
+                logger.warning(
+                    "tool_retry: skipping LLM retry — all errors are "
+                    "infrastructure (%d); composer will surface failure",
+                    infrastructure_errors,
+                )
+            elif error_summary_lines:
                 error_feedback = "\n".join(error_summary_lines)
                 logger.info("tool_retry: feeding errors back to LLM: %s", error_feedback[:400])
                 retry_messages = messages + [
@@ -6458,12 +6504,7 @@ async def stream_chat_response(
                         logger.info(
                             "tool_retry: retrying %d tool calls", len(retry_markers),
                         )
-                        # Merge: if a retry tool succeeds, overwrite the
-                        # failed previous result. stock_cards/mf_cards
-                        # accumulate as normal.
                         await _run_tool_markers(retry_markers)
-                    # Update "initial_response" to the retry so phase 3
-                    # includes the corrected thinking.
                     initial_response = retry_response
 
         # ── Phase 3: Compose final answer with SLOW model + REAL streaming
@@ -6476,6 +6517,7 @@ async def stream_chat_response(
         compose_intro = [
             "Here are the tool results. Compose your FINAL response now.",
         ]
+        all_tools_failed = bool(tool_entries) and not successful_tool_entries
         if successful_tool_entries:
             compose_intro.extend([
                 "",
@@ -6483,6 +6525,35 @@ async def stream_chat_response(
                 "You MUST synthesize the successful results below before using any "
                 "fallback phrasing.",
                 "Do NOT say you lack the data when a relevant successful tool result exists.",
+            ])
+        elif all_tools_failed:
+            # Every tool call hit an error. The retry loop already gave
+            # the fast model one chance to regenerate; we are now past
+            # that. The composer must NOT invent replacement content.
+            # See tool_call error logs for the actual failure reasons.
+            _failed_names = ", ".join(
+                e.get("tool", "?") for e in tool_entries
+            )
+            compose_intro.extend([
+                "",
+                f"⚠️ ALL tool calls failed: {_failed_names}.",
+                "This is a backend / infrastructure problem, NOT a data-not-"
+                "found case. You were NOT able to read any live data for "
+                "this request.",
+                "You MUST:",
+                "  1. Tell the user briefly and plainly that the data "
+                "backend had an error and you could not retrieve the "
+                "information they asked for.",
+                "  2. NOT invent any entity (company name, ticker, fund "
+                "scheme, sector, price, percent, ratio, or date) — even "
+                "if you would normally know it from general knowledge. "
+                "The user asked about their personal data or a specific "
+                "lookup, and fabricating a plausible substitute is worse "
+                "than admitting the failure.",
+                "  3. Offer to retry or suggest an alternative question "
+                "the user could ask.",
+                "Keep the response to 2-3 sentences plus the standard "
+                "[SUGGESTIONS] block.",
             ])
 
         # ── Prior-turn context reinforcement ────────────────────────────
