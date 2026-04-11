@@ -4639,7 +4639,8 @@ async def get_stock_story(*, symbol: str) -> dict | None:
                debt_to_equity, market_cap,
                revenue_growth, earnings_growth,
                compounded_sales_growth_3y, compounded_profit_growth_3y,
-               dividend_yield, growth_ranges
+               dividend_yield, growth_ranges,
+               ai_narrative, ai_narrative_at
         FROM {STOCK_TABLE}
         WHERE symbol = $1
         """,
@@ -4728,22 +4729,62 @@ async def get_stock_story(*, symbol: str) -> dict | None:
     else:
         verdict = None
 
-    # Generate AI narrative (non-blocking, graceful fallback)
-    ai_narrative = None
-    try:
-        from app.services.ai_service import generate_stock_narrative
+    # --- AI narrative: DB-cached + fire-and-forget refresh ---
+    #
+    # Previously this blocked every /story request on a 5-15s LLM
+    # call, so the top verdict card on the stock detail screen took
+    # forever to load. Now we serve whatever's cached in the
+    # `ai_narrative` column (same row we just read) and, if it's
+    # stale or missing, schedule a background regen that writes the
+    # column — the NEXT screen open will have a fresh narrative with
+    # zero LLM latency on the critical path.
+    ai_narrative = d.get("ai_narrative")
+    ai_narrative_at = d.get("ai_narrative_at")
+    _STALE_AFTER_HOURS = 24
+    _stale = True
+    if ai_narrative and ai_narrative_at:
+        try:
+            age_hours = (
+                datetime.now(timezone.utc) - ai_narrative_at
+            ).total_seconds() / 3600
+            _stale = age_hours > _STALE_AFTER_HOURS
+        except Exception:
+            _stale = True
 
-        # Parse growth_ranges for the AI prompt
+    if _stale:
+        # Parse growth_ranges for the AI prompt.
         gr = d.get("growth_ranges")
         if isinstance(gr, str):
             try:
                 gr = _json.loads(gr)
             except (ValueError, TypeError):
                 gr = None
-        ai_data = {**d, "tags_v2": tags_v2, "growth_ranges": gr}
-        ai_narrative = await generate_stock_narrative(ai_data)
-    except Exception:
-        pass  # AI is optional — never break the endpoint
+        ai_payload = {**d, "tags_v2": tags_v2, "growth_ranges": gr}
+
+        async def _regen_and_persist(symbol_: str, payload: dict) -> None:
+            try:
+                from app.services.ai_service import generate_stock_narrative
+                text = await generate_stock_narrative(payload)
+                if not text:
+                    return
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        f"UPDATE {STOCK_TABLE} "
+                        f"SET ai_narrative = $2, ai_narrative_at = NOW() "
+                        f"WHERE symbol = $1",
+                        symbol_, text,
+                    )
+            except Exception:
+                logger.debug(
+                    "ai_narrative regen failed for %s", symbol_, exc_info=True,
+                )
+
+        try:
+            import asyncio as _asyncio
+            loop = _asyncio.get_running_loop()
+            loop.create_task(_regen_and_persist(symbol, ai_payload))
+        except RuntimeError:
+            pass  # not in an event loop — fine, just skip
 
     return {
         "symbol": symbol,
