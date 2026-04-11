@@ -167,76 +167,226 @@ async def _call_llm(
 # Stock narrative
 # ---------------------------------------------------------------------------
 
-_STOCK_SYSTEM = """You are a concise Indian stock market analyst writing for retail investors.
-Rules:
-- Write exactly 2-3 short sentences (max 60 words total)
-- Be specific — use the numbers provided
-- No disclaimers, no "NFA", no "do your own research"
-- No bullet points, no headers — just flowing prose
-- Mention the company's key strength AND one risk/concern
-- Use plain English, avoid jargon"""
+_STOCK_SYSTEM = """You are Artha, a concise Indian stock market analyst writing for retail investors.
+
+Your input is a dense signal block covering 10 dimensions of the stock — action tag, valuation, quality, growth (3Y + YoY), balance sheet, ownership dynamics (FII/DII/promoter + pledge), technicals, per-layer score breakdown, analyst target and red flags. You will receive this data grouped by bucket with numeric values already formatted.
+
+RULES
+- Write exactly 2-3 short sentences (max 65 words total).
+- Be specific — cite actual numbers from the data, not hand-wavy adjectives.
+- Pick the 3-4 MOST MATERIAL facts across the buckets. Do not list one per bucket.
+- Lead with the action-tag narrative if the confidence is high; otherwise lead with the strongest fundamental signal.
+- Always mention ONE clear risk or counter-signal (red flag, pledge, FII selling, debt trend, momentum weakness, 52W near high, etc.). Never all-positive.
+- No disclaimers, no "NFA", no "do your own research", no "consult an advisor".
+- No bullet points, no headers, no markdown — flowing prose only.
+- Plain English. Acronyms ROE/ROCE/FCF/FII/DII/PE are fine."""
+
+
+def _fmt_pct(value: object, *, decimals: int = 1) -> str | None:
+    """Format a raw number as a percent string. Handles both decimal
+    (0.234 → "23.4%") and already-percentage (23.4 → "23.4%") inputs."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if abs(f) < 2:
+        # Assume it's a decimal fraction.
+        f *= 100
+    return f"{f:.{decimals}f}%"
+
+
+def _fmt_cr(value: object) -> str | None:
+    """Format an INR crore value."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if abs(f) >= 1e5:
+        return f"₹{f / 1e5:.1f}L Cr"
+    return f"₹{f:,.0f} Cr"
+
+
+def _fmt_num(value: object, *, decimals: int = 1, suffix: str = "") -> str | None:
+    if value is None:
+        return None
+    try:
+        return f"{float(value):.{decimals}f}{suffix}"
+    except (TypeError, ValueError):
+        return None
 
 
 def _build_stock_prompt(stock_data: dict) -> str:
-    """Build a prompt from stock data dict."""
-    parts = [f"Write a brief investment narrative for {stock_data.get('display_name', stock_data.get('symbol', 'this company'))}."]
-    parts.append("Key data:")
+    """Build a multi-bucket prompt from the full stock snapshot.
 
-    _fields = [
-        ("sector", "Sector"),
-        ("pe_ratio", "PE"),
-        ("price_to_book", "P/B"),
-        ("roe", "ROE"),
-        ("roce", "ROCE"),
-        ("operating_margins", "Operating Margin"),
-        ("debt_to_equity", "D/E"),
-        ("market_cap", "Market Cap (Cr)"),
-        ("revenue_growth", "Revenue Growth YoY"),
-        ("earnings_growth", "Earnings Growth YoY"),
-        ("compounded_sales_growth_3y", "Revenue CAGR 3Y"),
-        ("compounded_profit_growth_3y", "Profit CAGR 3Y"),
-        ("dividend_yield", "Dividend Yield"),
-        ("score", "EconAtlas Score (0-100)"),
-    ]
-    for key, label in _fields:
-        v = stock_data.get(key)
-        if v is not None:
-            if key == "operating_margins" and isinstance(v, (int, float)) and abs(v) < 1:
-                v = f"{v * 100:.1f}%"
-            elif key == "revenue_growth" and isinstance(v, (int, float)) and abs(v) < 2:
-                v = f"{v * 100:.1f}%"
-            elif key == "earnings_growth" and isinstance(v, (int, float)) and abs(v) < 2:
-                v = f"{v * 100:.1f}%"
-            elif key in ("roe", "roce") and isinstance(v, (int, float)):
-                v = f"{v:.1f}%"
-            elif key == "market_cap" and isinstance(v, (int, float)):
-                v = f"₹{v:,.0f} Cr"
-            parts.append(f"- {label}: {v}")
+    Emits ten grouped buckets — Artha is instructed to pick the 3-4
+    most material facts across them, not one per bucket. Missing
+    fields are silently dropped so the prompt length scales with
+    data availability.
+    """
+    d = stock_data
+    name = d.get("display_name") or d.get("symbol") or "this company"
+    parts: list[str] = [f"Write a brief investment narrative for {name}."]
+    parts.append("")
+    parts.append("Sector: " + (d.get("sector") or "Unknown"))
 
-    # Tags context
-    tags = stock_data.get("tags_v2")
-    if tags and isinstance(tags, list):
-        tag_names = [t.get("tag", "") if isinstance(t, dict) else str(t) for t in tags[:5]]
-        if tag_names:
-            parts.append(f"- Tags: {', '.join(tag_names)}")
+    def _add_bucket(label: str, fields: list[tuple[str, str | None]]) -> None:
+        rendered = [f"{lbl}={val}" for lbl, val in fields if val is not None and val != "None"]
+        if rendered:
+            parts.append(f"{label}: " + ", ".join(rendered))
 
-    # Growth ranges
-    gr = stock_data.get("growth_ranges")
-    if gr and isinstance(gr, dict):
+    # ── 1. Action tag + confidence ─────────────────────────────
+    _add_bucket("Action", [
+        ("tag", d.get("action_tag")),
+        ("confidence", d.get("score_confidence")),
+        ("lynch", d.get("lynch_classification")),
+        ("reasoning", str(d.get("action_tag_reasoning") or "")[:140] or None),
+    ])
+
+    # ── 2. Valuation ───────────────────────────────────────────
+    target = d.get("analyst_target_mean")
+    last = d.get("last_price")
+    upside = None
+    try:
+        if target is not None and last is not None and float(last) > 0:
+            upside = (float(target) - float(last)) / float(last) * 100
+    except (TypeError, ValueError):
+        pass
+    _add_bucket("Valuation", [
+        ("PE", _fmt_num(d.get("pe_ratio"), decimals=1, suffix="x")),
+        ("P/B", _fmt_num(d.get("price_to_book"), decimals=1, suffix="x")),
+        ("upside_vs_target",
+         f"{upside:+.1f}%" if upside is not None else None),
+        ("dividend_yield", _fmt_pct(d.get("dividend_yield"))),
+    ])
+
+    # ── 3. Quality / returns on capital ────────────────────────
+    _add_bucket("Quality", [
+        ("ROE", _fmt_pct(d.get("roe"))),
+        ("ROCE", _fmt_pct(d.get("roce"))),
+        ("gross_margin", _fmt_pct(d.get("gross_margins"))),
+        ("operating_margin", _fmt_pct(d.get("operating_margins"))),
+        ("profit_margin", _fmt_pct(d.get("profit_margins"))),
+    ])
+
+    # ── 4. Growth (3Y + YoY) ───────────────────────────────────
+    _add_bucket("Growth", [
+        ("revenue_cagr_3y", _fmt_pct(d.get("compounded_sales_growth_3y"))),
+        ("profit_cagr_3y", _fmt_pct(d.get("compounded_profit_growth_3y"))),
+        ("sales_yoy", _fmt_pct(d.get("sales_growth_yoy") or d.get("revenue_growth"))),
+        ("profit_yoy", _fmt_pct(d.get("profit_growth_yoy") or d.get("earnings_growth"))),
+    ])
+
+    # ── 5. Balance sheet + cash ────────────────────────────────
+    _add_bucket("Balance sheet", [
+        ("D/E", _fmt_num(d.get("debt_to_equity"), decimals=2)),
+        ("debt_direction", d.get("debt_direction")),
+        ("total_debt", _fmt_cr(d.get("total_debt"))),
+        ("total_cash", _fmt_cr(d.get("total_cash"))),
+        ("FCF", _fmt_cr(d.get("free_cash_flow"))),
+        ("payout_ratio", _fmt_pct(d.get("payout_ratio"))),
+        ("market_cap", _fmt_cr(d.get("market_cap"))),
+    ])
+
+    # ── 6. Ownership dynamics ──────────────────────────────────
+    _add_bucket("Ownership", [
+        ("promoter", _fmt_pct(d.get("promoter_holding"))),
+        ("promoter_change", _fmt_pct(d.get("promoter_holding_change"))),
+        ("pledged_pct", _fmt_pct(d.get("pledged_promoter_pct"))),
+        ("FII", _fmt_pct(d.get("fii_holding"))),
+        ("FII_change", _fmt_pct(d.get("fii_holding_change"))),
+        ("DII", _fmt_pct(d.get("dii_holding"))),
+        ("DII_change", _fmt_pct(d.get("dii_holding_change"))),
+    ])
+
+    # ── 7. Technicals ──────────────────────────────────────────
+    high52 = d.get("high_52w")
+    low52 = d.get("low_52w")
+    pos_52w = None
+    try:
+        if high52 and low52 and last is not None and float(high52) > float(low52):
+            pos_52w = (float(last) - float(low52)) / (float(high52) - float(low52)) * 100
+    except (TypeError, ValueError):
+        pass
+    _add_bucket("Technicals", [
+        ("trend", d.get("trend_alignment")),
+        ("breakout", d.get("breakout_signal")),
+        ("beta", _fmt_num(d.get("beta"), decimals=2)),
+        ("52w_position",
+         f"{pos_52w:.0f}% of range" if pos_52w is not None else None),
+        ("risk_reward", d.get("risk_reward_tag")),
+    ])
+
+    # ── 8. Score layer breakdown ───────────────────────────────
+    _add_bucket("Score layers (0-100)", [
+        ("overall", _fmt_num(d.get("score"), decimals=0)),
+        ("quality", _fmt_num(d.get("score_quality"), decimals=0)),
+        ("valuation", _fmt_num(d.get("score_valuation"), decimals=0)),
+        ("growth", _fmt_num(d.get("score_growth"), decimals=0)),
+        ("momentum", _fmt_num(d.get("score_momentum"), decimals=0)),
+        ("smart_money", _fmt_num(d.get("score_smart_money") or d.get("score_institutional"), decimals=0)),
+        ("risk", _fmt_num(d.get("score_risk"), decimals=0)),
+        ("earnings_quality", _fmt_num(d.get("score_earnings_quality"), decimals=0)),
+        ("financial_health", _fmt_num(d.get("score_financial_health"), decimals=0)),
+        ("liquidity", _fmt_num(d.get("score_liquidity"), decimals=0)),
+    ])
+
+    # ── 9. Historical growth ranges (3Y/5Y/10Y) ────────────────
+    gr = d.get("growth_ranges")
+    if isinstance(gr, dict):
+        gr_parts: list[str] = []
         for gr_key, gr_label in [
-            ("compounded_sales_growth", "Revenue CAGR"),
-            ("compounded_profit_growth", "Profit CAGR"),
-            ("return_on_equity", "ROE History"),
+            ("compounded_sales_growth", "sales"),
+            ("compounded_profit_growth", "profit"),
+            ("return_on_equity", "ROE"),
         ]:
-            gr_data = gr.get(gr_key)
-            if gr_data and isinstance(gr_data, dict):
-                range_parts = []
-                for period in ["10y", "5y", "3y"]:
-                    pv = gr_data.get(period)
+            gd = gr.get(gr_key)
+            if isinstance(gd, dict):
+                periods = []
+                for period in ("10y", "5y", "3y"):
+                    pv = gd.get(period)
                     if pv is not None:
-                        range_parts.append(f"{period.upper()}: {pv}%")
-                if range_parts:
-                    parts.append(f"- {gr_label}: {', '.join(range_parts)}")
+                        periods.append(f"{period.upper()}:{pv}%")
+                if periods:
+                    gr_parts.append(f"{gr_label}({', '.join(periods)})")
+        if gr_parts:
+            parts.append("Growth history: " + " | ".join(gr_parts))
+
+    # ── 10. Tags + red flags ───────────────────────────────────
+    tags = d.get("tags_v2")
+    if isinstance(tags, list):
+        tag_names: list[str] = []
+        for t in tags[:8]:
+            if isinstance(t, dict):
+                tg = t.get("tag")
+                if tg:
+                    tag_names.append(str(tg))
+            elif isinstance(t, str):
+                tag_names.append(t)
+        if tag_names:
+            parts.append("Tags: " + ", ".join(tag_names))
+
+    # Red flags are embedded in tags_v2 as category='risk' entries
+    # with severity='negative'. Extract and surface them separately
+    # so the LLM's "one risk/counter-signal" rule has explicit
+    # material to lean on.
+    if isinstance(tags, list):
+        risk_names: list[str] = []
+        for t in tags:
+            if not isinstance(t, dict):
+                continue
+            if str(t.get("category", "")).lower() != "risk":
+                continue
+            if str(t.get("severity", "")).lower() != "negative":
+                continue
+            tg = t.get("tag")
+            if tg:
+                risk_names.append(str(tg))
+        if risk_names:
+            parts.append("Red flags: " + ", ".join(risk_names[:5]))
 
     return "\n".join(parts)
 
@@ -246,10 +396,21 @@ async def generate_stock_narrative(stock_data: dict) -> str | None:
 
     Returns the narrative text, or None if AI is unavailable.
     Uses caching to avoid redundant calls for the same stock data.
+
+    Prompt versioning: the in-memory cache key is prefixed with a
+    version tag so changing the prompt bucket set automatically
+    invalidates every in-process cache entry. Existing DB-cached
+    narratives are left alone on purpose — we let the 24-hour TTL
+    in get_stock_story expire them naturally so rate-limited LLM
+    calls spread out as users browse instead of spiking.
     """
+    # Bump this whenever the bucket set / field list in
+    # _build_stock_prompt changes materially.
+    _PROMPT_VERSION = "v2-10buckets"
+
     symbol = stock_data.get("symbol", "")
     score = stock_data.get("score")
-    data_hash = f"{symbol}:{score}"
+    data_hash = f"{_PROMPT_VERSION}:{symbol}:{score}"
     ck = _cache_key("stock_narrative", data_hash)
 
     cached = _check_cache(ck)
@@ -257,7 +418,7 @@ async def generate_stock_narrative(stock_data: dict) -> str | None:
         return cached
 
     prompt = _build_stock_prompt(stock_data)
-    result = await _call_llm(_STOCK_SYSTEM, prompt, max_tokens=150)
+    result = await _call_llm(_STOCK_SYSTEM, prompt, max_tokens=200)
     if result:
         _set_cache(ck, result)
     return result

@@ -4626,21 +4626,52 @@ async def get_mf_sparklines(*, scheme_codes: list[str], days: int = 7, max_point
 # ---------------------------------------------------------------------------
 
 async def get_stock_story(*, symbol: str) -> dict | None:
-    """Build a narrative story for a stock: verdict, tags, score changes."""
+    """Build a narrative story for a stock: verdict, tags, score changes.
+
+    Loads the full signal set that `_build_stock_prompt` consumes so
+    Artha's narrative is computed over all 10 buckets (action,
+    valuation, quality, growth, balance sheet, ownership, technicals,
+    score layers, growth history, tags/red flags).
+    """
     pool = await get_pool()
     row = await pool.fetchrow(
         f"""
-        SELECT symbol, display_name, sector, score,
-               score_quality, score_valuation, score_growth,
-               score_momentum, score_institutional, score_risk,
-               score_breakdown, tags_v2,
-               pe_ratio, price_to_book, roe, roce,
-               operating_margins, profit_margins,
-               debt_to_equity, market_cap,
-               revenue_growth, earnings_growth,
-               compounded_sales_growth_3y, compounded_profit_growth_3y,
-               dividend_yield, growth_ranges,
-               ai_narrative, ai_narrative_at
+        SELECT
+            -- Identity
+            symbol, display_name, sector,
+            -- Action + tags
+            action_tag, action_tag_reasoning,
+            score_confidence, lynch_classification,
+            tags_v2,
+            -- Score layers
+            score, score_quality, score_valuation, score_growth,
+            score_momentum, score_institutional, score_risk,
+            score_smart_money, score_earnings_quality,
+            score_financial_health, score_liquidity,
+            score_breakdown,
+            -- Valuation
+            pe_ratio, price_to_book, last_price, analyst_target_mean,
+            dividend_yield,
+            -- Quality
+            roe, roce, gross_margins, operating_margins, profit_margins,
+            -- Growth
+            revenue_growth, earnings_growth,
+            compounded_sales_growth_3y, compounded_profit_growth_3y,
+            sales_growth_yoy, profit_growth_yoy,
+            growth_ranges,
+            -- Balance sheet + cash
+            debt_to_equity, debt_direction, total_debt, total_cash,
+            free_cash_flow, payout_ratio, market_cap,
+            -- Ownership
+            promoter_holding, promoter_holding_change,
+            pledged_promoter_pct,
+            fii_holding, fii_holding_change,
+            dii_holding, dii_holding_change,
+            -- Technicals
+            trend_alignment, breakout_signal, beta,
+            high_52w, low_52w, risk_reward_tag,
+            -- Narrative cache
+            ai_narrative, ai_narrative_at
         FROM {STOCK_TABLE}
         WHERE symbol = $1
         """,
