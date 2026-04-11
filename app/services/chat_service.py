@@ -724,8 +724,9 @@ At the very end of every response, append exactly 5 follow-up suggestions in thi
 - **No instructional verbs** as starters: Ask, Check, Get, Inquire, See, Show me how, Provide, Retrieve, Fetch, Calculate, Run, Analyse, Compute.
 - **Mix of forms — this is important:**
   * ~3 of 5 can be questions ("How did HDFC Bank do this week?")
-  * ~2 of 5 should be **statements or commands** the user would actually type ("Add TCS to my watchlist", "Show me safer alternatives", "Explain this in simpler words", "Tell me the risks", "Compare with its peers", "Give me a beginner-friendly summary")
+  * ~2 of 5 should be **read-only statements** the user would actually type ("Show me safer alternatives", "Explain this in simpler words", "Tell me the risks", "Compare with its peers", "Give me a beginner-friendly summary")
   * Never 5 question marks in a row — that feels like a quiz.
+- **NO actionable-mutation statements.** You do NOT have tools to add/remove watchlist items, place orders, modify portfolios, set alerts, create SIPs, or change user settings. Do NOT suggest "Add this to my watchlist", "Set an alert for X", "Buy 100 shares", "Start my SIP" — those imply an action the backend cannot execute. Stick to read-only statements ("Tell me…", "Show me…", "Explain…", "Compare…", "Give me…").
 - **Date awareness:** when relevant, anchor to today's session — "How did it close today?", "What's the end-of-week picture?" on Friday, "What's the setup for this week?" on Monday. If the user message was about an upcoming event (RBI policy, Fed meeting, earnings), reference the date naturally.
 - **Tax / FY awareness:** in late March, lean into "Is there still time to save tax with ELSS?", "What's my 80C status?". In early April, "What should I do for the new financial year?". In late July, "Help me with ITR filing".
 - **No acronyms as the main phrasing.** Say "price-to-earnings" not "PE", "large company" not "large cap" (for the first mention in a suggestion). Short ones already familiar to beginners (SIP, IPO, RBI, US, EV) are fine.
@@ -737,8 +738,8 @@ At the very end of every response, append exactly 5 follow-up suggestions in thi
 - "Tell me the risks of buying now" (statement, beginner)
 - "What did analysts say recently?" (question, easy)
 - "Show me safer alternatives in the same sector" (statement, beginner)
-- "Add this to my watchlist" (statement, actionable)
 - "Explain it in simpler words" (statement, beginner)
+- "Give me a beginner-friendly summary" (statement, beginner)
 - "Is it still a good buy this week?" (question, date-aware)
 
 **Bad examples:**
@@ -747,6 +748,9 @@ At the very end of every response, append exactly 5 follow-up suggestions in thi
 - "Analyse the forward PE multiple and EV/EBITDA of TCS versus large-cap IT peers over 5y" (jargon + too long)
 - "What is the revenue CAGR?" (jargon acronym)
 - "How much would ₹5000 monthly at 12% become in 10 years?" (numeric target)
+- "Add this to my watchlist" (mutation action — backend does not support)
+- "Set a price alert for ₹200" (mutation action — backend does not support)
+- "Buy 100 shares of TCS" (trading action — backend does not support)
 """
 
 # ---------------------------------------------------------------------------
@@ -5754,8 +5758,8 @@ async def generate_greeting() -> dict:
 _suggestions_pool: dict[str, tuple[list[str], float]] = {}
 _POOL_FRESH_SECONDS = 3 * 60   # refresh pool every 3 minutes
 _POOL_MAX_AGE = 15 * 60        # pool older than 15 min is considered stale
-_POOL_SIZE = 60                # ~60 suggestions so consecutive picks rarely overlap
-_DEFAULT_PICK = 10             # number of suggestions returned per request
+_POOL_SIZE = 60                # 60 prompts in the rotating pool
+_DEFAULT_PICK = 20             # return 20 suggestions per request (was 10)
 
 # Per-pool "recently served" set so /chat/suggestions on "new chat" never
 # returns the exact items the previous call already showed. On each
@@ -5823,9 +5827,13 @@ def _pick_fresh(
     picks = random.sample(candidates, sample_size) if candidates else []
     recent.update(picks)
 
-    _MAX_RECENT = max(_DEFAULT_PICK * 3, int(len(pool_items) * 0.6))
+    # Keep the exclusion set smaller than (pool - 2*count) so back-to-back
+    # calls always have ≥ count+count buffer worth of fresh candidates.
+    # For pool=60 pick=20 this keeps ~20 items in recent, leaving 40 fresh.
+    pool_len = len(pool_items)
+    _MAX_RECENT = max(count, pool_len - 2 * count) if pool_len >= 3 * count else count
     if len(recent) > _MAX_RECENT:
-        keep = random.sample(list(recent), _DEFAULT_PICK)
+        keep = random.sample(list(recent), min(count, len(recent)))
         recent.clear()
         recent.update(keep)
 
@@ -6193,12 +6201,16 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
             "'Run…', 'Show me the breakdown of…'.\n"
             "- **Mix forms — NOT all 60 should be questions.** About "
             "70% can be questions. The other ~30% should be natural "
-            "statements or commands the user would actually type: "
-            "'Add Infosys to my watchlist', 'Explain this in simpler "
-            "words', 'Help me start with mutual funds', 'Tell me "
-            "safer options', 'Give me a beginner guide to SIP', "
-            "'I want to invest 5000 monthly'. Not 60 question marks "
-            "in a row.\n"
+            "read-only statements the user would actually type: "
+            "'Explain this in simpler words', 'Help me start with "
+            "mutual funds', 'Tell me safer options', 'Give me a "
+            "beginner guide to SIP', 'Show me safer alternatives'. "
+            "Not 60 question marks in a row.\n"
+            "- **NO mutation/action statements.** The backend is "
+            "read-only. NEVER suggest 'Add X to my watchlist', "
+            "'Set an alert', 'Place an order', 'Buy/Sell', 'Start "
+            "my SIP', 'Change my preferences'. Those imply actions "
+            "we cannot execute and will confuse the user.\n"
             "- **No numeric targets in the prompt text** ('1 crore in "
             "10 years', '₹5L profit', '52-week highs', '₹50k Cr market "
             "cap'). A beginner doesn't type numbers that precisely; "
@@ -6224,33 +6236,48 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
             "4. A global company or overseas event is fine only when "
             "the context clearly links it to Indian markets.\n"
             "5. TARGET AUDIENCE: **beginner to intermediate retail "
-            "investors only** — NO advanced fund-manager prompts. Mix "
-            "~60% beginner ('How do I start investing?', 'What are "
-            "mutual funds?', 'Is TCS a good buy?', 'Explain PE ratio') "
-            "and ~40% intermediate (live market questions anchored in "
-            "today's context). Skip anything that assumes knowledge of "
-            "Greeks, arbitrage, derivatives strategies, factor models, "
-            "or multi-step portfolio math.\n"
+            "investors**, NOT fund managers. Deliberate mix for "
+            "variety — don't just stack beginner basics:\n"
+            "   - ~35% beginner: 'How do I start investing?', 'What "
+            "are mutual funds?', 'Is TCS a good buy?', 'Explain PE "
+            "ratio', 'What's a large cap stock?'\n"
+            "   - ~55% intermediate: live market questions grounded "
+            "in today's data ('Why is Nifty IT down today?', 'How "
+            "did HDFC Bank react to the rate decision?', 'Which "
+            "renewable stocks are leading this month?', 'Compare "
+            "Parag Parikh and Axis Flexi Cap returns'). Intermediate "
+            "means: named entities from the live context, specific "
+            "angles, but still plain English.\n"
+            "   - ~10% slightly advanced but still retail-friendly "
+            "('Which sectors are FIIs buying into?', 'How does the "
+            "USD/INR move affect IT exporters?', 'What's the "
+            "dividend yield on Nifty Bank?'). No Greeks, arbitrage, "
+            "derivatives strategies, factor models, or multi-step "
+            "portfolio math.\n"
+            "   **Do NOT over-weight beginner — a pool dominated by "
+            "'How do I start investing?'-style prompts is boring.**\n"
             "6. **Coverage diversity — spread your 60 prompts across "
             "these categories so back-to-back new chats never feel "
             "samey**. Target distribution (approximate):\n"
-            "   - 12-15: live market / today's movers / session mood\n"
-            "   - 6-8: mutual funds, SIP planning, beginner fund picks\n"
-            "   - 5-7: specific Indian stocks (from the top gainers/"
-            "losers/watchlist lists above)\n"
-            "   - 4-6: sectors + themes (banks, IT, EV, renewable)\n"
-            "   - 3-5: IPOs (open, upcoming)\n"
-            "   - 3-5: macro / India economy (inflation, rates, GDP)\n"
-            "   - 3-5: commodities (gold, crude) and FX (USD/INR) "
-            "relevance to Indian investors\n"
+            "   - 12-14: live market / today's movers / session mood\n"
+            "   - 6-8: mutual funds, SIP planning, fund comparisons\n"
+            "   - 6-8: specific Indian stocks (from the top "
+            "gainers/losers/watchlist lists above) — name-checked\n"
+            "   - 5-7: sectors + themes (banks, IT, EV, renewable, "
+            "defence, infra)\n"
+            "   - 4-5: IPOs (open, upcoming) + post-listing reactions\n"
+            "   - 3-5: macro / India economy (inflation, rates, "
+            "GDP, RBI)\n"
+            "   - 3-5: commodities (gold, crude) and FX (USD/INR)\n"
             "   - 3-5: tax basics (LTCG, STCG, 80C, ELSS, ITR) — "
-            "ESPECIALLY if the session notes mention Mar/Apr/Jul "
+            "ESPECIALLY if session notes mention Mar/Apr/Jul "
             "deadlines\n"
             "   - 2-4: upcoming events from the 'Upcoming events' "
             "context list (RBI policy, Fed meetings, earnings)\n"
-            "   - 2-4: educational concepts ('What is PE?', 'How do "
-            "dividends work?', 'Active vs passive funds?')\n"
-            "   - 2-3: US / global market reactions relevant to India\n"
+            "   - 2-4: educational concepts ('What is PE?', 'How "
+            "do dividends work?', 'Active vs passive funds?')\n"
+            "   - 2-3: US / global market reactions relevant to "
+            "India\n"
             "7. **Weekday / date awareness** — when the session notes "
             "mention 'Friday', include end-of-week recap questions "
             "('How did the market close this week?'). When Monday, "
@@ -6279,7 +6306,7 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
             {"role": "user", "content": user_msg},
         ]
 
-        # max_tokens sized for 60 prompts × ~12 tokens/prompt + headroom
+        # max_tokens sized for 60 prompts × ~14 tokens/prompt + headroom
         result = await _call_llm_blocking(api_key, prompt_messages, max_tokens=1800)
         if not result:
             return _static_suggestions(ist_hour)
@@ -6342,70 +6369,133 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
 
 
 def _static_suggestions(ist_hour: int) -> list[str]:
-    """Beginner-friendly time-based fallback suggestions.
+    """Beginner-to-intermediate time-based fallback suggestions.
 
-    Short plain-English phrasings (5-8 words), no jargon acronyms in
-    primary text, conversational tone. Each bucket has 12 items so a
-    request for 10 never falls short.
+    Short plain-English phrasings (4-9 words), jargon-free primary
+    text, conversational tone. Each bucket has 24 items so a pick of
+    20 always has plenty to sample from.
+
+    Mix target per bucket (approximate): ~35% beginner basics,
+    ~55% intermediate live-market questions, ~10% slightly advanced
+    retail-friendly. No actionable mutation phrasing.
     """
     if ist_hour < 9:
         return [
+            # beginner
+            "How do I start investing?",
+            "What are large cap stocks?",
+            "Best beginner investment options",
+            "Explain PE ratio in simple words",
+            "Help me plan an SIP",
+            "Show me good mutual funds to start",
+            "What is a mutual fund SIP?",
+            # intermediate
             "How is the market looking today?",
             "What's the news for investors?",
-            "Any new IPOs this week?",
-            "Show me good mutual funds to start",
             "How did US markets close last night?",
-            "What stocks are in the news?",
-            "Help me plan an SIP",
+            "Any new IPOs this week?",
             "Which sectors look strong?",
+            "What stocks are in the news?",
             "Explain today's market mood",
-            "What are large cap stocks?",
-            "How do I start investing?",
-            "Best beginner investment options",
+            "What moved Nifty yesterday?",
+            "Top performing funds this year",
+            "Is gold a good investment right now?",
+            "Compare HDFC Bank with ICICI Bank",
+            "Which IT stocks are trending?",
+            "What's happening with Indian rupee?",
+            # slightly advanced retail
+            "Which sectors are FIIs buying into?",
+            "How do rate cuts affect bank stocks?",
+            "Explain what capital goods stocks are",
+            "Tell me the risks in small caps",
         ]
     if ist_hour < 15:
         return [
+            # beginner
+            "What are mutual funds in simple terms?",
+            "How do I start investing?",
+            "Help me plan an SIP",
+            "Explain PE ratio in simple words",
+            "Show me good mutual funds to start",
+            "What's a safe investment option?",
+            "Tell me the basics of stock investing",
+            # intermediate
             "How is Nifty doing right now?",
             "Which sectors are up today?",
             "Top gainers today",
-            "Show me good mutual funds to start",
+            "Top losers today",
             "What stocks are in the news?",
-            "Compare TCS and Infosys simply",
+            "Compare TCS and Infosys",
             "Any new IPOs this week?",
             "How are my watchlist stocks?",
-            "Help me plan an SIP",
-            "Explain PE ratio in simple words",
-            "What's a safe investment option?",
             "Which bank stocks are popular?",
+            "What's moving renewable stocks?",
+            "Best performing flexi cap funds",
+            "Show me strong small caps today",
+            "Which EV stocks are trending?",
+            # slightly advanced retail
+            "Which stocks hit new highs today?",
+            "How is the rupee moving today?",
+            "What's the FII flow looking like?",
+            "Any red flags in IT sector right now?",
         ]
     if ist_hour < 20:
         return [
+            # beginner
+            "How do I start investing?",
+            "What are large cap stocks?",
+            "Help me plan an SIP",
+            "Explain PE ratio in simple words",
+            "Show me good mutual funds to start",
+            "Best beginner investment options",
+            "How do I save tax on investments?",
+            # intermediate
             "How did the market close today?",
             "Top gainers and losers today",
             "How are my watchlist stocks?",
             "Any new IPOs this week?",
-            "Show me good mutual funds to start",
-            "Help me plan an SIP",
             "What stocks are in the news?",
-            "Explain what a large cap stock is",
-            "Best beginner investment options",
-            "How do I save tax on gains?",
-            "Which sectors are trending?",
-            "What should I read before investing?",
+            "Which sectors led the rally today?",
+            "How did banks perform today?",
+            "Compare TCS and Infosys",
+            "Explain today's market close",
+            "What drove Nifty today?",
+            "Strong mid cap funds for this year",
+            "Best performing sectors this month",
+            "How did the rupee close today?",
+            # slightly advanced retail
+            "Which IPOs are listing next week?",
+            "Tell me the risks of buying now",
+            "What's the tax angle on my gains?",
+            "Show me defensive stocks for now",
         ]
     return [
-        "Show me good mutual funds to start",
-        "Help me plan an SIP",
-        "Any new IPOs this week?",
-        "How is the US market doing?",
+        # beginner
+        "How do I start investing?",
         "What are large cap stocks?",
         "Best beginner investment options",
-        "How do I start investing?",
+        "Help me plan an SIP",
         "Explain PE ratio in simple words",
-        "What stocks are in the news?",
-        "Compare TCS and Infosys simply",
+        "Show me good mutual funds to start",
         "Asset allocation for a 30 year old",
+        # intermediate
+        "What stocks are in the news?",
+        "Compare TCS and Infosys",
+        "Any new IPOs this week?",
+        "How is the US market doing?",
         "What's the market mood right now?",
+        "Best performing flexi cap funds",
+        "Strong small cap mutual funds",
+        "How did banks perform this week?",
+        "Which IT stocks are moving?",
+        "What's driving gold prices?",
+        "Best dividend paying stocks",
+        "How are EV stocks performing?",
+        # slightly advanced retail
+        "Which sectors are FIIs buying into?",
+        "Tell me safer options than direct stocks",
+        "Explain the current market mood",
+        "How do rate changes affect mutual funds?",
     ]
 
 
@@ -6700,6 +6790,37 @@ async def stream_chat_response(
             except json.JSONDecodeError:
                 params = {}
             params = _canonicalize_tool_params(tool_name, params)
+            # Last-resort: if `stock_compare` still has no symbols after
+            # canonicalization, the LLM emitted `[TOOL:stock_compare:{}]`
+            # with empty params. Extract candidate tickers from the
+            # user's own message (ALL-CAPS tokens 2-12 chars) and inject
+            # them. Better to compare something than crash with "Missing
+            # 'symbols' list" and cascade into hallucination.
+            if (
+                tool_name == "stock_compare"
+                and not (params.get("symbols") or [])
+                and user_message
+            ):
+                candidates = re.findall(
+                    r"\b([A-Z][A-Z0-9&\-]{1,11})\b", user_message,
+                )
+                # Strip short stopwords that look like tickers
+                _STOPWORDS = {
+                    "I", "A", "AN", "THE", "AND", "OR", "VS", "VERSUS",
+                    "IS", "IT", "ON", "AT", "TO", "OF", "MY", "BUY",
+                    "NOW", "ALL", "HOW", "THIS", "THAT", "WITH",
+                    "FOR", "IN", "SO", "DO", "GO", "NO", "YES", "US",
+                    "UK", "EU", "ARE", "WAS", "WHY", "WHO", "WHAT",
+                    "PE", "IPO", "SIP", "FII", "DII", "RBI", "USD",
+                    "INR", "NAV", "NPS", "EMI", "GDP", "CPI", "ELSS",
+                }
+                tickers = [c for c in candidates if c not in _STOPWORDS]
+                if len(tickers) >= 2:
+                    params["symbols"] = tickers[:3]
+                    logger.info(
+                        "stock_compare: extracted symbols %s from user message",
+                        params["symbols"],
+                    )
             _tool_t0 = time.monotonic()
             result = await _execute_tool(
                 tool_name,
