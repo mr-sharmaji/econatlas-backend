@@ -3907,66 +3907,111 @@ _INTRADAY_CACHE: dict[str, tuple[float, list[dict]]] = {}
 
 
 async def _fetch_yahoo_intraday(symbol: str) -> list[dict]:
-    """Fetch 5-min ticks for today from Yahoo. Returns points or [].
+    """Fetch 30-min ticks for the last 2 sessions from Upstox.
 
-    Honours INTRADAY_YAHOO_PROXY_URL (Cloudflare Worker edge IPs) for
-    the same reason the backfill job does: direct Yahoo calls from a
-    datacenter IP frequently return empty / 429 and leave the 1D chart
-    blank. Falls back to the direct endpoint when the env var is not
-    set.
+    Historically this hit Yahoo v8/chart directly, but that endpoint
+    is hard-blocked (HTTP 429) on datacenter IPs, so every 1D chart
+    came back blank. Upstox's public `/v2/historical-candle` API is
+    designed for server-side use, returns clean OHLCV candles, and
+    works unauthenticated for market data.
+
+    Returns points or []. Kept under the same function name so the
+    existing cache wrapper in get_stock_intraday_history doesn't need
+    to change.
     """
-    import os
     import httpx
-    yahoo_symbol = f"{symbol}.NS"
-    proxy = os.environ.get("INTRADAY_YAHOO_PROXY_URL", "").strip()
-    if proxy:
-        base = proxy.rstrip("/") + "/v8/finance/chart"
-    else:
-        base = "https://query1.finance.yahoo.com/v8/finance/chart"
-    url = f"{base}/{yahoo_symbol}?interval=5m&range=2d"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        ),
-    }
+
+    # Load the Upstox instrument master on demand and memoise it.
+    instr_map = await _get_upstox_instrument_map()
+    key = instr_map.get(symbol.upper().strip())
+    if not key:
+        return []
+    from datetime import timedelta
+    today = datetime.now(timezone.utc).date()
+    from_date = (today - timedelta(days=3)).isoformat()
+    to_date = today.isoformat()
+    import urllib.parse as _up
+    url = (
+        "https://api.upstox.com/v2/historical-candle/"
+        f"{_up.quote(key, safe='')}"
+        f"/30minute/{to_date}/{from_date}"
+    )
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(url, headers=headers)
+        async with httpx.AsyncClient(timeout=6) as client:
+            resp = await client.get(
+                url, headers={"Accept": "application/json"},
+            )
             resp.raise_for_status()
             payload = resp.json()
     except Exception as exc:
-        logger.debug("yahoo intraday fetch failed for %s: %s", symbol, exc)
+        logger.debug("upstox intraday fetch failed for %s: %s", symbol, exc)
         return []
 
-    try:
-        result = payload.get("chart", {}).get("result") or []
-        if not result:
-            return []
-        r0 = result[0]
-        timestamps = r0.get("timestamp") or []
-        closes = (
-            r0.get("indicators", {})
-              .get("quote", [{}])[0]
-              .get("close") or []
-        )
-        from datetime import datetime, timezone
-        out: list[dict] = []
-        for ts, close in zip(timestamps, closes):
-            if close is None:
-                continue
-            out.append(
-                {
-                    "ts": datetime.fromtimestamp(int(ts), tz=timezone.utc),
-                    "price": float(close),
-                    "volume": None,
-                    "percent_change": None,
-                }
-            )
-        return out
-    except Exception as exc:
-        logger.debug("yahoo intraday parse failed for %s: %s", symbol, exc)
+    if not isinstance(payload, dict) or payload.get("status") != "success":
         return []
+    candles = (payload.get("data") or {}).get("candles") or []
+    out: list[dict] = []
+    for row in candles:
+        if not isinstance(row, list) or len(row) < 5:
+            continue
+        try:
+            ts_utc = datetime.fromisoformat(row[0]).astimezone(timezone.utc)
+            close = float(row[4])
+        except (TypeError, ValueError):
+            continue
+        out.append({
+            "ts": ts_utc,
+            "price": close,
+            "volume": int(row[5]) if len(row) > 5 and row[5] is not None else None,
+            "percent_change": None,
+        })
+    out.sort(key=lambda p: p["ts"])
+    return out
+
+
+# Memoised Upstox instrument master for the live fallback path.
+_UPSTOX_INSTR_CACHE: dict[str, str] = {}
+_UPSTOX_INSTR_CACHE_TS: float = 0.0
+
+
+async def _get_upstox_instrument_map() -> dict[str, str]:
+    """Return {NSE tradingsymbol → 'NSE_EQ|ISIN'}. Cached for 24h."""
+    global _UPSTOX_INSTR_CACHE, _UPSTOX_INSTR_CACHE_TS
+    import time as _time
+    now = _time.monotonic()
+    if _UPSTOX_INSTR_CACHE and now - _UPSTOX_INSTR_CACHE_TS < 24 * 3600:
+        return _UPSTOX_INSTR_CACHE
+    import gzip
+    import io
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                "https://assets.upstox.com/market-quote/instruments/"
+                "exchange/complete.csv.gz",
+            )
+            resp.raise_for_status()
+        raw = gzip.GzipFile(fileobj=io.BytesIO(resp.content)).read().decode(
+            "utf-8", errors="replace",
+        )
+    except Exception as exc:
+        logger.debug("upstox instrument master load failed: %s", exc)
+        return _UPSTOX_INSTR_CACHE
+    mapping: dict[str, str] = {}
+    for line in raw.splitlines()[1:]:
+        if not line.startswith('"NSE_EQ'):
+            continue
+        parts = line.split(",", 4)
+        if len(parts) < 4:
+            continue
+        key = parts[0].strip('"')
+        ts = parts[2].strip('"').upper()
+        if ts and key.startswith("NSE_EQ|"):
+            mapping.setdefault(ts, key)
+    if mapping:
+        _UPSTOX_INSTR_CACHE = mapping
+        _UPSTOX_INSTR_CACHE_TS = now
+    return mapping
 
 
 async def get_stock_intraday_history(*, symbol: str) -> list[dict]:

@@ -627,6 +627,147 @@ _BACKFILL_INTER_CALL_DELAY_SEC = 0.3
 _BACKFILL_TOTAL_TIMEOUT_SEC = 900  # 15 min hard ceiling
 
 
+# ── Upstox primary source ───────────────────────────────────────────
+#
+# Yahoo v8/chart is heavily rate-limited on datacenter IPs (every call
+# returns 429). Upstox's public historical-candle API is designed for
+# server-side use, works unauthenticated for market data, and returns
+# clean [ts, open, high, low, close, volume, oi] tuples.
+#
+# Flow:
+#   1. Once per run, download Upstox's instrument master CSV (~6 MB
+#      gzipped) and build a {NSE_symbol → "NSE_EQ|ISIN"} lookup.
+#   2. For each target stock, call
+#      /v2/historical-candle/<key>/30minute/<to>/<from> to fetch the
+#      previous N sessions.
+#   3. Parse candles → (symbol, ts_utc, close, volume) and insert via
+#      the same ON CONFLICT DO NOTHING path the Yahoo backfill used.
+#
+# Upstox imposes a ~100 req/minute soft limit per IP. At 0.8s inter-
+# call pacing we do ~75 req/min, comfortably under.
+_UPSTOX_INSTRUMENTS_CSV_URL = (
+    "https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz"
+)
+_UPSTOX_HISTORICAL_URL = (
+    "https://api.upstox.com/v2/historical-candle/{key}/30minute/{to_date}/{from_date}"
+)
+_UPSTOX_PER_CALL_TIMEOUT_SEC = 10
+_UPSTOX_INTER_CALL_DELAY_SEC = 0.8
+# Cache the instrument master for 24h inside the worker process —
+# rebuild takes ~5s and is only needed when Upstox adds new listings.
+_upstox_instrument_cache: dict[str, str] = {}
+_upstox_instrument_cache_ts: float = 0.0
+
+
+async def _load_upstox_instrument_map(
+    client: httpx.AsyncClient,
+) -> dict[str, str]:
+    """Return {NSE tradingsymbol → 'NSE_EQ|ISIN'} lookup. Cached 24h."""
+    global _upstox_instrument_cache, _upstox_instrument_cache_ts
+    now = time.monotonic()
+    if (
+        _upstox_instrument_cache
+        and now - _upstox_instrument_cache_ts < 24 * 3600
+    ):
+        return _upstox_instrument_cache
+    try:
+        resp = await client.get(
+            _UPSTOX_INSTRUMENTS_CSV_URL,
+            timeout=30,
+        )
+        resp.raise_for_status()
+    except Exception as exc:
+        logger.warning("upstox: instrument master download failed: %s", exc)
+        return _upstox_instrument_cache  # return whatever we had
+    import gzip
+    import io
+    try:
+        buf = io.BytesIO(resp.content)
+        with gzip.GzipFile(fileobj=buf) as gz:
+            raw = gz.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        logger.warning("upstox: instrument master decode failed: %s", exc)
+        return _upstox_instrument_cache
+    mapping: dict[str, str] = {}
+    # CSV header: "instrument_key","exchange_token","tradingsymbol",...
+    # We only want NSE_EQ equity rows.
+    for line in raw.splitlines()[1:]:
+        if not line.startswith('"NSE_EQ'):
+            continue
+        # Simple split — the fields we need don't contain commas.
+        parts = line.split(",", 4)
+        if len(parts) < 4:
+            continue
+        key = parts[0].strip('"')
+        ts = parts[2].strip('"').upper()
+        if ts and key.startswith("NSE_EQ|"):
+            mapping.setdefault(ts, key)
+    if mapping:
+        _upstox_instrument_cache = mapping
+        _upstox_instrument_cache_ts = now
+        logger.warning(
+            "upstox: instrument master loaded, %d NSE symbols mapped",
+            len(mapping),
+        )
+    return mapping
+
+
+async def _fetch_upstox_30m_for_symbol(
+    client: httpx.AsyncClient,
+    instrument_key: str,
+    from_date: str,
+    to_date: str,
+) -> list[tuple[datetime, float, int | None]]:
+    """Fetch Upstox 30-min candles for a symbol over a date range.
+
+    Returns [(ts_utc, close, volume), ...]. Empty on any error.
+    """
+    import urllib.parse as _up
+    encoded_key = _up.quote(instrument_key, safe="")
+    url = _UPSTOX_HISTORICAL_URL.format(
+        key=encoded_key,
+        to_date=to_date,
+        from_date=from_date,
+    )
+    try:
+        resp = await client.get(
+            url,
+            headers={"Accept": "application/json"},
+            timeout=_UPSTOX_PER_CALL_TIMEOUT_SEC,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:
+        logger.debug(
+            "upstox: historical fetch failed for %s: %s",
+            instrument_key, exc,
+        )
+        return []
+    if not isinstance(payload, dict) or payload.get("status") != "success":
+        return []
+    candles = (
+        (payload.get("data") or {}).get("candles") or []
+    )
+    out: list[tuple[datetime, float, int | None]] = []
+    for row in candles:
+        if not isinstance(row, list) or len(row) < 6:
+            continue
+        try:
+            ts_str = row[0]
+            close = float(row[4])
+            volume_raw = row[5]
+            volume = int(volume_raw) if volume_raw is not None else None
+        except (TypeError, ValueError, IndexError):
+            continue
+        try:
+            # ISO 8601 like "2026-04-10T15:15:00+05:30"
+            ts_utc = datetime.fromisoformat(ts_str).astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        out.append((ts_utc, close, volume))
+    return out
+
+
 def _yahoo_chart_base() -> str:
     """Return Yahoo v8/chart base URL, honouring the Cloudflare
     Worker proxy if INTRADAY_YAHOO_PROXY_URL is set.
@@ -714,7 +855,11 @@ async def _fetch_yahoo_5m_for_day(
 
 
 async def run_discover_stock_intraday_backfill() -> None:
-    """One-shot: backfill today's 5-min intraday ticks from Yahoo.
+    """One-shot: backfill the last 2 trading sessions of 30-min ticks.
+
+    Primary source is Upstox's `/v2/historical-candle` which works
+    from datacenter IPs without auth; Yahoo v8 is retained only as a
+    last-ditch fallback for symbols Upstox doesn't map.
 
     Safe to re-run: the ON CONFLICT (symbol, ts) DO NOTHING clause
     makes repeated executions idempotent. Does NOT touch any field
@@ -736,49 +881,98 @@ async def run_discover_stock_intraday_backfill() -> None:
         logger.warning("intraday_backfill: no symbols to backfill")
         return
 
+    # Date window for Upstox: today and the 2 previous calendar days.
+    # This always captures at least the most recent trading session.
+    today_ist = datetime.now(_IST).date()
+    from datetime import timedelta
+    from_date = (today_ist - timedelta(days=3)).isoformat()
+    to_date = today_ist.isoformat()
+
     logger.warning(
-        "intraday_backfill: fetching Yahoo 5m range=2d for %d symbols",
-        len(symbols),
+        "intraday_backfill: fetching Upstox 30m %s→%s for %d symbols",
+        from_date, to_date, len(symbols),
     )
 
-    sem = asyncio.Semaphore(_BACKFILL_CONCURRENCY)
     all_rows: list[tuple[str, datetime, float, int | None]] = []
     deadline = time.monotonic() + _BACKFILL_TOTAL_TIMEOUT_SEC
     fetched_ok = 0
     fetched_empty = 0
+    fetched_upstox = 0
+    fetched_yahoo = 0
 
     async with httpx.AsyncClient(
-        timeout=_BACKFILL_PER_SYMBOL_TIMEOUT_SEC,
+        timeout=_UPSTOX_PER_CALL_TIMEOUT_SEC,
         follow_redirects=True,
     ) as client:
+        instr_map = await _load_upstox_instrument_map(client)
+        if not instr_map:
+            logger.error(
+                "intraday_backfill: Upstox instrument master empty, "
+                "falling back to Yahoo for every symbol",
+            )
 
-        async def _worker(symbol: str) -> None:
-            nonlocal fetched_ok, fetched_empty
-            async with sem:
-                if time.monotonic() > deadline:
-                    return
-                points = await _fetch_yahoo_5m_for_day(client, symbol)
-                # Deliberate pacing to stay well under Yahoo's 2000/hr
-                # rate limit. Runs inside the semaphore so concurrency is
-                # bounded regardless.
-                await asyncio.sleep(_BACKFILL_INTER_CALL_DELAY_SEC)
+        missing_upstox: list[str] = []
+        for symbol in symbols:
+            if time.monotonic() > deadline:
+                logger.warning(
+                    "intraday_backfill: wall-clock deadline hit, "
+                    "processed=%d/%d",
+                    fetched_ok + fetched_empty, len(symbols),
+                )
+                break
+            key = instr_map.get(symbol)
+            if key is None:
+                missing_upstox.append(symbol)
+                continue
+            points = await _fetch_upstox_30m_for_symbol(
+                client, key, from_date, to_date,
+            )
+            await asyncio.sleep(_UPSTOX_INTER_CALL_DELAY_SEC)
             if points:
                 fetched_ok += 1
+                fetched_upstox += 1
                 for ts_utc, price, vol in points:
                     all_rows.append((symbol, ts_utc, price, vol))
             else:
                 fetched_empty += 1
+                missing_upstox.append(symbol)
 
-        await asyncio.gather(
-            *(_worker(s) for s in symbols),
-            return_exceptions=True,
+        logger.warning(
+            "intraday_backfill: Upstox pass done — upstox_ok=%d missing=%d",
+            fetched_upstox, len(missing_upstox),
         )
+
+        # Yahoo fallback for anything Upstox couldn't resolve. On a
+        # datacenter IP this will mostly 429, but it's harmless to try.
+        if missing_upstox and time.monotonic() < deadline:
+            sem = asyncio.Semaphore(_BACKFILL_CONCURRENCY)
+
+            async def _yahoo_worker(symbol: str) -> None:
+                nonlocal fetched_ok, fetched_empty, fetched_yahoo
+                async with sem:
+                    if time.monotonic() > deadline:
+                        return
+                    points = await _fetch_yahoo_5m_for_day(client, symbol)
+                    await asyncio.sleep(_BACKFILL_INTER_CALL_DELAY_SEC)
+                if points:
+                    fetched_ok += 1
+                    fetched_yahoo += 1
+                    for ts_utc, price, vol in points:
+                        all_rows.append((symbol, ts_utc, price, vol))
+                else:
+                    fetched_empty += 1
+
+            await asyncio.gather(
+                *(_yahoo_worker(s) for s in missing_upstox),
+                return_exceptions=True,
+            )
 
     fetch_elapsed = time.monotonic() - t0
     logger.warning(
         "intraday_backfill: fetch done in %.1fs — "
-        "ok=%d empty=%d total_ticks=%d",
-        fetch_elapsed, fetched_ok, fetched_empty, len(all_rows),
+        "upstox=%d yahoo=%d empty=%d total_ticks=%d",
+        fetch_elapsed, fetched_upstox, fetched_yahoo,
+        fetched_empty, len(all_rows),
     )
 
     if not all_rows:
