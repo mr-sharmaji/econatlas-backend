@@ -627,6 +627,21 @@ _BACKFILL_INTER_CALL_DELAY_SEC = 0.3
 _BACKFILL_TOTAL_TIMEOUT_SEC = 900  # 15 min hard ceiling
 
 
+def _yahoo_chart_base() -> str:
+    """Return Yahoo v8/chart base URL, honouring the Cloudflare
+    Worker proxy if INTRADAY_YAHOO_PROXY_URL is set.
+
+    Without the proxy the backfill runs into Yahoo's datacenter-IP
+    rate limits on cloud hosts and every fetch returns empty or 429.
+    The proxy base must expose a ``/v8/finance/chart`` sub-path
+    compatible with Yahoo's public API.
+    """
+    proxy = os.environ.get("INTRADAY_YAHOO_PROXY_URL", "").strip()
+    if proxy:
+        return proxy.rstrip("/") + "/v8/finance/chart"
+    return "https://query1.finance.yahoo.com/v8/finance/chart"
+
+
 async def _fetch_yahoo_5m_for_day(
     client: httpx.AsyncClient,
     symbol: str,
@@ -640,7 +655,7 @@ async def _fetch_yahoo_5m_for_day(
     # nothing (no active session today) while range=2d still has Friday's
     # 5-minute ticks. We keep the 5m granularity for dense chart data.
     url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS"
+        f"{_yahoo_chart_base()}/{symbol}.NS"
         "?interval=5m&range=2d"
     )
     try:
@@ -651,7 +666,14 @@ async def _fetch_yahoo_5m_for_day(
         )
         resp.raise_for_status()
         payload = resp.json()
-    except Exception:
+    except Exception as exc:
+        # Log first-N failures at WARNING so datacenter-IP rate limits
+        # surface in ops instead of silently yielding an empty backfill.
+        # The logger.debug inside the caller shows ALL errors at DEBUG.
+        logger.debug(
+            "intraday_backfill: Yahoo v8 fetch failed for %s: %s",
+            symbol, exc,
+        )
         return []
 
     try:
@@ -698,6 +720,9 @@ async def run_discover_stock_intraday_backfill() -> None:
     makes repeated executions idempotent. Does NOT touch any field
     on discover_stock_snapshots — only inserts into the ticks table.
     """
+    # Logged at WARNING so it's unlikely to be rotated out of the
+    # ring-buffer log cache before we can diagnose it via /ops/logs.
+    logger.warning("intraday_backfill: STARTED")
     t0 = time.monotonic()
     pool = await get_pool()
 
@@ -708,11 +733,11 @@ async def run_discover_stock_intraday_backfill() -> None:
     )
     symbols: list[str] = [r["symbol"] for r in rows if r["symbol"]]
     if not symbols:
-        logger.info("intraday_backfill: no symbols to backfill")
+        logger.warning("intraday_backfill: no symbols to backfill")
         return
 
-    logger.info(
-        "intraday_backfill: fetching Yahoo 5m range=1d for %d symbols",
+    logger.warning(
+        "intraday_backfill: fetching Yahoo 5m range=2d for %d symbols",
         len(symbols),
     )
 
@@ -750,14 +775,18 @@ async def run_discover_stock_intraday_backfill() -> None:
         )
 
     fetch_elapsed = time.monotonic() - t0
-    logger.info(
+    logger.warning(
         "intraday_backfill: fetch done in %.1fs — "
         "ok=%d empty=%d total_ticks=%d",
         fetch_elapsed, fetched_ok, fetched_empty, len(all_rows),
     )
 
     if not all_rows:
-        logger.warning("intraday_backfill: no ticks collected, nothing to insert")
+        logger.error(
+            "intraday_backfill: no ticks collected, nothing to insert — "
+            "ok=%d empty=%d (check Yahoo reachability / .NS suffix)",
+            fetched_ok, fetched_empty,
+        )
         return
 
     # Bulk INSERT with ON CONFLICT DO NOTHING. Chunk at 5k rows to keep
@@ -781,7 +810,7 @@ async def run_discover_stock_intraday_backfill() -> None:
         logger.exception("intraday_backfill: bulk insert failed")
         return
 
-    logger.info(
+    logger.warning(
         "intraday_backfill: DONE in %.1fs — symbols_ok=%d symbols_empty=%d "
         "rows_queued=%d (dedup on conflict)",
         time.monotonic() - t0, fetched_ok, fetched_empty, inserted,

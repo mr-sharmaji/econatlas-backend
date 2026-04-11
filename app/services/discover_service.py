@@ -3907,13 +3907,23 @@ _INTRADAY_CACHE: dict[str, tuple[float, list[dict]]] = {}
 
 
 async def _fetch_yahoo_intraday(symbol: str) -> list[dict]:
-    """Fetch 5-min ticks for today from Yahoo. Returns points or []."""
+    """Fetch 5-min ticks for today from Yahoo. Returns points or [].
+
+    Honours INTRADAY_YAHOO_PROXY_URL (Cloudflare Worker edge IPs) for
+    the same reason the backfill job does: direct Yahoo calls from a
+    datacenter IP frequently return empty / 429 and leave the 1D chart
+    blank. Falls back to the direct endpoint when the env var is not
+    set.
+    """
+    import os
     import httpx
     yahoo_symbol = f"{symbol}.NS"
-    url = (
-        f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}"
-        "?interval=5m&range=1d"
-    )
+    proxy = os.environ.get("INTRADAY_YAHOO_PROXY_URL", "").strip()
+    if proxy:
+        base = proxy.rstrip("/") + "/v8/finance/chart"
+    else:
+        base = "https://query1.finance.yahoo.com/v8/finance/chart"
+    url = f"{base}/{yahoo_symbol}?interval=5m&range=2d"
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
