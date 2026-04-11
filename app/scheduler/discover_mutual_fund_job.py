@@ -51,7 +51,8 @@ class DiscoverMutualFundScraper(BaseScraper):
         except (TypeError, ValueError):
             return None
 
-    def _normalize_risk(self, value: Any) -> str | None:
+    @staticmethod
+    def _normalize_risk(value: Any) -> str | None:
         text = str(value or "").strip().lower()
         if not text:
             return None
