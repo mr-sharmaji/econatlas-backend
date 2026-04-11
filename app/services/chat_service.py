@@ -708,25 +708,45 @@ The biggest risk for Nifty IT right now is the **AI-disruption narrative eating 
 ## FOLLOW-UP SUGGESTIONS (append at end of EVERY response)
 At the very end of every response, append exactly 5 follow-up suggestions in this format:
 [SUGGESTIONS]
-- Follow-up question 1
-- Follow-up question 2
-- Follow-up question 3
-- Follow-up question 4
-- Follow-up question 5
+- Follow-up 1
+- Follow-up 2
+- Follow-up 3
+- Follow-up 4
+- Follow-up 5
 [/SUGGESTIONS]
 
-Rules for suggestions:
-- MAXIMUM 12 WORDS each. Count them.
-- First-person — what the user would type, not what they should ask.
-- Specific — reference real names/numbers from the current response.
-- No instructional verbs ("Ask for", "Check", "Get", "Inquire about", "See", "Show me how").
-- Direct questions or commands only.
+**Audience — beginner to intermediate retail investors.** Never "fund manager" jargon. Vocabulary level: someone who already knows what a stock and a mutual fund are but isn't comfortable with terms like "forward PE multiple", "EPS CAGR", "sector rotation", or "institutional ownership delta". Write like you're suggesting what a friend would type.
 
-Good: "Compare TCS fundamentals with Infosys and HCL Tech"
-Good: "How has TCS performed over the last 3 years?"
-Good: "Is TCS trading above or below fair value?"
-Bad: "Ask for more details about TCS" (instructional)
-Bad: "Compare" (too terse)
+**Style rules:**
+- **Length: 4–9 words**, max 10. Anything longer reads as a research brief, not a chat suggestion.
+- **First-person.** "Is TCS a good buy right now?" not "User should ask…".
+- **Specific to the current answer.** Reference real names/numbers that appeared above — never generic "tell me more".
+- **No instructional verbs** as starters: Ask, Check, Get, Inquire, See, Show me how, Provide, Retrieve, Fetch, Calculate, Run, Analyse, Compute.
+- **Mix of forms — this is important:**
+  * ~3 of 5 can be questions ("How did HDFC Bank do this week?")
+  * ~2 of 5 should be **statements or commands** the user would actually type ("Add TCS to my watchlist", "Show me safer alternatives", "Explain this in simpler words", "Tell me the risks", "Compare with its peers", "Give me a beginner-friendly summary")
+  * Never 5 question marks in a row — that feels like a quiz.
+- **Date awareness:** when relevant, anchor to today's session — "How did it close today?", "What's the end-of-week picture?" on Friday, "What's the setup for this week?" on Monday. If the user message was about an upcoming event (RBI policy, Fed meeting, earnings), reference the date naturally.
+- **Tax / FY awareness:** in late March, lean into "Is there still time to save tax with ELSS?", "What's my 80C status?". In early April, "What should I do for the new financial year?". In late July, "Help me with ITR filing".
+- **No acronyms as the main phrasing.** Say "price-to-earnings" not "PE", "large company" not "large cap" (for the first mention in a suggestion). Short ones already familiar to beginners (SIP, IPO, RBI, US, EV) are fine.
+- **No dense numeric targets** in the suggestion text ("1 crore in 10 years", "₹5L profit", "52-week high"). Those go in the next actual turn.
+
+**Good examples:**
+- "How has TCS been performing lately?" (question, specific)
+- "Compare with Infosys and Wipro" (statement, specific)
+- "Tell me the risks of buying now" (statement, beginner)
+- "What did analysts say recently?" (question, easy)
+- "Show me safer alternatives in the same sector" (statement, beginner)
+- "Add this to my watchlist" (statement, actionable)
+- "Explain it in simpler words" (statement, beginner)
+- "Is it still a good buy this week?" (question, date-aware)
+
+**Bad examples:**
+- "Ask for more details about TCS" (instructional)
+- "Compare" (too terse)
+- "Analyse the forward PE multiple and EV/EBITDA of TCS versus large-cap IT peers over 5y" (jargon + too long)
+- "What is the revenue CAGR?" (jargon acronym)
+- "How much would ₹5000 monthly at 12% become in 10 years?" (numeric target)
 """
 
 # ---------------------------------------------------------------------------
@@ -6171,6 +6191,14 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
             "driving banks up?'. Avoid instructional verbs like 'Ask "
             "for…', 'Check…', 'Analyze…', 'Calculate…', 'Compute…', "
             "'Run…', 'Show me the breakdown of…'.\n"
+            "- **Mix forms — NOT all 60 should be questions.** About "
+            "70% can be questions. The other ~30% should be natural "
+            "statements or commands the user would actually type: "
+            "'Add Infosys to my watchlist', 'Explain this in simpler "
+            "words', 'Help me start with mutual funds', 'Tell me "
+            "safer options', 'Give me a beginner guide to SIP', "
+            "'I want to invest 5000 monthly'. Not 60 question marks "
+            "in a row.\n"
             "- **No numeric targets in the prompt text** ('1 crore in "
             "10 years', '₹5L profit', '52-week highs', '₹50k Cr market "
             "cap'). A beginner doesn't type numbers that precisely; "
@@ -6195,10 +6223,14 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
             "news. No crypto prompts by default.\n"
             "4. A global company or overseas event is fine only when "
             "the context clearly links it to Indian markets.\n"
-            "5. MIX difficulty: ~60% beginner ('How do I start "
-            "investing?', 'What are mutual funds?', 'Is TCS a good "
-            "buy?'), ~30% intermediate (live market questions), ~10% "
-            "advanced.\n"
+            "5. TARGET AUDIENCE: **beginner to intermediate retail "
+            "investors only** — NO advanced fund-manager prompts. Mix "
+            "~60% beginner ('How do I start investing?', 'What are "
+            "mutual funds?', 'Is TCS a good buy?', 'Explain PE ratio') "
+            "and ~40% intermediate (live market questions anchored in "
+            "today's context). Skip anything that assumes knowledge of "
+            "Greeks, arbitrage, derivatives strategies, factor models, "
+            "or multi-step portfolio math.\n"
             "6. **Coverage diversity — spread your 60 prompts across "
             "these categories so back-to-back new chats never feel "
             "samey**. Target distribution (approximate):\n"
