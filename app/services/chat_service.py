@@ -727,12 +727,13 @@ At the very end of every response, append exactly 5 follow-up suggestions in thi
   * ~2 of 5 should be **read-only statements** the user would actually type ("Show me safer alternatives", "Explain this in simpler words", "Tell me the risks", "Compare with its peers", "Give me a beginner-friendly summary")
   * Never 5 question marks in a row — that feels like a quiz.
 - **NO actionable-mutation statements.** You do NOT have tools to add/remove watchlist items, place orders, modify portfolios, set alerts, create SIPs, or change user settings. Do NOT suggest "Add this to my watchlist", "Set an alert for X", "Buy 100 shares", "Start my SIP" — those imply an action the backend cannot execute. Stick to read-only statements ("Tell me…", "Show me…", "Explain…", "Compare…", "Give me…").
+- **When your response ASKS the user a question, the [SUGGESTIONS] block must contain ANSWERS, not new questions.** If you end with "What's your time horizon?", the chips should be possible answers like "Short-term, under a year", "Medium, 1-3 years", "Long-term, 5+ years", "I'm not sure yet", "Around 10 years". If you ask "What's your risk appetite?", the chips should be "Conservative", "Balanced", "Aggressive", "I don't know — help me pick". The user should be able to tap an answer chip instead of typing. If you ask "Which sector interests you?", list 5 sector names. NEVER follow an asked question with more questions — that's a dead-end loop.
 - **Date awareness:** when relevant, anchor to today's session — "How did it close today?", "What's the end-of-week picture?" on Friday, "What's the setup for this week?" on Monday. If the user message was about an upcoming event (RBI policy, Fed meeting, earnings), reference the date naturally.
 - **Tax / FY awareness:** in late March, lean into "Is there still time to save tax with ELSS?", "What's my 80C status?". In early April, "What should I do for the new financial year?". In late July, "Help me with ITR filing".
 - **No acronyms as the main phrasing.** Say "price-to-earnings" not "PE", "large company" not "large cap" (for the first mention in a suggestion). Short ones already familiar to beginners (SIP, IPO, RBI, US, EV) are fine.
 - **No dense numeric targets** in the suggestion text ("1 crore in 10 years", "₹5L profit", "52-week high"). Those go in the next actual turn.
 
-**Good examples:**
+**Good examples (normal response — statement/question mix):**
 - "How has TCS been performing lately?" (question, specific)
 - "Compare with Infosys and Wipro" (statement, specific)
 - "Tell me the risks of buying now" (statement, beginner)
@@ -741,6 +742,29 @@ At the very end of every response, append exactly 5 follow-up suggestions in thi
 - "Explain it in simpler words" (statement, beginner)
 - "Give me a beginner-friendly summary" (statement, beginner)
 - "Is it still a good buy this week?" (question, date-aware)
+
+**Good examples (response ending in a question — chips are ANSWERS):**
+- Artha: "What's your time horizon for this money?"
+  [SUGGESTIONS]
+  - Short-term, under a year
+  - Medium, 1-3 years
+  - Long-term, 5+ years
+  - Around 10 years
+  - I'm not sure yet
+- Artha: "What's your risk appetite — conservative, balanced, or aggressive?"
+  [SUGGESTIONS]
+  - Conservative, prefer safety
+  - Balanced, some risk okay
+  - Aggressive, growth first
+  - I don't know yet, help me decide
+  - I can tolerate medium risk
+- Artha: "Which sector interests you most?"
+  [SUGGESTIONS]
+  - IT and tech stocks
+  - Banks and financials
+  - Renewable energy
+  - FMCG and consumer
+  - I'm not sure, surprise me
 
 **Bad examples:**
 - "Ask for more details about TCS" (instructional)
@@ -1146,6 +1170,111 @@ def _resolve_symbol_alias(symbol: str) -> str:
         return symbol
     upper = symbol.upper().strip()
     return _STOCK_SYMBOL_ALIASES.get(upper, upper)
+
+
+# Common Indian-company names (Title Case, lowercase for lookup) →
+# canonical NSE tickers. Used by the stock_compare empty-params
+# fallback in `_run_tool_markers` so "Compare TCS and Infosys and
+# Wipro" (Title Case names mixed with an all-caps ticker) still
+# resolves to the right symbols list.
+_COMPANY_NAME_TO_TICKER: dict[str, str] = {
+    "infosys": "INFY",
+    "wipro": "WIPRO",
+    "reliance": "RELIANCE",
+    "tcs": "TCS",
+    "hdfc": "HDFCBANK",
+    "icici": "ICICIBANK",
+    "axis": "AXISBANK",
+    "kotak": "KOTAKBANK",
+    "sbi": "SBIN",
+    "hcl": "HCLTECH",
+    "tech": "TECHM",
+    "techmahindra": "TECHM",
+    "mindtree": "LTIM",
+    "ltim": "LTIM",
+    "ltimindtree": "LTIM",
+    "larsen": "LT",
+    "maruti": "MARUTI",
+    "mahindra": "M&M",
+    "tata": "TATAMOTORS",
+    "tatamotors": "TATAMOTORS",
+    "tatasteel": "TATASTEEL",
+    "tatapower": "TATAPOWER",
+    "tataconsumer": "TATACONSUM",
+    "bajaj": "BAJFINANCE",
+    "bajajfinance": "BAJFINANCE",
+    "bajajfinserv": "BAJAJFINSV",
+    "bajajauto": "BAJAJ-AUTO",
+    "bharti": "BHARTIARTL",
+    "airtel": "BHARTIARTL",
+    "bhartiarte": "BHARTIARTL",
+    "bhartiairtel": "BHARTIARTL",
+    "asian": "ASIANPAINT",
+    "asianpaints": "ASIANPAINT",
+    "hindustan": "HINDUNILVR",
+    "hul": "HINDUNILVR",
+    "itc": "ITC",
+    "nestle": "NESTLEIND",
+    "nestleindia": "NESTLEIND",
+    "dmart": "DMART",
+    "avenue": "DMART",
+    "titan": "TITAN",
+    "dabur": "DABUR",
+    "godrej": "GODREJCP",
+    "ultratech": "ULTRACEMCO",
+    "shree": "SHREECEM",
+    "shreecement": "SHREECEM",
+    "ambuja": "AMBUJACEM",
+    "jsw": "JSWSTEEL",
+    "jindal": "JINDALSTEL",
+    "vedanta": "VEDL",
+    "hindalco": "HINDALCO",
+    "coal": "COALINDIA",
+    "ntpc": "NTPC",
+    "powergrid": "POWERGRID",
+    "ongc": "ONGC",
+    "bpcl": "BPCL",
+    "iocl": "IOC",
+    "gail": "GAIL",
+    "zomato": "ZOMATO",
+    "paytm": "PAYTM",
+    "nykaa": "NYKAA",
+    "policybazaar": "POLICYBZR",
+    "adani": "ADANIENT",
+    "adanient": "ADANIENT",
+    "adaniports": "ADANIPORTS",
+    "adanigreen": "ADANIGREEN",
+    "adanipower": "ADANIPOWER",
+    "waaree": "WAAREEENER",
+    "suzlon": "SUZLON",
+    "drreddy": "DRREDDY",
+    "sun": "SUNPHARMA",
+    "sunpharma": "SUNPHARMA",
+    "cipla": "CIPLA",
+    "apollo": "APOLLOHOSP",
+    "apollohospital": "APOLLOHOSP",
+    "divi": "DIVISLAB",
+    "divis": "DIVISLAB",
+    "divislab": "DIVISLAB",
+    "hexaware": "HEXT",
+    "persistent": "PERSISTENT",
+    "coforge": "COFORGE",
+    "mphasis": "MPHASIS",
+    "happiest": "HAPPSTMNDS",
+    "happsmnds": "HAPPSTMNDS",
+    "happiestminds": "HAPPSTMNDS",
+    "hal": "HAL",
+    "bel": "BEL",
+    "bdl": "BDL",
+    "mazagon": "MAZAGON",
+    "hindustanaero": "HAL",
+    "cdsl": "CDSL",
+    "bse": "BSE",
+    "mcx": "MCX",
+    "irctc": "IRCTC",
+    "irfc": "IRFC",
+    "rvnl": "RVNL",
+}
 
 
 _SECTOR_ALIASES = {
@@ -6793,18 +6922,17 @@ async def stream_chat_response(
             # Last-resort: if `stock_compare` still has no symbols after
             # canonicalization, the LLM emitted `[TOOL:stock_compare:{}]`
             # with empty params. Extract candidate tickers from the
-            # user's own message (ALL-CAPS tokens 2-12 chars) and inject
-            # them. Better to compare something than crash with "Missing
-            # 'symbols' list" and cascade into hallucination.
+            # user's own message using TWO passes: (1) ALL-CAPS tokens
+            # (TCS, INFY, HEXT), (2) Title-Case company names mapped
+            # to tickers via _COMPANY_NAME_TO_TICKER.
             if (
                 tool_name == "stock_compare"
                 and not (params.get("symbols") or [])
                 and user_message
             ):
-                candidates = re.findall(
+                allcaps = re.findall(
                     r"\b([A-Z][A-Z0-9&\-]{1,11})\b", user_message,
                 )
-                # Strip short stopwords that look like tickers
                 _STOPWORDS = {
                     "I", "A", "AN", "THE", "AND", "OR", "VS", "VERSUS",
                     "IS", "IT", "ON", "AT", "TO", "OF", "MY", "BUY",
@@ -6814,7 +6942,19 @@ async def stream_chat_response(
                     "PE", "IPO", "SIP", "FII", "DII", "RBI", "USD",
                     "INR", "NAV", "NPS", "EMI", "GDP", "CPI", "ELSS",
                 }
-                tickers = [c for c in candidates if c not in _STOPWORDS]
+                tickers: list[str] = [
+                    c for c in allcaps if c not in _STOPWORDS
+                ]
+                # Second pass: title-case words → ticker via the
+                # company name map. "Infosys" → INFY, "Wipro" → WIPRO,
+                # "Reliance" → RELIANCE, etc.
+                title_words = re.findall(
+                    r"\b([A-Z][a-z]{2,})\b", user_message,
+                )
+                for word in title_words:
+                    mapped = _COMPANY_NAME_TO_TICKER.get(word.lower())
+                    if mapped and mapped not in tickers:
+                        tickers.append(mapped)
                 if len(tickers) >= 2:
                     params["symbols"] = tickers[:3]
                     logger.info(

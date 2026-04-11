@@ -5202,6 +5202,7 @@ class DiscoverStockScraper(BaseScraper):
         on_batch: "Callable[[list[dict]], None] | None" = None,
         batch_size: int = 50,
         skip_symbols: set[str] | None = None,
+        priority_map: dict[str, float] | None = None,
     ) -> list[dict]:
         """Fetch quotes + fundamentals (sync I/O). Does NOT score.
 
@@ -5213,6 +5214,15 @@ class DiscoverStockScraper(BaseScraper):
         killed the job mid-run can pick up where it left off instead of
         redoing all 2000+ symbols. Run-progress is already persisted via
         the incremental upsert path, so skipping is safe.
+
+        If *priority_map* is provided (symbol → market_cap in Crores from
+        the existing snapshot), the universe is sorted by it in
+        descending order so large-caps are refreshed FIRST. Without
+        this, the default alphabetical order leaves popular names like
+        TCS / RELIANCE / HDFCBANK / INFY waiting 40+ minutes while
+        obscure "A*" symbols get processed first — which is exactly
+        why users were still seeing 3-week-old prices on big names
+        even though the job was "running".
         """
         universe = self._build_effective_universe()
         if skip_symbols:
@@ -5222,6 +5232,22 @@ class DiscoverStockScraper(BaseScraper):
                 "Discover stock: resume mode — skipping %d already-fresh symbols, "
                 "processing %d remaining",
                 skipped_count, len(universe),
+            )
+        if priority_map:
+            # Stable sort: large-caps first, unknown / tiny caps last.
+            # Symbols not in the map get priority 0 so they're processed
+            # after everything we know is large.
+            universe = tuple(
+                sorted(
+                    universe,
+                    key=lambda s: -(priority_map.get(s.nse_symbol) or 0.0),
+                )
+            )
+            logger.info(
+                "Discover stock: sorted %d symbols by market_cap DESC — "
+                "large-caps refresh first (top 5: %s)",
+                len(universe),
+                [s.nse_symbol for s in universe[:5]],
             )
         bulk_quotes, _ = self._fetch_latest_bhavcopy_quotes()
         raw_rows: list[dict] = []
@@ -5411,19 +5437,40 @@ async def run_discover_stock_job() -> None:
         # re-fetched.
         from app.core.database import get_pool as _get_pool_for_resume
         already_fresh: set[str] = set()
+        priority_map: dict[str, float] = {}
         try:
             _resume_pool = await _get_pool_for_resume()
             _resume_rows = await _resume_pool.fetch(
+                "SELECT symbol, market_cap FROM discover_stock_snapshots "
+                "WHERE market = 'IN'"
+            )
+            for r in _resume_rows:
+                sym = r.get("symbol")
+                if not sym:
+                    continue
+                if r.get("market_cap") is not None:
+                    try:
+                        priority_map[sym] = float(r["market_cap"])
+                    except (TypeError, ValueError):
+                        pass
+            # Now the resume set — only rows updated in the last 6h
+            _fresh_rows = await _resume_pool.fetch(
                 "SELECT symbol FROM discover_stock_snapshots "
                 "WHERE market = 'IN' "
                 "AND ingested_at > NOW() - INTERVAL '6 hours'"
             )
-            already_fresh = {r["symbol"] for r in _resume_rows if r.get("symbol")}
+            already_fresh = {r["symbol"] for r in _fresh_rows if r.get("symbol")}
             if already_fresh:
                 logger.info(
                     "Discover stock: resume — %d symbols already fresh in "
                     "last 6h, will skip",
                     len(already_fresh),
+                )
+            if priority_map:
+                logger.info(
+                    "Discover stock: loaded priority_map with %d entries "
+                    "(large-caps will refresh first)",
+                    len(priority_map),
                 )
         except Exception as _resume_exc:
             logger.warning(
@@ -5431,6 +5478,7 @@ async def run_discover_stock_job() -> None:
                 _resume_exc,
             )
             already_fresh = set()
+            priority_map = {}
 
         # 1. Pre-fetch volatility data from PostgreSQL (async).
         volatility_data = await discover_service.get_bulk_stock_volatility_data()
@@ -5474,6 +5522,7 @@ async def run_discover_stock_job() -> None:
                 on_batch=_incremental_upsert,
                 batch_size=_INCREMENTAL_BATCH_SIZE,
                 skip_symbols=already_fresh,
+                priority_map=priority_map,
             ),
         )
         fetch_elapsed = time_mod.time() - job_t0
