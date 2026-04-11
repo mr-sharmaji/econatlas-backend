@@ -4,7 +4,7 @@ import json
 import logging
 import math
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal
 
 from app.core.database import get_pool, parse_ts, record_to_dict
@@ -3916,6 +3916,58 @@ def _point_timestamp(point: dict) -> datetime | None:
     return ts
 
 
+async def _get_stock_previous_close(pool, symbol: str) -> float | None:
+    """Return the previous close implied by the latest stock snapshot."""
+    row = await pool.fetchrow(
+        f"""
+        SELECT last_price, point_change, percent_change
+        FROM {STOCK_TABLE}
+        WHERE symbol = $1
+        """,
+        symbol,
+    )
+    if row is None:
+        return None
+    snap = record_to_dict(row)
+    last_price = _to_float(snap.get("last_price"))
+    point_change = _to_float(snap.get("point_change"))
+    percent_change = _to_float(snap.get("percent_change"))
+    if last_price is None:
+        return None
+    if point_change is not None:
+        prev_close = last_price - point_change
+        return round(prev_close, 4) if prev_close > 0 else None
+    if percent_change not in (None, -100.0):
+        denom = 1 + (percent_change / 100.0)
+        if abs(denom) > 1e-9:
+            prev_close = last_price / denom
+            return round(prev_close, 4) if prev_close > 0 else None
+    return None
+
+
+def _prepend_previous_close_point(
+    points: list[dict],
+    *,
+    previous_close: float | None,
+) -> list[dict]:
+    """Prepend a synthetic previous-close baseline for 1D charts."""
+    if previous_close is None or not points:
+        return points
+    first_ts = _point_timestamp(points[0])
+    if first_ts is None:
+        return points
+    first_price = _to_float(points[0].get("price"))
+    if first_price is not None and abs(first_price - previous_close) < 1e-6:
+        return points
+    baseline_point = {
+        "ts": (first_ts - timedelta(minutes=1)).isoformat(),
+        "price": previous_close,
+        "volume": None,
+        "percent_change": 0.0,
+    }
+    return [baseline_point, *points]
+
+
 async def _fetch_yahoo_intraday(symbol: str) -> list[dict]:
     """Fetch 30-min ticks for the last 2 sessions from Upstox.
 
@@ -4114,6 +4166,11 @@ async def get_stock_intraday_history(*, symbol: str) -> list[dict]:
             point for point, ts in dated_points
             if ts.astimezone(_IST).date() == latest_date
         ]
+        previous_close = await _get_stock_previous_close(pool, key)
+        points = _prepend_previous_close_point(
+            points,
+            previous_close=previous_close,
+        )
 
     _INTRADAY_CACHE[key] = (now, points)
     # Bound the cache size to prevent unbounded growth.
