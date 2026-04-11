@@ -318,7 +318,7 @@ Available tools:
 - [TOOL:watchlist_analysis:{}] — Aggregated diagnostic view of the user's watchlist: avg PE, avg ROE, avg D/E, avg score, avg dividend yield + per-stock details. Use for "analyze my watchlist", "how's my portfolio".
 - [TOOL:watchlist_diversification:{}] — Sector/market-cap breakdown + concentration risk assessment (HIGH/MEDIUM/LOW). Use for "is my portfolio diversified", "am I too concentrated".
 - [TOOL:watchlist_alerts:{}] — Red flags across watchlist: high debt, promoter pledging, declining margins, negative FCF, 52w extremes. Use for "any risks in my portfolio", "what should I watch out for".
-- [TOOL:sip_calculator:{"mode":"reverse","goal_amount":10000000,"years":10,"annual_return_pct":12}] — SIP math. `mode:forward` → given monthly+years+return, computes projected corpus. `mode:reverse` → given goal+years+return, computes required monthly SIP. Also `step_up_pct` and `current_corpus`. Use for "how much SIP for 1 crore in 10 years".
+- [TOOL:sip_calculator:{"mode":"reverse","goal_amount":10000000,"years":10,"annual_return_pct":12}] — SIP math. **Mode selection is critical — read the user's wording carefully:** if they say "₹X monthly", "₹X per month", "SIP of ₹X", "invest ₹X every month" → use `mode:"forward"` with `monthly_amount:X` (computes future corpus). If they say "I want ₹X in N years", "goal of ₹X", "target corpus ₹X", "reach ₹1 crore" → use `mode:"reverse"` with `goal_amount:X` (computes required monthly SIP). **Never** pass a monthly amount as `goal_amount` — that produces nonsense like "₹22/month needed for ₹5,000 target". Also supports `step_up_pct` and `current_corpus`.
 - [TOOL:retirement_calculator:{"current_age":30,"retire_age":60,"current_corpus":500000,"monthly_expense":50000}] — Retirement plan math with 4% rule + inflation-adjusted corpus + age-based asset allocation. Use for "retirement planning", "am I retirement ready".
 - [TOOL:allocation_advisor:{"age":30,"risk_tolerance":"balanced","corpus":500000,"horizon_years":20}] — Recommended equity:debt:gold mix + product category suggestions. Use for "ideal asset allocation for a 30 year old", "how should I split my money".
 - [TOOL:historical_valuation:{"symbol":"TCS","metric":"pe","lookback":"5y"}] — Stock valuation relative to sector average. Use for "is HDFC Bank expensive relative to history".
@@ -422,6 +422,21 @@ ONLY use "I don't have that exact data" when:
 - You actually called the right tool and it returned empty, OR
 - No tool exists for the data (e.g. "what's my bank account balance?"), OR
 - The data is genuinely outside the Indian market domain.
+
+### 3b. AUTHORITATIVE DEFINITIONS — do NOT paraphrase these
+
+Some instruments are frequently hallucinated when there is no tool for them. When the user asks "what is X", use these exact descriptions (never invent alternative framings):
+
+- **Gift Nifty** — a derivative contract on the Nifty 50 that trades on the **NSE IX (NSE International Exchange)** in GIFT City, Gandhinagar. It runs for ~20 hours across two sessions (India pre-open and US overlap) and is the **leading indicator** most traders watch for how Indian markets will open. Formerly known as SGX Nifty (it shifted from the Singapore Exchange to NSE IX in July 2023). It is NOT a "custom index", NOT related to any "Gift Money platform".
+- **SGX Nifty** — legacy name for Gift Nifty (pre-July 2023). Same instrument, different exchange.
+- **Nifty 50** — flagship NSE large-cap index, 50 most-liquid Indian stocks across sectors.
+- **Sensex** — BSE 30-stock flagship index.
+- **India VIX** — NSE's volatility index derived from Nifty options; measures expected 30-day volatility.
+- **Bank Nifty / Nifty Bank** — NSE index of 12 most-liquid Indian banking stocks.
+- **FII** — Foreign Institutional Investors (overseas funds buying/selling Indian stocks).
+- **DII** — Domestic Institutional Investors (Indian mutual funds, insurers, banks).
+
+For any other instrument you aren't sure about, say so plainly instead of inventing a definition.
 
 ### 4. MULTI-TOOL SYNTHESIS for big-picture queries
 Big-picture questions (sector analysis, thematic plays, "what's driving X", "biggest risks in Y sector") DESERVE multiple tool calls chained together. Don't answer with one tool when three would give a complete picture.
@@ -1039,6 +1054,74 @@ def _get_sector_profile(sector: str | None) -> dict[str, Any] | None:
         if profile_key in key or key in profile_key:
             return _SECTOR_PROFILES[profile_key]
     return None
+
+
+# Common user-typed symbols → actual NSE ticker map. NSE renamed or
+# abbreviated several popular names and the LLM + users often use the
+# colloquial form. Normalizing here is better than failing through to
+# fuzzy fallback because the canonical symbol is known.
+_STOCK_SYMBOL_ALIASES: dict[str, str] = {
+    "ULTRATECH": "ULTRACEMCO",
+    "ULTRACEMENT": "ULTRACEMCO",
+    "HAPPY": "HAPPSTMNDS",
+    "HAPPIESTM": "HAPPSTMNDS",
+    "HAPPIESTMINDS": "HAPPSTMNDS",
+    "LT": "LT",
+    "LANDT": "LT",
+    "MARUTI": "MARUTI",
+    "BAJAJAUTO": "BAJAJ-AUTO",
+    "BAJAJFIN": "BAJFINANCE",
+    "BAJAJFINANCE": "BAJFINANCE",
+    "BAJAJFINSERV": "BAJAJFINSV",
+    "HDFC": "HDFCBANK",
+    "SBI": "SBIN",
+    "M_AND_M": "M&M",
+    "MAHINDRA": "M&M",
+    "ONGC": "ONGC",
+    "POWERGRID": "POWERGRID",
+    "RELIANCE": "RELIANCE",
+    "HEXAWARE": "HEXT",
+    "LARSEN": "LT",
+    "TATAMOTORS": "TATAMOTORS",
+    "TATAPOWER": "TATAPOWER",
+    "TATASTEEL": "TATASTEEL",
+    "TATACHEM": "TATACHEM",
+    "TATACONSUMER": "TATACONSUM",
+    "TATACONSUM": "TATACONSUM",
+    "BAJFINANCE": "BAJFINANCE",
+    "JSW": "JSWSTEEL",
+    "ADANIPORTS": "ADANIPORTS",
+    "ADANIPOWER": "ADANIPOWER",
+    "ADANIENT": "ADANIENT",
+    "ADANIGAS": "ATGL",
+    "BPCL": "BPCL",
+    "IOC": "IOC",
+    "GAIL": "GAIL",
+    "IOCL": "IOC",
+    "NTPC": "NTPC",
+    "COAL": "COALINDIA",
+    "COALINDIA": "COALINDIA",
+    "ITC": "ITC",
+    "ASIANPAINTS": "ASIANPAINT",
+    "ASIANPAINT": "ASIANPAINT",
+    "INDIGO": "INDIGO",
+    "DMART": "DMART",
+    "DIVIS": "DIVISLAB",
+    "DIVISLAB": "DIVISLAB",
+    "DRREDDY": "DRREDDY",
+    "CIPLA": "CIPLA",
+    "SUNPHARMA": "SUNPHARMA",
+    "APOLLO": "APOLLOHOSP",
+    "APOLLOHOSPITAL": "APOLLOHOSP",
+}
+
+
+def _resolve_symbol_alias(symbol: str) -> str:
+    """Map common colloquial tickers to their canonical NSE symbol."""
+    if not symbol:
+        return symbol
+    upper = symbol.upper().strip()
+    return _STOCK_SYMBOL_ALIASES.get(upper, upper)
 
 
 _SECTOR_ALIASES = {
@@ -1842,8 +1925,36 @@ def _canonicalize_tool_params(tool_name: str, params: dict[str, Any] | None) -> 
                 flags=re.IGNORECASE,
             )
         elif raw_symbols is None:
-            fallback_symbols = []
-            for key in ("symbol", "stock", "stock1", "stock2", "stock3"):
+            # The LLM sometimes uses alternate key names for the list
+            # (`tickers`, `stocks`, `names`, `items`) or the singular
+            # form (`symbol`, `stock`, `ticker`, `name`). Gather every
+            # string value under any of these keys so the tool can
+            # never fail with "Missing 'symbols' list" when the intent
+            # was clearly to compare.
+            fallback_symbols: list[str] = []
+            _ALT_LIST_KEYS = (
+                "tickers", "stocks", "names", "items",
+                "stock_list", "symbol_list",
+            )
+            for key in _ALT_LIST_KEYS:
+                value = normalized.get(key)
+                if isinstance(value, list):
+                    fallback_symbols.extend(
+                        v for v in value if isinstance(v, str)
+                    )
+                elif isinstance(value, str) and value.strip():
+                    fallback_symbols.extend(
+                        re.split(
+                            r"\s*(?:,|/| vs | versus | and )\s*",
+                            value,
+                            flags=re.IGNORECASE,
+                        )
+                    )
+            _ALT_SINGULAR_KEYS = (
+                "symbol", "stock", "ticker", "name",
+                "stock1", "stock2", "stock3", "a", "b", "c",
+            )
+            for key in _ALT_SINGULAR_KEYS:
                 value = normalized.get(key)
                 if isinstance(value, str) and value.strip():
                     fallback_symbols.extend(
@@ -2834,6 +2945,7 @@ async def _execute_tool(
             symbol = params.get("symbol", "").upper().strip()
             if not symbol:
                 return {"error": "No symbol provided"}
+            symbol = _resolve_symbol_alias(symbol)
             row = await pool.fetchrow(
                 "SELECT * FROM discover_stock_snapshots WHERE symbol = $1",
                 symbol,
@@ -4857,11 +4969,22 @@ async def _execute_tool(
             }
 
         elif tool_name == "watchlist_diversification":
-            # Sector/market-cap breakdown + concentration risk assessment.
+            # Sector + derived market-cap bucket breakdown. The snapshot
+            # table only stores raw `market_cap` (in Crores), so we bucket
+            # client-side. SEBI-style cutoffs:
+            #   large > 20,000 Cr, mid 5,000-20,000 Cr, small ≤ 5,000 Cr.
             device_id_param = params.get("device_id") or device_id
+            _MCAP_CATEGORY_SQL = (
+                "CASE "
+                "  WHEN dss.market_cap IS NULL THEN 'Unknown' "
+                "  WHEN dss.market_cap > 20000 THEN 'Large cap' "
+                "  WHEN dss.market_cap >= 5000 THEN 'Mid cap' "
+                "  ELSE 'Small cap' "
+                "END AS market_cap_category"
+            )
             rows = await pool.fetch(
-                """
-                SELECT dss.sector, dss.market_cap_category, dss.market_cap,
+                f"""
+                SELECT dss.sector, {_MCAP_CATEGORY_SQL}, dss.market_cap,
                        dss.symbol, dss.display_name
                 FROM device_watchlists w
                 JOIN discover_stock_snapshots dss ON dss.symbol = w.asset
@@ -4872,7 +4995,8 @@ async def _execute_tool(
             extra_rows = await _fetch_starred_stock_rows(
                 pool,
                 starred_items,
-                "sector, market_cap_category, market_cap, symbol, display_name",
+                f"sector, {_MCAP_CATEGORY_SQL.replace('dss.', '')}, "
+                "market_cap, symbol, display_name",
             )
             existing_symbols = {
                 str(r.get("symbol") or "").strip().upper() for r in rows if r.get("symbol")
@@ -5880,24 +6004,53 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
 
         system = (
             "You generate a POOL of exactly 30 short, diverse suggested "
-            "prompts for an Indian market AI chatbot called Artha. These "
-            "are questions a retail investor would type into the app. "
-            "\n\n"
-            "STRICT RULES:\n"
-            "1. Every prompt MUST reference REAL data from the live context "
-            "below. Never invent company names. Never use placeholders like "
-            "'XYZ', 'ABC', 'Company X', 'Stock A'. If you don't know a real "
-            "name, ask a generic market question instead.\n"
-            "2. Max 12 words per prompt. Conversational tone, no instructional "
-            "verbs like 'Ask for...' or 'Check...'. Write as if the user is "
-            "typing the question.\n"
-            "3. English only, first-person, no numbering, no bullets.\n"
-            "4. India-first mix only: Indian stocks, mutual funds, sectors, "
-            "IPOs, tax, macro, watchlist ideas, and India-linked global-news "
-            "reactions. Do NOT include crypto prompts by default.\n"
-            "5. Use a global company or overseas event only when the live "
-            "context clearly links it to Indian markets.\n"
-            "6. Output exactly 30 prompts, one per line. No headings."
+            "prompts for an Indian-market AI chatbot called Artha. These "
+            "are questions a NEW or CURIOUS retail investor would type "
+            "into the app — NOT a fund manager. Keep the vocabulary "
+            "deliberately simple and plain-English.\n\n"
+            "STYLE — keep prompts EASY to read:\n"
+            "- **Target length: 4 to 8 words.** Max 10. Anything longer is "
+            "too intimidating for a beginner.\n"
+            "- **No acronyms as the main phrasing.** Say 'institutional "
+            "investors' not 'FII', 'price-to-earnings' not 'PE ratio', "
+            "'index constituents' not 'Nifty IT heavyweights'. Short "
+            "acronyms (SIP, IPO, RBI, US, UK, EV) are fine because "
+            "beginners already use them.\n"
+            "- **Conversational, first-person.** 'How is the market "
+            "today?', 'Should I add TCS to my watchlist?', 'What's "
+            "driving banks up?'. Avoid instructional verbs like 'Ask "
+            "for…', 'Check…', 'Analyze…', 'Calculate…', 'Compute…', "
+            "'Run…', 'Show me the breakdown of…'.\n"
+            "- **No numeric targets in the prompt text** ('1 crore in "
+            "10 years', '₹5L profit', '52-week highs', '₹50k Cr market "
+            "cap'). A beginner doesn't type numbers that precisely; "
+            "those go in the follow-up turn.\n"
+            "- **No dense comparisons** ('Compare TCS vs Infosys vs "
+            "HCL on ROE and margins'). Use simple forms: 'Compare TCS "
+            "and Infosys', 'Which IT giant looks stronger?'.\n"
+            "- **Avoid jargon phrases**: 'auto-relax filter', "
+            "'percentile', 'trimmed mean', 'drawdown', 'rotation', "
+            "'concentration risk', 'breadth', 'beta'. Replace with "
+            "everyday language ('safest', 'most popular', 'what's up', "
+            "'good for first-time buyers').\n\n"
+            "CONTENT RULES:\n"
+            "1. Every prompt should draw on REAL data from the live "
+            "context below when naming an entity. Never invent company "
+            "names. Never use placeholders ('XYZ', 'ABC', 'Company X'). "
+            "If you can't reference a real name, ask a generic question "
+            "instead ('Which sectors are up today?').\n"
+            "2. English only, first-person, no numbering, no bullets.\n"
+            "3. India-first mix: Indian stocks, mutual funds, sectors, "
+            "IPOs, SIP planning, tax basics, and India-linked global "
+            "news. No crypto prompts by default.\n"
+            "4. A global company or overseas event is fine only when "
+            "the context clearly links it to Indian markets.\n"
+            "5. MIX difficulty: ~60% beginner ('How do I start "
+            "investing?', 'What are mutual funds?', 'Is TCS a good "
+            "buy?'), ~30% intermediate (live market questions), ~10% "
+            "advanced.\n"
+            "6. Output exactly 30 prompts, one per line. No headings, "
+            "no quotes, no numbering."
         )
         user_msg = (
             f"Live market context (use only these real names):\n{context_str}\n\n"
@@ -5919,24 +6072,37 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
             return _static_suggestions(ist_hour)
 
         raw_lines = [
-            line.strip().lstrip("0123456789.-) *•")
+            line.strip().lstrip("0123456789.-) *•").strip('"').strip("'")
             for line in result.strip().split("\n")
         ]
-        # Filter: non-empty, minimum length, and reject obvious placeholders
+        # Filter: non-empty, minimum length, reject placeholders + anything
+        # that violates the beginner-friendly style rules.
         placeholder_markers = (
             "xyz", "abc ", "company x", "company y", "stock a", "stock b",
             "<company>", "<stock>", "[company]", "[stock]", "placeholder",
+        )
+        forbidden_verb_prefixes = (
+            "ask for ", "check ", "analyze ", "calculate ", "compute ",
+            "run ", "retrieve ", "show me the breakdown ",
+            "give me the breakdown ",
         )
         cleaned: list[str] = []
         for line in raw_lines:
             if not line or len(line) < 6:
                 continue
             low = line.lower()
+            # Beginner-friendly length cap (10 words max).
+            if len(line.split()) > 10:
+                logger.debug("suggestions: filtered long line: %r", line)
+                continue
             if any(p in low for p in placeholder_markers):
                 logger.debug("suggestions: filtered placeholder line: %r", line)
                 continue
             if _CRYPTO_TOPIC_RE.search(low):
                 logger.debug("suggestions: filtered crypto line: %r", line)
+                continue
+            if any(low.startswith(v) for v in forbidden_verb_prefixes):
+                logger.debug("suggestions: filtered instructional line: %r", line)
                 continue
             cleaned.append(line)
 
@@ -5963,73 +6129,71 @@ async def _compute_suggestions_llm(device_id: str | None) -> list[str]:
 
 
 def _static_suggestions(ist_hour: int) -> list[str]:
-    """Time-based static fallback suggestions.
+    """Beginner-friendly time-based fallback suggestions.
 
-    Each bucket returns at least 12 items so a request for 10 never
-    falls short.  Previously each bucket had only 4 items, which meant
-    the cold-start /chat/suggestions request returned 4 even though the
-    caller asked for 10.
+    Short plain-English phrasings (5-8 words), no jargon acronyms in
+    primary text, conversational tone. Each bucket has 12 items so a
+    request for 10 never falls short.
     """
     if ist_hour < 9:
         return [
-            "How is Gift Nifty today?",
-            "What is the market setup today?",
-            "Any upcoming IPOs to watch?",
-            "Best flexi cap mutual funds",
-            "How did US markets close overnight?",
-            "Top momentum stocks for today",
-            "How are my watchlist stocks shaping up?",
-            "What's the Fed doing this week?",
-            "FII/DII flows for yesterday",
-            "How much SIP for 1 crore in 10 years?",
-            "Best EV stocks right now",
-            "Pre-market macro summary for India",
+            "How is the market looking today?",
+            "What's the news for investors?",
+            "Any new IPOs this week?",
+            "Show me good mutual funds to start",
+            "How did US markets close last night?",
+            "What stocks are in the news?",
+            "Help me plan an SIP",
+            "Which sectors look strong?",
+            "Explain today's market mood",
+            "What are large cap stocks?",
+            "How do I start investing?",
+            "Best beginner investment options",
         ]
-    elif ist_hour < 15:
+    if ist_hour < 15:
         return [
-            "How is Nifty doing today?",
-            "How are my watchlist stocks doing?",
-            "Which sectors are leading today?",
-            "Compare TCS vs Infosys vs HCL",
-            "Top 5 Nifty IT heavyweights today",
-            "FII net buying in Indian equities today",
-            "What's the market mood right now?",
-            "Best flexi cap mutual funds",
-            "Upcoming IPOs open for subscription",
-            "Which stocks hit 52-week highs today?",
-            "Any red flags in my watchlist?",
-            "Best EV / renewable energy stocks",
+            "How is Nifty doing right now?",
+            "Which sectors are up today?",
+            "Top gainers today",
+            "Show me good mutual funds to start",
+            "What stocks are in the news?",
+            "Compare TCS and Infosys simply",
+            "Any new IPOs this week?",
+            "How are my watchlist stocks?",
+            "Help me plan an SIP",
+            "Explain PE ratio in simple words",
+            "What's a safe investment option?",
+            "Which bank stocks are popular?",
         ]
-    elif ist_hour < 20:
+    if ist_hour < 20:
         return [
             "How did the market close today?",
-            "Best performing sectors today",
-            "Top gainers and losers",
-            "How did my watchlist do today?",
-            "FII/DII flows for the day",
-            "Calculate LTCG tax on ₹5L profit",
-            "Best flexi cap mutual funds",
-            "Should I trim any of my stocks?",
-            "Which stocks are rotating in?",
-            "What's on tomorrow's calendar?",
-            "How much SIP for retirement at 60?",
-            "Top 5 dividend yield stocks",
+            "Top gainers and losers today",
+            "How are my watchlist stocks?",
+            "Any new IPOs this week?",
+            "Show me good mutual funds to start",
+            "Help me plan an SIP",
+            "What stocks are in the news?",
+            "Explain what a large cap stock is",
+            "Best beginner investment options",
+            "How do I save tax on gains?",
+            "Which sectors are trending?",
+            "What should I read before investing?",
         ]
-    else:
-        return [
-            "Best SIP mutual funds",
-            "India GDP growth trend",
-            "Any upcoming IPOs?",
-            "Best flexi cap mutual funds",
-            "How is the US market doing right now?",
-            "Compare TCS vs Infosys",
-            "How much SIP for 1 crore in 10 years?",
-            "Best EV stocks in India",
-            "What's my watchlist diversification?",
-            "Best dividend yield stocks",
-            "Asset allocation for a 30 year old",
-            "Upcoming RBI policy meeting date",
-        ]
+    return [
+        "Show me good mutual funds to start",
+        "Help me plan an SIP",
+        "Any new IPOs this week?",
+        "How is the US market doing?",
+        "What are large cap stocks?",
+        "Best beginner investment options",
+        "How do I start investing?",
+        "Explain PE ratio in simple words",
+        "What stocks are in the news?",
+        "Compare TCS and Infosys simply",
+        "Asset allocation for a 30 year old",
+        "What's the market mood right now?",
+    ]
 
 
 # ---------------------------------------------------------------------------
