@@ -2170,8 +2170,15 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
         return 0
     pool = await get_pool()
     count = 0
+    failed = 0
     async with pool.acquire() as conn:
         for row in rows:
+          # Per-row try/except: a single poison row (bad jsonb cast,
+          # _to_float on a non-numeric string, tags_v2 shape mismatch,
+          # etc.) must not abort the whole upsert loop and silently
+          # skip every remaining stock. Same bug pattern that hit the
+          # MF job — see upsert_discover_mutual_fund_snapshots.
+          try:
             await conn.execute(
                 f"""
                 INSERT INTO {STOCK_TABLE}
@@ -2482,6 +2489,18 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                 _to_jsonb_raw(row.get("growth_ranges")),                              # $96
             )
             count += 1
+          except Exception as exc:
+            failed += 1
+            logger.warning(
+                "stock upsert skipped symbol=%s: %s",
+                row.get("symbol"),
+                exc,
+            )
+    if failed:
+        logger.warning(
+            "stock upsert completed with %d failures out of %d rows",
+            failed, len(rows),
+        )
     return count
 
 
