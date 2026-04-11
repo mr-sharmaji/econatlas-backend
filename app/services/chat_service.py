@@ -298,7 +298,7 @@ Available tools:
 - [TOOL:narrative:{"symbol":"TCS"}] — Rich narrative for a stock: why_narrative + action_tag reasoning + lynch_classification + market_regime. Use when user asks "what's the thesis on X" or "why is X rated this way".
 - [TOOL:mf_lookup:{"scheme_name":"Parag Parikh Flexi Cap Fund - Direct Plan - Growth"}] — Mutual fund details. Accepts either `scheme_code` or `scheme_name`.
 - [TOOL:mf_screen:{"query":"category = 'Equity' AND returns_1y > 15", "limit":5}] — Filter mutual funds. Valid columns: scheme_code, scheme_name, category, sub_category, nav, expense_ratio, aum_cr, returns_1y, returns_3y, returns_5y, sharpe, sortino, score, risk_level.
-- [TOOL:watchlist:{}] — User's saved stocks with live data. Use this when the user says "my stocks", "my watchlist", "my portfolio".
+- [TOOL:watchlist:{}] — User's saved stocks AND mutual funds with live data. Each entity may also include a `news` array with 0-2 recent, RELEVANT articles (hybrid-search filtered — if `news` is absent or empty, there is no related news worth mentioning). When the user asks "check my watchlist" / "how are my stocks" / "what's happening with my portfolio", surface the attached news inline per entity when present; do NOT invent headlines if `news` is missing.
 - [TOOL:market_status:{}] — All indices (India/US/Europe/Japan) + FX + key commodities + market hours. Only call this if the LIVE MARKET SNAPSHOT above is stale or missing what you need.
 - [TOOL:market_mood:{}] — Current breadth: advances/declines, advance-decline ratio, stocks near 52w highs/lows, average % change, overall mood label (risk_on/mildly_positive/neutral/mildly_negative/risk_off). Use for "how is the market feeling today" queries.
 - [TOOL:macro_regime:{"country":"IN"}] — Macro regime snapshot: repo rate, CPI, GDP growth, real policy rate, rate stance (restrictive/accommodative/neutral), inflation state, growth phase. Use when user asks "what's the macro backdrop" or "is RBI tightening".
@@ -4025,6 +4025,73 @@ async def _execute_tool(
                         str(row.get("display_name") or row.get("scheme_name") or "").lower(),
                     )
                 )
+
+            # Enrich each watchlist entity with 1-2 recent news items
+            # *if* hybrid search finds something relevant. We run the
+            # searches concurrently and cap the universe to keep latency
+            # predictable. News is only attached when the hybrid search
+            # returns ≥1 row — the threshold logic inside
+            # _news_hybrid_search (vector distance < 0.6, trigram %,
+            # ILIKE) already filters out off-topic matches, so an empty
+            # result here just means "no related news" and we drop the
+            # field entirely rather than show unrelated articles.
+            async def _fetch_news_for(query_name: str) -> list[dict]:
+                if not query_name:
+                    return []
+                try:
+                    rows, _mode = await _news_hybrid_search(
+                        pool,
+                        query_name,
+                        limit=2,
+                        since_interval="7 days",
+                    )
+                    return [
+                        {
+                            "title": r.get("title"),
+                            "source": r.get("source"),
+                            "published": (
+                                r["timestamp"].isoformat()
+                                if r.get("timestamp") and hasattr(r["timestamp"], "isoformat")
+                                else r.get("timestamp")
+                            ),
+                            "summary": (r.get("summary") or "")[:240],
+                            "url": r.get("url"),
+                            "impact": r.get("impact"),
+                        }
+                        for r in rows
+                    ]
+                except Exception:
+                    logger.debug(
+                        "watchlist news enrichment failed for %s",
+                        query_name,
+                        exc_info=True,
+                    )
+                    return []
+
+            # Cap enrichment to the first 12 entities (stocks+MFs) so a
+            # 50-stock watchlist doesn't stall the SSE stream for 10s.
+            entities_to_enrich: list[tuple[str, str, dict]] = []
+            for row in stock_rows[:8]:
+                name = str(row.get("display_name") or row.get("symbol") or "").strip()
+                if name:
+                    entities_to_enrich.append(("stock", name, row))
+            for row in mf_rows[:4]:
+                name = str(
+                    row.get("display_name") or row.get("scheme_name") or ""
+                ).strip()
+                if name:
+                    entities_to_enrich.append(("mf", name, row))
+
+            if entities_to_enrich:
+                news_results = await asyncio.gather(
+                    *[_fetch_news_for(name) for _, name, _ in entities_to_enrich],
+                    return_exceptions=False,
+                )
+                for (_kind, _name, row), articles in zip(
+                    entities_to_enrich, news_results
+                ):
+                    if articles:
+                        row["news"] = articles
 
             return {
                 "count": len(stock_rows) + len(mf_rows),
