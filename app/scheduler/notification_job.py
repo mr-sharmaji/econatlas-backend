@@ -1109,33 +1109,28 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
     else:
         # No live transition detected (e.g., server restarted after close).
         # Fallback: check if India is closed and today's close data exists in DB.
-        from app.scheduler.trading_calendar import get_market_status
+        from app.scheduler.trading_calendar import (
+            get_market_status,
+            get_india_session_info,
+        )
+
+        # Gate 1: today must actually be an NSE trading day. Saturdays,
+        # Sundays and holidays must never trigger a post-market summary
+        # even though the market ticker cron writes rows every 30s.
+        india_info = get_india_session_info(now)
+        if not bool(india_info.get("is_trading_day")):
+            return
+
         status = get_market_status(now)
         if status.get("india_open"):
             return  # Market still open
 
-        # Only fire within 1 hour after market close (~15:30-16:30 IST)
+        # Gate 2: only fire within the 1-hour window *after* NSE close
+        # (15:30-16:30 IST = 930-990 minutes). The previous check had the
+        # comparison inverted and allowed firing all morning on non-trading
+        # days when stale Nifty rows existed in market_prices.
         total_minutes = now_ist.hour * 60 + now_ist.minute
-        if total_minutes > 990:  # 16:30 IST = 990 minutes
-            return
-
-        # Check if today had a trading session by looking for today's data
-        try:
-            from app.core.database import get_pool
-            pool = await get_pool()
-            has_today = await pool.fetchval(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM market_prices
-                    WHERE asset = 'Nifty 50' AND "timestamp"::date = $1
-                )
-                """,
-                today,
-            )
-            if not has_today:
-                return  # Not a trading day or data not yet available
-        except Exception:
-            logger.exception("Post-market fallback check failed")
+        if total_minutes < 930 or total_minutes > 990:
             return
 
     try:

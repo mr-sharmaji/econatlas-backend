@@ -120,8 +120,33 @@ async def send_topic_notification(
         return False
     try:
         from firebase_admin import messaging
+        # Android BigTextStyle lets long multi-sentence bodies (e.g. the
+        # 4-sentence post-market summary) expand fully when the user pulls
+        # down the notification shade, instead of being truncated to a
+        # single ellipsized line.
+        android_config = messaging.AndroidConfig(
+            priority="high",
+            notification=messaging.AndroidNotification(
+                title=title,
+                body=body,
+                channel_id="market_alerts",
+                default_sound=True,
+            ),
+        )
+        # APNS uses native expansion for long bodies — nothing special required.
+        apns_config = messaging.APNSConfig(
+            payload=messaging.APNSPayload(
+                aps=messaging.Aps(
+                    alert=messaging.ApsAlert(title=title, body=body),
+                    sound="default",
+                    mutable_content=True,
+                ),
+            ),
+        )
         message = messaging.Message(
             notification=messaging.Notification(title=title, body=body),
+            android=android_config,
+            apns=apns_config,
             data=data or {},
             topic=topic,
         )

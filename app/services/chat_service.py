@@ -4219,6 +4219,61 @@ async def _execute_tool(
             }
             country = country_map.get(country_raw, country_raw or "IN")
 
+            # FX indicators live in `market_prices` (written every 30s by
+            # the market ticker), not in `macro_indicators`. Route them to
+            # the right table so requests like "USD to INR" return data
+            # instead of the generic "no data found" error.
+            indicator_lc = indicator.lower().replace(" ", "_").replace("-", "_")
+            fx_assets = {
+                "usd_inr": "USD/INR",
+                "usdinr": "USD/INR",
+                "usd_to_inr": "USD/INR",
+                "dollar_rupee": "USD/INR",
+                "eur_inr": "EUR/INR",
+                "gbp_inr": "GBP/INR",
+                "jpy_inr": "JPY/INR",
+            }
+            fx_asset = None
+            for key, asset in fx_assets.items():
+                if key in indicator_lc:
+                    fx_asset = asset
+                    break
+
+            if fx_asset is not None:
+                fx_rows = await pool.fetch(
+                    "SELECT asset, price AS value, \"timestamp\" "
+                    "FROM market_prices "
+                    "WHERE asset = $1 "
+                    "ORDER BY \"timestamp\" DESC LIMIT 12",
+                    fx_asset,
+                )
+                if not fx_rows:
+                    return {
+                        "error": f"No {indicator} data found",
+                        "indicator": indicator,
+                        "country": country,
+                    }
+                fx_data = [record_to_dict(r) for r in fx_rows]
+                fx_latest = fx_data[0]
+                fx_prev = fx_data[1] if len(fx_data) > 1 else None
+                fx_change = None
+                if (
+                    fx_prev
+                    and fx_latest.get("value") is not None
+                    and fx_prev.get("value") is not None
+                ):
+                    fx_change = float(fx_latest["value"]) - float(fx_prev["value"])
+                return {
+                    "indicator": indicator,
+                    "country": country,
+                    "asset": fx_asset,
+                    "latest_value": fx_latest.get("value"),
+                    "latest_date": fx_latest.get("timestamp"),
+                    "prev_value": fx_prev.get("value") if fx_prev else None,
+                    "change": fx_change,
+                    "source": "market_prices",
+                }
+
             rows = await pool.fetch(
                 "SELECT indicator_name, country, value, timestamp "
                 "FROM macro_indicators "
