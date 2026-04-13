@@ -423,10 +423,12 @@ async def _fetch_india_open_data() -> dict | None:
         from app.core.database import get_pool
         pool = await get_pool()
 
-        # Nifty 50 last close
+        # Nifty 50 PREVIOUS SESSION CLOSE — use previous_close
+        # instead of latest price to avoid sign-flip when today's
+        # intraday tick is already in the table.
         nifty_row = await pool.fetchrow(
             """
-            SELECT price FROM market_prices
+            SELECT previous_close, price FROM market_prices
             WHERE asset = 'Nifty 50'
             ORDER BY timestamp DESC
             LIMIT 1
@@ -434,7 +436,9 @@ async def _fetch_india_open_data() -> dict | None:
         )
         if not nifty_row:
             return None
-        nifty_close = float(nifty_row["price"])
+        nifty_close = float(
+            nifty_row["previous_close"] or nifty_row["price"]
+        )
         if nifty_close == 0:
             return None
 
@@ -769,10 +773,20 @@ async def _check_gift_nifty(status: dict, now: datetime) -> None:
         if not gift_row:
             return
 
-        # Previous Nifty 50 daily close
+        # Previous Nifty 50 SESSION CLOSE — NOT the latest row,
+        # which during pre-market hours could be today's opening
+        # tick or an intraday update.  Using today's price as the
+        # baseline flips the sign when Gift Nifty is between
+        # yesterday's close and today's opening price.
+        #
+        # Three strategies (tried in order):
+        # 1) previous_close from the latest daily row (preferred)
+        # 2) price from the most recent PREVIOUS date row
+        # 3) fall back to the old ORDER BY DESC LIMIT 1
         nifty_row = await pool.fetchrow(
             """
-            SELECT price FROM market_prices
+            SELECT previous_close, price, timestamp::date AS d
+            FROM market_prices
             WHERE asset = 'Nifty 50'
             ORDER BY timestamp DESC
             LIMIT 1
@@ -781,8 +795,28 @@ async def _check_gift_nifty(status: dict, now: datetime) -> None:
         if not nifty_row:
             return
 
+        # Prefer previous_close (which is explicitly the prior
+        # session close, filled by Yahoo/Google sources).
+        nifty_close_raw = nifty_row["previous_close"]
+        if nifty_close_raw is None or float(nifty_close_raw) == 0:
+            # Fall back to the last distinct *previous* date's price
+            nifty_prev = await pool.fetchrow(
+                """
+                SELECT price FROM market_prices
+                WHERE asset = 'Nifty 50'
+                  AND timestamp::date < $1
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                nifty_row["d"],
+            )
+            if nifty_prev:
+                nifty_close_raw = nifty_prev["price"]
+            else:
+                nifty_close_raw = nifty_row["price"]
+
         gift_price = float(gift_row["price"])
-        nifty_close = float(nifty_row["price"])
+        nifty_close = float(nifty_close_raw)
         if nifty_close == 0:
             return
 
@@ -883,18 +917,30 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
     if _pre_market_state.get("last_date") == today:
         return
 
-    # Only send if Gift Nifty is open (confirms it's a trading day)
-    if not status.get("gift_nifty_open"):
+    # Hard gate: NSE must be a trading day.  The old check used
+    # gift_nifty_open as a proxy, but Gift Nifty opens on SGX
+    # before NSE trading days AND on some weekends (Sunday
+    # evening for Monday's session), so the pre-market summary
+    # was incorrectly firing on Sundays/holidays.
+    from app.scheduler.trading_calendar import get_india_session_info
+    india_info = get_india_session_info(now)
+    if not bool(india_info.get("is_trading_day")):
+        logger.debug(
+            "Pre-market summary skipped: not an NSE trading day (%s)",
+            india_info.get("fallback_reason"),
+        )
         return
 
     try:
         from app.core.database import get_pool
         pool = await get_pool()
 
-        # Previous Nifty 50 daily close
+        # Previous Nifty 50 SESSION CLOSE — use previous_close
+        # to avoid the sign-flip bug where the latest price row
+        # is today's intraday tick instead of yesterday's close.
         nifty_close_row = await pool.fetchrow(
             """
-            SELECT price FROM market_prices
+            SELECT previous_close, price FROM market_prices
             WHERE asset = 'Nifty 50'
             ORDER BY timestamp DESC
             LIMIT 1
@@ -902,7 +948,10 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
         )
         if not nifty_close_row:
             return
-        nifty_close = float(nifty_close_row["price"])
+        nifty_close = float(
+            nifty_close_row["previous_close"]
+            or nifty_close_row["price"]
+        )
         if nifty_close == 0:
             return
 
