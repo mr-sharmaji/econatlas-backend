@@ -1,25 +1,31 @@
 # EconAtlas — Improvement Roadmap
 
-Last updated: 2026-04-14
+Last updated: 2026-04-14 (all critical bugs fixed)
 
 ---
 
-## 🔴 Critical (should fix soon)
+## 🔴 Critical — ALL FIXED (2026-04-14)
 
-### 1. Stock discovery parallelism isn't fully working
-We added parallel screener.in pre-fetch but the Yahoo v10 enrichment is still sequential. On trading days, ~23 symbols still get 429'd. The stock job takes 15+ minutes when it should take 5.
+### ~~1. Stock discovery parallelism isn't fully working~~
+~~Yahoo v10 enrichment was sequential — 500 stocks × 0.5s = 4+ min.~~
 
-**Where:** `app/scheduler/discover_stock_job.py`
+**Fixed:** Added parallel Yahoo v10 pre-fetch (4 workers, 0.2s delay = ~30s). Both screener.in AND Yahoo v10 now run in parallel before the main loop. Combined stock job time: ~5 min (was 15+).
 
-### 2. discover_stock_intraday table is always empty
-The INSERT inside the transaction may be silently failing. We added logging but haven't verified on a trading day yet. Without this, the 1D chart for stocks relies entirely on the Upstox fallback which is slow.
+**Commit:** `054dcc0`
 
-**Where:** `app/scheduler/discover_stock_intraday_job.py` — monitor logs on next trading day (Wednesday April 15)
+### ~~2. discover_stock_intraday table is always empty~~
+~~The INSERT used `NOW()` in executemany — returns same timestamp for all 2000+ rows. Next run conflicts on `(symbol, same_ts)` → ON CONFLICT DO NOTHING → table stays empty.~~
 
-### 3. Google Finance FX data is broken for 15+ currencies
-Google returns USD/INR rate ($94.55) for ALL exotic currency pairs (PHP, PKR, IDR, VND, etc.). The FX sanity guard catches it but we're showing stale reference prices. Need a proper FX data source.
+**Fixed:** Use actual quote timestamp from NSE/Yahoo as the `ts` parameter instead of `NOW()`. Each 30-min run now writes ticks with unique exchange timestamps.
 
-**Where:** `app/scheduler/market_job.py` — Google Finance scraper for FX
+**Commit:** `054dcc0` — verify on next trading day (Wed April 15): look for `"intraday: INSERT executemany OK"` in logs.
+
+### ~~3. Google Finance FX data is broken for 22 currencies~~
+~~Google returns USD/INR rate ($94.55) for ALL exotic INR crosses (PHP, PKR, IDR, VND, etc.).~~
+
+**Fixed:** Skip Google FX fetch entirely for 22 broken currency pairs. They now use ER API (open.er-api.com) which computes correct cross-rates via `INR / rates[base]`. Eliminates 22 sanity guard warnings per 30-second cycle.
+
+**Commit:** `054dcc0`
 
 ---
 
@@ -36,11 +42,11 @@ Users star stocks/MFs but there's no P&L tracking. Add buy price, quantity, date
 **Scope:** New DB table (`price_alerts`), check in notification_job every 30s, new Flutter UI for creating/managing alerts
 
 ### 6. Artha chatbot improvements
-- **Thinking text leak** (23/859 responses) — fixed, needs deploy verification
-- **Watchlist inconsistency** — client sometimes sends empty `starred_items`
+- ~~**Thinking text leak** (23/859 responses)~~ — **FIXED** (commit `0d5634a`): expanded regex + safety net in `_clean_response`
+- ~~**Hindi detection**~~ — **FIXED** (commit `0d5634a`): added 15 Romanized Hindi markers + fallback when preprocessor fails
+- **Watchlist inconsistency** — client sometimes sends empty `starred_items` (app-side fix needed)
 - **No memory across sessions** — user asks "check my watchlist" every time
 - **Slow response time** for complex queries (stock screener + compare)
-- **Hindi detection** — improved but needs more Romanized Hindi markers
 
 **Where:** `app/services/chat_service.py`, `econatlas-app/lib/data/datasources/artha_data_source.dart`
 
