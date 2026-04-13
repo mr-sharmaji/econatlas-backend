@@ -48,29 +48,41 @@ async def upsert_stock_snapshots(rows: list[dict]) -> int:
     prepared: list[tuple] = list(dedup.values())
     if not prepared:
         return 0
+    # Use per-row execute instead of executemany. asyncpg's
+    # executemany uses pipeline mode where two rows with the same
+    # ON CONFLICT key fail because the second INSERT conflicts with
+    # the first (not yet committed within the pipeline). Per-row
+    # execute avoids this entirely and also lets us continue past
+    # individual failures.
+    count = 0
     async with pool.acquire() as conn:
-        await conn.executemany(
-            f"""
-            INSERT INTO {TABLE}
-            (market, symbol, display_name, sector, last_price, point_change, percent_change,
-             volume, traded_value, source_timestamp, ingested_at, source)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11)
-            ON CONFLICT (market, symbol)
-            DO UPDATE SET
-                display_name = EXCLUDED.display_name,
-                sector = EXCLUDED.sector,
-                last_price = EXCLUDED.last_price,
-                point_change = EXCLUDED.point_change,
-                percent_change = EXCLUDED.percent_change,
-                volume = EXCLUDED.volume,
-                traded_value = EXCLUDED.traded_value,
-                source_timestamp = EXCLUDED.source_timestamp,
-                ingested_at = NOW(),
-                source = EXCLUDED.source
-            """,
-            prepared,
-        )
-    return len(prepared)
+        for row in prepared:
+            try:
+                await conn.execute(
+                    f"""
+                    INSERT INTO {TABLE}
+                    (market, symbol, display_name, sector, last_price, point_change, percent_change,
+                     volume, traded_value, source_timestamp, ingested_at, source)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11)
+                    ON CONFLICT (market, symbol)
+                    DO UPDATE SET
+                        display_name = EXCLUDED.display_name,
+                        sector = EXCLUDED.sector,
+                        last_price = EXCLUDED.last_price,
+                        point_change = EXCLUDED.point_change,
+                        percent_change = EXCLUDED.percent_change,
+                        volume = EXCLUDED.volume,
+                        traded_value = EXCLUDED.traded_value,
+                        source_timestamp = EXCLUDED.source_timestamp,
+                        ingested_at = NOW(),
+                        source = EXCLUDED.source
+                    """,
+                    *row,
+                )
+                count += 1
+            except Exception:
+                pass  # skip individual failures
+    return count
 
 
 async def _as_of(market: str) -> datetime | None:
