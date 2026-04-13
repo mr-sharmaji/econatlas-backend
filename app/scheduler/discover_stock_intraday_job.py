@@ -538,6 +538,7 @@ async def run_discover_stock_intraday_job() -> None:
         ))
         insert_rows.append((
             symbol,
+            ts,  # actual quote timestamp, not NOW()
             q.get("last_price"),
             q.get("volume"),
             q.get("percent_change"),
@@ -575,7 +576,7 @@ async def run_discover_stock_intraday_job() -> None:
                         """
                         INSERT INTO discover_stock_intraday
                             (symbol, ts, price, volume, percent_change)
-                        VALUES ($1, NOW(), $2, $3, $4)
+                        VALUES ($1, $2, $3, $4, $5)
                         ON CONFLICT (symbol, ts) DO NOTHING
                         """,
                         insert_rows,

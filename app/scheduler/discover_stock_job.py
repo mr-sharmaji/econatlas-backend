@@ -5028,10 +5028,13 @@ class DiscoverStockScraper(BaseScraper):
             time_mod.sleep(self._screener_batch_delay)
 
             # Yahoo v10 for EVERY stock: fills gaps + adds exclusive data
+            # Check parallel pre-fetch cache first (same as screener)
             try:
-                yahoo_session = self._get_yahoo_session()
-                yahoo = yahoo_session.get_stock_data(stock.nse_symbol)
-                time_mod.sleep(self._yahoo_batch_delay)
+                yahoo = self._yahoo_cache.get(stock.nse_symbol)
+                if yahoo is None:
+                    yahoo_session = self._get_yahoo_session()
+                    yahoo = yahoo_session.get_stock_data(stock.nse_symbol)
+                    time_mod.sleep(self._yahoo_batch_delay)
 
                 yahoo_fields_filled = 0
 
@@ -5351,6 +5354,40 @@ class DiscoverStockScraper(BaseScraper):
                     "Screener pre-fetch complete: %d/%d cached",
                     len(self._screener_cache), len(fund_list),
                 )
+
+            # ── Parallel pre-fetch: Yahoo v10 enrichment ────────────
+            # Yahoo v10 quoteSummary (beta, analyst data, forward PE,
+            # margins, cash flow) was sequential — 0.5s delay per stock
+            # × 500 = 4+ minutes. Pre-fetch in parallel with 4 workers.
+            if fund_list:
+                logger.info(
+                    "Parallel Yahoo v10 pre-fetch: %d symbols, "
+                    "4 workers, 0.2s delay",
+                    len(fund_list),
+                )
+
+                def _fetch_yahoo_one(sym: str):
+                    try:
+                        session = self._get_yahoo_session()
+                        return session.get_stock_data(sym)
+                    except Exception:
+                        return None
+
+                yahoo_results = self._parallel_map(
+                    host="query2.finance.yahoo.com",
+                    workers=4,
+                    per_call_delay=0.2,
+                    items=fund_list,
+                    fetch_fn=_fetch_yahoo_one,
+                )
+                for sym, result in zip(fund_list, yahoo_results):
+                    if result is not None:
+                        self._yahoo_cache[sym] = result
+                logger.info(
+                    "Yahoo pre-fetch complete: %d/%d cached",
+                    len(self._yahoo_cache), len(fund_list),
+                )
+
             missing: list[DiscoverStockDef] = []
             for stock in universe:
                 if _aborted:

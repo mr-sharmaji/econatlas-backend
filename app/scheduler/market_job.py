@@ -762,7 +762,20 @@ class MarketScraper(BaseScraper, QuoteProvider):
         by_asset = {t.asset: t for t in yahoo_fx_ticks}
         stale_seconds = max(60, int(get_settings().effective_rolling_live_max_age_seconds()))
         out: list[QuoteTick] = []
+        # Google Finance returns USD/INR rate ($94.55) for ALL exotic
+        # INR crosses (PHP, PKR, IDR, VND, etc.) — completely wrong.
+        # Skip Google for these; they'll get correct data from ER API
+        # in _fetch_fx_fallback which computes cross-rates properly.
+        _GOOGLE_FX_BROKEN = frozenset({
+            "PHP/INR", "PKR/INR", "IDR/INR", "VND/INR", "BDT/INR",
+            "LKR/INR", "NPR/INR", "QAR/INR", "KWD/INR", "BHD/INR",
+            "OMR/INR", "ILS/INR", "NOK/INR", "DKK/INR", "PLN/INR",
+            "TRY/INR", "SAR/INR", "MXN/INR", "SEK/INR", "TWD/INR",
+            "KRW/INR", "THB/INR",
+        })
         for _symbol, pair in FX_SYMBOLS.items():
+            if pair in _GOOGLE_FX_BROKEN:
+                continue
             primary = by_asset.get(pair)
             needs_fallback = primary is None
             if primary is not None:
