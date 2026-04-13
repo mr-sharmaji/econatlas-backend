@@ -21,3 +21,6 @@ fastembed>=0.3,<1
 # pgvector Python driver — registers the VECTOR type with asyncpg so we can
 # pass list[float] as a vector parameter and read it back as a numpy array.
 pgvector>=0.3,<1
+# Server monitoring
+psutil>=5.9,<7
+prometheus-client>=0.21,<1

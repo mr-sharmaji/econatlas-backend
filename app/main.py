@@ -124,6 +124,37 @@ def create_app() -> FastAPI:
 
     application.include_router(api_router)
 
+    # ── Prometheus metrics endpoint ──
+    from starlette.responses import Response
+
+    @application.get("/metrics", include_in_schema=False)
+    async def prometheus_metrics():
+        from app.core.metrics import get_prometheus_metrics, get_prometheus_content_type
+        return Response(
+            content=get_prometheus_metrics(),
+            media_type=get_prometheus_content_type(),
+        )
+
+    # ── Request timing middleware ──
+    import time as _time
+
+    @application.middleware("http")
+    async def timing_middleware(request, call_next):
+        t0 = _time.monotonic()
+        response = await call_next(request)
+        duration = _time.monotonic() - t0
+        try:
+            from app.core.metrics import record_request
+            record_request(
+                method=request.method,
+                path=request.url.path,
+                status=response.status_code,
+                duration=duration,
+            )
+        except Exception:
+            pass  # metrics must never break the request
+        return response
+
     return application
 
 

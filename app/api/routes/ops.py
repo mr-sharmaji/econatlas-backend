@@ -88,6 +88,202 @@ async def _get_pool():
 
 
 # ═════════════════════════════════════════════════════════════════════
+# Server Health
+# ═════════════════════════════════════════════════════════════════════
+
+import time as _time
+_BOOT_TIME = _time.time()
+
+
+@router.get("/health")
+async def ops_server_health(
+    x_ops_token: str | None = Header(default=None),
+) -> dict:
+    """Comprehensive server health check with system, DB, Redis, jobs, and data metrics."""
+    _authorize(x_ops_token)
+    import os
+    import psutil
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    result: dict = {
+        "status": "healthy",
+        "timestamp": now.isoformat(),
+        "uptime_seconds": round(_time.time() - _BOOT_TIME),
+    }
+
+    # ── System metrics ──
+    try:
+        proc = psutil.Process()
+        mem = psutil.virtual_memory()
+        disk = psutil.disk_usage("/")
+        load = os.getloadavg()
+        result["system"] = {
+            "cpu_percent": psutil.cpu_percent(interval=0.1),
+            "cpu_count": psutil.cpu_count(),
+            "memory_used_mb": round(mem.used / 1024 / 1024),
+            "memory_total_mb": round(mem.total / 1024 / 1024),
+            "memory_percent": mem.percent,
+            "disk_used_gb": round(disk.used / 1024 / 1024 / 1024, 1),
+            "disk_total_gb": round(disk.total / 1024 / 1024 / 1024, 1),
+            "disk_percent": disk.percent,
+            "load_avg_1m": round(load[0], 2),
+            "load_avg_5m": round(load[1], 2),
+            "load_avg_15m": round(load[2], 2),
+            "process_memory_mb": round(proc.memory_info().rss / 1024 / 1024),
+            "process_threads": proc.num_threads(),
+            "open_files": len(proc.open_files()),
+        }
+    except Exception as exc:
+        result["system"] = {"error": str(exc)}
+
+    # ── Database metrics ──
+    try:
+        pool = await _get_pool()
+        # Pool stats
+        result["database"] = {
+            "pool_size": pool.get_size(),
+            "pool_free": pool.get_idle_size(),
+            "pool_used": pool.get_size() - pool.get_idle_size(),
+            "pool_min": pool.get_min_size(),
+            "pool_max": pool.get_max_size(),
+        }
+        # Latency check
+        t0 = _time.monotonic()
+        await pool.fetchval("SELECT 1")
+        latency = (_time.monotonic() - t0) * 1000
+        result["database"]["latency_ms"] = round(latency, 2)
+
+        # Table sizes
+        rows = await pool.fetch("""
+            SELECT relname AS table_name,
+                   n_live_tup AS row_count,
+                   pg_total_relation_size(c.oid) AS total_bytes
+            FROM pg_stat_user_tables s
+            JOIN pg_class c ON s.relname = c.relname
+            WHERE s.schemaname = 'public'
+            ORDER BY pg_total_relation_size(c.oid) DESC
+            LIMIT 15
+        """)
+        result["database"]["tables"] = [
+            {
+                "name": r["table_name"],
+                "rows": r["row_count"],
+                "size_mb": round(r["total_bytes"] / 1024 / 1024, 1),
+            }
+            for r in rows
+        ]
+
+        # Index health — check for invalid indexes
+        idx_rows = await pool.fetch("""
+            SELECT c.relname AS index_name, i.indisvalid AS valid
+            FROM pg_class c
+            JOIN pg_index i ON c.oid = i.indexrelid
+            JOIN pg_class t ON t.oid = i.indrelid
+            WHERE t.relname IN ('market_prices', 'market_scores',
+                                'market_prices_intraday', 'discover_stock_snapshots')
+              AND c.relkind = 'i'
+        """)
+        invalid_indexes = [r["index_name"] for r in idx_rows if not r["valid"]]
+        result["database"]["invalid_indexes"] = invalid_indexes
+
+        # Duplicate check on critical tables
+        dup_check = await pool.fetchval("""
+            SELECT COUNT(*) FROM (
+                SELECT asset, instrument_type, timestamp
+                FROM market_prices
+                GROUP BY asset, instrument_type, timestamp
+                HAVING COUNT(*) > 1
+            ) sub
+        """)
+        result["database"]["market_prices_duplicates"] = dup_check
+
+    except Exception as exc:
+        result["database"] = {"error": str(exc)}
+
+    # ── Redis metrics ──
+    try:
+        import redis as _redis
+        settings = get_settings()
+        r = _redis.from_url(settings.redis_url, decode_responses=True)
+        t0 = _time.monotonic()
+        r.ping()
+        latency = (_time.monotonic() - t0) * 1000
+        info = r.info(section="memory")
+        result["redis"] = {
+            "connected": True,
+            "latency_ms": round(latency, 2),
+            "memory_used_mb": round(info.get("used_memory", 0) / 1024 / 1024, 1),
+            "memory_peak_mb": round(info.get("used_memory_peak", 0) / 1024 / 1024, 1),
+            "keys": r.dbsize(),
+        }
+    except Exception as exc:
+        result["redis"] = {"connected": False, "error": str(exc)}
+
+    # ── Job status ──
+    try:
+        from app.core.log_stream import get_log_entries
+        # Running jobs
+        running_jobs = list(_running_direct_jobs.keys())
+        result["jobs"] = {
+            "running": running_jobs,
+        }
+        # Errors/warnings in the last hour
+        all_entries, _ = get_log_entries(limit=5000, min_level="WARNING")
+        hour_ago = (now - __import__("datetime").timedelta(hours=1)).isoformat()
+        recent = [e for e in all_entries if e.get("timestamp", "") >= hour_ago]
+        errors_1h = sum(1 for e in recent if e.get("level") == "ERROR")
+        warnings_1h = sum(1 for e in recent if e.get("level") == "WARNING")
+        result["jobs"]["errors_1h"] = errors_1h
+        result["jobs"]["warnings_1h"] = warnings_1h
+    except Exception as exc:
+        result["jobs"] = {"error": str(exc)}
+
+    # ── Data freshness ──
+    try:
+        pool = await _get_pool()
+        freshness = {}
+        for table, ts_col in [
+            ("market_prices", "timestamp"),
+            ("discover_stock_snapshots", "source_timestamp"),
+            ("discover_mutual_fund_snapshots", "source_timestamp"),
+        ]:
+            row = await pool.fetchrow(
+                f'SELECT MAX("{ts_col}") AS latest, COUNT(*) AS total FROM {table}'
+            )
+            freshness[table] = {
+                "latest": row["latest"].isoformat() if row["latest"] else None,
+                "total_rows": row["total"],
+            }
+        # Stock stale count
+        stale = await pool.fetchval(
+            "SELECT COUNT(*) FROM discover_stock_snapshots "
+            "WHERE source_timestamp < CURRENT_DATE"
+        )
+        freshness["stocks_stale"] = stale
+        result["data_freshness"] = freshness
+    except Exception as exc:
+        result["data_freshness"] = {"error": str(exc)}
+
+    # ── API request stats (from prometheus if available) ──
+    try:
+        from app.core.metrics import get_request_stats
+        result["api"] = get_request_stats()
+    except Exception:
+        result["api"] = {"note": "prometheus metrics not initialized"}
+
+    # Mark unhealthy if critical issues found
+    if result.get("database", {}).get("invalid_indexes"):
+        result["status"] = "degraded"
+    if result.get("database", {}).get("market_prices_duplicates", 0) > 0:
+        result["status"] = "degraded"
+    if not result.get("redis", {}).get("connected", False):
+        result["status"] = "degraded"
+
+    return result
+
+
+# ═════════════════════════════════════════════════════════════════════
 # Notification AI metrics
 # ═════════════════════════════════════════════════════════════════════
 
