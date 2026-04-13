@@ -1085,7 +1085,7 @@ async def execute_sql(
 
     first_word = query.split()[0].upper() if query.split() else ""
     _READ_ONLY = {"SELECT", "WITH", "EXPLAIN"}
-    _WRITE_ALLOWED = {"ALTER", "CREATE", "DROP", "UPDATE", "INSERT", "DELETE"}
+    _WRITE_ALLOWED = {"ALTER", "CREATE", "DROP", "UPDATE", "INSERT", "DELETE", "REINDEX", "SET", "VACUUM", "ANALYZE"}
 
     pool = await _get_pool()
     from app.core.database import record_to_dict
