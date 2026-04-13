@@ -86,11 +86,15 @@ services:
     environment:
       GF_SECURITY_ADMIN_PASSWORD: econatlas
       GF_USERS_ALLOW_SIGN_UP: "false"
-      # Serve Grafana at root — the FastAPI proxy handles the /grafana/ prefix
-      # stripping. SERVE_FROM_SUB_PATH caused Grafana's frontend JS to
-      # miscalculate API URLs when accessed through a reverse proxy.
       GF_SERVER_ROOT_URL: "${PUBLIC_BASE_URL:-http://localhost:8000}/grafana/"
       GF_SERVER_SERVE_FROM_SUB_PATH: "false"
+      # Anonymous access — Grafana is proxied through FastAPI and
+      # only accessible via /grafana/ path. No separate auth needed.
+      # This fixes 403 Forbidden on POST /api/ds/query caused by
+      # CSRF token mismatch when accessed through a reverse proxy.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
