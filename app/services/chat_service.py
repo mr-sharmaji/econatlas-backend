@@ -811,8 +811,14 @@ _SUGGESTIONS_PATTERN = re.compile(
     r'\[SUGGESTIONS\](.*?)(?:\[/SUGGESTIONS\]|\Z)',
     re.DOTALL,
 )
+# Match ALL leaked thinking formats the LLM might produce:
+#   ### Thinking\n...       (markdown heading)
+#   **Thinking:**\n...      (bold with colon)
+#   **Thinking**\n...       (bold without colon)
+#   Thinking:\n...          (plain text)
+#   **Thinking:\n...**      (bold wrapping content)
 _MARKDOWN_THINKING_RE = re.compile(
-    r'^\s*#{1,6}\s*Thinking\s*\n+(.*?)(?:\n{2,}(.*))?$',
+    r'^\s*(?:#{1,6}\s*|\*{1,2})?Thinking(?:\*{1,2})?[:\s]*\n+(.*?)(?:\n{2,}(.*))?$',
     re.DOTALL | re.IGNORECASE,
 )
 
@@ -1724,6 +1730,11 @@ _HINGLISH_MARKERS = (
     r"\bmat\b", r"\bnahi\b", r"\bnahin\b", r"\bbilkul\b",
     r"\bhua\b", r"\bhui\b", r"\bhuye\b", r"\bmatlab\b",
     r"\babhi\b", r"\bkab\s+tak\b", r"\bkal\b",
+    r"\baaj\b", r"\bkitna\b", r"\bkitni\b", r"\bkitne\b",
+    r"\bbatao\b", r"\bbataiye\b", r"\bdikhao\b",
+    r"\bpaisa\b", r"\bpaise\b", r"\brunpaya\b",
+    r"\bachha\s+hai\b", r"\btheek\b", r"\bthik\b",
+    r"\bmujhe\b", r"\bhamara\b", r"\bmera\b",
 )
 _HINGLISH_RE = re.compile("|".join(_HINGLISH_MARKERS), re.IGNORECASE)
 
@@ -7591,6 +7602,8 @@ async def stream_chat_response(
         )
     except Exception:
         logger.warning("chat_stream: preprocess failed", exc_info=True)
+        # Fallback: at least detect Hinglish even if full preprocess failed
+        query_meta["is_hinglish"] = detect_hinglish(original_user_message)
     # Use the canonical form downstream.  Save the original on the user
     # row, but pass the canonical form into the LLM context so the
     # intent is clear.

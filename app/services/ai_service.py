@@ -78,8 +78,16 @@ def _clean_response(raw: str) -> str:
     """
     text = raw.strip()
 
-    # Remove <think>...</think> blocks (some models use these)
+    # Remove <think>...</think> and <thinking>...</thinking> blocks
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL).strip()
+
+    # Remove leaked markdown thinking headings that weren't caught
+    # by _normalize_thinking_markup (e.g. **Thinking:** or ### Thinking)
+    text = re.sub(
+        r"^\s*(?:#{1,6}\s*|\*{1,2})?[Tt]hinking(?:\*{1,2})?[:\s]*\n+",
+        "", text,
+    ).strip()
 
     # Remove common preamble patterns from Nemotron-style models
     preamble_patterns = [
