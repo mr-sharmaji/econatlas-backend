@@ -24,7 +24,14 @@ logger = logging.getLogger(__name__)
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 
 # Symbols Yahoo does not support for INR cross rates
-_UNSUPPORTED_YAHOO_FX = {"SARINR=X", "MXNINR=X"}
+# Yahoo returns 404 for these exotic INR cross rates — no data available.
+_UNSUPPORTED_YAHOO_FX = {
+    "SARINR=X", "MXNINR=X",
+    "QARINR=X", "KWDINR=X", "BHDINR=X", "ILSINR=X",
+    "NOKINR=X", "TRYINR=X", "BDTINR=X", "LKRINR=X",
+    "NPRINR=X", "OMRINR=X", "PLNINR=X", "PKRINR=X",
+    "PHPINR=X", "VNDINR=X",
+}
 
 # Yahoo reports these commodity symbols in USX (cents) — divide by 100
 _USX_SYMBOLS = {"ZW=F", "ZC=F", "ZS=F", "ZO=F", "CT=F", "SB=F", "KC=F"}

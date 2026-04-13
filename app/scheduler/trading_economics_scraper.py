@@ -359,6 +359,9 @@ class TradingEconomicsScraper:
                 r"rose by|fell by|increased by|decreased by|grew by|shrank by|"
                 r"rose |fell |increased |decreased |"
                 r"widened to|narrowed to|revised\b.*?\bto|"
+                r"held (?:steady )?at|accelerated to|decelerated to|"
+                r"expanded to|contracted to|moderated to|improved to|"
+                r"slowed to|surged to|plunged to|recovered to|"
                 r"deficit (?:of|to)|surplus (?:of|to))\s*"
                 r"(?:USD\s+)?(?:INR\s+)?(?:\$\s*)?([\d,\.]+)",
                 desc_text, re.IGNORECASE,

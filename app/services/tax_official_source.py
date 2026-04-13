@@ -9,7 +9,11 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urljoin
 
+import logging
+
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from app.services import tax_fy, tax_service
 
@@ -207,25 +211,39 @@ def _extract_taxcalc_latest_new_slabs(taxcalc_text: str) -> tuple[str, str, list
 
 
 def _extract_old_slabs_and_basic_exemption(taxcalc_text: str) -> tuple[list[dict[str, float]], dict[str, float]]:
+    # ClearTax periodically reformats their HTML. Use flexible
+    # patterns that match both the old and new wording:
+    #   Old: "Individuals less than 60 Years of Age...Up to Rs. 2.5 lakh NIL"
+    #   New: "Individual below 60 years...₹ 2.5 Lakh...Nil"
+    #   New: "Senior Citizens (Aged 60 to 80)...Up to Rs. 3 lakh Nil"
+    #   New: "aged above 80 years...Up to Rs. 5 lakh Nil"
     below60_match = re.search(
-        r"Individuals less than 60 Years of Age\s+Income Slabs\s+Income Tax Rates\s+"
-        r"Up to Rs\.\s*([0-9.]+)\s*lakh\s+NIL",
+        r"(?:less than 60|below 60|under 60|Individual.{0,60}?60 years)"
+        r".{0,300}?"
+        r"(?:Up to|Upto)\s+(?:Rs\.?|₹)\s*([0-9.]+)\s*lakh\s+(?:NIL|Nil|nil|0%|0)",
         taxcalc_text,
         re.IGNORECASE | re.DOTALL,
     )
     senior_match = re.search(
-        r"Resident Individuals Aged 60-80 Years\s+Income Slabs\s+Income Tax Rates\s+"
-        r"Up to Rs\.\s*([0-9.]+)\s*lakh\s+NIL",
+        r"(?:Aged 60.{0,10}?80|60-80|60 to 80|senior citizen)"
+        r".{0,300}?"
+        r"(?:Up to|Upto)\s+(?:Rs\.?|₹)\s*([0-9.]+)\s*lakh\s+(?:NIL|Nil|nil|0%|0)",
         taxcalc_text,
         re.IGNORECASE | re.DOTALL,
     )
     super_match = re.search(
-        r"Resident Individuals Aged more than 80 Years\s+Income Slabs\s+Income Tax Rates\s+"
-        r"Up to Rs\.\s*([0-9.]+)\s*lakh\s+NIL",
+        r"(?:more than 80|above 80|Aged 80\+?|super.senior|80\+\s*years)"
+        r".{0,300}?"
+        r"(?:Up to|Upto)\s+(?:Rs\.?|₹)\s*([0-9.]+)\s*lakh\s+(?:NIL|Nil|nil|0%|0)",
         taxcalc_text,
         re.IGNORECASE | re.DOTALL,
     )
     if not (below60_match and senior_match and super_match):
+        # Log what we found for debugging
+        logger.warning(
+            "Old-regime parse: below60=%s senior=%s super=%s",
+            bool(below60_match), bool(senior_match), bool(super_match),
+        )
         raise ValueError("Unable to parse old-regime basic exemption table.")
 
     old_mid1 = re.search(
