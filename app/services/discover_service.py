@@ -5123,7 +5123,10 @@ async def reconcile_stock_snapshots() -> dict:
     Returns {"updated": N, "checked": M}.
     """
     pool = await get_pool()
-    # Count stale before fix
+    # Count stale: any snapshot whose source_timestamp is older than
+    # the latest trade_date in price_history, OR whose price differs.
+    # The old ₹0.50 absolute threshold missed penny stocks that moved
+    # 2-3% but less than 50 paise.
     stale_row = await pool.fetchrow(f"""
         SELECT COUNT(*) AS cnt
         FROM {STOCK_TABLE} s
@@ -5132,7 +5135,8 @@ async def reconcile_stock_snapshots() -> dict:
             FROM discover_stock_price_history
             ORDER BY symbol, trade_date DESC
         ) h ON s.symbol = h.symbol
-        WHERE ABS(s.last_price - h.close) > 0.5
+        WHERE s.source_timestamp::date < h.trade_date
+           OR ABS(s.last_price - h.close) > 0.01
     """)
     stale_count = stale_row["cnt"] if stale_row else 0
 
@@ -5171,7 +5175,8 @@ async def reconcile_stock_snapshots() -> dict:
             ) prev ON true
         ) sub
         WHERE s.symbol = sub.symbol
-          AND ABS(s.last_price - sub.close) > 0.5
+          AND (s.source_timestamp::date < sub.trade_date
+               OR ABS(s.last_price - sub.close) > 0.01)
     """)
 
     # Parse "UPDATE N" from asyncpg result
