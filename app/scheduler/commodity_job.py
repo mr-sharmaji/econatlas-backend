@@ -473,12 +473,22 @@ _PRICE_CHANGE_TOLERANCE = 1e-9
 
 
 def build_commodity_intraday_rows_for_open(commodity_rows: list[dict]) -> list[dict]:
-    """Build intraday rows for 24H chart using provider source timestamps."""
+    """Build intraday rows for 24H chart.
+
+    Uses source_timestamp when fresh, but falls back to NOW() when
+    the source timestamp is stale (>1 hour old). This ensures ticks
+    are written 24/7 even when the market is closed and Yahoo keeps
+    returning Friday's timestamp — without this, ON CONFLICT skips
+    the insert and the 24H window has a 50-hour Saturday gap.
+    """
+    now = datetime.now(timezone.utc)
     rows = []
     for r in commodity_rows:
         source_dt = parse_ts(r.get("source_timestamp")) if r.get("source_timestamp") else None
-        if source_dt is None:
-            source_dt = datetime.now(timezone.utc)
+        # If source timestamp is stale (>1h old), use current time
+        # so we always get a unique tick timestamp for ON CONFLICT.
+        if source_dt is None or (now - source_dt).total_seconds() > 3600:
+            source_dt = now
         ts_rounded = market_service._round_to_minute(source_dt).isoformat()
         rows.append({
             "asset": r["asset"],
