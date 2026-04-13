@@ -116,14 +116,23 @@ async def ops_server_health(
     try:
         proc = psutil.Process()
         mem = psutil.virtual_memory()
+        swap = psutil.swap_memory()
         disk = psutil.disk_usage("/")
         load = os.getloadavg()
+        net = psutil.net_io_counters()
+        net_conns = psutil.net_connections(kind="tcp")
+        from collections import Counter as _Counter
+        conn_states = _Counter(c.status for c in net_conns)
+
         result["system"] = {
             "cpu_percent": psutil.cpu_percent(interval=0.1),
             "cpu_count": psutil.cpu_count(),
             "memory_used_mb": round(mem.used / 1024 / 1024),
             "memory_total_mb": round(mem.total / 1024 / 1024),
             "memory_percent": mem.percent,
+            "memory_available_mb": round(mem.available / 1024 / 1024),
+            "swap_used_mb": round(swap.used / 1024 / 1024),
+            "swap_total_mb": round(swap.total / 1024 / 1024),
             "disk_used_gb": round(disk.used / 1024 / 1024 / 1024, 1),
             "disk_total_gb": round(disk.total / 1024 / 1024 / 1024, 1),
             "disk_percent": disk.percent,
@@ -133,6 +142,14 @@ async def ops_server_health(
             "process_memory_mb": round(proc.memory_info().rss / 1024 / 1024),
             "process_threads": proc.num_threads(),
             "open_files": len(proc.open_files()),
+            "network": {
+                "bytes_sent_mb": round(net.bytes_sent / 1024 / 1024, 1),
+                "bytes_recv_mb": round(net.bytes_recv / 1024 / 1024, 1),
+                "packets_sent": net.packets_sent,
+                "packets_recv": net.packets_recv,
+                "tcp_connections": len(net_conns),
+                "connection_states": dict(conn_states),
+            },
         }
     except Exception as exc:
         result["system"] = {"error": str(exc)}
@@ -198,6 +215,81 @@ async def ops_server_health(
         """)
         result["database"]["market_prices_duplicates"] = dup_check
 
+        # ── PostgreSQL internals ──
+        # Active queries
+        active = await pool.fetch("""
+            SELECT pid, state, query, NOW() - query_start AS duration,
+                   wait_event_type, wait_event
+            FROM pg_stat_activity
+            WHERE datname = current_database()
+              AND pid != pg_backend_pid()
+              AND state != 'idle'
+            ORDER BY query_start ASC
+        """)
+        result["database"]["active_queries"] = [
+            {
+                "pid": r["pid"],
+                "state": r["state"],
+                "duration_s": round(r["duration"].total_seconds(), 1) if r["duration"] else 0,
+                "wait": f"{r['wait_event_type']}:{r['wait_event']}" if r["wait_event_type"] else None,
+                "query": (r["query"] or "")[:120],
+            }
+            for r in active
+        ]
+
+        # Lock waits
+        locks = await pool.fetchval("""
+            SELECT COUNT(*) FROM pg_locks WHERE NOT granted
+        """)
+        result["database"]["lock_waits"] = locks
+
+        # Transaction rate + cache hit ratio
+        stats = await pool.fetchrow("""
+            SELECT xact_commit + xact_rollback AS tx_total,
+                   xact_commit AS tx_committed,
+                   xact_rollback AS tx_rolled_back,
+                   blks_hit, blks_read,
+                   CASE WHEN blks_hit + blks_read > 0
+                        THEN ROUND(blks_hit::numeric / (blks_hit + blks_read) * 100, 2)
+                        ELSE 100 END AS cache_hit_ratio,
+                   tup_returned, tup_fetched, tup_inserted, tup_updated, tup_deleted,
+                   deadlocks, conflicts
+            FROM pg_stat_database
+            WHERE datname = current_database()
+        """)
+        if stats:
+            result["database"]["stats"] = {
+                "tx_committed": stats["tx_committed"],
+                "tx_rolled_back": stats["tx_rolled_back"],
+                "cache_hit_ratio": float(stats["cache_hit_ratio"]),
+                "rows_returned": stats["tup_returned"],
+                "rows_inserted": stats["tup_inserted"],
+                "rows_updated": stats["tup_updated"],
+                "rows_deleted": stats["tup_deleted"],
+                "deadlocks": stats["deadlocks"],
+                "conflicts": stats["conflicts"],
+            }
+
+        # Dead tuples + autovacuum
+        vacuum_rows = await pool.fetch("""
+            SELECT relname, n_dead_tup, last_vacuum, last_autovacuum,
+                   n_live_tup
+            FROM pg_stat_user_tables
+            WHERE n_dead_tup > 1000
+            ORDER BY n_dead_tup DESC
+            LIMIT 10
+        """)
+        result["database"]["vacuum_needed"] = [
+            {
+                "table": r["relname"],
+                "dead_tuples": r["n_dead_tup"],
+                "live_tuples": r["n_live_tup"],
+                "last_vacuum": r["last_vacuum"].isoformat() if r["last_vacuum"] else None,
+                "last_autovacuum": r["last_autovacuum"].isoformat() if r["last_autovacuum"] else None,
+            }
+            for r in vacuum_rows
+        ]
+
     except Exception as exc:
         result["database"] = {"error": str(exc)}
 
@@ -223,19 +315,58 @@ async def ops_server_health(
     # ── Job status ──
     try:
         from app.core.log_stream import get_log_entries
+        from datetime import timedelta
         # Running jobs
         running_jobs = list(_running_direct_jobs.keys())
         result["jobs"] = {
             "running": running_jobs,
         }
+
+        # Per-job last run details from ARQ
+        try:
+            import redis as _redis
+            settings = get_settings()
+            r = _redis.from_url(settings.redis_url, decode_responses=True)
+            arq_jobs = {}
+            # Scan ARQ result keys
+            for key in r.scan_iter("arq:result:*", count=100):
+                try:
+                    import json as _json
+                    raw = r.get(key)
+                    if raw:
+                        data = _json.loads(raw)
+                        job_name = data.get("function", key.split(":")[-1])
+                        arq_jobs[job_name] = {
+                            "success": data.get("success"),
+                            "start_time": data.get("start_time"),
+                            "finish_time": data.get("finish_time"),
+                            "duration_ms": round((data.get("finish_time", 0) or 0) - (data.get("start_time", 0) or 0), 1) if data.get("finish_time") and data.get("start_time") else None,
+                        }
+                except Exception:
+                    pass
+            result["jobs"]["arq_results"] = arq_jobs
+        except Exception:
+            pass
+
         # Errors/warnings in the last hour
         all_entries, _ = get_log_entries(limit=5000, min_level="WARNING")
-        hour_ago = (now - __import__("datetime").timedelta(hours=1)).isoformat()
+        hour_ago = (now - timedelta(hours=1)).isoformat()
         recent = [e for e in all_entries if e.get("timestamp", "") >= hour_ago]
         errors_1h = sum(1 for e in recent if e.get("level") == "ERROR")
         warnings_1h = sum(1 for e in recent if e.get("level") == "WARNING")
         result["jobs"]["errors_1h"] = errors_1h
         result["jobs"]["warnings_1h"] = warnings_1h
+
+        # Top error messages
+        from collections import Counter as _ErrCounter
+        err_msgs = _ErrCounter()
+        for e in recent:
+            if e.get("level") in ("ERROR", "WARNING"):
+                err_msgs[e.get("message", "")[:80]] += 1
+        result["jobs"]["top_issues"] = [
+            {"message": msg, "count": cnt}
+            for msg, cnt in err_msgs.most_common(5)
+        ]
     except Exception as exc:
         result["jobs"] = {"error": str(exc)}
 

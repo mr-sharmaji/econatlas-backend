@@ -86,6 +86,9 @@ services:
     environment:
       GF_SECURITY_ADMIN_PASSWORD: econatlas
       GF_USERS_ALLOW_SIGN_UP: "false"
+      # Serve Grafana under /grafana subpath so Nginx can proxy it
+      GF_SERVER_ROOT_URL: "https://api.velqon.xyz/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
