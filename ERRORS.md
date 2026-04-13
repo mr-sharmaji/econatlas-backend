@@ -554,6 +554,111 @@ notification generation and the dedup key logic.
 
 ---
 
+---
+
+# Artha Chatbot Audit (2026-04-14)
+
+## C1. Thinking text leaked into 23 responses
+
+**CRITICAL — visible to users.**
+
+23 assistant messages contain `### Thinking` or `**Thinking:**` 
+prefixes that should have been stripped before sending to the client.
+
+Examples:
+```
+### Thinking
+Use the LIVE MARKET SNAPSHOT block to give the current crude oil price...
+
+**Crude oil price today**
+- **$99.38/bbl** (+0.99%)
+```
+
+```
+### Thinking
+The `stock_compare` tool returned an error because it needs at least
+two symbols. I'll let you know and ask if you'd like me to retry...
+```
+
+**Root cause:** The LLM's chain-of-thought reasoning is not being
+stripped from the response before streaming to the client. The
+`thinking_text` column exists in `chat_messages` but the content
+column still contains the thinking prefix.
+
+**Fix:** In `chat_service.py`, strip everything before the first
+non-thinking paragraph before saving/streaming the response.
+
+---
+
+## C2. Watchlist inconsistency — sometimes empty, sometimes has data
+
+**Symptom:** Same device gets "no stocks in watchlist" on one message
+and a full watchlist on the next.
+
+- "review my watchlist mutual funds" → "your watchlist contains only
+  stocks; there are no mutual funds"
+- "check my watchlist" → "I don't have any stocks or mutual funds"
+- "watchlist check" → shows full watchlist with Nifty 50, Gold, etc.
+- "What are the top 3 stocks in my watchlist by ROE?" → "no stocks"
+
+**Root cause:** The watchlist tool sometimes receives a different
+device_id or the tool fails silently and the LLM fabricates a
+"no data" response instead of retrying.
+
+---
+
+## C3. Model temporarily unavailable (2 occurrences)
+
+**Symptom:** "Model temporarily unavailable. Here's what I can tell
+you from the latest cached market snapshot..."
+
+**Impact:** Low — only 2 out of 859 messages (0.2%). The fallback
+provides basic market data which is better than an error.
+
+**Root cause:** OpenRouter free model rate limit or timeout. The
+fallback handler works correctly.
+
+---
+
+## C4. Hindi query got English response
+
+**Symptom:** User asked "aaj market kaisa hai" (Hindi) but got a
+fully English response.
+
+**Expected:** Response in Hindi or at least mixed Hindi-English.
+The system prompt says "Hindi if user writes in Hindi".
+
+**Root cause:** The LLM may not be detecting Hindi in transliterated
+(Roman script) form. The system prompt might need explicit guidance
+for Romanized Hindi detection.
+
+---
+
+## C5. Stock prices in responses are from query time, not real-time
+
+**Not a bug** — expected behavior. Artha shows prices as of the last
+data refresh. Examples verified:
+
+- Nifty Bank +1.99% ✅ (matches DB: 55,912.75 on Apr 10)
+- IDFC First Bank ₹62.95 — DB now shows ₹64.86 (updated since)
+- UltraTech ₹10,934 — DB now shows ₹11,502 (updated since)
+- Nippon India Taiwan Equity Fund +167.09% 1yr ✅ (matches DB)
+
+The stale prices are because responses were from April 10-11 and
+the DB has since been updated. Live queries show current data.
+
+---
+
+## C6. FX sanity guard still firing for PHP/INR and PKR/INR
+
+**Ongoing** — Google Finance returns USD/INR rate (94.55) for ALL
+exotic currency pairs. The sanity guard correctly replaces them
+with the last known good value.
+
+Not a chatbot bug — data source issue. Same as ERRORS.md #10c.
+
+---
+
 ## Priority order
 
 1. **A1 — %change mismatch (duplicate latest prices)** — highest-impact UX bug
