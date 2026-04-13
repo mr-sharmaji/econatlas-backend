@@ -155,6 +155,53 @@ def create_app() -> FastAPI:
             pass  # metrics must never break the request
         return response
 
+    # ── Grafana reverse proxy ──
+    # Cloudflare Tunnel only exposes port 8000. Grafana runs on
+    # localhost:3000 inside Docker. Proxy /grafana/* through FastAPI
+    # so it's accessible via the same tunnel.
+    import httpx as _httpx
+
+    _grafana_client = _httpx.AsyncClient(
+        base_url="http://grafana:3000",
+        timeout=30.0,
+    )
+
+    @application.api_route(
+        "/grafana/{path:path}",
+        methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        include_in_schema=False,
+    )
+    async def grafana_proxy(request: Request, path: str):
+        url = f"/grafana/{path}"
+        if request.url.query:
+            url = f"{url}?{request.url.query}"
+        body = await request.body()
+        headers = dict(request.headers)
+        headers.pop("host", None)
+        try:
+            resp = await _grafana_client.request(
+                method=request.method,
+                url=url,
+                headers=headers,
+                content=body if body else None,
+            )
+            excluded = {"transfer-encoding", "content-encoding", "content-length"}
+            resp_headers = {
+                k: v for k, v in resp.headers.items()
+                if k.lower() not in excluded
+            }
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                headers=resp_headers,
+                media_type=resp.headers.get("content-type"),
+            )
+        except Exception as exc:
+            return Response(
+                content=f"Grafana unavailable: {exc}",
+                status_code=502,
+            )
+
     return application
 
 
