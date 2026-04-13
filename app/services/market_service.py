@@ -553,30 +553,26 @@ async def get_latest_prices(
         out.append(d)
 
     # De-duplicate: the output can contain 2+ entries for the same
-    # asset when the SQL ROW_NUMBER query returns more rows than
-    # unique (asset, instrument_type) pairs — e.g. from concurrent
-    # ingest races or CTE edge cases.  Keep the entry whose
-    # previous_close-based change_percent has the LARGEST absolute
-    # value (heuristic: the stale baseline produces the smaller
-    # move because the old close is closer to the current price).
-    # This fixes the %change mismatch (list shows +0.28% vs detail
-    # shows -0.91%) that happens when one entry's previous_close is
-    # 2 days old.
-    seen: dict[str, dict] = {}
+    # asset when the processing pipeline produces multiple output
+    # items from a single SQL row (e.g. intraday override path
+    # creates a second entry with a different previous_close).
+    # Keep the FIRST occurrence per asset — the first entry is the
+    # one produced by the SQL ROW_NUMBER(rn=1) query which has the
+    # authoritative change_percent and previous_close from the
+    # source (Yahoo/Google). Later entries may have been
+    # recalculated against a stale baseline.
+    seen: dict[str, int] = {}
+    deduped: list[dict] = []
     for d in out:
         key = str(d.get("asset", ""))
-        existing = seen.get(key)
-        if existing is None:
-            seen[key] = d
-        else:
-            # Prefer the row with larger absolute change — that's
-            # the one using the most recent previous_close.
-            old_abs = abs(float(existing.get("change_percent") or 0))
-            new_abs = abs(float(d.get("change_percent") or 0))
-            if new_abs > old_abs:
-                seen[key] = d
-    deduped = list(seen.values())
-    logger.debug("Latest prices ready: instrument_type=%s output_rows=%d (deduped from %d)", instrument_type, len(deduped), len(out))
+        if key not in seen:
+            seen[key] = len(deduped)
+            deduped.append(d)
+    if len(deduped) < len(out):
+        logger.info(
+            "Latest prices deduped: %d → %d (dropped %d duplicates)",
+            len(out), len(deduped), len(out) - len(deduped),
+        )
     return deduped
 
 
