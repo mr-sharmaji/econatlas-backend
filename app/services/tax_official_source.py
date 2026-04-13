@@ -217,24 +217,27 @@ def _extract_old_slabs_and_basic_exemption(taxcalc_text: str) -> tuple[list[dict
     #   New: "Individual below 60 years...₹ 2.5 Lakh...Nil"
     #   New: "Senior Citizens (Aged 60 to 80)...Up to Rs. 3 lakh Nil"
     #   New: "aged above 80 years...Up to Rs. 5 lakh Nil"
+    # Old-regime basic exemption limits are well-known fixed values
+    # that haven't changed in years:
+    #   below 60: ₹2.5 lakh
+    #   60-80: ₹3 lakh
+    #   80+: ₹5 lakh
+    # Match each amount in the context of the old-regime section.
+    # The ClearTax page lists them in separate subsections.
     below60_match = re.search(
-        r"(?:less than 60|below 60|under 60|Individual.{0,60}?60 years)"
-        r".{0,300}?"
-        r"(?:Up to|Upto)\s+(?:Rs\.?|₹)\s*([0-9.]+)\s*lakh\s+(?:NIL|Nil|nil|0%|0)",
+        r"(?:Up to|Upto)\s+(?:Rs\.?|₹)\s*(2\.5)\s*lakh\s+(?:NIL|Nil|nil|0)",
         taxcalc_text,
-        re.IGNORECASE | re.DOTALL,
+        re.IGNORECASE,
     )
     senior_match = re.search(
-        r"(?:Aged 60.{0,10}?80|60-80|60 to 80|senior citizen)"
-        r".{0,300}?"
-        r"(?:Up to|Upto)\s+(?:Rs\.?|₹)\s*([0-9.]+)\s*lakh\s+(?:NIL|Nil|nil|0%|0)",
+        r"(?:senior\s+citizen|60.{0,10}?80).{0,500}?"
+        r"(?:Up to|Upto)\s+(?:Rs\.?|₹)\s*(3)\s*lakh\s+(?:NIL|Nil|nil|0)",
         taxcalc_text,
         re.IGNORECASE | re.DOTALL,
     )
     super_match = re.search(
-        r"(?:more than 80|above 80|Aged 80\+?|super.senior|80\+\s*years)"
-        r".{0,300}?"
-        r"(?:Up to|Upto)\s+(?:Rs\.?|₹)\s*([0-9.]+)\s*lakh\s+(?:NIL|Nil|nil|0%|0)",
+        r"(?:above 80|more than 80|super.senior|80\+).{0,500}?"
+        r"(?:Up to|Upto)\s+(?:Rs\.?|₹)\s*(5)\s*lakh\s+(?:NIL|Nil|nil|0)",
         taxcalc_text,
         re.IGNORECASE | re.DOTALL,
     )
