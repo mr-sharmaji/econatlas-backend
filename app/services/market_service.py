@@ -497,25 +497,40 @@ async def get_latest_prices(
                     phase,
                     is_stale,
                 )
-        else:
-            # Always prefer our own DB-computed previous day price
-            # over the source's previous_close. Yahoo sometimes
-            # provides a stale previous_close after holidays (e.g.
-            # using Thursday's close instead of Friday's when
-            # Monday is the current session). The SQL subquery's
-            # prev_price is the actual most-recent prior row price
-            # from our own market_prices table.
+        elif inst not in _ROLLING_24H_TYPES:
+            # For SESSION-based assets (indices): prefer DB-computed
+            # previous day price over the source's previous_close.
+            # Yahoo sometimes provides a stale previous_close after
+            # holidays. The SQL subquery's prev_price is the actual
+            # most-recent prior row from our own market_prices table.
+            #
+            # For ROLLING 24H assets (commodities, crypto, FX): trust
+            # the source's own change_percent and previous_close.
+            # These trade continuously and the source's prior close
+            # is always from the actual prior session. DB-computed
+            # values are wrong here because multi-day gaps in our
+            # daily table make the "previous row" 3+ days old.
             if prev is not None and isinstance(prev, (int, float)):
                 try:
                     p = float(d["price"])
                     pv = float(prev)
                     if pv and pv != 0:
                         db_change = round(((p - pv) / pv) * 100, 2)
-                        # Only override if meaningfully different
                         src_change = d.get("change_percent")
                         if src_change is None or abs((src_change or 0) - db_change) > 0.1:
                             d["change_percent"] = db_change
                             d["previous_close"] = pv
+                except (TypeError, ZeroDivisionError):
+                    pass
+        else:
+            # Rolling 24h: only fill if source didn't provide change
+            if d.get("change_percent") is None and prev is not None and isinstance(prev, (int, float)):
+                try:
+                    p = float(d["price"])
+                    pv = float(prev)
+                    if pv and pv != 0:
+                        d["change_percent"] = round(((p - pv) / pv) * 100, 2)
+                        d["previous_close"] = pv
                 except (TypeError, ZeroDivisionError):
                     pass
         if inst not in _ROLLING_24H_TYPES:
