@@ -131,6 +131,10 @@ async def _run_discover_mutual_funds() -> None:
     await _enqueue("discover_mutual_funds")
 
 
+async def _run_reconcile_stock_snapshots() -> None:
+    await _enqueue("reconcile_stock_snapshots")
+
+
 async def _run_discover_stock_price() -> None:
     await _enqueue("discover_stock_price")
 
@@ -291,6 +295,24 @@ def start_scheduler() -> None:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=10800,
+        )
+        # ── Reconciliation: fix stale snapshot prices after daily pipeline ──
+        # Runs 65 min after main stock job (16:00 + 65 = 17:05 IST).
+        # At this point both discover_stock (16:00) and
+        # discover_stock_price (16:30) have finished. Any snapshot
+        # still stale gets its price synced from price_history.
+        _scheduler.add_job(
+            _run_reconcile_stock_snapshots,
+            "cron",
+            day_of_week=intervals["discover_stock_daily_days"],
+            hour=17,
+            minute=5,
+            timezone="Asia/Kolkata",
+            id="reconcile_stock_snapshots",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
         )
         # ── Intraday live-price refresh (Mon-Fri market hours) ──
         # Every 30 min between 09:00 and 15:45 IST. The job itself has

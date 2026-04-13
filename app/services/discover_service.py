@@ -5107,3 +5107,85 @@ async def get_market_mood() -> dict:
         },
         "summary": ai_summary or fallback_summary,
     }
+
+
+# ── Reconciliation: sync snapshot prices from price_history ────────
+
+async def reconcile_stock_snapshots() -> dict:
+    """Reconcile discover_stock_snapshots with discover_stock_price_history.
+
+    After the daily pipeline + stock_price job, some stocks may have
+    stale prices in the snapshot table (due to screener.in 429s,
+    Yahoo timeouts, or the sequential fetch loop being aborted).
+    This function updates any snapshot whose last_price differs from
+    the most recent close in price_history by more than ₹0.50.
+
+    Returns {"updated": N, "checked": M}.
+    """
+    pool = await get_pool()
+    # Count stale before fix
+    stale_row = await pool.fetchrow(f"""
+        SELECT COUNT(*) AS cnt
+        FROM {STOCK_TABLE} s
+        JOIN (
+            SELECT DISTINCT ON (symbol) symbol, close, trade_date
+            FROM discover_stock_price_history
+            ORDER BY symbol, trade_date DESC
+        ) h ON s.symbol = h.symbol
+        WHERE ABS(s.last_price - h.close) > 0.5
+    """)
+    stale_count = stale_row["cnt"] if stale_row else 0
+
+    if stale_count == 0:
+        logger.info("reconcile_stock_snapshots: 0 stale — nothing to do")
+        return {"updated": 0, "checked": stale_count}
+
+    result = await pool.execute(f"""
+        UPDATE {STOCK_TABLE} s
+        SET last_price = sub.close,
+            percent_change = CASE
+                WHEN sub.prev_close IS NOT NULL AND sub.prev_close > 0
+                THEN ROUND(((sub.close - sub.prev_close) / sub.prev_close * 100)::numeric, 2)
+                ELSE s.percent_change
+            END,
+            point_change = CASE
+                WHEN sub.prev_close IS NOT NULL
+                THEN ROUND((sub.close - sub.prev_close)::numeric, 2)
+                ELSE s.point_change
+            END,
+            source_timestamp = sub.trade_date + TIME '10:00:00',
+            ingested_at = NOW()
+        FROM (
+            SELECT h.symbol, h.close, h.trade_date, prev.close AS prev_close
+            FROM (
+                SELECT DISTINCT ON (symbol) symbol, close, trade_date
+                FROM discover_stock_price_history
+                ORDER BY symbol, trade_date DESC
+            ) h
+            LEFT JOIN LATERAL (
+                SELECT close
+                FROM discover_stock_price_history p
+                WHERE p.symbol = h.symbol AND p.trade_date < h.trade_date
+                ORDER BY p.trade_date DESC
+                LIMIT 1
+            ) prev ON true
+        ) sub
+        WHERE s.symbol = sub.symbol
+          AND ABS(s.last_price - sub.close) > 0.5
+    """)
+
+    # Parse "UPDATE N" from asyncpg result
+    updated = 0
+    if result:
+        parts = result.split()
+        if len(parts) >= 2:
+            try:
+                updated = int(parts[-1])
+            except ValueError:
+                pass
+
+    logger.info(
+        "reconcile_stock_snapshots: %d/%d stale snapshots fixed",
+        updated, stale_count,
+    )
+    return {"updated": updated, "checked": stale_count}

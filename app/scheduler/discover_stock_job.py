@@ -454,8 +454,15 @@ class YahooFinanceSession:
 
 
 class DiscoverStockScraper(BaseScraper):
+    # Pre-fetch caches populated by _prefetch_fundamentals_parallel.
+    # The existing _fetch_screener_fundamentals reads from here first.
+    _screener_cache: dict[str, tuple[dict, str]] = {}
+    _yahoo_cache: dict[str, dict | None] = {}
+
     def __init__(self) -> None:
         super().__init__()
+        self._screener_cache = {}
+        self._yahoo_cache = {}
         self.settings = get_settings()
         self._nse_ready = False
         self._nse_disabled_until: datetime | None = None
@@ -1547,6 +1554,10 @@ class DiscoverStockScraper(BaseScraper):
 
     def _fetch_screener_fundamentals(self, nse_symbol: str) -> tuple[dict, str]:
         """Fetch fundamentals from Screener.in with retry logic and shareholding extraction."""
+        # Check parallel pre-fetch cache first
+        cached = self._screener_cache.get(nse_symbol)
+        if cached is not None:
+            return cached
         base = self.settings.discover_stock_primary_url.rstrip("/")
         candidates = [
             f"{base}/company/{nse_symbol}/consolidated/",
@@ -5312,6 +5323,34 @@ class DiscoverStockScraper(BaseScraper):
                 "fundamentals enabled for %d symbols",
                 len(bulk_quotes), _total, len(fundamentals_symbols),
             )
+
+            # ── Parallel pre-fetch: screener.in fundamentals ──────────
+            # Instead of fetching sequentially inside _build_snapshot_row
+            # (which takes 5-20s per stock × 2000 = hours), pre-fetch all
+            # screener pages in parallel with rate-limit backoff. The
+            # existing _fetch_screener_fundamentals checks _screener_cache
+            # first and falls through to HTTP only on cache miss.
+            fund_list = sorted(fundamentals_symbols)
+            if fund_list:
+                logger.info(
+                    "Parallel screener.in pre-fetch: %d symbols, "
+                    "3 workers, 0.5s delay",
+                    len(fund_list),
+                )
+                results = self._parallel_map(
+                    host="www.screener.in",
+                    workers=3,
+                    per_call_delay=0.5,
+                    items=fund_list,
+                    fetch_fn=lambda sym: self._fetch_screener_fundamentals(sym),
+                )
+                for sym, result in zip(fund_list, results):
+                    if result is not None:
+                        self._screener_cache[sym] = result
+                logger.info(
+                    "Screener pre-fetch complete: %d/%d cached",
+                    len(self._screener_cache), len(fund_list),
+                )
             missing: list[DiscoverStockDef] = []
             for stock in universe:
                 if _aborted:

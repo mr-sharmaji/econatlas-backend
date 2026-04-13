@@ -29,6 +29,7 @@ _VALID_JOBS = {
     "discover_mf_holdings_etmoney",
     "discover_mf_holdings_moneycontrol",
     "rescore_stock", "rescore_mf",
+    "reconcile_stock_snapshots",
     "ipo", "tax", "market_score", "fertilizer",
     "notification_check", "ipo_notification",
     "gap_backfill",
@@ -166,6 +167,10 @@ _DIRECT_RUN_JOBS: dict[str, tuple[str, str]] = {
     "discover_mf_holdings_moneycontrol": (
         "app.scheduler.discover_mf_holdings_job",
         "run_discover_mf_holdings_moneycontrol_job",
+    ),
+    "reconcile_stock_snapshots": (
+        "app.services.discover_service",
+        "reconcile_stock_snapshots",
     ),
     "discover_stock_intraday_backfill": (
         "app.scheduler.discover_stock_intraday_job",

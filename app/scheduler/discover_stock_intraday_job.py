@@ -95,11 +95,11 @@ _NSE_TIMEOUT_SEC = 8
 # ── Yahoo fallback configuration ────────────────────────────────────
 _YAHOO_BATCH_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
 _YAHOO_BATCH_SIZE = 50
-_YAHOO_BATCH_CONCURRENCY = 4
+_YAHOO_BATCH_CONCURRENCY = 6
 _YAHOO_PER_BATCH_TIMEOUT_SEC = 10
 
 # ── Overall wall-clock ceiling ──────────────────────────────────────
-_INTRADAY_TOTAL_TIMEOUT_SEC = 120
+_INTRADAY_TOTAL_TIMEOUT_SEC = 180
 
 _BROWSER_HEADERS = {
     "User-Agent": (
