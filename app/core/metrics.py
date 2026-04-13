@@ -45,11 +45,46 @@ REQUEST_COUNT = Counter(
     ["method", "path", "status"],
 )
 
+# ── System metrics ────────────────────────────────────────────────────
+
+SYSTEM_CPU_PERCENT = Gauge("system_cpu_percent", "System CPU usage %")
+SYSTEM_MEMORY_USED = Gauge("system_memory_used_bytes", "System memory used")
+SYSTEM_MEMORY_TOTAL = Gauge("system_memory_total_bytes", "System memory total")
+SYSTEM_MEMORY_PERCENT = Gauge("system_memory_percent", "System memory usage %")
+SYSTEM_DISK_USED = Gauge("system_disk_used_bytes", "Disk used")
+SYSTEM_DISK_TOTAL = Gauge("system_disk_total_bytes", "Disk total")
+SYSTEM_DISK_PERCENT = Gauge("system_disk_percent", "Disk usage %")
+SYSTEM_LOAD_1M = Gauge("system_load_avg_1m", "1-min load average")
+SYSTEM_LOAD_5M = Gauge("system_load_avg_5m", "5-min load average")
+SYSTEM_LOAD_15M = Gauge("system_load_avg_15m", "15-min load average")
+SYSTEM_NET_BYTES_SENT = Gauge("system_net_bytes_sent", "Network bytes sent")
+SYSTEM_NET_BYTES_RECV = Gauge("system_net_bytes_recv", "Network bytes received")
+SYSTEM_TCP_CONNECTIONS = Gauge("system_tcp_connections", "Active TCP connections", ["state"])
+SYSTEM_SWAP_USED = Gauge("system_swap_used_bytes", "Swap used")
+
 # ── Database pool metrics ─────────────────────────────────────────────
 
 DB_POOL_SIZE = Gauge("db_pool_size", "Current database connection pool size")
 DB_POOL_FREE = Gauge("db_pool_free", "Free connections in pool")
 DB_POOL_USED = Gauge("db_pool_used", "Used connections in pool")
+DB_LATENCY = Gauge("db_latency_seconds", "Database query latency")
+DB_CACHE_HIT_RATIO = Gauge("db_cache_hit_ratio", "PostgreSQL buffer cache hit %")
+DB_ACTIVE_QUERIES = Gauge("db_active_queries", "Number of active queries")
+DB_LOCK_WAITS = Gauge("db_lock_waits", "Number of waiting locks")
+DB_DEADLOCKS = Counter("db_deadlocks_total", "Total deadlocks")
+DB_TX_COMMITTED = Gauge("db_transactions_committed_total", "Total committed transactions")
+DB_TX_ROLLED_BACK = Gauge("db_transactions_rolled_back_total", "Total rolled back transactions")
+DB_TABLE_ROWS = Gauge("db_table_rows", "Row count per table", ["table"])
+DB_TABLE_SIZE = Gauge("db_table_size_bytes", "Total size per table", ["table"])
+DB_DEAD_TUPLES = Gauge("db_dead_tuples", "Dead tuples per table", ["table"])
+DB_DUPLICATES = Gauge("db_duplicates_count", "Duplicate rows in market_prices")
+
+# ── Redis metrics ─────────────────────────────────────────────────────
+
+REDIS_CONNECTED = Gauge("redis_connected", "Redis connection status (1=up, 0=down)")
+REDIS_LATENCY = Gauge("redis_latency_seconds", "Redis ping latency")
+REDIS_MEMORY_USED = Gauge("redis_memory_used_bytes", "Redis memory used")
+REDIS_KEYS = Gauge("redis_keys_total", "Total Redis keys")
 
 # ── Job metrics ───────────────────────────────────────────────────────
 
@@ -66,6 +101,8 @@ JOB_ERRORS = Counter(
     ["job_name"],
 )
 
+JOB_RUNNING = Gauge("jobs_running_count", "Number of currently running jobs")
+
 # ── Data freshness ────────────────────────────────────────────────────
 
 DATA_FRESHNESS = Gauge(
@@ -73,6 +110,14 @@ DATA_FRESHNESS = Gauge(
     "Seconds since latest data for each source",
     ["source"],
 )
+
+DATA_ROWS_TOTAL = Gauge("data_rows_total", "Total rows per data table", ["table"])
+DATA_STALE_STOCKS = Gauge("data_stale_stocks", "Number of stale stock snapshots")
+
+# ── Log metrics ───────────────────────────────────────────────────────
+
+LOG_ERRORS_1H = Gauge("log_errors_1h", "Errors in the last hour")
+LOG_WARNINGS_1H = Gauge("log_warnings_1h", "Warnings in the last hour")
 
 # ── In-process request stats (for /ops/health) ───────────────────────
 
@@ -151,3 +196,189 @@ def get_prometheus_metrics() -> bytes:
 
 def get_prometheus_content_type() -> str:
     return CONTENT_TYPE_LATEST
+
+
+# ── Background collector ──────────────────────────────────────────────
+# Updates system/DB/Redis gauges every 15s so Prometheus scrapes
+# always get fresh values without blocking HTTP requests.
+
+_collector_started = False
+
+
+async def start_metrics_collector():
+    """Launch the background metrics collector. Call once at app startup."""
+    global _collector_started
+    if _collector_started:
+        return
+    _collector_started = True
+
+    import asyncio
+    asyncio.create_task(_collect_loop())
+    logger.info("Metrics background collector started (15s interval)")
+
+
+async def _collect_loop():
+    import asyncio
+    while True:
+        try:
+            await _collect_once()
+        except Exception as exc:
+            logger.debug("Metrics collector error: %s", exc)
+        await asyncio.sleep(15)
+
+
+async def _collect_once():
+    """Single collection pass — update all gauges."""
+    import os
+    import psutil
+    from collections import Counter as _Ctr
+
+    # ── System ──
+    try:
+        mem = psutil.virtual_memory()
+        swap = psutil.swap_memory()
+        disk = psutil.disk_usage("/")
+        load = os.getloadavg()
+        net = psutil.net_io_counters()
+
+        SYSTEM_CPU_PERCENT.set(psutil.cpu_percent(interval=0))
+        SYSTEM_MEMORY_USED.set(mem.used)
+        SYSTEM_MEMORY_TOTAL.set(mem.total)
+        SYSTEM_MEMORY_PERCENT.set(mem.percent)
+        SYSTEM_DISK_USED.set(disk.used)
+        SYSTEM_DISK_TOTAL.set(disk.total)
+        SYSTEM_DISK_PERCENT.set(disk.percent)
+        SYSTEM_LOAD_1M.set(load[0])
+        SYSTEM_LOAD_5M.set(load[1])
+        SYSTEM_LOAD_15M.set(load[2])
+        SYSTEM_NET_BYTES_SENT.set(net.bytes_sent)
+        SYSTEM_NET_BYTES_RECV.set(net.bytes_recv)
+        SYSTEM_SWAP_USED.set(swap.used)
+
+        conns = psutil.net_connections(kind="tcp")
+        states = _Ctr(c.status for c in conns)
+        for state in ("ESTABLISHED", "TIME_WAIT", "CLOSE_WAIT", "LISTEN", "SYN_SENT"):
+            SYSTEM_TCP_CONNECTIONS.labels(state=state).set(states.get(state, 0))
+    except Exception:
+        pass
+
+    # ── Database ──
+    try:
+        from app.core.database import get_pool
+        pool = await get_pool()
+
+        DB_POOL_SIZE.set(pool.get_size())
+        DB_POOL_FREE.set(pool.get_idle_size())
+        DB_POOL_USED.set(pool.get_size() - pool.get_idle_size())
+
+        # Latency
+        t0 = time.monotonic()
+        await pool.fetchval("SELECT 1")
+        DB_LATENCY.set(time.monotonic() - t0)
+
+        # PG stats
+        stats = await pool.fetchrow("""
+            SELECT xact_commit, xact_rollback, deadlocks,
+                   blks_hit, blks_read,
+                   CASE WHEN blks_hit + blks_read > 0
+                        THEN blks_hit::float / (blks_hit + blks_read) * 100
+                        ELSE 100 END AS cache_hit
+            FROM pg_stat_database WHERE datname = current_database()
+        """)
+        if stats:
+            DB_CACHE_HIT_RATIO.set(stats["cache_hit"])
+            DB_TX_COMMITTED.set(stats["xact_commit"])
+            DB_TX_ROLLED_BACK.set(stats["xact_rollback"])
+
+        # Active queries + locks
+        active = await pool.fetchval(
+            "SELECT COUNT(*) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND state != 'idle' "
+            "AND pid != pg_backend_pid()"
+        )
+        DB_ACTIVE_QUERIES.set(active or 0)
+        locks = await pool.fetchval("SELECT COUNT(*) FROM pg_locks WHERE NOT granted")
+        DB_LOCK_WAITS.set(locks or 0)
+
+        # Table stats (top 10 by size)
+        tables = await pool.fetch("""
+            SELECT s.relname, s.n_live_tup, s.n_dead_tup,
+                   pg_total_relation_size(c.oid) AS size
+            FROM pg_stat_user_tables s
+            JOIN pg_class c ON s.relname = c.relname
+                AND c.relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
+            WHERE s.schemaname = 'public'
+            ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 10
+        """)
+        for t in tables:
+            name = t["relname"]
+            DB_TABLE_ROWS.labels(table=name).set(t["n_live_tup"])
+            DB_TABLE_SIZE.labels(table=name).set(t["size"])
+            DB_DEAD_TUPLES.labels(table=name).set(t["n_dead_tup"])
+
+        # Duplicates
+        dupes = await pool.fetchval("""
+            SELECT COUNT(*) FROM (
+                SELECT asset, instrument_type, timestamp
+                FROM market_prices
+                GROUP BY asset, instrument_type, timestamp
+                HAVING COUNT(*) > 1
+            ) sub
+        """)
+        DB_DUPLICATES.set(dupes or 0)
+
+        # Data freshness
+        for table, col in [
+            ("market_prices", "timestamp"),
+            ("discover_stock_snapshots", "source_timestamp"),
+            ("discover_mutual_fund_snapshots", "source_timestamp"),
+        ]:
+            latest = await pool.fetchval(f'SELECT MAX("{col}") FROM {table}')
+            if latest:
+                age = (datetime.now(timezone.utc) - latest).total_seconds()
+                DATA_FRESHNESS.labels(source=table).set(max(0, age))
+            row_count = await pool.fetchval(f"SELECT COUNT(*) FROM {table}")
+            DATA_ROWS_TOTAL.labels(table=table).set(row_count or 0)
+
+        stale = await pool.fetchval(
+            "SELECT COUNT(*) FROM discover_stock_snapshots "
+            "WHERE source_timestamp < CURRENT_DATE"
+        )
+        DATA_STALE_STOCKS.set(stale or 0)
+
+    except Exception:
+        pass
+
+    # ── Redis ──
+    try:
+        import redis as _redis
+        from app.core.config import get_settings
+        settings = get_settings()
+        r = _redis.from_url(settings.redis_url, decode_responses=True)
+        t0 = time.monotonic()
+        r.ping()
+        REDIS_LATENCY.set(time.monotonic() - t0)
+        REDIS_CONNECTED.set(1)
+        info = r.info(section="memory")
+        REDIS_MEMORY_USED.set(info.get("used_memory", 0))
+        REDIS_KEYS.set(r.dbsize())
+    except Exception:
+        REDIS_CONNECTED.set(0)
+
+    # ── Jobs ──
+    try:
+        from app.api.routes.ops import _running_direct_jobs
+        JOB_RUNNING.set(len(_running_direct_jobs))
+    except Exception:
+        pass
+
+    # ── Logs ──
+    try:
+        from app.core.log_stream import get_log_entries
+        entries, _ = get_log_entries(limit=5000, min_level="WARNING")
+        hour_ago = (datetime.now(timezone.utc) - __import__("datetime").timedelta(hours=1)).isoformat()
+        recent = [e for e in entries if e.get("timestamp", "") >= hour_ago]
+        LOG_ERRORS_1H.set(sum(1 for e in recent if e.get("level") == "ERROR"))
+        LOG_WARNINGS_1H.set(sum(1 for e in recent if e.get("level") == "WARNING"))
+    except Exception:
+        pass

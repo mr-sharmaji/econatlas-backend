@@ -1,274 +1,273 @@
 {
   "annotations": { "list": [] },
   "editable": true,
-  "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
-  "id": null,
-  "links": [],
   "panels": [
     {
-      "title": "Request Rate (req/s)",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+      "title": "🟢 Status Bar",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 4, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "fillOpacity": 15, "lineWidth": 2 },
-          "unit": "reqps"
-        },
-        "overrides": []
-      },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "red", "value": 0}] } } },
+      "targets": [{ "expr": "time() - process_start_time_seconds", "legendFormat": "Uptime", "refId": "A" }]
+    },
+    {
+      "title": "CPU %",
+      "type": "gauge",
+      "gridPos": { "h": 3, "w": 3, "x": 4, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 60}, {"color": "red", "value": 85}] } } },
+      "targets": [{ "expr": "system_cpu_percent", "refId": "A" }]
+    },
+    {
+      "title": "Memory %",
+      "type": "gauge",
+      "gridPos": { "h": 3, "w": 3, "x": 7, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 90}] } } },
+      "targets": [{ "expr": "system_memory_percent", "refId": "A" }]
+    },
+    {
+      "title": "Disk %",
+      "type": "gauge",
+      "gridPos": { "h": 3, "w": 3, "x": 10, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 75}, {"color": "red", "value": 90}] } } },
+      "targets": [{ "expr": "system_disk_percent", "refId": "A" }]
+    },
+    {
+      "title": "DB Cache Hit",
+      "type": "gauge",
+      "gridPos": { "h": 3, "w": 3, "x": 13, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "thresholds": { "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 90}, {"color": "green", "value": 98}] } } },
+      "targets": [{ "expr": "db_cache_hit_ratio", "refId": "A" }]
+    },
+    {
+      "title": "DB Latency",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 3, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.01}, {"color": "red", "value": 0.1}] } } },
+      "targets": [{ "expr": "db_latency_seconds", "refId": "A" }]
+    },
+    {
+      "title": "Stale Stocks",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 2, "x": 19, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 100}] } } },
+      "targets": [{ "expr": "data_stale_stocks", "refId": "A" }]
+    },
+    {
+      "title": "Errors/1h",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 3, "x": 21, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}] } } },
+      "targets": [{ "expr": "log_errors_1h", "legendFormat": "Errors", "refId": "A" }]
+    },
+
+    {
+      "title": "Request Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 3 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 15, "lineWidth": 2 } } },
       "targets": [
-        {
-          "expr": "sum(rate(http_requests_total[1m]))",
-          "legendFormat": "Total",
-          "refId": "A"
-        },
-        {
-          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[1m]))",
-          "legendFormat": "5xx Errors",
-          "refId": "B"
-        }
+        { "expr": "sum(rate(http_requests_total[1m]))", "legendFormat": "Total", "refId": "A" },
+        { "expr": "sum(rate(http_requests_total{status=~\"5..\"}[1m]))", "legendFormat": "5xx", "refId": "B" },
+        { "expr": "sum(rate(http_requests_total{status=~\"4..\"}[1m]))", "legendFormat": "4xx", "refId": "C" }
       ]
     },
     {
       "title": "Request Latency (p50 / p95 / p99)",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 3 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "fillOpacity": 10, "lineWidth": 2 },
-          "unit": "s"
-        },
-        "overrides": []
-      },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10, "lineWidth": 2 } } },
       "targets": [
-        {
-          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
-          "legendFormat": "p50",
-          "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
-          "legendFormat": "p95",
-          "refId": "B"
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
-          "legendFormat": "p99",
-          "refId": "C"
-        }
+        { "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p99", "refId": "C" }
       ]
     },
     {
-      "title": "Process Memory (RSS)",
+      "title": "Slowest Endpoints",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 3 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "fixedColor": "orange", "mode": "fixed" },
-          "custom": { "fillOpacity": 20, "lineWidth": 2 },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 0, "lineWidth": 2 } } },
+      "targets": [{ "expr": "topk(5, sum(rate(http_request_duration_seconds_sum[5m])) by (path) / sum(rate(http_request_duration_seconds_count[5m])) by (path) > 0)", "legendFormat": "{{path}}", "refId": "A" }]
+    },
+
+    {
+      "title": "CPU + Load Average",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 15, "lineWidth": 2 } } },
       "targets": [
-        {
-          "expr": "process_resident_memory_bytes",
-          "legendFormat": "RSS",
-          "refId": "A"
-        }
+        { "expr": "system_cpu_percent", "legendFormat": "CPU %", "refId": "A" },
+        { "expr": "system_load_avg_1m", "legendFormat": "Load 1m", "refId": "B" },
+        { "expr": "system_load_avg_5m", "legendFormat": "Load 5m", "refId": "C" }
       ]
     },
     {
-      "title": "CPU Usage",
+      "title": "Memory Usage",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 10 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "fixedColor": "red", "mode": "fixed" },
-          "custom": { "fillOpacity": 15, "lineWidth": 2 },
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "fillOpacity": 20, "lineWidth": 2 } } },
       "targets": [
-        {
-          "expr": "rate(process_cpu_seconds_total[1m])",
-          "legendFormat": "CPU",
-          "refId": "A"
-        }
+        { "expr": "process_resident_memory_bytes", "legendFormat": "Process RSS", "refId": "A" },
+        { "expr": "system_memory_used_bytes", "legendFormat": "System Used", "refId": "B" },
+        { "expr": "system_swap_used_bytes", "legendFormat": "Swap", "refId": "C" }
       ]
     },
     {
-      "title": "Slowest Endpoints (avg latency)",
+      "title": "Network I/O",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 10 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "fillOpacity": 0, "lineWidth": 2 },
-          "unit": "s"
-        },
-        "overrides": []
-      },
+      "fieldConfig": { "defaults": { "unit": "Bps", "custom": { "fillOpacity": 15, "lineWidth": 2 } } },
       "targets": [
-        {
-          "expr": "topk(5, sum(rate(http_request_duration_seconds_sum[5m])) by (path) / sum(rate(http_request_duration_seconds_count[5m])) by (path) > 0)",
-          "legendFormat": "{{path}}",
-          "refId": "A"
-        }
+        { "expr": "rate(system_net_bytes_sent[1m])", "legendFormat": "Sent", "refId": "A" },
+        { "expr": "rate(system_net_bytes_recv[1m])", "legendFormat": "Received", "refId": "B" }
+      ]
+    },
+
+    {
+      "title": "DB Pool",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 20, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "db_pool_size", "legendFormat": "Total", "refId": "A" },
+        { "expr": "db_pool_used", "legendFormat": "Used", "refId": "B" },
+        { "expr": "db_pool_free", "legendFormat": "Free", "refId": "C" }
       ]
     },
     {
-      "title": "Open File Descriptors",
+      "title": "DB Transactions",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "gridPos": { "h": 7, "w": 6, "x": 6, "y": 17 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "fixedColor": "purple", "mode": "fixed" },
-          "custom": { "fillOpacity": 15, "lineWidth": 2 },
-          "unit": "short"
-        },
-        "overrides": []
-      },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10, "lineWidth": 2 } } },
       "targets": [
-        {
-          "expr": "process_open_fds",
-          "legendFormat": "Open FDs",
-          "refId": "A"
-        },
-        {
-          "expr": "process_max_fds",
-          "legendFormat": "Max FDs",
-          "refId": "B"
-        }
+        { "expr": "rate(db_transactions_committed_total[1m])", "legendFormat": "Committed/s", "refId": "A" },
+        { "expr": "rate(db_transactions_rolled_back_total[1m])", "legendFormat": "Rolled Back/s", "refId": "B" }
       ]
     },
+    {
+      "title": "Active Queries + Locks",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 6, "x": 12, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 10, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "db_active_queries", "legendFormat": "Active Queries", "refId": "A" },
+        { "expr": "db_lock_waits", "legendFormat": "Lock Waits", "refId": "B" },
+        { "expr": "db_duplicates_count", "legendFormat": "Duplicates", "refId": "C" }
+      ]
+    },
+    {
+      "title": "Redis",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 6, "x": 18, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 15, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "redis_memory_used_bytes / 1024 / 1024", "legendFormat": "Memory MB", "refId": "A" },
+        { "expr": "redis_keys_total", "legendFormat": "Keys", "refId": "B" },
+        { "expr": "redis_latency_seconds * 1000", "legendFormat": "Latency ms", "refId": "C" }
+      ]
+    },
+
+    {
+      "title": "TCP Connection States",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 20, "lineWidth": 2, "stacking": { "mode": "normal" } } } },
+      "targets": [
+        { "expr": "system_tcp_connections{state=\"ESTABLISHED\"}", "legendFormat": "ESTABLISHED", "refId": "A" },
+        { "expr": "system_tcp_connections{state=\"TIME_WAIT\"}", "legendFormat": "TIME_WAIT", "refId": "B" },
+        { "expr": "system_tcp_connections{state=\"CLOSE_WAIT\"}", "legendFormat": "CLOSE_WAIT", "refId": "C" },
+        { "expr": "system_tcp_connections{state=\"LISTEN\"}", "legendFormat": "LISTEN", "refId": "D" }
+      ]
+    },
+    {
+      "title": "Data Freshness (age in seconds)",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "data_freshness_age_seconds{source=\"market_prices\"}", "legendFormat": "Market Prices", "refId": "A" },
+        { "expr": "data_freshness_age_seconds{source=\"discover_stock_snapshots\"}", "legendFormat": "Stocks", "refId": "B" },
+        { "expr": "data_freshness_age_seconds{source=\"discover_mutual_fund_snapshots\"}", "legendFormat": "Mutual Funds", "refId": "C" }
+      ]
+    },
+    {
+      "title": "Errors & Warnings / hour",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 15, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "log_errors_1h", "legendFormat": "Errors", "refId": "A" },
+        { "expr": "log_warnings_1h", "legendFormat": "Warnings", "refId": "B" }
+      ]
+    },
+
+    {
+      "title": "Table Sizes",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "options": { "orientation": "horizontal", "xTickLabelRotation": 0 },
+      "targets": [{ "expr": "topk(10, db_table_size_bytes)", "legendFormat": "{{table}}", "refId": "A", "format": "table", "instant": true }]
+    },
+    {
+      "title": "Dead Tuples (vacuum needed)",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5000}, {"color": "red", "value": 50000}] } } },
+      "options": { "orientation": "horizontal" },
+      "targets": [{ "expr": "topk(10, db_dead_tuples)", "legendFormat": "{{table}}", "refId": "A", "format": "table", "instant": true }]
+    },
+
     {
       "title": "Requests by Endpoint",
       "type": "table",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 39 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-      "fieldConfig": {
-        "defaults": { "unit": "reqps" },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "Path" }, "properties": [{ "id": "custom.width", "value": 300 }] }
-        ]
-      },
-      "transformations": [
-        { "id": "sortBy", "options": { "fields": {}, "sort": [{ "field": "Value", "desc": true }] } }
-      ],
-      "targets": [
-        {
-          "expr": "topk(15, sum(rate(http_requests_total[5m])) by (path))",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ]
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "transformations": [{ "id": "sortBy", "options": { "sort": [{ "field": "Value", "desc": true }] } }],
+      "targets": [{ "expr": "topk(20, sum(rate(http_requests_total[5m])) by (path))", "format": "table", "instant": true, "refId": "A" }]
     },
     {
-      "title": "Error Rate by Endpoint",
-      "type": "table",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
-      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-      "fieldConfig": {
-        "defaults": { "unit": "percentunit" },
-        "overrides": [
-          { "matcher": { "id": "byName", "options": "Path" }, "properties": [{ "id": "custom.width", "value": 300 }] }
-        ]
-      },
-      "targets": [
-        {
-          "expr": "topk(10, sum(rate(http_requests_total{status=~\"5..\"}[5m])) by (path) / sum(rate(http_requests_total[5m])) by (path) > 0)",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "GC Collections",
+      "title": "GC + File Descriptors",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 39 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "fillOpacity": 10, "lineWidth": 1 },
-          "unit": "short"
-        },
-        "overrides": []
-      },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 10, "lineWidth": 1 } } },
       "targets": [
-        {
-          "expr": "rate(python_gc_collections_total[5m])",
-          "legendFormat": "Gen {{generation}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "Virtual Memory",
-      "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 24 },
-      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-      "fieldConfig": { "defaults": { "unit": "bytes" } },
-      "targets": [
-        {
-          "expr": "process_virtual_memory_bytes",
-          "legendFormat": "VIRT",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "Uptime",
-      "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 24 },
-      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-      "fieldConfig": { "defaults": { "unit": "s" } },
-      "targets": [
-        {
-          "expr": "time() - process_start_time_seconds",
-          "legendFormat": "Uptime",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "title": "Python Version",
-      "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 24 },
-      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
-      "fieldConfig": { "defaults": { "unit": "string" } },
-      "targets": [
-        {
-          "expr": "python_info",
-          "legendFormat": "{{version}}",
-          "refId": "A"
-        }
+        { "expr": "rate(python_gc_collections_total[5m])", "legendFormat": "GC Gen {{generation}}", "refId": "A" },
+        { "expr": "process_open_fds", "legendFormat": "Open FDs", "refId": "B" }
       ]
     }
   ],
-  "refresh": "30s",
+  "refresh": "15s",
   "schemaVersion": 39,
   "tags": ["econatlas", "api", "monitoring"],
-  "templating": { "list": [] },
   "time": { "from": "now-1h", "to": "now" },
-  "timepicker": {},
   "timezone": "Asia/Kolkata",
   "title": "EconAtlas API",
   "uid": "econatlas-api",
-  "version": 1
+  "version": 2
 }

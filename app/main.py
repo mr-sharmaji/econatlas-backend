@@ -89,6 +89,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     #    simple queries answer with zero tool calls.
     from app.services.chat_service import start_prefetch_task
     start_prefetch_task()
+    # Start metrics background collector (updates Prometheus gauges every 15s)
+    from app.core.metrics import start_metrics_collector
+    await start_metrics_collector()
     yield
     stop_scheduler()            # 1. Stop enqueuing new jobs
     await stop_worker()         # 2. Drain in-flight ARQ jobs
