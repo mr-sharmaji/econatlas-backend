@@ -137,7 +137,14 @@ class CommodityScraper(BaseScraper, QuoteProvider):
         logger.debug("Fetching commodity quotes for %d symbols", len(SYMBOLS))
         for symbol, (asset, unit) in SYMBOLS.items():
             try:
-                payload = self._get_json(YAHOO_CHART_URL.format(symbol=symbol))
+                # Retry up to 3 times with backoff — Yahoo 429s are
+                # transient and usually clear within a few seconds.
+                # Previously a single failure fell through to Google
+                # which tracks a different contract (CLW00 vs CL=F).
+                payload = self._get_json(
+                    YAHOO_CHART_URL.format(symbol=symbol),
+                    retries=3,
+                )
                 result = payload.get("chart", {}).get("result", [])
                 if not result:
                     continue
@@ -361,17 +368,14 @@ class CommodityScraper(BaseScraper, QuoteProvider):
         except Exception:
             logger.exception("Commodity Yahoo fetch failed")
             yahoo_rows = []
-        all_rows = list(yahoo_rows)
-        try:
-            fallback_rows = self._fetch_google_fallbacks(yahoo_rows)
-            if fallback_rows:
-                logger.info("Commodity fallback quotes added: %d", len(fallback_rows))
-                all_rows.extend(fallback_rows)
-        except Exception:
-            logger.debug("Commodity fallback scan failed", exc_info=True)
-        selected = self._select_best_quotes(all_rows)
-        selected = self._promote_delayed_primary_with_fallback(selected, all_rows)
-        return selected
+        # Google fallback REMOVED — Google tracks CLW00 (nearest
+        # delivery) which diverges 5-15% from the front-month during
+        # roll periods. Yahoo CL=F ($97.84) is correct; Google CLW00
+        # ($91.91) caused a false -11.3% notification. Accept missing
+        # data over wrong data.
+        if not yahoo_rows:
+            logger.warning("Commodity: Yahoo returned 0 rows, no fallback")
+        return yahoo_rows
 
     def fetch_all(self) -> List[Dict]:
         return self.fetch_quotes()
