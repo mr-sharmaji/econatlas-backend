@@ -70,6 +70,66 @@ def _set_cache(key: str, text: str) -> None:
     _cache[key] = (text, time.time())
 
 
+def _convert_tables_to_bullets(text: str) -> str:
+    """Convert markdown tables to compact bullet lists for mobile.
+
+    Tables with 4+ columns are unreadable on phone screens (words
+    wrap to 3-4 chars per column). Converts:
+      | Symbol | Sector | Score | Change |
+      |--------|--------|-------|--------|
+      | TCS    | IT     | 78    | +1.2%  |
+    To:
+      - **TCS** — IT · Score 78 · +1.2%
+    """
+    lines = text.split("\n")
+    result = []
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        # Detect table: starts with | and has multiple |
+        if line.startswith("|") and line.count("|") >= 3:
+            # Collect the full table
+            table_lines = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                table_lines.append(lines[i].strip())
+                i += 1
+            if len(table_lines) < 3:
+                # Too short to be a real table, keep as-is
+                result.extend(table_lines)
+                continue
+            # Parse header
+            header = [c.strip() for c in table_lines[0].split("|")[1:-1]]
+            # Skip separator row (|---|---|)
+            data_start = 1
+            if data_start < len(table_lines) and re.match(
+                r"^\|[\s\-:|]+\|$", table_lines[data_start]
+            ):
+                data_start = 2
+            # Convert each data row to a bullet
+            for row_line in table_lines[data_start:]:
+                cells = [c.strip() for c in row_line.split("|")[1:-1]]
+                if not cells or all(not c for c in cells):
+                    continue
+                # First cell becomes bold label, rest joined with ·
+                # Strip existing bold markers to avoid ****double****
+                label = (cells[0] if cells else "").strip("*")
+                details = []
+                for j, cell in enumerate(cells[1:], 1):
+                    if cell and j < len(header):
+                        details.append(f"{header[j]} {cell}")
+                    elif cell:
+                        details.append(cell)
+                if details:
+                    result.append(f"- **{label}** — {' · '.join(details)}")
+                else:
+                    result.append(f"- **{label}**")
+            result.append("")  # blank line after converted table
+        else:
+            result.append(lines[i])
+            i += 1
+    return "\n".join(result)
+
+
 def _clean_response(raw: str) -> str:
     """Strip thinking artifacts and meta-commentary from LLM output.
 
@@ -88,6 +148,12 @@ def _clean_response(raw: str) -> str:
         r"^\s*(?:#{1,6}\s*|\*{1,2})?[Tt]hinking(?:\*{1,2})?[:\s]*\n+",
         "", text,
     ).strip()
+
+    # Convert markdown tables to bullet lists for mobile readability.
+    # LLMs frequently emit tables despite prompt instructions. Tables
+    # with 5+ columns are unreadable on phone screens (words wrap to
+    # 3-4 chars per column). Convert each row to a compact bullet.
+    text = _convert_tables_to_bullets(text)
 
     # Remove common preamble patterns from Nemotron-style models
     preamble_patterns = [
