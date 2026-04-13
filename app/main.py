@@ -164,8 +164,8 @@ def create_app() -> FastAPI:
     # so it's accessible via the same tunnel.
     import httpx as _httpx
 
-    import base64 as _b64
-    _grafana_auth = _b64.b64encode(b"admin:econatlas").decode()
+    import os as _os
+    _grafana_token = _os.environ.get("GRAFANA_SERVICE_TOKEN", "")
     _grafana_client = _httpx.AsyncClient(
         base_url="http://grafana:3000",
         timeout=30.0,
@@ -186,11 +186,12 @@ def create_app() -> FastAPI:
         body = await request.body()
         headers = dict(request.headers)
         headers.pop("host", None)
-        # Inject basic auth so Grafana never returns 403.
-        # The browser's session cookie doesn't survive the proxy
-        # (CSRF mismatch), so we authenticate every proxied request
-        # server-side with the admin credentials.
-        headers["authorization"] = f"Basic {_grafana_auth}"
+        # Inject service account token so Grafana never returns 403.
+        # Browser session cookies don't survive the reverse proxy
+        # (CSRF mismatch). Use a read-only service account API key
+        # loaded from GRAFANA_SERVICE_TOKEN env var.
+        if _grafana_token:
+            headers["authorization"] = f"Bearer {_grafana_token}"
         try:
             resp = await _grafana_client.request(
                 method=request.method,

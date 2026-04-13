@@ -57,6 +57,7 @@ services:
       REDIS_URL: redis://redis:6379
       LOG_LEVEL: DEBUG
       FIREBASE_CREDENTIALS_JSON: /app/firebase-key.json
+      GRAFANA_SERVICE_TOKEN: "${GRAFANA_SERVICE_TOKEN:-}"
     volumes:
       - ./firebase-key.json:/app/firebase-key.json:ro
     depends_on:
