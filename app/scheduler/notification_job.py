@@ -1339,11 +1339,13 @@ async def _check_missed_open_notifications(
 
 # Expected close hours in IST for each market (approximate)
 _CLOSE_WINDOWS_IST: dict[str, tuple[int, int]] = {
-    # (earliest_close_hour, latest_check_hour) in IST — narrow windows to avoid duplicates
-    "india": (15, 16),    # NSE closes 15:30, check until 16:00
-    "us": (1, 2),         # US closes ~1:30 AM IST, check until 2:00 only
-    "europe": (20, 21),   # Europe closes ~20:30 IST, check until 21:00 only
-    "japan": (11, 12),    # TSE closes ~11:30 IST, check until 12:00 only
+    # (earliest_close_hour, latest_check_hour) in IST.
+    # Wider windows to catch missed notifications after server
+    # restarts. The dedup_key (date + market) prevents duplicates.
+    "india": (15, 17),    # NSE closes 15:30, check until 17:00
+    "us": (1, 6),         # US closes ~1:30 AM IST, check until 6:00 AM
+    "europe": (20, 23),   # Europe closes ~20:30 IST, check until 23:00
+    "japan": (11, 14),    # TSE closes ~11:30 IST, check until 14:00
 }
 
 

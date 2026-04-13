@@ -25,6 +25,7 @@ _india_session_cache_until: float = 0.0
 # Lazy-loaded calendars (avoid import cost at module load)
 _nse_calendar = None
 _nyse_calendar = None
+_nymex_calendar = None
 _lse_calendar = None
 _tse_calendar = None
 
@@ -44,6 +45,7 @@ SESSION_CLOSED = "closed"
 # Package has no XNSE; XBOM is the India exchange calendar in gerrymanoim/exchange_calendars.
 _NSE_CALENDAR_NAME = "XBOM"
 _NYSE_CALENDAR_NAME = "XNYS"
+_NYMEX_CALENDAR_NAME = "NYMEX"
 _LSE_CALENDAR_NAME = "XLON"
 _TSE_CALENDAR_NAME = "XTKS"
 
@@ -83,6 +85,17 @@ def _get_nyse():
         except Exception as e:
             logger.warning("NYSE calendar (%s) unavailable: %s. Using weekday/date fallback for US.", _NYSE_CALENDAR_NAME, e)
     return _nyse_calendar
+
+
+def _get_nymex():
+    global _nymex_calendar
+    if _nymex_calendar is None:
+        try:
+            import exchange_calendars as xcals
+            _nymex_calendar = xcals.get_calendar(_NYMEX_CALENDAR_NAME)
+        except Exception as e:
+            logger.warning("NYMEX calendar unavailable: %s. Falling back to NYSE.", e)
+    return _nymex_calendar
 
 
 def _get_lse():
@@ -148,7 +161,16 @@ def is_trading_day_markets(utc_now: datetime) -> bool:
 
 
 def is_trading_day_commodities(utc_now: datetime) -> bool:
-    """True if 'today' is a trading day for commodity futures (US session). Use for gold, oil, etc."""
+    """True if 'today' is a trading day for commodity futures.
+
+    Uses the NYMEX calendar from exchange_calendars which knows
+    CME Globex holidays (Good Friday, Christmas, etc.). Falls back
+    to NYSE calendar, then weekday check.
+    """
+    nymex = _get_nymex()
+    if nymex is not None:
+        nymex_date = utc_now.astimezone(_NYSE_TZ).date()
+        return nymex.is_session(nymex_date)
     nyse = _get_nyse()
     if nyse is None:
         return utc_now.weekday() < 5
