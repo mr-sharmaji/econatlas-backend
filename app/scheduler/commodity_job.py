@@ -74,24 +74,15 @@ def _active_front_month_symbol(root: str, exchange: str) -> dict:
     return {"code": code, "token": token}
 
 
-def _get_google_fallbacks() -> dict:
-    """Build Google Finance fallback config with dynamic crude oil symbol."""
-    fallbacks = {
-        "GC=F": {"code": "GCW00:COMEX", "token": '"GCW00","COMEX"'},
-        "SI=F": {"code": "SIW00:COMEX", "token": '"SIW00","COMEX"'},
-        "PL=F": {"code": "PLW00:NYMEX", "token": '"PLW00","NYMEX"'},
-        "PA=F": {"code": "PAW00:NYMEX", "token": '"PAW00","NYMEX"'},
-        # Crude oil: use active front-month, NOT W00 (expiring contract).
-        # W00 diverges 5-15% during roll periods and caused a false
-        # -11.3% notification when it showed $91.91 vs Yahoo's $103.62.
-        "CL=F": _active_front_month_symbol("CL", "NYMEX"),
-        "NG=F": {"code": "NGW00:NYMEX", "token": '"NGW00","NYMEX"'},
-        "HG=F": {"code": "HGW00:COMEX", "token": '"HGW00","COMEX"'},
-    }
-    return fallbacks
-
-
-GOOGLE_COMMODITY_FALLBACKS = _get_google_fallbacks()
+GOOGLE_COMMODITY_FALLBACKS = {
+    "GC=F": {"code": "GCW00:COMEX", "token": '"GCW00","COMEX"'},
+    "SI=F": {"code": "SIW00:COMEX", "token": '"SIW00","COMEX"'},
+    "PL=F": {"code": "PLW00:NYMEX", "token": '"PLW00","NYMEX"'},
+    "PA=F": {"code": "PAW00:NYMEX", "token": '"PAW00","NYMEX"'},
+    "CL=F": {"code": "CLW00:NYMEX", "token": '"CLW00","NYMEX"'},
+    "NG=F": {"code": "NGW00:NYMEX", "token": '"NGW00","NYMEX"'},
+    "HG=F": {"code": "HGW00:COMEX", "token": '"HGW00","COMEX"'},
+}
 COMMODITY_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
 
 
