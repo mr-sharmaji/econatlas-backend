@@ -74,15 +74,35 @@ def _active_front_month_symbol(root: str, exchange: str) -> dict:
     return {"code": code, "token": token}
 
 
-GOOGLE_COMMODITY_FALLBACKS = {
-    "GC=F": {"code": "GCW00:COMEX", "token": '"GCW00","COMEX"'},
-    "SI=F": {"code": "SIW00:COMEX", "token": '"SIW00","COMEX"'},
-    "PL=F": {"code": "PLW00:NYMEX", "token": '"PLW00","NYMEX"'},
-    "PA=F": {"code": "PAW00:NYMEX", "token": '"PAW00","NYMEX"'},
-    "CL=F": {"code": "CLW00:NYMEX", "token": '"CLW00","NYMEX"'},
-    "NG=F": {"code": "NGW00:NYMEX", "token": '"NGW00","NYMEX"'},
-    "HG=F": {"code": "HGW00:COMEX", "token": '"HGW00","COMEX"'},
-}
+def _get_google_fallbacks() -> dict:
+    """Build Google Finance fallback symbols.
+
+    Most commodities use W00 (nearest delivery) which auto-rolls
+    correctly. Crude oil is the exception — Google's CLW00 lags
+    during monthly rolls and gets stuck on the expired contract
+    (e.g. showing $91.69 for expired April while the active May
+    contract is $97.64). Use the dynamic front-month symbol
+    (CLK26, CLM26, etc.) for crude oil instead.
+    """
+    now = datetime.now(timezone.utc)
+    next_month = now.month % 12 + 1
+    next_year = now.year + (1 if next_month == 1 else 0)
+    month_code = _FUTURES_MONTH_CODES[next_month - 1]
+    year_short = str(next_year)[-2:]
+    cl_code = f"CL{month_code}{year_short}:NYMEX"
+    cl_token = f'"CL{month_code}{year_short}","NYMEX"'
+    return {
+        "GC=F": {"code": "GCW00:COMEX", "token": '"GCW00","COMEX"'},
+        "SI=F": {"code": "SIW00:COMEX", "token": '"SIW00","COMEX"'},
+        "PL=F": {"code": "PLW00:NYMEX", "token": '"PLW00","NYMEX"'},
+        "PA=F": {"code": "PAW00:NYMEX", "token": '"PAW00","NYMEX"'},
+        "CL=F": {"code": cl_code, "token": cl_token},
+        "NG=F": {"code": "NGW00:NYMEX", "token": '"NGW00","NYMEX"'},
+        "HG=F": {"code": "HGW00:COMEX", "token": '"HGW00","COMEX"'},
+    }
+
+
+GOOGLE_COMMODITY_FALLBACKS = _get_google_fallbacks()
 COMMODITY_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
 
 
@@ -368,14 +388,19 @@ class CommodityScraper(BaseScraper, QuoteProvider):
         except Exception:
             logger.exception("Commodity Yahoo fetch failed")
             yahoo_rows = []
-        # Google fallback REMOVED — Google tracks CLW00 (nearest
-        # delivery) which diverges 5-15% from the front-month during
-        # roll periods. Yahoo CL=F ($97.84) is correct; Google CLW00
-        # ($91.91) caused a false -11.3% notification. Accept missing
-        # data over wrong data.
-        if not yahoo_rows:
-            logger.warning("Commodity: Yahoo returned 0 rows, no fallback")
-        return yahoo_rows
+        all_rows = list(yahoo_rows)
+        # Google fallback: now using dynamic front-month symbol for
+        # crude oil (CLK26 instead of CLW00) so prices match Yahoo.
+        try:
+            fallback_rows = self._fetch_google_fallbacks(yahoo_rows)
+            if fallback_rows:
+                logger.info("Commodity fallback quotes added: %d", len(fallback_rows))
+                all_rows.extend(fallback_rows)
+        except Exception:
+            logger.debug("Commodity fallback scan failed", exc_info=True)
+        selected = self._select_best_quotes(all_rows)
+        selected = self._promote_delayed_primary_with_fallback(selected, all_rows)
+        return selected
 
     def fetch_all(self) -> List[Dict]:
         return self.fetch_quotes()
