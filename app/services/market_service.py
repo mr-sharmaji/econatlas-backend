@@ -551,8 +551,33 @@ async def get_latest_prices(
                 is_stale,
             )
         out.append(d)
-    logger.debug("Latest prices ready: instrument_type=%s output_rows=%d", instrument_type, len(out))
-    return out
+
+    # De-duplicate: the output can contain 2+ entries for the same
+    # asset when the SQL ROW_NUMBER query returns more rows than
+    # unique (asset, instrument_type) pairs — e.g. from concurrent
+    # ingest races or CTE edge cases.  Keep the entry whose
+    # previous_close-based change_percent has the LARGEST absolute
+    # value (heuristic: the stale baseline produces the smaller
+    # move because the old close is closer to the current price).
+    # This fixes the %change mismatch (list shows +0.28% vs detail
+    # shows -0.91%) that happens when one entry's previous_close is
+    # 2 days old.
+    seen: dict[str, dict] = {}
+    for d in out:
+        key = str(d.get("asset", ""))
+        existing = seen.get(key)
+        if existing is None:
+            seen[key] = d
+        else:
+            # Prefer the row with larger absolute change — that's
+            # the one using the most recent previous_close.
+            old_abs = abs(float(existing.get("change_percent") or 0))
+            new_abs = abs(float(d.get("change_percent") or 0))
+            if new_abs > old_abs:
+                seen[key] = d
+    deduped = list(seen.values())
+    logger.debug("Latest prices ready: instrument_type=%s output_rows=%d (deduped from %d)", instrument_type, len(deduped), len(out))
+    return deduped
 
 
 # ---- Intraday (1D live) ----

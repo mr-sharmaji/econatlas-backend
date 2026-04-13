@@ -169,9 +169,9 @@ async def run_gap_backfill_job() -> None:
         latest_ts = row["latest_ts"] if row else None
 
         if latest_ts is None:
-            # No data at all — skip (full backfill is a separate script)
-            logger.debug("Gap backfill: no existing data for %s — skipping", item.asset)
-            continue
+            # No data at all — treat as a full-seed: start from 5 years ago.
+            logger.info("Gap backfill: FULL SEED needed for %s (no existing data)", item.asset)
+            latest_ts = now - timedelta(days=1825)  # 5 years
 
         # Ensure timezone-aware
         if latest_ts.tzinfo is None:
@@ -179,6 +179,25 @@ async def run_gap_backfill_job() -> None:
 
         # Normalize to midnight
         latest_date = latest_ts.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Also check if the asset has very few rows (< 90 days of data):
+        # treat it as a seed by pushing the gap start back to 5 years ago
+        # so the chart has enough history for the 1Y/3Y/5Y views.
+        row_count = await pool.fetchval(
+            "SELECT COUNT(*) FROM market_prices WHERE asset = $1 AND instrument_type = $2",
+            item.asset,
+            item.instrument_type,
+        )
+        if row_count < 90:
+            seed_start = now - timedelta(days=1825)
+            if seed_start < latest_date:
+                logger.info(
+                    "Gap backfill: LOW DATA SEED for %s — only %d rows, seeding from %s",
+                    item.asset,
+                    row_count,
+                    seed_start.date(),
+                )
+                latest_date = seed_start
 
         if not _is_gap(latest_date, expected_latest):
             continue
