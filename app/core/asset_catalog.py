@@ -48,7 +48,8 @@ ASSET_CATALOG: tuple[AssetCatalogItem, ...] = (
     AssetCatalogItem("Euro Stoxx 50", "index", "^STOXX50E", "Europe", "EURONEXT", "session", 330, "index", "points", False, "Euro Stoxx 50"),
     # Japan
     AssetCatalogItem("Nikkei 225", "index", "^N225", "Japan", "TSE", "session", 400, "index", "points", False, "Nikkei 225"),
-    AssetCatalogItem("TOPIX", "index", "^TOPX", "Japan", "TSE", "session", 410, "index", "points", False, "Nikkei 225"),
+    # ^TOPX returns empty on Yahoo backfill. 1306.T (TOPIX ETF) tracks it 1:1.
+    AssetCatalogItem("TOPIX", "index", "1306.T", "Japan", "TSE", "session", 410, "index", "points", False, "Nikkei 225"),
     # FX
     AssetCatalogItem("USD/INR", "currency", "USDINR=X", "FX", "NYSE", "rolling_24h", 500, "fx", "inr", True, "USD/INR"),
     AssetCatalogItem("EUR/INR", "currency", "EURINR=X", "FX", "NYSE", "rolling_24h", 510, "fx", "inr", False, "USD/INR"),

@@ -135,6 +135,47 @@ async def _run_reconcile_stock_snapshots() -> None:
     await _enqueue("reconcile_stock_snapshots")
 
 
+async def _run_db_maintenance() -> None:
+    """Weekly REINDEX + VACUUM ANALYZE on high-write tables.
+
+    Prevents index corruption from accumulating — concurrent market/
+    commodity/crypto job writes can corrupt btree indexes over time
+    (seen on market_prices, market_scores, market_prices_intraday).
+    """
+    from app.core.database import get_pool
+    pool = await get_pool()
+    tables = [
+        "market_prices",
+        "market_prices_intraday",
+        "market_scores",
+        "discover_stock_snapshots",
+        "discover_stock_price_history",
+        "discover_stock_intraday",
+        "discover_mutual_fund_snapshots",
+    ]
+    for table in tables:
+        try:
+            # Remove exact duplicates first (they block REINDEX)
+            if table == "market_scores":
+                await pool.execute(f"""
+                    DELETE FROM {table} WHERE ctid NOT IN (
+                        SELECT MIN(ctid) FROM {table} GROUP BY asset, instrument_type
+                    )
+                """)
+            elif table == "market_prices":
+                await pool.execute(f"""
+                    DELETE FROM {table} WHERE ctid NOT IN (
+                        SELECT MIN(ctid) FROM {table}
+                        GROUP BY asset, instrument_type, timestamp
+                    )
+                """)
+            await pool.execute(f"REINDEX TABLE {table}")
+            await pool.execute(f"VACUUM ANALYZE {table}")
+            logger.info("DB maintenance: REINDEX + VACUUM OK for %s", table)
+        except Exception as exc:
+            logger.warning("DB maintenance: %s failed: %s", table, exc)
+
+
 async def _run_discover_stock_price() -> None:
     await _enqueue("discover_stock_price")
 
@@ -449,6 +490,21 @@ def start_scheduler() -> None:
         misfire_grace_time=600,
     )
     logger.info("Scheduler: ipo_notification every 30m")
+    # Weekly DB maintenance: REINDEX + VACUUM on high-write tables
+    # Sunday 3:00 AM IST — lowest traffic window
+    _scheduler.add_job(
+        _run_db_maintenance,
+        "cron",
+        day_of_week="sun",
+        hour=3,
+        minute=0,
+        timezone="Asia/Kolkata",
+        id="db_maintenance",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=7200,
+    )
+    logger.info("Scheduler: db_maintenance weekly Sun 3:00 AM IST")
     logger.info(
         "Scheduler: brief=%dm discover_stock=%s %02d:%02d IST retry=%s %02d:%02d IST discover_mf=%s %02d:%02d IST ipo=%dm macro=%dm news=%dm tax=%s",
         intervals["brief_minutes"],
