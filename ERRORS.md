@@ -649,6 +649,41 @@ the DB has since been updated. Live queries show current data.
 
 ---
 
+## C7. CRITICAL: Crude oil price mismatch — Google vs Yahoo contracts
+
+**Notification said: "Crude Oil drops 11.3% to $91.91"**
+**Trading Economics shows: $97.8**
+**Yahoo (Apr 10): $103.62**
+**Google (Apr 13): $91.91**
+
+The -11.3% was computed as ($91.91 - $103.62) / $103.62 — comparing
+Google's CLW00:NYMEX (specific delivery month, $91.91) against
+Yahoo's CL=F (continuous front-month, $103.62). These are DIFFERENT
+futures contracts with a $12 spread.
+
+Google Finance tracks `CLW00:NYMEX` which is a specific delivery
+month contract that's already in backwardation. Yahoo CL=F tracks
+the continuous front-month. During contract rolls the prices diverge.
+
+**7 commodities affected by source mismatch:**
+- crude oil: $91.91 (Google) vs $103.62 (Yahoo) = -11.3% false alert
+- natural gas: $2.63 vs $2.71 = -2.9% (smaller but still cross-source)
+- copper, gold, silver, palladium, platinum: all have Google vs Yahoo
+  mismatches but within ~2-3% (tolerable)
+
+**Root cause:** The commodity_job writes both Google and Yahoo rows
+to `market_prices` with different timestamps. The notification code
+computes change from "latest row" vs "previous row" without checking
+if they're from the same source.
+
+**Fixes needed:**
+1. Add commodity sanity guard (similar to FX): reject prices that
+   deviate >10% from the previous row unless both are from the same source
+2. OR: prefer one source consistently (Yahoo for daily, Google for intraday)
+3. Notification should only compute change between same-source rows
+
+---
+
 ## C6. FX sanity guard still firing for PHP/INR and PKR/INR
 
 **Ongoing** — Google Finance returns USD/INR rate (94.55) for ALL

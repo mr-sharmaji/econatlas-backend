@@ -1073,24 +1073,30 @@ async def _check_commodity_spikes(now: datetime) -> None:
         # Get the latest price AND the previous session's close for
         # each asset. Compute the change ourselves instead of trusting
         # the source's change_percent (which can be stale after holidays).
+        # Get latest price AND previous session's close from the
+        # SAME source. Cross-source comparison (Google vs Yahoo)
+        # produces false spikes because they track different
+        # futures contracts (CLW00:NYMEX vs CL=F continuous).
         rows = await pool.fetch(
             """
             WITH latest AS (
                 SELECT DISTINCT ON (asset)
-                    asset, price, unit, timestamp::date AS d
+                    asset, price, unit, source, timestamp::date AS d
                 FROM market_prices
                 WHERE instrument_type = 'commodity'
                   AND asset = ANY($1)
                 ORDER BY asset, timestamp DESC
             ),
             prev AS (
-                SELECT DISTINCT ON (asset)
-                    asset, price AS prev_price
-                FROM market_prices
-                WHERE instrument_type = 'commodity'
-                  AND asset = ANY($1)
-                  AND timestamp::date < (SELECT MAX(d) FROM latest WHERE latest.asset = market_prices.asset)
-                ORDER BY asset, timestamp DESC
+                SELECT DISTINCT ON (l.asset)
+                    l.asset, m.price AS prev_price
+                FROM latest l
+                JOIN market_prices m
+                  ON m.asset = l.asset
+                 AND m.instrument_type = 'commodity'
+                 AND m.source = l.source
+                 AND m.timestamp::date < l.d
+                ORDER BY l.asset, m.timestamp DESC
             )
             SELECT l.asset, l.price, l.unit, p.prev_price
             FROM latest l
