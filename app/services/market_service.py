@@ -497,15 +497,27 @@ async def get_latest_prices(
                     phase,
                     is_stale,
                 )
-        elif d.get("change_percent") is None and prev is not None and isinstance(prev, (int, float)):
-            try:
-                p = float(d["price"])
-                pv = float(prev)
-                if pv and pv != 0:
-                    d["change_percent"] = round(((p - pv) / pv) * 100, 2)
-                    d["previous_close"] = pv
-            except (TypeError, ZeroDivisionError):
-                pass
+        else:
+            # Always prefer our own DB-computed previous day price
+            # over the source's previous_close. Yahoo sometimes
+            # provides a stale previous_close after holidays (e.g.
+            # using Thursday's close instead of Friday's when
+            # Monday is the current session). The SQL subquery's
+            # prev_price is the actual most-recent prior row price
+            # from our own market_prices table.
+            if prev is not None and isinstance(prev, (int, float)):
+                try:
+                    p = float(d["price"])
+                    pv = float(prev)
+                    if pv and pv != 0:
+                        db_change = round(((p - pv) / pv) * 100, 2)
+                        # Only override if meaningfully different
+                        src_change = d.get("change_percent")
+                        if src_change is None or abs((src_change or 0) - db_change) > 0.1:
+                            d["change_percent"] = db_change
+                            d["previous_close"] = pv
+                except (TypeError, ZeroDivisionError):
+                    pass
         if inst not in _ROLLING_24H_TYPES:
             intraday_day = await get_intraday(asset=asset, instrument_type=inst)
             points = intraday_day.get("prices") or []
