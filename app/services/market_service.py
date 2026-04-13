@@ -442,7 +442,17 @@ async def get_latest_prices(
         prev = d.pop("prev_price", None)
         asset = str(d.get("asset") or "")
         inst = str(d.get("instrument_type") or "")
-        d["change_window"] = "24h" if inst in _ROLLING_24H_TYPES else "session"
+        # Daily-only commodities (no intraday feed) get "session"
+        # instead of "24h" — they're reference prices updated once
+        # per day, not continuously traded futures.
+        _DAILY_ONLY_COMMODITIES = frozenset({
+            "coal", "dap fertilizer", "iron ore", "palm oil",
+            "potash", "rubber", "tsp fertilizer", "urea", "zinc",
+        })
+        if inst in _ROLLING_24H_TYPES and asset not in _DAILY_ONLY_COMMODITIES:
+            d["change_window"] = "24h"
+        else:
+            d["change_window"] = "session"
         d["last_tick_timestamp"] = None
         d["ingested_at"] = None
         d["data_quality"] = None
