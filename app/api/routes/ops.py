@@ -173,11 +173,13 @@ async def ops_server_health(
 
         # Table sizes
         rows = await pool.fetch("""
-            SELECT relname AS table_name,
-                   n_live_tup AS row_count,
+            SELECT s.relname AS table_name,
+                   s.n_live_tup AS row_count,
                    pg_total_relation_size(c.oid) AS total_bytes
             FROM pg_stat_user_tables s
-            JOIN pg_class c ON s.relname = c.relname
+            JOIN pg_class c ON s.relname = c.relname AND c.relnamespace = (
+                SELECT oid FROM pg_namespace WHERE nspname = 'public'
+            )
             WHERE s.schemaname = 'public'
             ORDER BY pg_total_relation_size(c.oid) DESC
             LIMIT 15
