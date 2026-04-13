@@ -535,6 +535,13 @@ async def run_discover_stock_intraday_job() -> None:
                             percent_change = COALESCE($4, percent_change),
                             volume = COALESCE($5, volume),
                             traded_value = COALESCE($6, traded_value),
+                            -- source_timestamp was missing from the UPDATE,
+                            -- so the app always showed the last DAILY job's
+                            -- timestamp (e.g. Thursday 10:30) even though
+                            -- the intraday job updated prices every 30 min
+                            -- during market hours on Monday. The "Updated
+                            -- X ago" label showed 3 days stale.
+                            source_timestamp = NOW(),
                             ingested_at = NOW()
                         WHERE symbol = $1
                         """,

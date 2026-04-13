@@ -821,21 +821,41 @@ async def _check_gift_nifty(status: dict, now: datetime) -> None:
             return
 
         change_pct = (gift_price - nifty_close) / nifty_close * 100
-        current_band = int(change_pct * 2) / 2  # 0.5% bands
+        # 1.0% bands (was 0.5%) — wider bands mean fewer
+        # notifications. At 0.5% bands, small oscillations
+        # around a band boundary fired 3+ alerts per morning.
+        current_band = int(change_pct) if abs(change_pct) >= 1 else (1 if change_pct > 0 else -1)
 
         today = now.astimezone(_IST).strftime("%Y-%m-%d")
-        band_key = f"{current_band:.1f}"
+        band_key = f"{current_band}"
         dedup_key = f"{today}_gift_nifty_{band_key}"
 
-        if abs(change_pct) > 0.5 and current_band != _gift_nifty_state.get("last_band"):
+        # Cooldown: at least 30 minutes between Gift Nifty alerts
+        # to prevent notification spam from volatile pre-market.
+        last_sent = _gift_nifty_state.get("last_sent_at")
+        if last_sent is not None:
+            elapsed = (now - last_sent).total_seconds()
+            if elapsed < 1800:  # 30 minutes
+                return
+
+        # Max 3 Gift Nifty alerts per day
+        daily_count = _gift_nifty_state.get("daily_count", 0)
+        daily_date = _gift_nifty_state.get("daily_date")
+        if daily_date != today:
+            daily_count = 0
+
+        if abs(change_pct) > 0.5 and current_band != _gift_nifty_state.get("last_band") and daily_count < 3:
             logger.info(
-                "Gift Nifty alert: %.1f%% (price=%.0f, nifty_close=%.0f, band=%.1f)",
+                "Gift Nifty alert: %.1f%% (price=%.0f, nifty_close=%.0f, band=%d)",
                 change_pct, gift_price, nifty_close, current_band,
             )
             await notification_service.notify_gift_nifty_move(
                 change_pct, gift_price, dedup_key=dedup_key,
             )
             _gift_nifty_state["last_band"] = current_band
+            _gift_nifty_state["last_sent_at"] = now
+            _gift_nifty_state["daily_count"] = daily_count + 1
+            _gift_nifty_state["daily_date"] = today
 
     except Exception:
         logger.exception("Gift Nifty check failed")
