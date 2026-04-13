@@ -24,14 +24,27 @@ logger = logging.getLogger(__name__)
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 
 # Symbols Yahoo does not support for INR cross rates
-# Yahoo returns 404 for these exotic INR cross rates — no data available.
-_UNSUPPORTED_YAHOO_FX = {
-    "SARINR=X", "MXNINR=X",
-    "QARINR=X", "KWDINR=X", "BHDINR=X", "ILSINR=X",
-    "NOKINR=X", "TRYINR=X", "BDTINR=X", "LKRINR=X",
-    "NPRINR=X", "OMRINR=X", "PLNINR=X", "PKRINR=X",
-    "PHPINR=X", "VNDINR=X",
+# Yahoo returns 404 for direct INR crosses (e.g. QARINR=X).
+# These are computed via USD triangulation: fetch XXXUSD=X and
+# USDINR=X separately, then multiply to get XXX/INR.
+_COMPUTED_INR_CROSSES: dict[str, str] = {
+    # Yahoo INR symbol → Yahoo USD symbol for the foreign currency
+    "QARINR=X": "QARUSD=X",
+    "KWDINR=X": "KWDUSD=X",
+    "BHDINR=X": "BHDUSD=X",
+    "ILSINR=X": "ILSUSD=X",
+    "NOKINR=X": "NOKUSD=X",
+    "TRYINR=X": "TRYUSD=X",
+    "BDTINR=X": "BDTUSD=X",
+    "LKRINR=X": "LKRUSD=X",
+    "NPRINR=X": "NPRUSD=X",
+    "OMRINR=X": "OMRUSD=X",
+    "PLNINR=X": "PLNUSD=X",
+    "PKRINR=X": "PKRUSD=X",
+    "PHPINR=X": "PHPUSD=X",
+    "VNDINR=X": "VNDUSD=X",
 }
+_UNSUPPORTED_YAHOO_FX = {"SARINR=X", "MXNINR=X"}
 
 # Yahoo reports these commodity symbols in USX (cents) — divide by 100
 _USX_SYMBOLS = {"ZW=F", "ZC=F", "ZS=F", "ZO=F", "CT=F", "SB=F", "KC=F"}
@@ -141,6 +154,51 @@ class GapBackfiller(BaseScraper):
             out.append((ts, value))
         return out
 
+    def fetch_computed_inr_cross(
+        self,
+        inr_symbol: str,
+        start: datetime,
+        end: datetime,
+    ) -> list[tuple[datetime, float]]:
+        """Compute XXX/INR by triangulating via USD.
+
+        Yahoo doesn't have direct INR crosses for exotic currencies
+        (QARINR=X returns 404). But QARUSD=X and USDINR=X both work.
+        XXX/INR = XXX/USD × USD/INR (join on date).
+        """
+        usd_symbol = _COMPUTED_INR_CROSSES.get(inr_symbol)
+        if not usd_symbol:
+            return []
+
+        xxx_usd = self.fetch_series(usd_symbol, start, end)
+        usd_inr = self.fetch_series("USDINR=X", start, end)
+
+        if not xxx_usd or not usd_inr:
+            logger.info(
+                "Computed INR cross: %s — XXX/USD=%d points, USD/INR=%d points",
+                inr_symbol, len(xxx_usd), len(usd_inr),
+            )
+            return []
+
+        # Index USD/INR by date for O(1) lookup
+        usd_inr_by_date = {ts: price for ts, price in usd_inr}
+
+        out: list[tuple[datetime, float]] = []
+        for ts, xxx_usd_price in xxx_usd:
+            inr_rate = usd_inr_by_date.get(ts)
+            if inr_rate is None or inr_rate <= 0:
+                continue
+            # XXX/INR = XXX/USD × USD/INR
+            cross = round(xxx_usd_price * inr_rate, 6)
+            if cross > 0:
+                out.append((ts, cross))
+
+        logger.info(
+            "Computed INR cross: %s — %d points (from %d XXX/USD × %d USD/INR)",
+            inr_symbol, len(out), len(xxx_usd), len(usd_inr),
+        )
+        return out
+
 
 async def run_gap_backfill_job() -> None:
     """Scan all backfillable assets for data gaps and fill from Yahoo."""
@@ -220,8 +278,11 @@ async def run_gap_backfill_job() -> None:
             gap_end.date(),
         )
 
-        # Fetch from Yahoo
-        points = fetcher.fetch_series(item.symbol, gap_start, gap_end)
+        # Fetch from Yahoo — use triangulation for unsupported INR crosses
+        if item.symbol in _COMPUTED_INR_CROSSES:
+            points = fetcher.fetch_computed_inr_cross(item.symbol, gap_start, gap_end)
+        else:
+            points = fetcher.fetch_series(item.symbol, gap_start, gap_end)
         if not points:
             logger.warning("Gap backfill: no data returned for %s", item.asset)
             time.sleep(0.3)
