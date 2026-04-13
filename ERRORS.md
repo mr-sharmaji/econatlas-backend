@@ -1,12 +1,41 @@
-# Backend error log — pending fixes
+# Backend error log
 
-Snapshot taken 2026-04-11 ~13:06 IST while watching `/ops/logs` and the
-discover_mutual_funds direct-run. Everything below has a root cause
-identified but no fix shipped in this session — they're parked for a
-focused pass later.
+Last updated: 2026-04-14
 
 Source: `GET /ops/logs` (in-memory ring buffer, ~5000 entries, ~2 min
 retention window because `market_service` is spamming ~14 log/sec).
+
+---
+
+# FIXED BUGS (this session, 2026-04-11 → 2026-04-14)
+
+| Issue | Fix | Commit |
+|-------|-----|--------|
+| MF upsert aborts on single-row failure | Per-row try/except | `76bb979` |
+| Stock upsert aborts on single-row failure | Per-row try/except | `0f1f832` |
+| %change mismatch (Sensex +0.28% vs -0.91%) | Dedup output + DB prev_close override | `ed9fa6e`, `7415a43`, `9641208` |
+| Historical data missing (Sensex 3→1232 rows, Silver 6431) | gap_backfill seeds <90-row assets | `ed9fa6e` |
+| Holiday notifications (Sunday pre-market) | `is_trading_day` gate | `f7c5af0` |
+| Gift Nifty sign flip (+0.6% vs -0.6%) | `previous_close` baseline | `f7c5af0` |
+| Gift Nifty duplicate notifications (3+ per morning) | 30-min cooldown, 1% bands, max 3/day | `e85ee47` |
+| Commodity false spike alerts | DB-computed change, 3% bands, 2hr cooldown | `f1f73b5` |
+| Stock intraday source_timestamp missing | actual Yahoo quote_ts | `f1f73b5` |
+| Stock 1D chart empty (Upstox .NS suffix) | Strip .NS/.BO before lookup | `e3c91e5` |
+| Macro forex_reserves dropped (unit mismatch) | Auto-scale USD millions→billions | `3972978` |
+| Pull-to-refresh broken (OfflineInterceptor) | Disabled request blocking | `c7eb5af` |
+| Widget refresh lag (Handler deferred in doze) | AlarmManager.setExactAndAllowWhileIdle | `e90ef85` |
+| App crash (WidgetRefreshService missing SCHEDULE_EXACT_ALARM) | Added permission + fallback | `f614279` |
+| 43% stale stock prices after daily job | Parallel screener pre-fetch + reconciliation | `b77043d` |
+| Nifty Midcap 150 wrong sign (stale Yahoo prev_close) | DB-computed previous_close override | `9641208` |
+| Market_prices duplicates (3834 rows) | Cleaned via ops/sql DELETE | manual |
+| Corrupted intraday index (Sensex) | REINDEX | manual |
+| MF top_holdings parse crash (company_name vs name) | Accept both field shapes | `98a1e1d` |
+| Commodity deep links showing USD instead of INR | instrumentTypeHint from route | `98a1e1d` |
+| MF detail 404 for stale scheme codes | Fallback name-search provider | `98a1e1d` |
+
+---
+
+# PENDING / OPEN BUGS
 
 ---
 
@@ -41,7 +70,8 @@ against a fresh fetch of one of the failing symbols
 
 ## 2. `brief_job` — duplicate (market, symbol) in executemany batch
 
-**Status:** FIXED in commit `3972978` locally — NEEDS DEPLOY.
+**Status:** FIXED in commit `3972978` locally — **STILL NOT DEPLOYED**.
+Confirmed still crashing in production as of 2026-04-14 (MARUTI.NS).
 
 **Symptom:**
 ```
@@ -66,7 +96,7 @@ occurrence before `executemany`. See `app/services/brief_service.py`.
 
 ## 3. `macro_job` — forex reserves unit mismatch
 
-**Status:** FIXED in commit `3972978` locally — NEEDS DEPLOY.
+**Status:** ✅ FIXED and deployed.
 
 **Symptom:**
 ```
