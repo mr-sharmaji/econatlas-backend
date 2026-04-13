@@ -125,7 +125,10 @@ async def ops_server_health(
         conn_states = _Counter(c.status for c in net_conns)
 
         result["system"] = {
-            "cpu_percent": psutil.cpu_percent(interval=0.1),
+            # interval=1 gives a 1-second sample for accurate reading.
+            # interval=0 returns 0% because there's no prior baseline
+            # in a fresh per-request call.
+            "cpu_percent": psutil.cpu_percent(interval=1),
             "cpu_count": psutil.cpu_count(),
             "memory_used_mb": round(mem.used / 1024 / 1024),
             "memory_total_mb": round(mem.total / 1024 / 1024),
