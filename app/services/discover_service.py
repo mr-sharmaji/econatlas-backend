@@ -4040,7 +4040,14 @@ async def _fetch_yahoo_intraday(symbol: str) -> list[dict]:
 
     # Load the Upstox instrument master on demand and memoise it.
     instr_map = await _get_upstox_instrument_map()
-    key = instr_map.get(symbol.upper().strip())
+    # Strip Yahoo's .NS / .BO suffix before looking up the Upstox
+    # instrument map which uses plain NSE trading symbols.
+    clean_sym = symbol.upper().strip()
+    for suffix in (".NS", ".BO"):
+        if clean_sym.endswith(suffix):
+            clean_sym = clean_sym[: -len(suffix)]
+            break
+    key = instr_map.get(clean_sym)
     if not key:
         return []
     from datetime import timedelta
