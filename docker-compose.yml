@@ -86,9 +86,11 @@ services:
     environment:
       GF_SECURITY_ADMIN_PASSWORD: econatlas
       GF_USERS_ALLOW_SIGN_UP: "false"
-      # Serve Grafana under /grafana subpath so Nginx can proxy it
+      # Serve Grafana at root — the FastAPI proxy handles the /grafana/ prefix
+      # stripping. SERVE_FROM_SUB_PATH caused Grafana's frontend JS to
+      # miscalculate API URLs when accessed through a reverse proxy.
       GF_SERVER_ROOT_URL: "${PUBLIC_BASE_URL:-http://localhost:8000}/grafana/"
-      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "false"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana

@@ -175,7 +175,10 @@ def create_app() -> FastAPI:
         include_in_schema=False,
     )
     async def grafana_proxy(request: Request, path: str):
-        url = f"/grafana/{path}"
+        # Strip /grafana/ prefix — Grafana container runs at root /
+        # (SERVE_FROM_SUB_PATH=false). Forward the path as-is to
+        # the container.
+        url = f"/{path}"
         if request.url.query:
             url = f"{url}?{request.url.query}"
         body = await request.body()
