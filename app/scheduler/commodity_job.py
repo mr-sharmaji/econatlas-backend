@@ -47,15 +47,51 @@ SYMBOLS = {
     "HO=F": ("heating oil", "usd_per_gallon"),
 }
 
-GOOGLE_COMMODITY_FALLBACKS = {
-    "GC=F": {"code": "GCW00:COMEX", "token": '"GCW00","COMEX"'},
-    "SI=F": {"code": "SIW00:COMEX", "token": '"SIW00","COMEX"'},
-    "PL=F": {"code": "PLW00:NYMEX", "token": '"PLW00","NYMEX"'},
-    "PA=F": {"code": "PAW00:NYMEX", "token": '"PAW00","NYMEX"'},
-    "CL=F": {"code": "CLW00:NYMEX", "token": '"CLW00","NYMEX"'},
-    "NG=F": {"code": "NGW00:NYMEX", "token": '"NGW00","NYMEX"'},
-    "HG=F": {"code": "HGW00:COMEX", "token": '"HGW00","COMEX"'},
-}
+# Futures month codes: F=Jan G=Feb H=Mar J=Apr K=May M=Jun
+#                      N=Jul Q=Aug U=Sep V=Oct X=Nov Z=Dec
+_FUTURES_MONTH_CODES = "FGHJKMNQUVXZ"
+
+
+def _active_front_month_symbol(root: str, exchange: str) -> dict:
+    """Compute the active front-month Google Finance symbol.
+
+    For most commodities, W00 (nearest delivery) matches the active
+    front-month. But for crude oil during roll periods, W00 tracks
+    the expiring contract which diverges 5-15% from the actively
+    traded next-month contract.
+
+    This function computes the next calendar month's contract code
+    (e.g. in April 2026 → CLK26:NYMEX for May delivery).
+    """
+    now = datetime.now(timezone.utc)
+    # Active month is typically the NEXT month
+    next_month = now.month % 12 + 1
+    next_year = now.year + (1 if next_month == 1 else 0)
+    month_code = _FUTURES_MONTH_CODES[next_month - 1]
+    year_short = str(next_year)[-2:]
+    code = f"{root}{month_code}{year_short}:{exchange}"
+    token = f'"{root}{month_code}{year_short}","{exchange}"'
+    return {"code": code, "token": token}
+
+
+def _get_google_fallbacks() -> dict:
+    """Build Google Finance fallback config with dynamic crude oil symbol."""
+    fallbacks = {
+        "GC=F": {"code": "GCW00:COMEX", "token": '"GCW00","COMEX"'},
+        "SI=F": {"code": "SIW00:COMEX", "token": '"SIW00","COMEX"'},
+        "PL=F": {"code": "PLW00:NYMEX", "token": '"PLW00","NYMEX"'},
+        "PA=F": {"code": "PAW00:NYMEX", "token": '"PAW00","NYMEX"'},
+        # Crude oil: use active front-month, NOT W00 (expiring contract).
+        # W00 diverges 5-15% during roll periods and caused a false
+        # -11.3% notification when it showed $91.91 vs Yahoo's $103.62.
+        "CL=F": _active_front_month_symbol("CL", "NYMEX"),
+        "NG=F": {"code": "NGW00:NYMEX", "token": '"NGW00","NYMEX"'},
+        "HG=F": {"code": "HGW00:COMEX", "token": '"HGW00","COMEX"'},
+    }
+    return fallbacks
+
+
+GOOGLE_COMMODITY_FALLBACKS = _get_google_fallbacks()
 COMMODITY_FALLBACK_MAX_CLOCK_SKEW_SECONDS = 180
 
 
