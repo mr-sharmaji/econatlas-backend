@@ -370,6 +370,16 @@ async def _fetch_yahoo_batch(
             volume = int(vol_raw) if vol_raw is not None else None
         except (TypeError, ValueError):
             volume = None
+        # Extract actual exchange quote time from Yahoo (Unix epoch).
+        rmt = row.get("regularMarketTime")
+        quote_ts = None
+        if rmt is not None:
+            try:
+                from datetime import datetime, timezone
+                quote_ts = datetime.fromtimestamp(int(rmt), tz=timezone.utc)
+            except (TypeError, ValueError, OSError):
+                pass
+
         out[plain] = {
             "last_price": price_f,
             "point_change": point,
@@ -387,6 +397,7 @@ async def _fetch_yahoo_batch(
                 if row.get("regularMarketDayLow") is not None else None
             ),
             "source": "yahoo_batch",
+            "quote_ts": quote_ts,
         }
     return out
 
@@ -501,6 +512,9 @@ async def run_discover_stock_intraday_job() -> None:
     # Bulk-write via executemany inside one transaction — the naive
     # per-symbol loop did ~4000 sequential round-trips (~60s). Batched
     # executemany collapses that to two statements (~2s).
+    from datetime import datetime, timezone as _tz
+    _fetch_ts = datetime.now(_tz.utc)  # fallback for NSE quotes with no per-symbol ts
+
     update_rows: list[tuple] = []
     insert_rows: list[tuple] = []
     for symbol in symbols:
@@ -508,6 +522,11 @@ async def run_discover_stock_intraday_job() -> None:
         if not q or q.get("last_price") is None:
             skipped += 1
             continue
+        # Use actual exchange quote timestamp when available (Yahoo
+        # provides regularMarketTime). For NSE bulk quotes which
+        # don't carry per-symbol timestamps, fall back to the fetch
+        # wall-clock time.
+        ts = q.get("quote_ts") or _fetch_ts
         update_rows.append((
             symbol,
             q.get("last_price"),
@@ -515,6 +534,7 @@ async def run_discover_stock_intraday_job() -> None:
             q.get("percent_change"),
             q.get("volume"),
             q.get("traded_value"),
+            ts,
         ))
         insert_rows.append((
             symbol,
@@ -535,13 +555,7 @@ async def run_discover_stock_intraday_job() -> None:
                             percent_change = COALESCE($4, percent_change),
                             volume = COALESCE($5, volume),
                             traded_value = COALESCE($6, traded_value),
-                            -- source_timestamp was missing from the UPDATE,
-                            -- so the app always showed the last DAILY job's
-                            -- timestamp (e.g. Thursday 10:30) even though
-                            -- the intraday job updated prices every 30 min
-                            -- during market hours on Monday. The "Updated
-                            -- X ago" label showed 3 days stale.
-                            source_timestamp = NOW(),
+                            source_timestamp = $7,
                             ingested_at = NOW()
                         WHERE symbol = $1
                         """,

@@ -1038,41 +1038,65 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
 
 
 async def _check_commodity_spikes(now: datetime) -> None:
-    """Check for commodity price spikes (±2% from previous close)."""
+    """Check for commodity price spikes (±3% from previous session close).
+
+    Previous version had three issues:
+    1. Used source's change_percent which could be stale after holidays.
+    2. Used 2% bands → crude oil going 0→7% fired 3 notifications (bands 2,4,6).
+    3. No cooldown → oscillation near a band boundary fired repeatedly.
+
+    Now: compute change from DB's previous-day price, use 3% bands,
+    add 2-hour cooldown per asset, cap at 2 alerts per asset per day.
+    """
     now_ist = now.astimezone(_IST)
     today = now_ist.date()
+
+    # Gate: only alert on commodity trading days. Prevents stale
+    # weekend data from triggering false spikes.
+    from app.scheduler.trading_calendar import is_trading_day_commodities
+    if not is_trading_day_commodities(now):
+        return
 
     # Reset alerted state on new day
     if _commodity_spike_state.get("last_date") != today:
         _commodity_spike_state["last_date"] = today
         _commodity_spike_state["alerted"] = {}
+        _commodity_spike_state["daily_counts"] = {}
+        _commodity_spike_state["last_sent"] = {}
 
     try:
         from app.core.database import get_pool
         pool = await get_pool()
 
-        # Only alert on essential commodities for Indian users.
-        # NOTE: names MUST match market_prices.asset exactly. The canonical
-        # names come from commodity_job.SYMBOLS and use SPACES for multi-
-        # word commodities ("crude oil", not "crude_oil"). A previous bug
-        # here used underscores so crude-oil and natural-gas alerts never
-        # fired — the SQL filter asset = ANY($2) silently returned zero
-        # rows even during 5%+ intraday moves.
         _SPIKE_ASSETS = ('gold', 'silver', 'crude oil', 'natural gas')
 
-        # Get latest prices with significant moves (today only)
+        # Get the latest price AND the previous session's close for
+        # each asset. Compute the change ourselves instead of trusting
+        # the source's change_percent (which can be stale after holidays).
         rows = await pool.fetch(
             """
-            SELECT DISTINCT ON (asset) asset, price, change_percent, unit
-            FROM market_prices
-            WHERE instrument_type = 'commodity'
-              AND asset = ANY($2)
-              AND change_percent IS NOT NULL
-              AND ABS(change_percent) >= 2.0
-              AND "timestamp" >= $1
-            ORDER BY asset, "timestamp" DESC
+            WITH latest AS (
+                SELECT DISTINCT ON (asset)
+                    asset, price, unit, timestamp::date AS d
+                FROM market_prices
+                WHERE instrument_type = 'commodity'
+                  AND asset = ANY($1)
+                ORDER BY asset, timestamp DESC
+            ),
+            prev AS (
+                SELECT DISTINCT ON (asset)
+                    asset, price AS prev_price
+                FROM market_prices
+                WHERE instrument_type = 'commodity'
+                  AND asset = ANY($1)
+                  AND timestamp::date < (SELECT MAX(d) FROM latest WHERE latest.asset = market_prices.asset)
+                ORDER BY asset, timestamp DESC
+            )
+            SELECT l.asset, l.price, l.unit, p.prev_price
+            FROM latest l
+            LEFT JOIN prev p ON l.asset = p.asset
+            WHERE p.prev_price IS NOT NULL AND p.prev_price > 0
             """,
-            today,
             list(_SPIKE_ASSETS),
         )
 
@@ -1095,16 +1119,34 @@ async def _check_commodity_spikes(now: datetime) -> None:
             logger.debug("USD/INR rate unavailable for commodity notification")
 
         alerted = _commodity_spike_state["alerted"]
+        daily_counts = _commodity_spike_state.get("daily_counts", {})
+        last_sent = _commodity_spike_state.get("last_sent", {})
 
         for row in rows:
             asset = row["asset"]
-            change_pct = float(row["change_percent"])
             price = float(row["price"])
+            prev_price = float(row["prev_price"])
             unit = row.get("unit")
 
-            # Track in 2% bands to avoid spamming
-            band = int(change_pct / 2) * 2
+            # Compute change from our own DB data
+            change_pct = round(((price - prev_price) / prev_price) * 100, 2)
+
+            # Only alert on ≥3% moves (was 2% — too noisy for volatile commodities)
+            if abs(change_pct) < 3.0:
+                continue
+
+            # 3% bands to avoid spamming
+            band = int(change_pct / 3) * 3
             if alerted.get(asset) == band:
+                continue
+
+            # Cooldown: 2 hours between alerts per asset
+            asset_last = last_sent.get(asset)
+            if asset_last is not None and (now - asset_last).total_seconds() < 7200:
+                continue
+
+            # Max 2 alerts per asset per day
+            if daily_counts.get(asset, 0) >= 2:
                 continue
 
             display_name = asset.replace("_", " ").title()
@@ -1145,6 +1187,10 @@ async def _check_commodity_spikes(now: datetime) -> None:
                 dedup_key=dedup_key,
             )
             alerted[asset] = band
+            last_sent[asset] = now
+            daily_counts[asset] = daily_counts.get(asset, 0) + 1
+            _commodity_spike_state["daily_counts"] = daily_counts
+            _commodity_spike_state["last_sent"] = last_sent
 
     except Exception:
         logger.exception("Commodity spike check failed")
