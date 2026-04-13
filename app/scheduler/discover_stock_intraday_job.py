@@ -543,6 +543,12 @@ async def run_discover_stock_intraday_job() -> None:
             q.get("percent_change"),
         ))
 
+    logger.info(
+        "intraday: prepared %d update_rows, %d insert_rows, %d skipped "
+        "(nse=%d, yahoo=%d)",
+        len(update_rows), len(insert_rows), skipped, nse_count, yahoo_count,
+    )
+
     if update_rows:
         try:
             async with pool.acquire() as conn:
@@ -561,6 +567,10 @@ async def run_discover_stock_intraday_job() -> None:
                         """,
                         update_rows,
                     )
+                    logger.info(
+                        "intraday: UPDATE executemany OK (%d rows)",
+                        len(update_rows),
+                    )
                     await conn.executemany(
                         """
                         INSERT INTO discover_stock_intraday
@@ -570,9 +580,17 @@ async def run_discover_stock_intraday_job() -> None:
                         """,
                         insert_rows,
                     )
+                    logger.info(
+                        "intraday: INSERT executemany OK (%d rows into discover_stock_intraday)",
+                        len(insert_rows),
+                    )
             updated = len(update_rows)
+            logger.info(
+                "intraday: transaction COMMITTED — %d snapshots updated, %d ticks inserted",
+                updated, len(insert_rows),
+            )
         except Exception:
-            logger.exception("intraday: bulk write transaction failed")
+            logger.exception("intraday: bulk write transaction FAILED — rolling back")
             errors = len(update_rows)
             updated = 0
 

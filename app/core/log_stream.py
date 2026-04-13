@@ -7,15 +7,27 @@ from datetime import datetime, timezone
 from typing import Any
 
 _lock = threading.Lock()
-_entries: deque[dict[str, Any]] = deque(maxlen=5000)
+_entries: deque[dict[str, Any]] = deque(maxlen=20000)
 _next_id = 1
 _handler: "_InMemoryLogHandler | None" = None
 _formatter = logging.Formatter()
 
 
+# Loggers that spam DEBUG at high frequency — only capture INFO+
+# from these to preserve buffer space for job-level diagnostics.
+_THROTTLED_LOGGERS = frozenset({
+    "app.services.market_service",
+    "urllib3.connectionpool",
+    "charset_normalizer",
+})
+
+
 class _InMemoryLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:  # pragma: no cover (simple adapter)
         global _next_id
+        # Throttle chatty loggers: only capture INFO+ from them.
+        if record.name in _THROTTLED_LOGGERS and record.levelno < logging.INFO:
+            return
         try:
             ts = datetime.fromtimestamp(record.created, tz=timezone.utc)
             payload = {
