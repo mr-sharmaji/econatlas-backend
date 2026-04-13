@@ -1070,38 +1070,21 @@ async def _check_commodity_spikes(now: datetime) -> None:
 
         _SPIKE_ASSETS = ('gold', 'silver', 'crude oil', 'natural gas')
 
-        # Get the latest price AND the previous session's close for
-        # each asset. Compute the change ourselves instead of trusting
-        # the source's change_percent (which can be stale after holidays).
-        # Get latest price AND previous session's close from the
-        # SAME source. Cross-source comparison (Google vs Yahoo)
-        # produces false spikes because they track different
-        # futures contracts (CLW00:NYMEX vs CL=F continuous).
+        # Use the source's OWN change_percent and previous_close.
+        # These are calculated by Google/Yahoo relative to the SAME
+        # futures contract's prior close — always consistent.
+        # NEVER compute change from DB rows across sources: Google
+        # (CLW00:NYMEX) and Yahoo (CL=F continuous) track different
+        # contracts that diverge by 5-15% during roll periods.
         rows = await pool.fetch(
             """
-            WITH latest AS (
-                SELECT DISTINCT ON (asset)
-                    asset, price, unit, source, timestamp::date AS d
-                FROM market_prices
-                WHERE instrument_type = 'commodity'
-                  AND asset = ANY($1)
-                ORDER BY asset, timestamp DESC
-            ),
-            prev AS (
-                SELECT DISTINCT ON (l.asset)
-                    l.asset, m.price AS prev_price
-                FROM latest l
-                JOIN market_prices m
-                  ON m.asset = l.asset
-                 AND m.instrument_type = 'commodity'
-                 AND m.source = l.source
-                 AND m.timestamp::date < l.d
-                ORDER BY l.asset, m.timestamp DESC
-            )
-            SELECT l.asset, l.price, l.unit, p.prev_price
-            FROM latest l
-            LEFT JOIN prev p ON l.asset = p.asset
-            WHERE p.prev_price IS NOT NULL AND p.prev_price > 0
+            SELECT DISTINCT ON (asset)
+                asset, price, unit, change_percent, previous_close
+            FROM market_prices
+            WHERE instrument_type = 'commodity'
+              AND asset = ANY($1)
+              AND change_percent IS NOT NULL
+            ORDER BY asset, timestamp DESC
             """,
             list(_SPIKE_ASSETS),
         )
@@ -1131,11 +1114,11 @@ async def _check_commodity_spikes(now: datetime) -> None:
         for row in rows:
             asset = row["asset"]
             price = float(row["price"])
-            prev_price = float(row["prev_price"])
             unit = row.get("unit")
 
-            # Compute change from our own DB data
-            change_pct = round(((price - prev_price) / prev_price) * 100, 2)
+            # Use the source's own change_percent — already computed
+            # relative to the same contract's prior close.
+            change_pct = float(row.get("change_percent") or 0)
 
             # Only alert on ≥3% moves (was 2% — too noisy for volatile commodities)
             if abs(change_pct) < 3.0:
