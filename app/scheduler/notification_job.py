@@ -5,7 +5,11 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from app.services import notification_service
-from app.scheduler.trading_calendar import get_market_status, is_exchange_holiday
+from app.scheduler.trading_calendar import (
+    get_india_session_info,
+    get_market_status,
+    is_exchange_holiday,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -154,14 +158,32 @@ async def _fetch_india_close_data() -> dict | None:
         # intentionally excluded — it duplicates the Nifty 50 large-cap
         # signal and nothing in the close builder or the AI narrative
         # prompt consumes it anymore.
+        #
+        # Freshness gate: only accept rows from the current IST trading
+        # day. On holidays the latest Nifty row is from the previous
+        # trading session (e.g. Friday close still sitting in the DB on
+        # Ambedkar Jayanti) and we must NOT present it as "today's
+        # close". This is a third-layer defence — layers 1 and 2 in
+        # run_notification_job already gate holidays, this gate catches
+        # any future bug path that reaches us without going through
+        # the transition loop.
         index_rows = await pool.fetch(
             """
-            SELECT asset, change_percent, price FROM market_prices
+            SELECT asset, change_percent, price, timestamp FROM market_prices
             WHERE asset IN ('Nifty 50', 'Nifty Midcap 150', 'Nifty Smallcap 250')
+              AND (timestamp AT TIME ZONE 'Asia/Kolkata')::date
+                  = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
             ORDER BY timestamp DESC
             LIMIT 6
             """
         )
+        if not index_rows:
+            logger.info(
+                "_fetch_india_close_data: no Nifty rows for today IST — "
+                "market was closed or data hasn't arrived yet"
+            )
+            return None
+
         data: dict = {}
         nifty_close = None
         seen_idx: set[str] = set()
@@ -1194,6 +1216,32 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
     now_ist = now.astimezone(_IST)
     today = now_ist.date()
 
+    # ── Holiday / non-trading-day gate (first line of defence) ──
+    #
+    # On NSE holidays (Ambedkar Jayanti, Gandhi Jayanti, Republic Day, etc.)
+    # upstream data sources (Google Finance, Yahoo) sometimes report
+    # transient "open" states as stale prices flap, which produces a
+    # false open→closed transition in the main loop. That bug used to
+    # reach this function with `india_closed_transition=True` and the
+    # "pending" logic would then flush a fake post-market notification
+    # showing stale data from the previous trading day's close.
+    #
+    # Gate at the top regardless of transition state: if XBOM/NSE says
+    # today isn't a trading day, clear any stale pending state and exit.
+    # This layer is a backstop — layer 2 (the transition loop itself)
+    # skips tracking India state entirely on holidays.
+    india_info = get_india_session_info(now)
+    if not india_info.get("is_trading_day"):
+        if _post_market_state.get("pending"):
+            logger.info(
+                "Post-market summary: dropping pending state — today (%s) is "
+                "not an NSE trading day (source=%s)",
+                today, india_info.get("source"),
+            )
+            _post_market_state["pending"] = False
+            _post_market_state["close_time"] = None
+        return
+
     # Already sent today
     if _post_market_state.get("last_date") == today:
         return
@@ -1432,6 +1480,46 @@ async def run_notification_job() -> None:
             "europe": bool(status.get("europe_open")),
             "japan": bool(status.get("japan_open")),
         }
+
+        # ── Holiday gate (primary defence) ──
+        #
+        # Force `is_open = False` for any market that's on a holiday today.
+        # Upstream data sources occasionally flap a transient "open" state
+        # on holidays (stale price feeds, late TTL flushes, etc.). Without
+        # this gate, a spurious True→False transition fires the close
+        # notification even though the market never actually opened.
+        #
+        # Europe and Japan already have per-transition holiday gates below,
+        # but the issue is they can still build up a false "open" state in
+        # _prev_state that triggers on the next tick. Forcing is_open=False
+        # AND resetting _prev_state handles both markets cleanly.
+        india_info = get_india_session_info(now)
+        if not india_info.get("is_trading_day"):
+            if markets["india"] or _prev_state.get("india"):
+                logger.info(
+                    "Holiday gate: India is not a trading day (%s) — "
+                    "forcing nse_open=False and resetting prev_state",
+                    india_info.get("source"),
+                )
+            markets["india"] = False
+            _prev_state["india"] = False
+
+        if is_exchange_holiday("NYSE", now):
+            if markets["us"] or _prev_state.get("us"):
+                logger.info(
+                    "Holiday gate: NYSE holiday — forcing nyse_open=False "
+                    "and resetting prev_state"
+                )
+            markets["us"] = False
+            _prev_state["us"] = False
+
+        if is_exchange_holiday("LSE", now):
+            markets["europe"] = False
+            _prev_state["europe"] = False
+
+        if is_exchange_holiday("TSE", now):
+            markets["japan"] = False
+            _prev_state["japan"] = False
 
         india_closed_transition = False
 
