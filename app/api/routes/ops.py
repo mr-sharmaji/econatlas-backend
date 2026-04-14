@@ -38,6 +38,12 @@ _VALID_JOBS = {
     "stock_narrative_embed",
     "economic_events_embed",
     "educational_concepts_seed",
+    # Weekly broker pricing scrape — task is registered in
+    # app/queue/settings.get_arq_functions() but the API gate also
+    # needs to allow-list the name here, otherwise both
+    # /ops/jobs/trigger/broker_charges and the /ops/jobs listing
+    # treat it as unknown.
+    "broker_charges",
 }
 
 # Tables exposed for CRUD operations.
@@ -208,8 +214,19 @@ async def _fetch_windows_exporter() -> dict | None:
     cores = len({lbls.get("core") for lbls, _ in snap2.get("windows_cpu_time_total", []) if lbls.get("core")})
 
     # ── Memory ──
-    mem_total = _sum("windows_cs_physical_memory_bytes")
-    mem_free = _sum("windows_os_physical_memory_free_bytes")
+    # windows_exporter ≥0.18 renamed the cs_/os_ collectors to memory_*.
+    # Use the new names with a fallback to the legacy ones so this
+    # works against any version on the host.
+    mem_total = _sum("windows_memory_physical_total_bytes") \
+        or _sum("windows_cs_physical_memory_bytes")
+    # `windows_memory_available_bytes` is what Task Manager calls
+    # "Available" — closer to what users expect than "physical_free"
+    # which excludes the cache. windows_memory_physical_free_bytes is
+    # also exposed and gives a higher "used" number; pick available
+    # since it matches Task Manager's display.
+    mem_free = _sum("windows_memory_available_bytes") \
+        or _sum("windows_memory_physical_free_bytes") \
+        or _sum("windows_os_physical_memory_free_bytes")
     mem_used = max(0.0, mem_total - mem_free)
     mem_pct = (mem_used / mem_total * 100.0) if mem_total > 0 else 0.0
 

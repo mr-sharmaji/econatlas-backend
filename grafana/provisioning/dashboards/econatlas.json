@@ -86,7 +86,7 @@
       "gridPos": { "h": 5, "w": 5, "x": 5, "y": 5 },
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 90}] } } },
-      "targets": [{ "expr": "(1 - windows_os_physical_memory_free_bytes / windows_cs_physical_memory_bytes) * 100", "refId": "A" }]
+      "targets": [{ "expr": "(1 - windows_memory_available_bytes / windows_memory_physical_total_bytes) * 100", "refId": "A" }]
     },
     {
       "title": "Windows Memory used / total",
@@ -95,8 +95,8 @@
       "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "fieldConfig": { "defaults": { "unit": "decgbytes", "decimals": 1 } },
       "targets": [
-        { "expr": "(windows_cs_physical_memory_bytes - windows_os_physical_memory_free_bytes) / 1024 / 1024 / 1024", "legendFormat": "Used", "refId": "A" },
-        { "expr": "windows_cs_physical_memory_bytes / 1024 / 1024 / 1024", "legendFormat": "Total", "refId": "B" }
+        { "expr": "(windows_memory_physical_total_bytes - windows_memory_available_bytes) / 1024 / 1024 / 1024", "legendFormat": "Used", "refId": "A" },
+        { "expr": "windows_memory_physical_total_bytes / 1024 / 1024 / 1024", "legendFormat": "Total", "refId": "B" }
       ]
     },
     {
