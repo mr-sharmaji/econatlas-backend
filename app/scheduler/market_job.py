@@ -533,6 +533,24 @@ class MarketScraper(BaseScraper, QuoteProvider):
         return items
 
     def _fetch_gift_nifty(self) -> QuoteTick | None:
+        """Scrape giftcitynifty.com and return the latest tick as a QuoteTick.
+
+        Also populates ``self._gift_nifty_intraday_backfill`` with one
+        intraday-row dict for EVERY row on the page (the site typically
+        serves hundreds of minute-level rows for the current session),
+        so a single successful scrape can backfill the full day's
+        intraday chart. The caller consumes this list in
+        ``_fetch_market_rows_sync`` and writes to market_prices_intraday
+        via ``insert_intraday_batch``; the ``(asset, instrument_type,
+        source_timestamp, provider)`` upsert key dedups any rows that
+        were already in the table from a prior scrape, so replaying
+        unchanged history is free.
+
+        The backfill list is reset at the start of every call so a
+        transient scrape failure doesn't leave stale data around.
+        """
+        self._gift_nifty_intraday_backfill = []
+        latest_tick: QuoteTick | None = None
         try:
             def _clean_cell(raw: str) -> str:
                 return html.unescape(re.sub(r"<[^>]+>", "", raw or "")).strip()
@@ -553,6 +571,8 @@ class MarketScraper(BaseScraper, QuoteProvider):
             if not tables:
                 return None
             rows = re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", tables[0])
+            now_utc = datetime.now(timezone.utc)
+            now_ist = now_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
             for row in rows:
                 cells = re.findall(r"<td[^>]*>([\s\S]*?)</td>", row)
                 if len(cells) < 5:
@@ -588,8 +608,6 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 if pct is None and previous_close not in (None, 0):
                     pct = round(((price - previous_close) / previous_close) * 100, 2)
 
-                now_utc = datetime.now(timezone.utc)
-                now_ist = now_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
                 hhmm = _clean_cell(cells[0])
                 source_ts = now_utc
                 m_time = re.search(r"(\d{1,2}):(\d{2})", hhmm)
@@ -600,26 +618,74 @@ class MarketScraper(BaseScraper, QuoteProvider):
                     if local_ts > (now_ist + timedelta(minutes=5)):
                         local_ts -= timedelta(days=1)
                     source_ts = local_ts.astimezone(timezone.utc)
+                else:
+                    # No parseable HH:MM → skip intraday row, since we
+                    # have no real source_timestamp. The first such row
+                    # still feeds the daily QuoteTick below.
+                    if latest_tick is None:
+                        latest_tick = QuoteTick(
+                            asset="Gift Nifty",
+                            price=price,
+                            instrument_type="index",
+                            unit="points",
+                            source="giftcitynifty_scrape",
+                            change_percent=pct,
+                            previous_close=previous_close,
+                            provider="giftcitynifty",
+                            provider_priority=1,
+                            confidence_level=0.9,
+                            source_timestamp=source_ts,
+                            quality="primary",
+                            is_predictive=True,
+                            session_source="gift_nifty_windows",
+                        )
+                    continue
 
-                return QuoteTick(
-                    asset="Gift Nifty",
-                    price=price,
-                    instrument_type="index",
-                    unit="points",
-                    source="giftcitynifty_scrape",
-                    change_percent=pct,
-                    previous_close=previous_close,
-                    provider="giftcitynifty",
-                    provider_priority=1,
-                    confidence_level=0.9,
-                    source_timestamp=source_ts,
-                    quality="primary",
-                    is_predictive=True,
-                    session_source="gift_nifty_windows",
-                )
+                # First valid row becomes the "latest" QuoteTick driving
+                # the daily market_prices upsert.
+                if latest_tick is None:
+                    latest_tick = QuoteTick(
+                        asset="Gift Nifty",
+                        price=price,
+                        instrument_type="index",
+                        unit="points",
+                        source="giftcitynifty_scrape",
+                        change_percent=pct,
+                        previous_close=previous_close,
+                        provider="giftcitynifty",
+                        provider_priority=1,
+                        confidence_level=0.9,
+                        source_timestamp=source_ts,
+                        quality="primary",
+                        is_predictive=True,
+                        session_source="gift_nifty_windows",
+                    )
+
+                # Every row (including row 0) becomes an intraday tick
+                # for the backfill list. The upsert key is (asset,
+                # instrument_type, source_timestamp, provider), so
+                # repeated scrapes collapse to a single row per minute
+                # regardless of how many times they re-appear on the
+                # source page.
+                ts_iso = source_ts.isoformat()
+                self._gift_nifty_intraday_backfill.append({
+                    "asset": "Gift Nifty",
+                    "instrument_type": "index",
+                    "price": price,
+                    "timestamp": ts_iso,
+                    "source_timestamp": ts_iso,
+                    "provider": "giftcitynifty",
+                    "provider_priority": 1,
+                    "confidence_level": 0.9,
+                    "is_fallback": False,
+                    "quality": "primary",
+                    "is_predictive": True,
+                    "session_source": "gift_nifty_windows",
+                })
         except Exception:
             logger.exception("Gift Nifty scrape failed")
-        return None
+            return None
+        return latest_tick
 
     def _parse_google_index_quote(self, page_html: str, token: str) -> tuple[float, float | None, float | None, datetime] | None:
         # Google Finance inline payload shape:
@@ -1162,12 +1228,19 @@ def build_market_intraday_rows_last_session_yahoo(
     return rows_out
 
 
-def _fetch_market_rows_sync() -> tuple[List[Dict], bool]:
-    """Sync scrape; run in thread executor. Returns (rows, calendar_says_trading_day).
-    Each row's timestamp is the exchange trading date (NSE/NYSE) so Monday's close is not stored as Tuesday."""
+def _fetch_market_rows_sync() -> tuple[List[Dict], bool, List[Dict]]:
+    """Sync scrape; run in thread executor. Returns (rows, calendar_says_trading_day, gift_nifty_intraday_backfill).
+    Each row's timestamp is the exchange trading date (NSE/NYSE) so Monday's close is not stored as Tuesday.
+    The third element is a list of intraday-tick dicts scraped from the
+    giftcitynifty.com historical table — the main scrape returns only
+    the latest tick as a daily row, but the page carries hundreds of
+    minute-level history rows that we batch-insert into
+    market_prices_intraday so the 1D chart has real coverage even when
+    the source pauses publishing (e.g. on Indian holidays)."""
     now = _scraper.utc_now()
     calendar_open = is_trading_day_markets(now) or is_gift_nifty_open(now)
     items = _scraper.fetch_all()
+    gift_backfill = list(getattr(_scraper, "_gift_nifty_intraday_backfill", []) or [])
     logger.debug(
         "Fetched market rows sync: now=%s calendar_open=%s raw_items=%d",
         now.isoformat(),
@@ -1202,7 +1275,7 @@ def _fetch_market_rows_sync() -> tuple[List[Dict], bool]:
             "session_source": it.get("session_source"),
         })
     logger.debug("Prepared market rows for persistence: %d", len(rows))
-    return (rows, calendar_open)
+    return (rows, calendar_open, gift_backfill)
 
 
 _PRICE_CHANGE_TOLERANCE = 1e-9
@@ -1287,11 +1360,14 @@ async def run_market_job() -> None:
     try:
         logger.debug("Market job cycle started")
         loop = asyncio.get_event_loop()
-        fetched_rows, calendar_says_open = await loop.run_in_executor(
+        fetched_rows, calendar_says_open, gift_nifty_backfill = await loop.run_in_executor(
             get_job_executor("market"),
             _fetch_market_rows_sync,
         )
-        logger.debug("Market job fetched_rows=%d calendar_says_open=%s", len(fetched_rows), calendar_says_open)
+        logger.debug(
+            "Market job fetched_rows=%d calendar_says_open=%s gift_backfill=%d",
+            len(fetched_rows), calendar_says_open, len(gift_nifty_backfill),
+        )
         if not fetched_rows:
             logger.debug("Market job exiting early: no fetched rows")
             return
@@ -1322,6 +1398,24 @@ async def run_market_job() -> None:
             logger.info("Market job: no daily or intraday rows written")
         else:
             logger.info("Market job complete: %d rows upserted (daily)", updated)
+
+        # Backfill Gift Nifty historical ticks from the HTML table. A
+        # single successful scrape carries the full day of minute-level
+        # history, so even when the upstream source pauses publishing
+        # (e.g. the 2026-04-14 Ambedkar Jayanti stall) the 1D chart
+        # still has real data going back hours. Upsert key is
+        # (asset, instrument_type, source_timestamp, provider), so
+        # repeated scrapes of the same history are free no-ops.
+        if gift_nifty_backfill:
+            try:
+                gift_n = await market_service.insert_intraday_batch(gift_nifty_backfill)
+                logger.debug(
+                    "Gift Nifty historical backfill: %d rows attempted, %d upserted",
+                    len(gift_nifty_backfill), gift_n,
+                )
+            except Exception:
+                logger.exception("Gift Nifty historical backfill failed")
+
         logger.debug("Market job cycle completed")
     except Exception:
         logger.exception("Market job failed")
