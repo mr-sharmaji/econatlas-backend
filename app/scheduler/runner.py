@@ -243,6 +243,15 @@ async def _startup_collection() -> None:
     startup_jobs = [
         "market", "commodity", "crypto", "brief",
         "ipo", "macro", "tax", "news",
+        # Long-interval jobs included at startup so fresh deploys
+        # don't have to wait for their wall-clock cron tick (which
+        # may be hours or days away). All four previously used
+        # apscheduler `interval` triggers which reset on process
+        # start and almost never fired in deploy-heavy windows.
+        "market_score",   # hourly cron at :17
+        "fertilizer",     # 6h cron at :23
+        "imf_forecast",   # daily cron at 03:37 UTC
+        "econ_calendar",  # daily cron at 03:47 UTC
     ]
     settings = get_settings()
     if getattr(settings, "discover_cron_enabled", False):
@@ -450,33 +459,60 @@ def start_scheduler() -> None:
         misfire_grace_time=120,
     )
     _scheduler.add_job(_run_macro, "interval", minutes=intervals["macro_minutes"], id="macro", replace_existing=True)
-    _scheduler.add_job(_run_imf_forecast, "interval", hours=24, id="imf_forecast", replace_existing=True)
-    _scheduler.add_job(_run_econ_calendar, "interval", hours=24, id="econ_calendar", replace_existing=True)
+    # imf_forecast / econ_calendar: long interval jobs (daily). Same
+    # wall-clock cron reasoning as market_score below — interval
+    # triggers schedule first fire at start_date + interval, so with
+    # a 24h interval and frequent deploys the job basically never
+    # fires. Cron fires at wall-clock time regardless of deploys.
+    _scheduler.add_job(
+        _run_imf_forecast, "cron",
+        hour=3, minute=37,
+        id="imf_forecast", replace_existing=True,
+        max_instances=1, coalesce=True, misfire_grace_time=3600,
+    )
+    _scheduler.add_job(
+        _run_econ_calendar, "cron",
+        hour=3, minute=47,
+        id="econ_calendar", replace_existing=True,
+        max_instances=1, coalesce=True, misfire_grace_time=3600,
+    )
+    logger.info("Scheduler: imf_forecast daily at 03:37 UTC, econ_calendar daily at 03:47 UTC")
     _scheduler.add_job(_run_news, "interval", minutes=intervals["news_minutes"], id="news", replace_existing=True)
     if intervals["tax_enabled"]:
         _scheduler.add_job(_run_tax, "interval", minutes=intervals["tax_minutes"], id="tax", replace_existing=True)
+    # Wall-clock cron so first fire doesn't depend on process start
+    # time. APScheduler's interval trigger schedules the first run at
+    # start_date + interval, so with 6h interval + frequent deploys
+    # the job rarely fires — that's how Sensex ended up 6 days stale.
+    # Cron trigger fires at :17 past every hour independent of when
+    # the process started; job runtime is ~1.5s for ~120 assets so
+    # hourly is cheap.
     _scheduler.add_job(
         _run_market_score,
-        "interval",
-        hours=6,
+        "cron",
+        minute=17,
         id="market_score",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,
     )
-    logger.info("Scheduler: market_score every 6h")
+    logger.info("Scheduler: market_score hourly at :17")
+    # fertilizer: wall-clock cron every 6h at :23 past (staggered
+    # from market_score:17 so they don't pile up). Same deploy-
+    # resilience reason as the other cron conversions above.
     _scheduler.add_job(
         _run_fertilizer,
-        "interval",
-        hours=6,
+        "cron",
+        hour="*/6",
+        minute=23,
         id="fertilizer",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,
     )
-    logger.info("Scheduler: fertilizer every 6h")
+    logger.info("Scheduler: fertilizer every 6h at :23")
     # Notification check runs alongside market job to detect open/close transitions
     if intervals["market_seconds"] and intervals["market_seconds"] > 0:
         _scheduler.add_job(_run_notification_check, "interval", seconds=intervals["market_seconds"], id="notification_check", replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=60)
