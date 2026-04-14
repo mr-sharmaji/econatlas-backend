@@ -4629,6 +4629,96 @@ async def get_mf_point_to_point_returns(*, scheme_code: str) -> dict | None:
     }
 
 
+async def recompute_mf_returns_all() -> dict:
+    """Recompute returns_1m/3m/6m/1y/3y/5y columns from our NAV
+    history table and UPDATE every row in discover_mutual_fund_snapshots.
+
+    Why: ETMoney populates these columns from its `xirrDurationWise`
+    blob, which is cached at their snapshot time (often 1-28 days
+    stale) and uses a SEBI-style trailing anchor. Our chart and
+    point-to-point returns helper use first-trading-day-≥-target
+    against live NAV history, which drifts 1-2 percentage points
+    from ETMoney on volatile windows. Users see the mismatch
+    between the top period badge and the Returns card.
+
+    Fix: overwrite the columns at ingestion time with history-
+    anchored values. 1M/3M/6M stay absolute % (matches existing
+    semantics), 1Y/3Y/5Y become CAGR (also matches — scoring
+    peer-percentiles work on any consistent scale).
+
+    Called from the end of run_discover_mutual_fund_job so it runs
+    after every scheduler tick. Also exposed as an ops job
+    (`recompute_mf_returns`) for one-shot backfills.
+
+    Returns counters: {scheme_count, updated, skipped, elapsed_s}.
+    """
+    import time as _t
+    pool = await get_pool()
+    t0 = _t.monotonic()
+    codes = await pool.fetch(
+        f"SELECT scheme_code FROM {MF_TABLE} ORDER BY scheme_code"
+    )
+    total = len(codes)
+    logger.info("recompute_mf_returns: %d schemes", total)
+
+    updated = 0
+    skipped = 0
+    for i, rec in enumerate(codes):
+        scheme_code = rec["scheme_code"]
+        try:
+            ptp = await get_mf_point_to_point_returns(scheme_code=scheme_code)
+        except Exception:
+            logger.exception("recompute_mf_returns: scheme=%s failed", scheme_code)
+            skipped += 1
+            continue
+        if ptp is None:
+            skipped += 1
+            continue
+        # UPDATE only the columns we intend to overwrite. Use
+        # CAGR for ≥1Y to preserve peer-percentile scoring
+        # semantics; absolute % for sub-1Y.
+        await pool.execute(
+            f"""
+            UPDATE {MF_TABLE} SET
+                returns_1m = COALESCE($2, returns_1m),
+                returns_3m = COALESCE($3, returns_3m),
+                returns_6m = COALESCE($4, returns_6m),
+                returns_1y = COALESCE($5, returns_1y),
+                returns_3y = COALESCE($6, returns_3y),
+                returns_5y = COALESCE($7, returns_5y)
+            WHERE scheme_code = $1
+            """,
+            scheme_code,
+            ptp.get("return_1m"),
+            ptp.get("return_3m"),
+            ptp.get("return_6m"),
+            ptp.get("cagr_1y"),
+            ptp.get("cagr_3y"),
+            ptp.get("cagr_5y"),
+        )
+        updated += 1
+        if (i + 1) % 500 == 0:
+            elapsed = _t.monotonic() - t0
+            rate = (i + 1) / elapsed if elapsed > 0 else 0
+            eta = (total - i - 1) / rate if rate > 0 else 0
+            logger.info(
+                "recompute_mf_returns: %d/%d (%.1f/s, eta %.0fs), "
+                "updated=%d skipped=%d",
+                i + 1, total, rate, eta, updated, skipped,
+            )
+    elapsed = _t.monotonic() - t0
+    logger.info(
+        "recompute_mf_returns DONE: scheme_count=%d updated=%d skipped=%d elapsed=%.1fs",
+        total, updated, skipped, elapsed,
+    )
+    return {
+        "scheme_count": total,
+        "updated": updated,
+        "skipped": skipped,
+        "elapsed_s": round(elapsed, 1),
+    }
+
+
 async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
     """Get peer stocks in the same industry (fallback to sector), sorted by score descending."""
     pool = await get_pool()

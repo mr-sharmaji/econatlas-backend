@@ -2966,6 +2966,35 @@ async def run_discover_mutual_fund_job() -> None:
         count = await discover_service.upsert_discover_mutual_fund_snapshots(rows)
         logger.info("Discover mutual fund job complete: %d snapshots upserted", count)
 
+        # Overwrite returns_1m/3m/6m/1y/3y/5y columns with history-
+        # anchored values computed from discover_mf_nav_history. The
+        # upsert above writes ETMoney's xirrDurationWise values which
+        # are cached at their snapshot time (often days stale) and
+        # use a SEBI-style trailing anchor that drifts 1-2 percentage
+        # points from our live-NAV first-trading-day-≥-target rule.
+        # Doing this after upsert means the display and scoring see
+        # one consistent methodology — see discover_service.
+        # recompute_mf_returns_all for details.
+        try:
+            recompute_result = await discover_service.recompute_mf_returns_all()
+            logger.info(
+                "MF Job: returns recomputed — %s",
+                recompute_result,
+            )
+        except Exception:
+            logger.exception("MF Job: recompute_mf_returns_all FAILED")
+
+        # Now that the returns columns reflect our live-NAV anchors,
+        # rescore every fund so peer percentiles (and therefore
+        # scores and rankings further below) use the corrected
+        # values. Without this, scores lag the returns by one
+        # scheduler tick — small drift but real.
+        try:
+            rescore_result = await rescore_discover_mutual_funds()
+            logger.info("MF Job: rescore after recompute — %s", rescore_result)
+        except Exception:
+            logger.exception("MF Job: rescore after recompute FAILED")
+
         # After upsert, compute dual ranking: sub-category + category
         pool = await get_pool()
 
