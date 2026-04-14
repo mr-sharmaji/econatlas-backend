@@ -106,8 +106,14 @@ _FALLBACK_BROKER_DATA: dict[str, dict[str, dict]] = {
 _FALLBACK_BROKER_META: dict[str, dict] = {
     "zerodha":   {"tagline": "Delivery free · 0.03%/₹20 intraday/F&O · options flat ₹20", "dp_charge": 15.34, "dp_includes_gst": True,  "amc_yearly": 354, "account_opening_fee": 0, "call_trade_fee": 50},
     "upstox":    {"tagline": "₹20 delivery · 0.1%/₹20 intraday · 0.05% futures · ₹20 options", "dp_charge": 20.0,  "dp_includes_gst": True,  "amc_yearly": 354, "account_opening_fee": 0, "call_trade_fee": 88.5},
-    "groww":     {"tagline": "0.1%/₹20 equity · ₹20 flat F&O · Min ₹5", "dp_charge": 20.0,  "dp_includes_gst": True,  "amc_yearly": 0,   "account_opening_fee": 0, "call_trade_fee": 0},
-    "angel_one": {"tagline": "0.1%/₹20 equity · ₹20 flat F&O · Min ₹5", "dp_charge": 20.0,  "dp_includes_gst": True,  "amc_yearly": 450, "account_opening_fee": 0, "call_trade_fee": 0},
+    # Groww / Angel One both have a "min ₹5 per order" rule on equity
+    # that only matters for tiny trades (under ~₹5,000 per side, where
+    # 0.1% is less than ₹5). It's still applied in the calculation via
+    # the per-segment min_charge field, but we keep it OUT of the
+    # tagline so users don't read it as a base charge that always
+    # applies. The chip / breakdown surface it when it actually fires.
+    "groww":     {"tagline": "0.1%/₹20 equity · ₹20 flat F&O", "dp_charge": 20.0,  "dp_includes_gst": True,  "amc_yearly": 0,   "account_opening_fee": 0, "call_trade_fee": 0},
+    "angel_one": {"tagline": "0.1%/₹20 equity · ₹20 flat F&O", "dp_charge": 20.0,  "dp_includes_gst": True,  "amc_yearly": 450, "account_opening_fee": 0, "call_trade_fee": 0},
 }
 
 # ── Statutory rates (2025-26, revised Oct 2024) ──────────────────────
