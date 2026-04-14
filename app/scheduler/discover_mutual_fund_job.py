@@ -28,6 +28,12 @@ class DiscoverMutualFundScraper(BaseScraper):
     def __init__(self) -> None:
         super().__init__()
         self.settings = get_settings()
+        # Categorized failure counters for the Groww sitemap sweep.
+        # Reset at the start of each _enrich_from_groww call so counts
+        # reflect only the current run. Incremented from worker threads,
+        # so every touch goes through the lock.
+        self._sitemap_fail_reasons: dict[str, int] = {}
+        self._sitemap_fail_lock = threading.Lock()
 
     def _walk(self, obj: Any):
         if isinstance(obj, dict):
@@ -2097,24 +2103,62 @@ class DiscoverMutualFundScraper(BaseScraper):
     def _fetch_groww_blob_by_slug(self, slug: str) -> dict | None:
         """Fetch a fund page by known-good slug and return the
         scheme blob. Lower-level helper that skips the slug-
-        derivation step in _fetch_groww_scheme_data."""
+        derivation step in _fetch_groww_scheme_data.
+
+        On failure, bumps `_sitemap_fail_reasons[reason]` and logs
+        the first few failures at WARNING so we can see concrete
+        examples without drowning the log on large sweeps."""
+        def _fail(reason: str, detail: str = "") -> None:
+            with self._sitemap_fail_lock:
+                self._sitemap_fail_reasons[reason] = (
+                    self._sitemap_fail_reasons.get(reason, 0) + 1
+                )
+                total = sum(self._sitemap_fail_reasons.values())
+            # Log the first 5 examples per sweep to show what a
+            # failure actually looks like. Beyond that, aggregated
+            # counts are logged by the caller at phase end.
+            if total <= 5:
+                logger.warning(
+                    "groww: sitemap slug fail (%s) slug=%r %s",
+                    reason, slug, detail,
+                )
+
         if not slug:
+            _fail("empty_slug")
             return None
         url = f"{self._GROWW_BASE}/{slug}"
         try:
             html = self._get_text(url, timeout=12, retries=0)
-        except Exception:
+        except requests.HTTPError as exc:
+            status = getattr(exc.response, "status_code", "?")
+            _fail(f"http_{status}", f"url={url}")
             return None
-        if not html or "expense_ratio" not in html:
+        except requests.RequestException as exc:
+            _fail("network_error", f"url={url} err={type(exc).__name__}")
+            return None
+        except Exception as exc:
+            _fail("fetch_unknown", f"url={url} err={type(exc).__name__}")
+            return None
+        if not html:
+            _fail("empty_body", f"url={url}")
+            return None
+        if "expense_ratio" not in html:
+            _fail("no_expense_ratio_in_html", f"url={url} len={len(html)}")
             return None
         match = self._GROWW_NEXT_DATA_REGEX.search(html)
         if not match:
+            _fail("no_next_data_regex", f"url={url}")
             return None
         try:
             payload = json.loads(match.group(1))
-        except Exception:
+        except Exception as exc:
+            _fail("next_data_json_parse", f"url={url} err={type(exc).__name__}")
             return None
-        return self._walk_for_scheme_blob(payload)
+        blob = self._walk_for_scheme_blob(payload)
+        if blob is None:
+            _fail("walk_no_scheme_blob", f"url={url}")
+            return None
+        return blob
 
     def _enrich_from_groww(self, rows: dict[str, dict]) -> None:
         """Primary Groww enrichment pass — fills missing fields on
@@ -2155,6 +2199,9 @@ class DiscoverMutualFundScraper(BaseScraper):
         # Parallel: 6 workers × 0.15s pacing ≈ 40 req/sec aggregate,
         # well under Groww's observed tolerance. Automatic 60s backoff
         # on any 429/503 via _parallel_map.
+        # Reset categorized failure counters for this sweep.
+        with self._sitemap_fail_lock:
+            self._sitemap_fail_reasons.clear()
         try:
             slugs = self._fetch_groww_sitemap_slugs()
         except Exception:
@@ -2187,9 +2234,17 @@ class DiscoverMutualFundScraper(BaseScraper):
                         by_code[sc] = blob
                 except Exception:
                     pass
+            with self._sitemap_fail_lock:
+                fail_breakdown = dict(
+                    sorted(
+                        self._sitemap_fail_reasons.items(),
+                        key=lambda x: -x[1],
+                    )
+                )
             logger.warning(
-                "groww: sitemap sweep done — indexed=%d fail=%d of %d",
-                len(by_code), sitemap_failures, len(slugs),
+                "groww: sitemap sweep done — indexed=%d fail=%d of %d "
+                "reasons=%s",
+                len(by_code), sitemap_failures, len(slugs), fail_breakdown,
             )
 
         # Phase 2: apply sitemap-indexed data by scheme_code.
