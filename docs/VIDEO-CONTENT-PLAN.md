@@ -1,297 +1,326 @@
-# Daily AI-generated video content — implementation plan
+# Daily AI-generated video content — implementation plan (v2, locked)
 
-Status: **design draft, not yet implemented**
-Target: **MVP free-forever stack**, hybrid visual approach (AI background + real data overlay)
-Cadence: **daily market recap + weekly roundup + weekly educational explainer**
+**Status**: design locked, ready for Phase 0 build.
+All decisions below are final — this doc was iterated across a design
+session and every "open question" from v1 has been resolved.
 
 ---
 
-## 1. What we're building
+## 1. Locked decisions (at a glance)
 
-Short-form (45–90 second) vertical videos auto-generated from EconAtlas
-market data, served through the app as a "Daily Insights" feed.
-Three content types running on independent cron schedules.
+| # | Decision | Value |
+|---|---|---|
+| 1 | **Feature scope** | In-app only (no cross-posting in MVP) |
+| 2 | **Video types** | Daily recap + weekly roundup + weekly educational explainer |
+| 3 | **Language** | English only |
+| 4 | **Audience** | Mixed general, neutral-accessible tone |
+| 5 | **Compliance stance** | Factual reporting + named stocks, NO advice language |
+| 6 | **Moderation flow** | Auto-publish with pre-render validators |
+| 7 | **Personalization** | Same video for all users |
+| 8 | **Resolution** | 1080 × 1920 H.264, NVENC-encoded |
+| 9 | **Voice** | `en-IN-NeerjaNeural` (Edge TTS) for all video types |
+| 10 | **Captions** | Always-on burned into frames, word-by-word from TTS boundaries |
+| 11 | **Music** | Soft ambient, ducked under voice (Pixabay royalty-free, pre-downloaded) |
+| 12 | **Bumpers** | 2 s intro + 2 s outro, MoviePy-generated using app theme colors |
+| 13 | **Chart style** | Matplotlib themed to match `lib/core/theme.dart` (#0F1E31 bg, #00E676/#FF5252) |
+| 14 | **Backgrounds** | Pollinations.ai, pre-cached 20–30 images, rotated |
+| 15 | **LLM** | **Reuse existing `ai_service.call_ai()` via OpenRouter `gpt-oss-120b:free`** |
+| 16 | **GPU strategy** | Tier 1: NVENC encoding + MiDaS depth parallax (4 GB GTX 1050 Ti) |
+| 17 | **Thumbnails** | Custom MoviePy composition (chart snapshot + title overlay) |
+| 18 | **Holiday handling** | Skip cron entirely when market is closed |
+| 19 | **Flutter nav** | Card on Overview screen + "See All" → dedicated feed screen |
+| 20 | **Player UX** | Classic card list + tap-to-play (not TikTok swipe) |
+| 21 | **Notifications** | In-app "new video" badge only, no push |
+| 22 | **Analytics** | None in MVP — ship and decide by vibes |
+| 23 | **Retention** | Daily: 30 days · Weekly: 12 weeks · Explainers: forever |
+| 24 | **Phase 0 test topic** | "What is P/E ratio?" with Reliance as example |
 
-Every video follows the same visual template for MVP — brandable,
-templated, cheap to produce:
+---
+
+## 2. What we're building
+
+Short-form (45–75 second) vertical videos auto-generated from EconAtlas
+market data + AI-generated backgrounds + themed data charts + natural
+English narration, served through the app as a feed on the Overview
+screen.
+
+**Free-forever pipeline**: every component runs on the existing Windows
+11 + Docker Desktop + GTX 1050 Ti host. No paid APIs, no GPU rental,
+no third-party licensing fees beyond OpenRouter's free `gpt-oss-120b`
+tier (1000 req/day, we'll use ~7/day).
+
+**Visual template** (1080 × 1920, 9:16 vertical):
 
 ```
-┌─────────────────────────────────┐   ← 1080 × 1920 (9:16 vertical)
-│   [AI-generated background]      │      Ken-Burns slow pan (30s loop)
+┌─────────────────────────────────┐
+│   [AI background, MiDaS-parallax]│   Static Pollinations image,
+│    Slow cinematic camera move    │   3D camera synthesis via depth
 │                                  │
 │  ┌──────────────────────────┐   │
-│  │    TITLE                 │   │   ← 80px, bold, brand color
-│  │    Date · Category chip  │   │
+│  │    TITLE                 │   │   Brand theme: #0F1E31 bg,
+│  │    Date · Category chip  │   │   #00E676 accent
 │  └──────────────────────────┘   │
 │                                  │
 │     ┌─────────────────────┐     │
-│     │                     │     │   ← real matplotlib chart
-│     │   Animated chart    │     │      (progressive draw)
-│     │   (Nifty today)     │     │
+│     │   Animated chart    │     │   Themed matplotlib
+│     │   (Nifty intraday)  │     │   (#0F1E31 bg, green/red lines)
 │     └─────────────────────┘     │
 │                                  │
-│    "Nifty closed at 22,450..."  │   ← live caption, word-by-word
-│                                  │
+│    "Nifty closed at 22,450..."  │   Word-by-word caption,
+│                                  │   timed to Neerja voice
 │  ┌──────────────────────────┐   │
-│  │  Not investment advice   │   │   ← always visible footer
-│  │  Educational content      │   │
+│  │  Not investment advice   │   │   Always-on disclaimer footer
+│  │  Educational content     │   │
 │  └──────────────────────────┘   │
 └─────────────────────────────────┘
 ```
 
-Total duration: 45s (daily), 75s (weekly roundup), 60s (explainer).
+Total duration: **45 s (daily)** · **75 s (weekly)** · **60 s (explainer)**.
+
+Audio: Neerja narration + ducked ambient music (music -14 dB LUFS under
+voice, lifts to -20 dB when voice is silent).
 
 ---
 
-## 2. Content types
+## 3. Content types (cron schedule)
 
-### 2a. Daily Market Recap
-- **Fires**: Mon–Fri 17:00 IST (90 min after market close at 15:30)
-- **Duration**: 45 s (≈ 130 words of narration)
-- **Structure**:
-  1. Hook (5 s): *"Indian markets today — here's the 45-second recap."*
-  2. Indices (15 s): Nifty, Sensex, Bank Nifty with percent moves
-  3. Highlights (15 s): top gainer, top loser, top sector
-  4. Flows (5 s): FII/DII net
-  5. Close + disclaimer (5 s)
-- **Chart**: animated Nifty intraday line, progressive draw
-- **Data source**: `market_prices_intraday`, `market_prices`, `discover_stock_snapshots`, `institutional_flows_overview`
+### 3a. Daily Market Recap
+- **Fires**: Mon–Fri **17:00 IST** (90 min after 15:30 close)
+- **Skip condition**: NSE holiday — quick sentinel check on
+  `market_prices_intraday` row count for today (<50 rows = closed)
+- **Duration**: 45 s (~130 words @ Neerja pace)
+- **Structure** (timing):
+  - 0:00–0:02 — Branded intro bumper (logo + date)
+  - 0:02–0:07 — Hook: *"Indian markets today — here's the 45-second recap."*
+  - 0:07–0:22 — Indices (Nifty, Sensex, Bank Nifty) with percent moves
+  - 0:22–0:37 — Top gainer + top loser + top sector
+  - 0:37–0:42 — FII/DII flows
+  - 0:42–0:45 — Outro bumper with disclaimer
+- **Chart**: animated Nifty intraday line (today's 30-min ticks), progressive draw from 0:10 to 0:25
+- **Data**: `market_prices_intraday`, `market_prices`, `discover_stock_snapshots`, `institutional_flows_overview`
 
-### 2b. Weekly Roundup
-- **Fires**: Friday 17:30 IST (after Friday's daily recap)
-- **Duration**: 75 s (≈ 220 words)
+### 3b. Weekly Roundup
+- **Fires**: Friday **17:30 IST** (30 min after Friday's daily recap)
+- **Duration**: 75 s (~220 words)
 - **Structure**:
-  1. Hook (5 s): *"This week in Indian markets…"*
-  2. Weekly indices (15 s)
-  3. Best & worst sectors (15 s)
-  4. Notable individual stocks (20 s)
-  5. FII/DII cumulative for the week (10 s)
-  6. Events ahead next week (10 s)
-  7. Disclaimer (5 s)
-- **Chart**: animated weekly Nifty line with annotations on daily highs/lows
-- **Data source**: same tables, aggregated over 5 trading days
+  - 0:00–0:02 — Intro bumper
+  - 0:02–0:08 — Hook: *"This week in Indian markets…"*
+  - 0:08–0:23 — Weekly indices with day-by-day highs/lows annotated
+  - 0:23–0:38 — Best & worst sectors of the week
+  - 0:38–0:53 — Top 3 individual stock moves
+  - 0:53–1:03 — FII/DII cumulative for the week
+  - 1:03–1:10 — Events to watch next week (from `economic_events`)
+  - 1:10–1:15 — Outro + disclaimer
+- **Chart**: animated weekly Nifty candle chart with daily session annotations
+- **Data**: same tables, aggregated over 5 trading days
 
-### 2c. Educational Explainer
-- **Fires**: Wednesday 10:00 IST (weekly, any day of the week)
-- **Duration**: 60 s (≈ 170 words)
-- **Topic pool**: pre-seeded list of 52 concepts (one year of weekly rotation)
-  - "What is P/E ratio?"
-  - "NAV explained"
-  - "How does STT work?"
-  - "Index vs active fund"
-  - "Lot size in F&O"
-  - … (complete list at end of doc)
+### 3c. Educational Explainer
+- **Fires**: Wednesday **10:00 IST** (weekly, any day)
+- **Duration**: 60 s (~170 words)
+- **Topic rotation**: 52 pre-seeded topics (see §16) — one per week, one year of non-repeating content
 - **Structure**:
-  1. Hook: "Let's decode [concept] in 60 seconds"
-  2. Simple definition
-  3. Concrete Indian example
-  4. Practical takeaway
-- **Chart**: concept-specific illustration (optional for MVP — can use only text + background)
-- **Data source**: none (evergreen content, script-only)
+  - 0:00–0:02 — Intro bumper
+  - 0:02–0:12 — Hook: *"Let's decode {concept} in 60 seconds…"*
+  - 0:12–0:27 — Definition (one simple sentence, one clarifying sentence)
+  - 0:27–0:47 — Concrete Indian example using real Nifty/Reliance/HDFC numbers
+  - 0:47–0:57 — Practical takeaway
+  - 0:57–1:00 — Outro + disclaimer
+- **Chart**: concept-specific (e.g., for P/E ratio: a simple bar showing price vs earnings)
+- **Data**: evergreen, no live DB dependency
 
 ---
 
-## 3. The free stack
+## 4. The final tech stack
 
-Every component has been picked for "no API key needed OR generous free tier,
-runs on existing Windows 11 + Docker Desktop + CPU-only setup".
-
-| Stage | Tool | Free tier | Fallback |
+| Stage | Tool | Location | Notes |
 |---|---|---|---|
-| **Script generation** | Gemini 2.0 Flash | 1500 req/day, 1M tokens/day | Ollama local (llama3.2:3b) |
-| **Text-to-speech** | `edge-tts` (Microsoft Edge voices) | Unlimited, no key | Piper TTS (local, CPU) |
-| **Background images** | Pollinations.ai | Unlimited, no key | Pre-baked asset library |
-| **Background music** | Pixabay Music API | Free, no attribution required | Silent (MVP skip) |
-| **Chart rendering** | `matplotlib` → PNG frames | Local Python | — |
-| **Video composition** | `moviepy` (wraps ffmpeg) | Local, no limits | Raw ffmpeg scripts |
-| **Caption timing** | Edge TTS word boundaries | Provided by edge-tts | `faster-whisper` local transcription |
-| **Storage** | Local disk `/app/static/videos` | Free | Cloudflare R2 (10 GB free tier) |
-| **Serving** | Existing FastAPI | Already running | — |
-| **Playback** | Flutter `video_player` package | Free plugin | — |
+| **Script generation** | `app/services/ai_service.py::call_ai()` — OpenRouter `gpt-oss-120b:free` → fallback chain | Existing, inside Docker | Already battle-tested, already handles rate limits + preamble cleanup. **No new LLM integration needed.** |
+| **Script validation** | New `script_validator.py` — regex for forbidden phrases + numeric-grounding check | Inside Docker | Critical safety rail. Rejects + retries any script with advice language or hallucinated numbers. |
+| **Voice (TTS)** | `edge-tts` — `en-IN-NeerjaNeural` voice | Inside Docker (Python) | Returns MP3 + word-boundary JSON for caption timing |
+| **Background images** | Pollinations.ai, pre-cached 20–30 images in repo | Fetched once during setup | Eliminates per-video API calls, survives Pollinations downtime |
+| **Background motion (Tier 1 GPU win #1)** | **MiDaS DPT-Hybrid** depth estimation + 3D camera synthesis | On GPU (~1.5 GB VRAM) | Turns a still Pollinations image into a cinematic 2.5D camera move. This is the "cool trick" that makes videos feel like real footage. |
+| **Background music** | Pixabay royalty-free tracks, 5–10 pre-downloaded | Static repo assets | No attribution required, no API call, no licensing risk |
+| **Chart frames** | `matplotlib` themed to `lib/core/theme.dart` colors | Inside Docker, CPU | ~30 frames × 33 ms = 1 s of animation. Rendered as transparent PNGs. |
+| **Compositing** | `moviepy` (wraps ffmpeg) | Inside Docker, CPU orchestration | Layers: bg parallax → chart → captions → bumpers → music duck |
+| **Caption timing** | Edge TTS word boundaries (no ML needed) | In-process Python | Each word has start/end offset already — just synthesize TextClip per word |
+| **Final encoding (Tier 1 GPU win #2)** | **ffmpeg with `h264_nvenc`** hardware encoder | On GPU (~200 MB VRAM) | 5–10× faster than `libx264`. 60 s video: ~20 s encode vs ~5 min on CPU. |
+| **Thumbnail** | Custom MoviePy composition (chart snapshot + title overlay) | Inside Docker | Rendered as separate JPEG, not extracted from MP4 |
+| **Storage** | Local disk volume `/app/static/videos/` | Docker volume | ~200–300 MB steady state with retention policy |
+| **Serving** | New `app/api/routes/videos.py` with HTTP Range support | Existing FastAPI | Byte-range streaming for mobile seek |
+| **Playback** | Flutter `video_player: ^2.9` plugin | Existing Flutter app | Official plugin, handles MP4 + range requests |
 
-Dependencies to add to `requirements.txt`:
+### New dependencies to add
+
+**Python (`requirements.txt`)**:
 ```
 edge-tts>=6.1
 moviepy>=1.0
-google-generativeai>=0.8   # Gemini Flash
+torch>=2.1           # already present? check
+torchvision>=0.16    # for MiDaS
+pillow>=10.0
+numpy>=1.24
 ```
+
+**Flutter (`pubspec.yaml`)**:
+```
+video_player: ^2.9
+```
+
+**System (already installed on the host)**:
+- `ffmpeg` with NVENC support — verify via `ffmpeg -encoders | grep nvenc`
+- NVIDIA drivers + CUDA runtime (for MiDaS + NVENC)
+- Docker GPU passthrough **OR** run the video pipeline as a standalone
+  Windows-host service (see §5 for the trade-off)
 
 ---
 
-## 4. Architecture — how it fits into the existing backend
+## 5. GPU integration strategy
+
+The 1050 Ti has 4 GB VRAM and sits in the production server. Two options
+for accessing it from the backend:
+
+### Option A: Docker GPU passthrough (one-time setup)
+
+1. Enable GPU support in Docker Desktop settings
+2. Ensure NVIDIA Container Toolkit is installed on Windows (comes with Docker Desktop 4.20+)
+3. Add `gpus: all` to the `app:` service in `docker-compose.yml`
+4. Use a CUDA-enabled base image (`nvidia/cuda:12.2.0-runtime-ubuntu22.04` or similar)
+
+Pro: single Python process, single Dockerfile, single deployment.
+Con: larger image, GPU contention if other services in the compose also
+use GPU.
+
+### Option B: Standalone host service (recommended for MVP)
+
+1. Run the video generation pipeline as a standalone Python service on
+   the Windows host, **not** in Docker
+2. Listens on `localhost:9100/generate` (HTTP API, POST with video type)
+3. ARQ worker in the Docker container calls
+   `http://host.docker.internal:9100/generate`
+4. Generated MP4 is written to a shared volume that both sides can read
+
+Pro: zero Docker GPU configuration, trivial NVIDIA driver access on
+Windows, keeps the video pipeline isolated from the main API. If SD or
+MiDaS crashes its Python process, the API stays up.
+Con: one more process to manage (systemd equivalent on Windows = NSSM or
+Task Scheduler).
+
+**Recommendation: Option B for Phase 0 and 1, consider A later**. The
+extra isolation is worth it and the setup is simpler.
+
+### VRAM budget during active generation
+
+| Step | VRAM peak | Duration | Held concurrently with |
+|---|---|---|---|
+| MiDaS depth estimation | ~1.5 GB | ~1 s | nothing (exclusive) |
+| NVENC encoding | ~200 MB | ~20 s | can overlap with anything |
+| matplotlib rendering | 0 (CPU) | ~15 s | runs in parallel |
+| Edge TTS + HTTP calls | 0 (cloud) | ~5 s | runs in parallel |
+
+**Peak VRAM at any moment: ~1.5 GB (MiDaS) or ~200 MB (NVENC)**.
+Never both at once. We explicitly call `torch.cuda.empty_cache()` and
+`del model` between steps. 4 GB is more than enough.
+
+### Fallback chain (when GPU is busy/unavailable)
+
+```
+NVENC encode → libx264 CPU encode (slower but always works)
+MiDaS depth → plain Ken-Burns pan via ffmpeg (no depth, just scale+translate)
+Pollinations unreachable → pre-cached background image rotation
+Edge TTS unreachable → Piper TTS local fallback (optional Phase 3)
+OpenRouter rate-limited → existing ai_service retry chain already handles this
+```
+
+Every step degrades gracefully. At worst, we produce a CPU-only video
+with a Ken-Burns still background — still ships, still watchable.
+
+---
+
+## 6. Architecture in the existing codebase
 
 ```
 app/
 ├── scheduler/
-│   ├── runner.py                       ← add 3 new cron jobs here
-│   └── video/                          ← NEW package
+│   ├── runner.py                         [EDIT] add 3 cron jobs
+│   └── video/                            [NEW package]
 │       ├── __init__.py
-│       ├── video_job.py                ← ARQ task entry point
-│       ├── orchestrator.py             ← end-to-end pipeline
-│       ├── script_generator.py         ← Gemini Flash wrapper
-│       ├── tts.py                      ← edge-tts wrapper
-│       ├── chart_renderer.py           ← matplotlib → PNG frames
-│       ├── background_generator.py     ← Pollinations.ai wrapper + cache
-│       ├── compositor.py               ← moviepy assembly
+│       ├── video_job.py                  ARQ task entry
+│       ├── orchestrator.py               pipeline runner
+│       ├── script_generator.py           prompt templates + ai_service wrapper
+│       ├── script_validator.py           forbidden-phrase + numeric-grounding
+│       ├── tts.py                        edge-tts + word-boundary extraction
+│       ├── chart_renderer.py             themed matplotlib → PNG frames
+│       ├── background_generator.py       Pollinations fetch + local cache
+│       ├── depth_parallax.py             MiDaS + 3D camera synthesis
+│       ├── compositor.py                 moviepy assembly + music ducking
+│       ├── bumpers.py                    MoviePy-generated intro/outro
+│       ├── encoder.py                    ffmpeg NVENC wrapper + CPU fallback
+│       ├── thumbnail.py                  custom composition (not ffmpeg extract)
 │       ├── templates/
-│       │   ├── base.py                 ← shared visual template
-│       │   ├── daily_recap.py          ← daily flow (data → script → render)
-│       │   ├── weekly_roundup.py       ← weekly flow
-│       │   └── explainer.py            ← educational flow
+│       │   ├── daily_recap.py            data → script → render
+│       │   ├── weekly_roundup.py
+│       │   └── explainer.py
 │       └── assets/
-│           ├── backgrounds/            ← pre-baked AI backgrounds (cache)
-│           ├── music/                  ← pre-downloaded Pixabay tracks
-│           ├── fonts/                  ← brand font TTF
-│           └── logos/                  ← app logo, watermark
+│           ├── backgrounds/              pre-cached Pollinations images
+│           ├── music/                    pre-downloaded Pixabay tracks
+│           ├── fonts/                    brand font (from theme)
+│           └── logos/                    app icon for bumpers
 │
 ├── queue/
-│   ├── tasks.py                        ← add task_video_generate
-│   └── settings.py                     ← register in get_arq_functions()
+│   ├── tasks.py                          [EDIT] add task_video_{daily,weekly,explainer}
+│   └── settings.py                       [EDIT] register in get_arq_functions()
 │
 ├── api/routes/
-│   └── videos.py                       ← NEW: GET /videos, stream, thumbnail
+│   └── videos.py                         [NEW] /videos list + stream + thumbnail
 │
 ├── services/
-│   └── video_service.py                ← NEW: DB queries, file resolution
+│   ├── ai_service.py                     [REUSE] call_ai() for script generation
+│   └── video_service.py                  [NEW] DB queries + file resolution
 │
 └── schemas/
-    └── video_schema.py                 ← NEW: pydantic response models
+    └── video_schema.py                   [NEW] pydantic response models
 
-sql/init.sql                            ← add video_content table
+sql/init.sql                              [EDIT] add video_content table
 
-/app/static/videos/                     ← mounted volume
-    ├── daily/
-    │   ├── 2026-04-14.mp4
-    │   ├── 2026-04-14.jpg              ← thumbnail (first frame)
-    │   └── 2026-04-14.json             ← metadata (script, word timings)
-    ├── weekly/
-    │   └── 2026-W15.mp4
-    └── explainer/
-        └── pe-ratio.mp4
+/app/static/videos/                       Docker volume
+├── daily/YYYY-MM-DD.mp4
+├── daily/YYYY-MM-DD.jpg
+├── weekly/YYYY-WNN.mp4
+└── explainer/{slug}.mp4
+
+# Standalone GPU service (Option B — recommended)
+~/econatlas-video-service/                Windows host, outside Docker
+├── server.py                             FastAPI on localhost:9100
+├── requirements.txt                      torch, diffusers, moviepy, etc.
+└── run.ps1                               starts as a Windows service
+```
+
+Flutter side:
+```
+lib/
+├── data/models/
+│   └── video_content.dart                [NEW] VideoContent model
+├── data/datasources/
+│   └── remote_data_source.dart           [EDIT] getVideos(), getVideoMetadata()
+├── presentation/providers/
+│   └── video_providers.dart              [NEW] FutureProvider with cache
+└── presentation/screens/
+    ├── overview/
+    │   └── overview_screen.dart          [EDIT] add video card + "See All" link
+    └── videos/
+        ├── video_feed_screen.dart        [NEW] list + categories
+        └── video_player_screen.dart      [NEW] full-screen player
 ```
 
 ---
 
-## 5. Data flow — one video, end to end
+## 7. Prompt templates (final, locked)
 
-**Example: daily recap on 14 Apr 2026**
-
-```
-1. Cron fires at 17:00 IST
-     app/scheduler/runner.py → _run_video_daily()
-     → queues ARQ job `video_daily`
-
-2. ARQ worker picks it up
-     app/queue/tasks.py::task_video_daily
-     → app/scheduler/video/orchestrator.py::generate("daily_recap")
-
-3. Collect data (from existing Postgres tables)
-     SELECT * FROM market_prices_intraday WHERE date = today AND asset IN (Nifty, Sensex, BankNifty)
-     SELECT * FROM discover_stock_snapshots ORDER BY percent_change DESC LIMIT 1   # top gainer
-     SELECT * FROM discover_stock_snapshots ORDER BY percent_change ASC LIMIT 1    # top loser
-     SELECT * FROM institutional_flows_overview WHERE date = today                 # FII/DII
-
-4. Generate script (Gemini Flash)
-     Prompt template (see §7) + data dict
-     → 120-140 word script
-
-5. Generate TTS audio (edge-tts)
-     voice = "en-IN-NeerjaNeural"
-     → out.mp3 + word-boundary timestamps
-
-6. Pick background
-     check app/scheduler/video/assets/backgrounds/
-     if fewer than 10 cached: generate one via Pollinations.ai
-     pick random (or hash of date for determinism)
-     → 1080x1920 JPEG
-
-7. Render chart frames (matplotlib)
-     read today's Nifty intraday prices
-     for t in range(30):  # 30 frames × 33ms = 1 second of animation
-         plot progressive slice
-         savefig(f"frame_{t:03d}.png", transparent=True)
-     → 30 PNG frames
-
-8. Composite (moviepy)
-     background = ImageClip(bg).set_duration(45).resize((1080, 1920)).set_fps(30)
-     chart_clip = ImageSequenceClip(frames).set_start(10).set_duration(20).set_position("center")
-     title = TextClip("Today's Market Recap", ...)
-     caption = word-by-word text overlay from edge-tts word boundaries
-     footer = TextClip("Not investment advice · Educational content", ...)
-     logo = ImageClip("logo.png").set_position((50, 50))
-     audio = AudioFileClip("out.mp3")
-     final = CompositeVideoClip([background, chart_clip, title, caption, footer, logo]).set_audio(audio)
-     final.write_videofile("2026-04-14.mp4", codec="libx264", fps=30, audio_codec="aac")
-
-9. Write thumbnail
-     ffmpeg -i 2026-04-14.mp4 -vf "select=eq(n\,30)" -frames:v 1 2026-04-14.jpg
-
-10. Insert DB row
-     INSERT INTO video_content (
-         type, title, description, script, duration_seconds,
-         file_path, thumbnail_path, generated_at, published_at, metadata
-     ) VALUES (
-         'daily_recap', 'Market Recap · 14 Apr 2026', '...',
-         <script>, 45.2,
-         '/videos/daily/2026-04-14.mp4',
-         '/videos/daily/2026-04-14.jpg',
-         NOW(), NOW(),
-         '{"voice": "en-IN-NeerjaNeural", "template": "v1"}'::jsonb
-     );
-
-11. Invalidate Flutter cache (optional)
-     Redis pub/sub → push notification to watching clients
-```
-
-Expected total wall-time on the Windows 11 host: **~60 seconds per video**,
-CPU-only, no GPU required.
-
----
-
-## 6. Database schema
-
-```sql
-CREATE TABLE IF NOT EXISTS video_content (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    type           TEXT NOT NULL CHECK (type IN ('daily_recap', 'weekly_roundup', 'explainer')),
-    title          TEXT NOT NULL,
-    description    TEXT,
-    script         TEXT NOT NULL,
-    duration_seconds REAL NOT NULL,
-    file_path      TEXT NOT NULL,       -- /videos/daily/2026-04-14.mp4
-    thumbnail_path TEXT,                -- /videos/daily/2026-04-14.jpg
-    file_size_bytes BIGINT,
-    generated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    published_at   TIMESTAMPTZ,
-    metadata       JSONB NOT NULL DEFAULT '{}'::jsonb,
-    views_count    INTEGER NOT NULL DEFAULT 0,
-    status         TEXT NOT NULL DEFAULT 'ready'
-                    CHECK (status IN ('generating', 'ready', 'failed', 'archived'))
-);
-
-CREATE INDEX idx_video_content_type_published
-    ON video_content(type, published_at DESC NULLS LAST);
-
-CREATE INDEX idx_video_content_generated
-    ON video_content(generated_at DESC);
-
--- One daily recap per day (retry-safe idempotency)
-CREATE UNIQUE INDEX idx_video_daily_unique
-    ON video_content((generated_at::date))
-    WHERE type = 'daily_recap';
-```
-
-**Retention policy**: keep last 30 days of daily, 12 weeks of weekly,
-unlimited explainers (they're evergreen). Weekly cleanup cron.
-
----
-
-## 7. Prompt templates (Gemini Flash)
-
-### Daily recap
+### 7a. Daily recap
 
 ```
 You are writing a voiceover script for a daily Indian stock market recap.
+Target: ~45 seconds of narration at 3.3 words/second = 120-140 words total.
 
 TODAY'S DATA ({date}):
 - Nifty 50: closed at {nifty_close}, {nifty_direction} {nifty_change_pct}%
@@ -304,21 +333,29 @@ TODAY'S DATA ({date}):
 - DII net: {dii_net} cr
 
 STRICT RULES:
-1. EXACTLY 120–140 words (≈45 seconds at 3.3 wps narration).
+1. EXACTLY 120–140 words. Count carefully.
 2. Use the EXACT numbers above — never round, never invent, never predict.
-3. Conversational tone like a friend explaining over tea, not a news anchor.
-4. NO phrases like "should buy", "will go up", "expect", "likely to",
-   "recommend", "target price", "should hold" — do not give advice.
-5. Open with a 5-second hook, end with: "Educational only. Not investment advice."
+3. Conversational tone like explaining to a friend over tea, not a news anchor.
+4. FORBIDDEN phrases (your script will be auto-rejected if any appear):
+   "should buy", "should sell", "should hold", "will go up", "will go down",
+   "expect", "likely to", "recommend", "target price", "going to",
+   "predicts", "is a good buy", "bullish on", "bearish on".
+5. Structure:
+   - Line 1: Opening hook (~5 sec)
+   - Lines 2-3: Index moves (~15 sec)
+   - Lines 4-5: Top gainer + loser + best sector (~15 sec)
+   - Line 6: FII/DII flows (~5 sec)
+   - Line 7: Close with "Educational only. Not investment advice."
 6. Output ONLY the script text. No headers, no markdown, no stage directions.
 
 BEGIN:
 ```
 
-### Weekly roundup
+### 7b. Weekly roundup
 
 ```
-You are writing a 75-second weekly roundup voiceover for Indian markets.
+You are writing a 75-second weekly Indian markets roundup.
+Target: 200–240 words @ 3.3 wps.
 
 THIS WEEK ({week_start} → {week_end}):
 - Nifty weekly: {nifty_weekly_pct}% ({nifty_start} → {nifty_end})
@@ -332,425 +369,496 @@ THIS WEEK ({week_start} → {week_end}):
 - Notable events: {events}
 - Next week to watch: {upcoming_events}
 
-STRICT RULES:
-1. 200–240 words (≈75 seconds at 3.3 wps).
-2. Structure: opening hook → index summary → sector highlights →
+RULES:
+1. 200-240 words exactly.
+2. EXACT numbers only — no rounding, inventing, or predicting.
+3. Same FORBIDDEN phrases as daily template (see 7a).
+4. Structure: opening hook → index summary → sector highlights →
    top movers → flows → what's ahead → disclaimer.
-3. Use EXACT numbers; no estimations.
-4. NO buy/sell/hold/target/predict language.
 5. End with: "Educational only. Not investment advice."
 6. Output ONLY the script.
 
 BEGIN:
 ```
 
-### Educational explainer
+### 7c. Educational explainer
 
 ```
-You are writing a 60-second educational explainer for retail investors in India.
+You are writing a 60-second educational explainer for first-time Indian retail investors.
+Target: 150–180 words @ 3.0 wps (slower pace for clarity).
 
 TOPIC: {concept}
 SHORT DESCRIPTION: {concept_description}
-AUDIENCE: First-time investors, beginner level.
+EXAMPLE CONTEXT: {example_data_if_any}
 
-STRICT RULES:
-1. 150–180 words (≈60 seconds at 3.0 wps for clearer pacing).
+RULES:
+1. 150-180 words.
 2. Structure:
    - Hook (10 s): "Let's decode {concept} in 60 seconds…"
-   - Definition (15 s): one simple sentence, then one clarifying sentence.
-   - Indian example (20 s): concrete, relatable — use everyday rupee amounts,
-     familiar names (Nifty, Reliance, HDFC Bank).
-   - Practical takeaway (10 s): what the viewer should now understand.
+   - Definition (15 s): one simple sentence, one clarifying sentence.
+   - Indian example (20 s): use REAL numbers from Indian stocks (Nifty, Reliance, TCS, HDFC Bank).
+   - Practical takeaway (10 s): what the viewer now understands.
    - Disclaimer (5 s): "Educational content only. Not investment advice."
-3. NO jargon without immediate explanation.
-4. NO specific "you should" or "everyone must" advice.
-5. Output ONLY the script text.
+3. No jargon without immediate explanation.
+4. FORBIDDEN phrases same as 7a. No "you should do X" language.
+5. Output ONLY the script.
 
 BEGIN:
 ```
 
-### Grounding discipline (critical)
-
-**Never let the LLM emit numbers.** The script template in code will
-`.format()` the actual DB values INTO the generated text, then validate
-that the final script contains only numbers we passed in. If the LLM
-hallucinates a number, we detect it and retry the generation with a
-stricter reminder.
+### 7d. Grounding + validation (always run post-generation)
 
 ```python
-def _validate_script(script: str, allowed_numbers: set[str]) -> bool:
-    found = set(re.findall(r'\d+(?:\.\d+)?', script))
-    stray = found - allowed_numbers
-    return len(stray) == 0
+# In app/scheduler/video/script_validator.py
+FORBIDDEN = [
+    "should buy", "should sell", "should hold", "must buy", "must sell",
+    "will go up", "will go down", "is going to", "going to rise",
+    "going to fall", "expect the", "expected to", "likely to rise",
+    "likely to fall", "recommend", "recommended", "target price",
+    "price target", "is a good buy", "is a bad buy", "bullish on",
+    "bearish on", "predicts", "forecasting", "outperform",
+    "underperform", "strong buy", "strong sell", "overweight",
+    "underweight", "accumulate", "book profit", "exit at",
+]
+
+def validate_script(script: str, allowed_numbers: set[str]) -> ValidationResult:
+    low = script.lower()
+    # 1. Forbidden phrase check
+    hit = next((p for p in FORBIDDEN if p in low), None)
+    if hit:
+        return ValidationResult(ok=False, reason=f"forbidden phrase: {hit}")
+    # 2. Numeric grounding — every number in the script must be one we passed in
+    found = set(re.findall(r'(\d+(?:\.\d+)?)', script))
+    stray = found - allowed_numbers - {"1", "2", "3", "45", "60", "75", "100"}  # allow counting numbers
+    if stray:
+        return ValidationResult(ok=False, reason=f"hallucinated numbers: {stray}")
+    # 3. Length check
+    word_count = len(script.split())
+    if not (100 <= word_count <= 250):
+        return ValidationResult(ok=False, reason=f"word count {word_count} out of range")
+    return ValidationResult(ok=True)
 ```
+
+On validation failure, regenerate with a stricter reminder appended to
+the prompt. Give up after 3 attempts and skip today's video (worse than
+publishing a bad one).
 
 ---
 
-## 8. Cron schedule (additions to `app/scheduler/runner.py`)
+## 8. DB schema (unchanged from v1)
 
-```python
-# Daily market recap — 17:00 IST Mon-Fri (90 min after 15:30 close)
-_scheduler.add_job(
-    _run_video_daily,
-    "cron",
-    day_of_week="mon-fri",
-    hour=17,
-    minute=0,
-    timezone="Asia/Kolkata",
-    id="video_daily",
-    replace_existing=True,
-    max_instances=1,
-    coalesce=True,
-    misfire_grace_time=3600,
-)
+```sql
+CREATE TABLE IF NOT EXISTS video_content (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    type           TEXT NOT NULL CHECK (type IN ('daily_recap', 'weekly_roundup', 'explainer')),
+    title          TEXT NOT NULL,
+    description    TEXT,
+    script         TEXT NOT NULL,
+    duration_seconds REAL NOT NULL,
+    file_path      TEXT NOT NULL,
+    thumbnail_path TEXT,
+    file_size_bytes BIGINT,
+    generated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    published_at   TIMESTAMPTZ,
+    metadata       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status         TEXT NOT NULL DEFAULT 'ready'
+                    CHECK (status IN ('generating', 'ready', 'failed', 'archived'))
+);
 
-# Weekly roundup — 17:30 IST Friday
-_scheduler.add_job(
-    _run_video_weekly,
-    "cron",
-    day_of_week="fri",
-    hour=17,
-    minute=30,
-    timezone="Asia/Kolkata",
-    id="video_weekly",
-    replace_existing=True,
-    max_instances=1,
-    coalesce=True,
-    misfire_grace_time=3600,
-)
-
-# Educational explainer — 10:00 IST Wednesday
-_scheduler.add_job(
-    _run_video_explainer,
-    "cron",
-    day_of_week="wed",
-    hour=10,
-    minute=0,
-    timezone="Asia/Kolkata",
-    id="video_explainer",
-    replace_existing=True,
-    max_instances=1,
-    coalesce=True,
-    misfire_grace_time=10800,
-)
+CREATE INDEX idx_video_content_type_published
+    ON video_content(type, published_at DESC NULLS LAST);
+CREATE UNIQUE INDEX idx_video_daily_unique
+    ON video_content((generated_at::date))
+    WHERE type = 'daily_recap';
 ```
 
-ARQ task registration in `app/queue/settings.py::get_arq_functions()`:
+No `views_count` column — analytics deferred.
+
+---
+
+## 9. Cron schedule (append to `app/scheduler/runner.py`)
+
 ```python
+# Daily market recap — 17:00 IST Mon-Fri (skip on holidays via sentinel)
+_scheduler.add_job(_run_video_daily, "cron",
+    day_of_week="mon-fri", hour=17, minute=0,
+    timezone="Asia/Kolkata", id="video_daily",
+    replace_existing=True, max_instances=1, coalesce=True,
+    misfire_grace_time=3600)
+
+# Weekly roundup — 17:30 IST Friday
+_scheduler.add_job(_run_video_weekly, "cron",
+    day_of_week="fri", hour=17, minute=30,
+    timezone="Asia/Kolkata", id="video_weekly",
+    replace_existing=True, max_instances=1, coalesce=True,
+    misfire_grace_time=3600)
+
+# Educational explainer — 10:00 IST Wednesday
+_scheduler.add_job(_run_video_explainer, "cron",
+    day_of_week="wed", hour=10, minute=0,
+    timezone="Asia/Kolkata", id="video_explainer",
+    replace_existing=True, max_instances=1, coalesce=True,
+    misfire_grace_time=10800)
+
+# Weekly cleanup — Sunday 2 AM IST (delete >30d daily, >12w weekly)
+_scheduler.add_job(_run_video_cleanup, "cron",
+    day_of_week="sun", hour=2, minute=0,
+    timezone="Asia/Kolkata", id="video_cleanup",
+    replace_existing=True, max_instances=1, coalesce=True,
+    misfire_grace_time=43200)
+```
+
+And register in ARQ + `_VALID_JOBS`:
+```python
+# app/queue/settings.py
 func(task_video_daily,     name="video_daily",     timeout=600),
 func(task_video_weekly,    name="video_weekly",    timeout=900),
 func(task_video_explainer, name="video_explainer", timeout=600),
-```
+func(task_video_cleanup,   name="video_cleanup",   timeout=120),
 
-Add `"video_daily"`, `"video_weekly"`, `"video_explainer"` to
-`_VALID_JOBS` in `app/api/routes/ops.py` so they're manually triggerable.
+# app/api/routes/ops.py::_VALID_JOBS
+"video_daily", "video_weekly", "video_explainer", "video_cleanup",
+```
 
 ---
 
-## 9. FastAPI routes (`app/api/routes/videos.py`)
+## 10. FastAPI routes (`app/api/routes/videos.py`)
 
 ```
 GET  /videos
      ?type=daily_recap|weekly_roundup|explainer
      ?limit=20&offset=0
-     → list of video metadata (id, title, thumbnail, duration, published_at)
+     → list of VideoContent metadata
 
 GET  /videos/{id}
-     → full metadata including script text for transcripts
+     → full metadata including script text (for transcript view)
 
 GET  /videos/{id}/stream
-     → streams the MP4 with HTTP Range support (critical for mobile seek)
-     Sets Cache-Control: public, max-age=86400 (1 day)
+     → MP4 with HTTP Range support (critical for Flutter video_player seek)
+     Sets Cache-Control: public, max-age=86400
 
 GET  /videos/{id}/thumbnail
-     → 1080x1920 JPEG first-frame
-
-POST /videos/{id}/view
-     → increment views_count (fire-and-forget, no auth)
+     → 1080×1920 JPEG
 ```
 
-Range support is non-trivial — use `StreamingResponse` with byte-range
-parsing. Existing code in `app/api/routes/` does not have this pattern
-so it'll need to be added from scratch. ~50 lines.
+Byte-range streaming must be implemented from scratch (no existing
+pattern in the codebase). ~50 lines of `StreamingResponse` + header
+parsing. This is a minor Phase 1 task.
 
 ---
 
-## 10. Flutter integration
+## 11. Flutter integration (locked)
 
-New screen: `lib/presentation/screens/insights/insights_screen.dart`
+### Overview screen card
+```dart
+// lib/presentation/screens/overview/overview_screen.dart
+// Add below the existing "Market Sentiment" section:
 
-Route: `/insights` added to bottom tab bar (or under the existing
-Dashboard/Discover/Artha structure — TBD).
-
-Widget tree:
-```
-InsightsScreen (ConsumerStatefulWidget)
-├── SegmentedControl (Daily | Weekly | Learn)
-├── VerticalVideoFeed
-│   └── PageView.builder (one video per page, vertical swipe)
-│       └── VideoCard
-│           ├── BackgroundVideoPlayer (video_player plugin)
-│           ├── OverlayMetadata (title, date, description)
-│           ├── MuteButton
-│           └── ShareButton
-└── NoConnectionBanner (when offline, show cached thumbnails)
+_DailyVideoCard(
+  onTap: () => context.push('/videos'),
+)
 ```
 
-Model: `VideoContent` class with `fromJson`/`toJson`, cached in
-SharedPreferences same pattern as `broker_charges` provider.
+The card shows:
+- Latest daily recap thumbnail (1080×1920 JPEG, displayed as 16:9 crop)
+- Title overlay
+- Duration chip
+- "See All →" link on the right edge
+- Red dot badge if a new video was generated since the user's last
+  `prefLastVideoSeenAt` timestamp
 
-Provider: `videoFeedProvider.family<List<VideoContent>, VideoType>`
-that fetches and caches by type.
+### Dedicated feed screen
+```dart
+// lib/presentation/screens/videos/video_feed_screen.dart
+// Route: /videos
 
-Plugin: `video_player: ^2.9` (official) — supports HLS and MP4,
-handles range requests automatically.
+Column(
+  children: [
+    SegmentedControl(['Daily', 'Weekly', 'Learn']),
+    Expanded(
+      child: ListView.builder(
+        itemBuilder: (ctx, i) => VideoCard(
+          thumbnail: video.thumbnailUrl,
+          title: video.title,
+          date: video.publishedAt,
+          duration: video.duration,
+          onTap: () => context.push('/videos/${video.id}'),
+        ),
+      ),
+    ),
+  ],
+)
+```
 
-**Offline mode**: MP4s are small (~5 MB each). Download the 3 latest
-per type on Wi-Fi, play from local cache. Optional for MVP.
+### Player screen
+```dart
+// lib/presentation/screens/videos/video_player_screen.dart
+// Route: /videos/:id
 
-**Autoplay rules**:
-- On tab open: autoplay first video, muted by default
-- Tap to unmute
-- Swipe to next video = autoplay next
-- Swipe away / leave screen = pause
+Stack(
+  children: [
+    VideoPlayer(
+      controller,
+      aspectRatio: 9 / 16,
+    ),
+    // Top bar: back button, title
+    // Bottom: play/pause, scrubber, mute, share
+    // Right side: full-screen toggle
+  ],
+)
+```
+
+Provider:
+```dart
+// lib/presentation/providers/video_providers.dart
+final videoFeedProvider = FutureProvider.autoDispose
+    .family<List<VideoContent>, String>((ref, type) async {
+  // Same caching pattern as broker_charges_providers
+  // - SharedPreferences cache key: prefCacheVideos_{type}
+  // - Network fallback
+  // - Cache-version gate
+});
+```
 
 ---
 
-## 11. Disclaimers & compliance
+## 12. Disclaimers & compliance rails
 
-Because this is financial content served to Indian users, SEBI has opinions.
-**Do all of these**:
+1. **Burned-in footer watermark** on every frame:
+   `Educational · Not Investment Advice`
+   Non-removable, always at bottom 10% of frame.
 
-1. **Watermark every frame** with "Educational · Not Investment Advice"
-   in a fixed bottom-left overlay that cannot be cropped out.
-2. **Every script must end** with the same disclaimer sentence —
-   enforced by the prompt AND validated before the video is rendered.
-3. **No stock-specific recommendations** — the daily recap can say
-   "TCS was today's top gainer" but NOT "TCS is a good buy."
-   The LLM prompt explicitly forbids this; a regex validator catches
-   forbidden phrases before TTS runs:
-   ```
-   forbidden_phrases = [
-       "should buy", "should sell", "should hold",
-       "will go up", "will go down", "expect",
-       "target price", "recommend", "buy now",
-       "likely to", "going to", "predicts",
-   ]
-   ```
-4. **Video metadata** stored in `video_content.metadata` includes the
-   LLM model + version + prompt template version so we can audit
-   what generated each clip if a complaint arrives.
-5. **Appeal channel** — in-app "Report content" button on every video
-   that creates a row in a new `video_reports` table.
-6. **Lawyer review recommended** before first public release.
-   This is cheap insurance — a 1-hour consultation with an Indian
-   securities lawyer before launch.
+2. **Script ends with**: `"Educational only. Not investment advice."`
+   — enforced by the validator in §7d. Retry if missing.
+
+3. **Forbidden-phrase filter**: 28 phrases auto-reject the script. List
+   in §7d. Can be extended without touching generation code.
+
+4. **Numeric grounding**: every digit in the final script must be a
+   number we passed in as prompt data. Stray numbers = validator fail.
+
+5. **Audit trail**: `video_content.metadata` stores:
+   - LLM model name
+   - Prompt template version
+   - Validator pass count
+   - Any retry reasons
+   - Generation timestamp
+
+6. **Feedback channel**: defer to post-MVP — users can complain via
+   existing feedback form (already in app).
 
 ---
 
-## 12. Phased rollout
+## 13. Phase 0 concrete task list (4 days)
 
-### Phase 0 — foundations (3–4 days)
+**Goal**: one working MP4 of "What is P/E ratio?" saved to local disk,
+playable in VLC, validates the whole pipeline end-to-end.
 
-Goal: the pipeline runs end-to-end and produces one working video
-file to your desktop. No app integration yet.
+### Day 1: scaffolding + script generation
+- [ ] Create `app/scheduler/video/` package + all module stubs
+- [ ] Create `script_generator.py` with the explainer prompt template
+- [ ] Wire to existing `ai_service.call_ai()`
+- [ ] Create `script_validator.py` with forbidden-phrase + numeric checks
+- [ ] CLI: `python -m app.scheduler.video.orchestrator explainer --topic "P/E ratio"`
+- **Exit**: prints a valid 150-180 word script about P/E ratio using Reliance
 
-- `app/scheduler/video/` package scaffolded
-- `script_generator.py` with Gemini Flash
-- `tts.py` with edge-tts
-- `chart_renderer.py` producing 30 chart frames
-- `compositor.py` producing final MP4
-- One manual trigger: `python -m app.scheduler.video.orchestrator daily_recap`
-- Output: `./out/test.mp4` playable in VLC
+### Day 2: TTS + backgrounds + charts
+- [ ] Create `tts.py` with edge-tts + word-boundary extraction
+- [ ] Pre-fetch 10 Pollinations backgrounds (finance theme) into `assets/backgrounds/`
+- [ ] Create `chart_renderer.py` with matplotlib themed to #0F1E31/#00E676/#FF5252
+- [ ] Render a P/E-specific chart (simple bar: Reliance price ÷ Reliance EPS)
+- **Exit**: `out/voice.mp3` + 30 chart PNG frames + background.jpg all exist
 
-**Exit criterion**: you can run one command and get a valid MP4.
+### Day 3: composition + GPU pipeline
+- [ ] Install `torch`, `torchvision`, `diffusers` on Windows host
+- [ ] Set up standalone `~/econatlas-video-service/server.py` FastAPI on localhost:9100
+  OR: enable Docker GPU passthrough
+- [ ] Implement `depth_parallax.py` with MiDaS DPT-Hybrid
+- [ ] Verify `ffmpeg -encoders | grep nvenc` finds `h264_nvenc`
+- [ ] Implement `encoder.py` with NVENC + CPU fallback
+- [ ] Implement `compositor.py` with layered MoviePy
+- [ ] Implement `bumpers.py` with themed intro/outro
+- **Exit**: end-to-end pipeline produces `out/pe-ratio.mp4`, 60 s, 1080×1920, NVENC-encoded
+
+### Day 4: polish + thumbnail + test
+- [ ] Implement `thumbnail.py` (custom composition, not ffmpeg extract)
+- [ ] Implement music ducking in `compositor.py` (Pixabay soft track)
+- [ ] Run the full pipeline 5+ times, fix any rough edges
+- [ ] Document any gotchas in `VIDEO-CONTENT-PLAN.md` appendix
+- **Exit**: producing consistent 60 s videos that look and sound good
+  enough to show a user. Sharable with you for review.
+
+**No app integration yet.** Phase 0 is just the offline pipeline.
+
+---
+
+## 14. Phases beyond 0
 
 ### Phase 1 — backend MVP (4–5 days)
-
-- `video_content` DB table (migration)
-- ARQ task + cron schedule
-- FastAPI routes (`/videos`, `/videos/{id}/stream`, `/videos/{id}/thumbnail`)
-- Byte-range streaming
-- File layout on disk
-- Retention cron (delete >30 day old daily, >12 week old weekly)
-
-**Exit criterion**: cron fires, video gets stored, `curl /videos` returns
-the new clip, `curl /videos/{id}/stream | vlc -` plays it.
+- `video_content` DB migration
+- ARQ tasks + cron schedule
+- `/videos` routes with byte-range streaming
+- Cleanup cron
+- Grafana panels for video generation metrics
+- **Exit**: cron fires, video is produced, `/videos` API returns it, `curl /videos/{id}/stream | vlc -` plays it
 
 ### Phase 2 — Flutter MVP (3–4 days)
+- `VideoContent` model + provider + caching
+- Overview screen card
+- `/videos` feed screen with segmented control
+- `/videos/:id` player screen
+- "New video" badge on Overview card
+- **Exit**: user opens app, sees today's video card on Overview, taps, watches
 
-- `VideoContent` model
-- `videoFeedProvider`
-- `InsightsScreen` with `PageView.builder` + `video_player`
-- Entry point (new bottom tab or item in existing tab)
-- SharedPreferences caching
+### Phase 3 — polish (1–2 weeks, ongoing)
+- Prompt engineering refinement (watch 20 videos, iterate)
+- Bumper motion design improvements
+- Music library expansion
+- Chart motion design upgrades
+- Error state handling (no video today, offline, etc.)
 
-**Exit criterion**: user opens app, swipes to Insights tab, sees today's
-recap video, taps play, hears narration with captions.
-
-### Phase 3 — polish & iterate (1–2 weeks, ongoing)
-
-- Better prompt engineering (watch 5 videos, refine)
-- Better chart motion design (easing, annotations)
-- Background music selection + ducking under voice
-- Multiple background image themes (morning / evening / weekend)
-- View count + basic analytics
-- In-app share button (pre-generated share link to MP4)
-
-### Phase 4 — education content library (1 week upfront)
-
-- Author the 52-topic list for explainers
-- Pre-generate the first 4 explainers
-- Review quality before enabling the weekly cron
-
-**Total effort: ~3 weeks of focused work for a shippable v1.**
+### Phase 4 — growth (later)
+- Push notifications
+- Analytics (view count, completion rate)
+- Sharing
+- Hindi language track
+- Cross-posting to YouTube Shorts
 
 ---
 
-## 13. Risk register
+## 15. Risk register
 
-| Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
-| Gemini free tier shrinks | Medium | High | Ollama local fallback ready |
-| edge-tts gets blocked by Microsoft | Low | High | Piper TTS local fallback |
-| Pollinations.ai goes down | Medium | Low | Pre-bake 30 backgrounds, rotate |
-| LLM hallucinates a number | **High** | **Critical** | Strict numeric validator (§7), retry on fail |
-| Users hear "robotic" voice | High | Medium | Multiple voices per video type, better prompt pacing |
-| SEBI complaint | Low | **Critical** | Disclaimer watermark + phrase filter + lawyer review |
-| Disk fills up | Medium | Medium | Retention cron, size monitoring via Grafana |
-| Video generation runs during high-load cron | Low | Low | Stagger: video at 17:00, broker at 04:00, etc. |
-| ffmpeg encoding CPU-spikes | Medium | Medium | nice/ionice in Docker container, profile first |
-
----
-
-## 14. Open questions
-
-1. **Background music?** Pixabay has good royalty-free tracks but
-   adds complexity. MVP: no music (voice only), add in Phase 3.
-
-2. **Multiple voices?** edge-tts has ~8 Indian English voices.
-   One-voice-per-content-type is simpler but less interesting.
-   MVP: fixed voice `en-IN-NeerjaNeural` for all.
-
-3. **Where does "Insights" live in the app nav?**
-   - Option A: new bottom tab (requires nav restructure)
-   - Option B: card on Dashboard screen
-   - Option C: under Artha AI section (conceptually fits)
-   - Recommendation: **B for MVP** (1 card on Dashboard), promote to
-     tab in Phase 4 if engagement is there
-
-4. **Language?** MVP is English only. Hindi (TTS via
-   `hi-IN-SwaraNeural`) is an obvious Phase-5 addition.
-
-5. **Thumbnails**: first frame of MP4 is usually ugly (background only,
-   no chart yet). Better to capture the 10th-second frame when the
-   chart is mid-draw. `ffmpeg -ss 00:00:10 -frames:v 1`.
-
-6. **Pre-generation vs on-demand**: pre-generate at 17:00 and serve
-   static files (MVP approach) vs generate per-request (wasteful). MVP
-   pre-generates.
-
-7. **What happens on market holidays?** Cron doesn't know about NSE
-   holidays. Skip if today's `market_prices_intraday` has <50 rows
-   (a quick sentinel for "markets were closed").
-
-8. **Can this be triggered ad-hoc via `/ops/jobs/trigger/video_daily`?**
-   Yes — same mechanism as other ARQ tasks.
+| Risk | Mitigation |
+|---|---|
+| LLM hallucinates a stock price | Strict numeric validator + retry chain + data-grounded template |
+| OpenRouter free tier shrinks | Existing `ai_service` has fallback chain across multiple free models |
+| Edge TTS blocked by Microsoft | Piper TTS local fallback in Phase 3 |
+| Pollinations.ai down | Pre-cached 20 backgrounds, rotation |
+| SD 1.5 OOM on 1050 Ti (Phase 4) | Currently not used — MiDaS + NVENC only, both tested at ~2 GB peak |
+| MiDaS OOM mid-generation | `torch.cuda.empty_cache()` between steps, CPU fallback (Ken Burns) |
+| NVENC unavailable on host | ffmpeg falls back to libx264 (slower but works) |
+| SEBI complaint about content | Burned disclaimer + forbidden-phrase filter + audit trail + no forward advice |
+| Disk fills with videos | 30 d / 12 w / forever retention cron + Prometheus gauge alert |
+| Video generation slows API traffic | Off-hours (17:00), short duration (~90 s), GPU isolation via standalone host service |
+| Production server restart during generation | Idempotent writes: regenerate today's video on next cron if DB row missing |
 
 ---
 
-## 15. Educational topic backlog (52 topics for weekly cron)
+## 16. Educational explainer backlog (52 topics, 1 year)
 
-Basics:
-- What is P/E ratio?
-- What is NAV?
-- Nominal vs real returns
-- Simple vs compound interest
-- Bid-ask spread
-- Market cap explained (large / mid / small)
-- Blue chip stocks — what actually counts?
-- Index vs active mutual fund
+**Basics** (8)
+1. What is P/E ratio?  ← *Phase 0 test topic*
+2. What is NAV?
+3. Nominal vs real returns
+4. Simple vs compound interest
+5. Bid-ask spread
+6. Market cap (large / mid / small)
+7. What counts as blue chip?
+8. Index vs active mutual fund
 
-Taxes:
-- STT explained in 60 seconds
-- LTCG vs STCG
-- How dividend tax works
-- The ₹1 lakh exemption
-- Section 80C in 60 seconds
+**Taxes** (5)
+9. STT explained
+10. LTCG vs STCG
+11. Dividend tax
+12. ₹1 lakh LTCG exemption
+13. Section 80C in 60 seconds
 
-F&O:
-- Lot size — why does it matter?
-- Strike price in one minute
-- Call vs Put — the simplest explanation
-- Premium vs intrinsic value
-- Why F&O is NOT for beginners
+**F&O** (5)
+14. Lot size — why it matters
+15. Strike price in one minute
+16. Call vs Put — simplest explanation
+17. Premium vs intrinsic value
+18. Why F&O is NOT for beginners
 
-IPOs:
-- What happens in an IPO
-- Anchor investors
-- Grey market premium
-- How allotment actually works
-- Mainboard vs SME IPOs
+**IPOs** (5)
+19. What happens in an IPO
+20. Anchor investors
+21. Grey market premium
+22. How allotment actually works
+23. Mainboard vs SME IPOs
 
-Macro:
-- What is CPI?
-- Repo rate explained
-- Why RBI meetings matter
-- FII vs DII flows
-- Fiscal deficit — one minute explainer
+**Macro** (5)
+24. What is CPI?
+25. Repo rate explained
+26. Why RBI meetings matter
+27. FII vs DII flows
+28. Fiscal deficit in one minute
 
-Products:
-- SIP vs lump sum
-- ELSS tax saving
-- Gilt funds
-- Gold ETFs vs SGBs
-- NPS vs EPF vs PPF
+**Products** (5)
+29. SIP vs lump sum
+30. ELSS tax saving
+31. Gilt funds
+32. Gold ETFs vs SGBs
+33. NPS vs EPF vs PPF
 
-Risk:
-- Standard deviation as risk
-- Beta explained
-- Sharpe ratio in 60 seconds
-- Why diversification actually works
-- Rebalancing — the boring secret
+**Risk** (5)
+34. Standard deviation as risk
+35. Beta explained
+36. Sharpe ratio in 60 seconds
+37. Why diversification actually works
+38. Rebalancing — the boring secret
 
-Valuation:
-- P/B ratio
-- ROE and why it's not everything
-- Debt-to-equity
-- Dividend yield
+**Valuation** (4)
+39. P/B ratio
+40. ROE and why it's not everything
+41. Debt-to-equity
+42. Dividend yield
 
-Brokerage & charges:
-- What does 0.03% brokerage actually cost you
-- DP charges explained
-- BSDA vs regular demat
-- When minimum brokerage kicks in
-- Clearing vs execution costs
+**Brokerage & charges** (5)
+43. What 0.03% brokerage actually costs
+44. DP charges explained
+45. BSDA vs regular demat
+46. When minimum brokerage kicks in
+47. Clearing vs execution costs
 
-Behavioral:
-- Why cost averaging feels wrong but works
-- The sunk cost fallacy in stocks
-- Anchoring bias — the ₹100 stock trap
+**Behavioral** (3)
+48. Why cost averaging feels wrong but works
+49. The sunk cost fallacy in stocks
+50. Anchoring bias — the ₹100 stock trap
 
-Derivatives advanced:
-- Open interest
-- Max pain theory
-- India VIX
-- Futures rollover
-
-Total: 52 topics = 1 year of weekly content before repetition.
+**Derivatives advanced** (2)
+51. Open interest
+52. Max pain theory
 
 ---
 
-## 16. What I need from you before building
+## 17. What's locked, what's not
 
-1. **Go / no-go** on the hybrid visual approach (AI bg + data overlay).
-2. **Nav placement** — dashboard card (Option B) OK for MVP?
-3. **First test topic** for explainer — pick one from §15 so we can
-   validate the pipeline end-to-end with a real script.
-4. **Lawyer** — do you have one lined up or should we start with
-   maximally conservative disclaimers and self-audit?
-5. **Any branding constraints** — logo, colors, fonts, disallowed
-   phrases? The compositor needs these pinned before Phase 0.
+**Locked** (24 items in §1) — ready to build.
 
-Once those are answered I'll start Phase 0 and have a playable MP4
-to show within ~4 days.
+**Deferred to Phase 3+ (not needed for MVP)**:
+- Hindi language track
+- Push notifications
+- Analytics / view counting
+- Share functionality
+- Offline download
+- Transcript view
+- Rating / feedback on individual videos
+- Cross-posting to social platforms
+
+**Will decide during Phase 0 as we go** (minor operational details):
+- Exact Pollinations.ai prompts for background images
+- Specific Pixabay tracks to download
+- Exact matplotlib color/font tuning
+- MiDaS parallax intensity knobs
+
+None of the deferred items blocks Phase 0.
+
+---
+
+## 18. Go signal
+
+When you say go, I start Day 1 of Phase 0:
+
+1. Create the `app/scheduler/video/` package
+2. Write `script_generator.py` + explainer prompt for P/E ratio
+3. Wire to `ai_service.call_ai()`
+4. Write `script_validator.py`
+5. Produce the first valid script and show it to you
+
+Four days later you'll have a playable MP4 of the P/E ratio video. No
+Flutter work yet, no app integration, just the raw pipeline proof.
+
+Review that video. If the quality is acceptable → Phase 1 + 2 (~2 more
+weeks). If the quality needs more work → we iterate on the prompt /
+chart / bumpers before moving on.
