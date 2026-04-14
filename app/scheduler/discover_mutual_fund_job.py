@@ -1839,7 +1839,13 @@ class DiscoverMutualFundScraper(BaseScraper):
                         or h.get("name")
                         or h.get("stock_name")
                     ),
-                    "sector": h.get("sector") or h.get("industry"),
+                    # Groww emits `sector_name`; keep `sector`/`industry`
+                    # as fallbacks for any other enrichment source.
+                    "sector": (
+                        h.get("sector_name")
+                        or h.get("sector")
+                        or h.get("industry")
+                    ),
                     "corpus_per": cls._groww_to_float(
                         h.get("corpus_per") or h.get("percentage")
                     ),
@@ -1848,7 +1854,14 @@ class DiscoverMutualFundScraper(BaseScraper):
                         or h.get("market_value_crore")
                     ),
                     "isin": h.get("isin"),
-                    "asset_type": h.get("asset_type"),
+                    # Groww tags each holding with `nature_name` (EQ /
+                    # Debt / Others) and `instrument_name` (Equity,
+                    # GOI Sec, REITs, ...). `asset_type` is legacy.
+                    "asset_type": (
+                        h.get("asset_type")
+                        or h.get("instrument_name")
+                        or h.get("nature_name")
+                    ),
                 })
             top_holdings = [
                 h for h in top_holdings
@@ -1860,6 +1873,49 @@ class DiscoverMutualFundScraper(BaseScraper):
                 # explicit disclosure date is provided.
                 if isinstance(nav_date, str) and nav_date:
                     out["holdings_as_of"] = nav_date
+
+            # --- Asset allocation (derived from the full holdings list) ---
+            # Groww doesn't expose a pre-computed asset allocation
+            # object, but every holding is tagged with `nature_name`
+            # which buckets into EQ / Debt / Others. Aggregate
+            # `corpus_per` across ALL holdings (not just the top 15
+            # used above) so the totals reflect the real portfolio.
+            # Cash is the residual — Groww excludes TREPS/repo from
+            # the holdings list, so (100 − sum) is a good proxy.
+            eq = debt = other = 0.0
+            for h in holdings:
+                if not isinstance(h, dict):
+                    continue
+                pct = cls._groww_to_float(h.get("corpus_per"))
+                if pct is None:
+                    continue
+                nature = (h.get("nature_name") or "").strip().lower()
+                if nature == "eq":
+                    eq += pct
+                elif nature == "debt":
+                    debt += pct
+                else:
+                    # 'Others' bucket (REITs, InvITs, gold, unknown)
+                    other += pct
+            total_disclosed = eq + debt + other
+            # Some Groww payloads sum to slightly over 100 (duration-
+            # weighted debt reporting). Normalize to 100 in that case
+            # so downstream percentages stay sane.
+            if total_disclosed > 0:
+                if total_disclosed > 100.5:
+                    scale = 100.0 / total_disclosed
+                    eq *= scale
+                    debt *= scale
+                    other *= scale
+                    cash = 0.0
+                else:
+                    cash = max(0.0, 100.0 - total_disclosed)
+                out["asset_allocation"] = {
+                    "equity_pct": round(eq, 2),
+                    "debt_pct": round(debt, 2),
+                    "cash_pct": round(cash, 2),
+                    "other_pct": round(other, 2),
+                }
 
         # --- Scalar quality signals (stored inside tags_v2 blob) ---
         quality: dict[str, Any] = {}
