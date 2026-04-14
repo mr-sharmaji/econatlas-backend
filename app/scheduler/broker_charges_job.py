@@ -32,12 +32,12 @@ _BROKER_DATA: list[dict] = [
     *[{"broker": "zerodha", "segment": s, **v, "source_url": "https://zerodha.com/charges"}
       for s, v in {
           "equity_delivery":   {"brokerage_mode": "free", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 0, "min_charge": 0},
-          "equity_intraday":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0003, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
-          "equity_futures":    {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0003, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
+          "equity_intraday":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
+          "equity_futures":    {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
           "equity_options":    {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-          "currency_futures":  {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0003, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
+          "currency_futures":  {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
           "currency_options":  {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-          "commodity_futures": {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0003, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
+          "commodity_futures": {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
           "commodity_options": {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
       }.items()],
     # --- Upstox ---
@@ -80,7 +80,7 @@ _BROKER_DATA: list[dict] = [
 
 # Broker metadata (not segment-specific)
 _BROKER_META = {
-    "zerodha":   {"tagline": "Delivery free · ₹20 flat F&O · AMC free (BSDA up to ₹4L)", "dp_charge": 15.34, "dp_includes_gst": False, "amc_yearly": 0, "account_opening_fee": 0, "call_trade_fee": 50},
+    "zerodha":   {"tagline": "Delivery free · 0.05%/₹20 intraday/F&O · AMC free", "dp_charge": 15.34, "dp_includes_gst": False, "amc_yearly": 0, "account_opening_fee": 0, "call_trade_fee": 50},
     "upstox":    {"tagline": "₹20 delivery · 0.05% intraday/futures · AMC ₹150+GST/yr", "dp_charge": 18.50, "dp_includes_gst": False, "amc_yearly": 177, "account_opening_fee": 0, "call_trade_fee": 88.5},
     "groww":     {"tagline": "0.1%/₹20 equity · ₹20 flat F&O · Min ₹5 · AMC free", "dp_charge": 20.0, "dp_includes_gst": False, "amc_yearly": 0, "account_opening_fee": 0, "call_trade_fee": 0},
     "angel_one": {"tagline": "0.1%/₹20 equity · ₹20 flat F&O · Min ₹5 · AMC ₹240+GST/yr", "dp_charge": 25.50, "dp_includes_gst": False, "amc_yearly": 283.2, "account_opening_fee": 0, "call_trade_fee": 23.6},
