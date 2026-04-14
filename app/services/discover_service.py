@@ -4515,13 +4515,35 @@ async def get_bulk_stock_volatility_data() -> dict[str, dict]:
 
 
 async def get_mf_nav_history(*, scheme_code: str, days: int = 365) -> list[dict]:
+    """Return NAV history anchored to the fund's own latest NAV date,
+    not server-local CURRENT_DATE.
+
+    Rationale: `get_mf_point_to_point_returns` (which feeds the
+    Returns card and the detail screen's 1D/period values) uses
+    `end_date = MAX(nav_date)` as its reference and then walks back
+    N days. The chart endpoint needs to use the same reference
+    so the top-of-screen period badge lands on the same anchor NAV
+    as the Returns card. When CURRENT_DATE is ahead of the latest
+    NAV (which happens every night + on weekends + whenever a fund's
+    NAV is late), anchoring on CURRENT_DATE shifts the first chart
+    point by a day or two and makes the badge disagree with the
+    card in volatile windows by 0.5-1 percentage point.
+
+    Implementation: single pass — find MAX(nav_date) in a subquery,
+    use it as the window anchor. Still a single round trip, still
+    uses the (scheme_code, nav_date) index.
+    """
     pool = await get_pool()
     rows = await pool.fetch(
         """
         SELECT nav_date, nav
         FROM discover_mf_nav_history
         WHERE scheme_code = $1
-          AND nav_date >= CURRENT_DATE - make_interval(days => $2)
+          AND nav_date >= (
+              SELECT MAX(nav_date)
+              FROM discover_mf_nav_history
+              WHERE scheme_code = $1
+          ) - make_interval(days => $2)
         ORDER BY nav_date ASC
         """,
         scheme_code,
