@@ -92,7 +92,10 @@ _FALLBACK_BROKER_DATA: dict[str, dict[str, dict]] = {
 }
 
 _FALLBACK_BROKER_META: dict[str, dict] = {
-    "zerodha":   {"tagline": "Delivery free · 0.03%/₹20 intraday/F&O · AMC free", "dp_charge": 15.34, "dp_includes_gst": False, "amc_yearly": 0, "account_opening_fee": 0, "call_trade_fee": 50},
+    # Zerodha AMC is tiered: free < ₹4L holdings, ₹100/yr ₹4-10L, ₹300/yr
+    # >₹10L (charged quarterly at ₹75 + GST). Showing the highest tier
+    # (~₹354/yr incl 18% GST) — see zerodha.com/charges AMC table.
+    "zerodha":   {"tagline": "Delivery free · 0.03%/₹20 intraday/F&O · AMC ₹75/qtr +GST", "dp_charge": 15.34, "dp_includes_gst": False, "amc_yearly": 354, "account_opening_fee": 0, "call_trade_fee": 50},
     "upstox":    {"tagline": "₹20 delivery · 0.1%/₹20 intraday · AMC ₹300+GST/yr", "dp_charge": 20.0, "dp_includes_gst": False, "amc_yearly": 354, "account_opening_fee": 0, "call_trade_fee": 88.5},
     "groww":     {"tagline": "0.1%/₹20 equity · ₹20 flat F&O · Min ₹5 · AMC free", "dp_charge": 20.0, "dp_includes_gst": False, "amc_yearly": 0, "account_opening_fee": 0, "call_trade_fee": 0},
     "angel_one": {"tagline": "0.1%/₹20 equity · ₹20 flat F&O · Min ₹5 · DP ₹20/scrip", "dp_charge": 20.0, "dp_includes_gst": False, "amc_yearly": 0, "account_opening_fee": 0, "call_trade_fee": 0},
@@ -132,9 +135,16 @@ def _fetch_html(url: str) -> str | None:
         return None
 
 
+_RUPEE_RE = re.compile(
+    r'(?:[\u20b9₹]|Rs\.?)\s*(\d+(?:\.\d+)?)',
+    re.IGNORECASE,
+)
+
+
 def _parse_rupee(text: str) -> float | None:
-    """Extract a numeric value from text like '₹20', '₹15.34', '20'."""
-    m = re.search(r'[\u20b9₹]?\s*([\d,]+\.?\d*)', text.replace(',', ''))
+    """Extract a rupee amount. Requires ₹ or Rs. prefix to avoid
+    swallowing bare numbers from percentages ('0.03%' → 0.03)."""
+    m = _RUPEE_RE.search(text.replace(',', ''))
     if m:
         try:
             return float(m.group(1))
@@ -145,7 +155,7 @@ def _parse_rupee(text: str) -> float | None:
 
 def _parse_percent(text: str) -> float | None:
     """Extract a percentage from text like '0.05%', '0.1 %'. Returns as decimal (0.0005)."""
-    m = re.search(r'([\d.]+)\s*%', text)
+    m = re.search(r'(\d+(?:\.\d+)?)\s*%', text)
     if m:
         try:
             return float(m.group(1)) / 100
@@ -154,213 +164,232 @@ def _parse_percent(text: str) -> float | None:
     return None
 
 
-def _scrape_zerodha(html: str) -> dict | None:
-    """Parse zerodha.com/charges for brokerage rates and DP charges.
+def _parse_brokerage_cell(text: str) -> dict | None:
+    """Parse a brokerage cell like:
+      'Zero Brokerage'                                   → free
+      '0.03% or Rs. 20/executed order whichever is lower' → percent_cap
+      '₹20 per executed order'                            → flat
+      'Flat ₹20 per executed order'                       → flat
+      '₹20 per executed order or 0.1% (whichever is lower)' → percent_cap
+    Returns a segment dict or None.
+    """
+    low = text.lower().strip()
+    if not low:
+        return None
 
-    Zerodha's charges page uses a table-based layout with segments as
-    columns and charge types as rows. Key data points:
-    - Equity delivery: Zero brokerage
-    - Intraday/F&O: 0.03% or ₹20/executed order (whichever is lower)
-    - DP charges: ₹15.34 per scrip per day
+    # Zero / free
+    if "zero" in low or low in ("free", "nil"):
+        return {"brokerage_mode": "free", "brokerage_pct": 0,
+                "brokerage_cap": 0, "brokerage_flat": 0, "min_charge": 0}
+
+    # Find ALL percentages and rupee amounts — brokerage cells often
+    # mix promo offers ("₹0 upto ₹500") with real rates ("₹20 or 0.1%")
+    # and a minimum ("₹5"), so a naive "first match" would grab noise.
+    pcts = [
+        float(m.group(1)) / 100
+        for m in re.finditer(r'(\d+(?:\.\d+)?)\s*%', text)
+    ]
+    rupees = [float(m.group(1)) for m in _RUPEE_RE.finditer(text)]
+    pcts = [p for p in pcts if p > 0]
+    rupees = [r for r in rupees if r > 0]
+
+    # Pick the smallest non-zero percentage (real rate, not spurious)
+    pct = min(pcts) if pcts else None
+
+    # Cap is typically ₹10-₹100. Prefer values in that range; otherwise
+    # fall back to the smallest non-zero rupee. This separates cap (~₹20)
+    # from minimum charge (~₹5) in promo cells like Angel One's.
+    cap_candidates = [r for r in rupees if 10 <= r <= 100]
+    if cap_candidates:
+        rupee = min(cap_candidates)
+    elif rupees:
+        rupee = min(rupees)
+    else:
+        rupee = None
+
+    # Minimum charge: if we have a rupee < 10, treat it as min charge
+    min_charge_candidates = [r for r in rupees if r < 10]
+    min_charge = min_charge_candidates[0] if min_charge_candidates else 0
+
+    # percent_cap: has both pct and cap
+    if pct is not None and rupee is not None:
+        return {"brokerage_mode": "percent_cap", "brokerage_pct": pct,
+                "brokerage_cap": rupee, "brokerage_flat": 0,
+                "min_charge": min_charge}
+
+    # flat: only rupee, no pct
+    if rupee is not None and pct is None:
+        return {"brokerage_mode": "flat", "brokerage_pct": 0,
+                "brokerage_cap": 0, "brokerage_flat": rupee,
+                "min_charge": min_charge}
+
+    return None
+
+
+def _normalize_header(text: str) -> str | None:
+    """Map a table header cell to a canonical segment key.
+
+    Returns one of the SEGMENTS values or None if not recognized.
+    """
+    t = text.lower().strip()
+    # Equity
+    if "equity" in t and "delivery" in t:
+        return "equity_delivery"
+    if "equity" in t and "intraday" in t:
+        return "equity_intraday"
+    if ("equity" in t and ("futures" in t or "future" in t)):
+        return "equity_futures"
+    if ("equity" in t and ("options" in t or "option" in t)):
+        return "equity_options"
+    # Stock Investments = delivery (Angel One), Intraday Trading = intraday
+    if "stock investment" in t or t == "delivery":
+        return "equity_delivery"
+    if t == "intraday" or "intraday trading" in t:
+        return "equity_intraday"
+    # F&O header variants (Zerodha: "F&O - Futures", "F&O - Options")
+    if ("f&o" in t or "f & o" in t) and ("futures" in t or "future" in t):
+        return "equity_futures"
+    if ("f&o" in t or "f & o" in t) and ("options" in t or "option" in t):
+        return "equity_options"
+    # Currency
+    if "currency" in t and ("futures" in t or "future" in t):
+        return "currency_futures"
+    if "currency" in t and ("options" in t or "option" in t):
+        return "currency_options"
+    # Commodity
+    if "commodity" in t and ("futures" in t or "future" in t):
+        return "commodity_futures"
+    if "commodity" in t and ("options" in t or "option" in t):
+        return "commodity_options"
+    return None
+
+
+def _parse_brokerage_table(table) -> dict[str, dict]:
+    """Generic parser: find a 'Brokerage' row in a table and map each
+    column to a canonical segment via the header row.
+    """
+    rows = table.find_all("tr")
+    if not rows:
+        return {}
+
+    # Find header row: first row with any recognizable segment name
+    header_idx = -1
+    headers: list[str | None] = []
+    for i, row in enumerate(rows):
+        cells = [c.get_text(" ", strip=True) for c in row.find_all(["th", "td"])]
+        mapped = [_normalize_header(c) for c in cells]
+        if sum(1 for m in mapped if m) >= 2:
+            header_idx = i
+            headers = mapped
+            break
+
+    if header_idx < 0:
+        return {}
+
+    # Find brokerage row
+    result: dict[str, dict] = {}
+    for row in rows[header_idx + 1:]:
+        cells = row.find_all(["td", "th"])
+        if not cells:
+            continue
+        label = cells[0].get_text(" ", strip=True).lower()
+        if "brokerage" not in label:
+            continue
+
+        # Each subsequent cell corresponds to a header column.
+        # Header has a leading empty cell before the segment names;
+        # body rows also have the label in cell 0 — so body cell i
+        # aligns to header cell i.
+        for i, cell in enumerate(cells):
+            if i >= len(headers):
+                break
+            segment = headers[i]
+            if not segment:
+                continue
+            parsed = _parse_brokerage_cell(cell.get_text(" ", strip=True))
+            if parsed:
+                result[segment] = parsed
+        break  # only first brokerage row
+
+    return result
+
+
+def _scrape_generic_tables(html: str, broker_name: str) -> dict | None:
+    """Generic multi-table scraper.
+
+    Walks every <table> on the page and parses any table with a
+    'Brokerage' row via _parse_brokerage_table. Results are merged
+    across tables so multi-table layouts (e.g. Zerodha has separate
+    equity / F&O / currency / commodity tables) are handled uniformly.
+
+    NB: intentionally does NOT scrape metadata (DP / AMC / call-trade) —
+    those fields vary too much in page layout to extract reliably, and
+    tiered AMC tables (Zerodha: free <₹4L → ₹300/yr >₹10L) can't be
+    compressed to a single value. Metadata comes from the hand-maintained
+    _FALLBACK_BROKER_META dict.
     """
     try:
         soup = BeautifulSoup(html, "html.parser")
-        text = soup.get_text(" ", strip=True).lower()
         result: dict[str, Any] = {"segments": {}, "meta": {}}
 
-        # ── Detect brokerage model ──
-        # Zerodha: "zero brokerage" for delivery, "0.03% or ₹20" for others
-        if "zero brokerage" in text or "free equity delivery" in text:
-            result["segments"]["equity_delivery"] = {
-                "brokerage_mode": "free", "brokerage_pct": 0,
-                "brokerage_cap": 0, "brokerage_flat": 0, "min_charge": 0,
-            }
-
-        # Look for the intraday/F&O rate pattern
-        # Zerodha uses "0.03% or ₹20/executed order whichever is lower"
-        intraday_match = re.search(
-            r'([\d.]+)\s*%\s*or\s*[\u20b9₹]?\s*([\d.]+)\s*/?\s*(?:executed\s*)?order',
-            text,
-        )
-        if intraday_match:
-            pct = float(intraday_match.group(1)) / 100
-            cap = float(intraday_match.group(2))
-            for seg in ["equity_intraday", "equity_futures", "currency_futures", "commodity_futures"]:
-                result["segments"][seg] = {
-                    "brokerage_mode": "percent_cap", "brokerage_pct": pct,
-                    "brokerage_cap": cap, "brokerage_flat": 0, "min_charge": 0,
-                }
-
-        # Options: flat fee per order
-        flat_match = re.search(
-            r'(?:options?|f&o)\s*[:\-]?\s*(?:flat\s*)?[\u20b9₹]?\s*([\d.]+)\s*/?\s*(?:executed\s*)?order',
-            text,
-        )
-        if flat_match:
-            flat = float(flat_match.group(1))
-            for seg in ["equity_options", "currency_options", "commodity_options"]:
-                result["segments"][seg] = {
-                    "brokerage_mode": "flat", "brokerage_pct": 0,
-                    "brokerage_cap": 0, "brokerage_flat": flat, "min_charge": 0,
-                }
-
-        # ── DP charges ──
-        dp_match = re.search(r'dp\s*charges?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
-        if dp_match:
-            result["meta"]["dp_charge"] = float(dp_match.group(1))
-
-        # ── Call & trade fee ──
-        call_match = re.search(r'call\s*(?:&|and)\s*trade\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
-        if call_match:
-            result["meta"]["call_trade_fee"] = float(call_match.group(1))
+        for table in soup.find_all("table"):
+            parsed = _parse_brokerage_table(table)
+            if parsed:
+                result["segments"].update(parsed)
 
         if result["segments"]:
-            logger.info("Zerodha scraper: extracted %d segments", len(result["segments"]))
+            logger.info(
+                "%s scraper: extracted %d segments",
+                broker_name, len(result["segments"]),
+            )
             return result
 
-        logger.warning("Zerodha scraper: no segments extracted from HTML")
+        logger.warning("%s scraper: no segments extracted from HTML", broker_name)
         return None
     except Exception as exc:
-        logger.warning("Zerodha scraper parse error: %s", exc)
+        logger.warning("%s scraper parse error: %s", broker_name, exc)
         return None
+
+
+def _scrape_zerodha(html: str) -> dict | None:
+    return _scrape_generic_tables(html, "Zerodha")
 
 
 def _scrape_upstox(html: str) -> dict | None:
-    """Parse upstox.com/brokerage-charges for rates.
-
-    Upstox charges page has a tabular layout:
-    - Delivery: ₹20 per order
-    - Intraday: ₹20 per order or 0.05% whichever is lower
-    - F&O: ₹20 per order
-    """
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        text = soup.get_text(" ", strip=True).lower()
-        result: dict[str, Any] = {"segments": {}, "meta": {}}
-
-        # Delivery flat fee
-        delivery_match = re.search(
-            r'(?:delivery|cash)\s*(?:trading)?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)\s*/?\s*(?:executed\s*)?order',
-            text,
-        )
-        if delivery_match:
-            flat = float(delivery_match.group(1))
-            result["segments"]["equity_delivery"] = {
-                "brokerage_mode": "flat", "brokerage_pct": 0,
-                "brokerage_cap": 0, "brokerage_flat": flat, "min_charge": 0,
-            }
-
-        # Intraday pct or flat
-        intraday_match = re.search(
-            r'(?:intraday)\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)\s*(?:/?\s*order|or)\s*([\d.]+)\s*%',
-            text,
-        )
-        if not intraday_match:
-            intraday_match = re.search(
-                r'([\d.]+)\s*%\s*or\s*[\u20b9₹]?\s*([\d.]+)\s*/?\s*order',
-                text,
-            )
-        if intraday_match:
-            groups = intraday_match.groups()
-            try:
-                vals = [float(g) for g in groups]
-                pct_val = min(vals)
-                cap_val = max(vals)
-                if pct_val < 1:
-                    pct_val = pct_val / 100
-                result["segments"]["equity_intraday"] = {
-                    "brokerage_mode": "percent_cap", "brokerage_pct": pct_val,
-                    "brokerage_cap": cap_val, "brokerage_flat": 0, "min_charge": 0,
-                }
-            except ValueError:
-                pass
-
-        # F&O flat
-        fo_match = re.search(
-            r'(?:futures?\s*(?:&|and)\s*options?|f\s*&\s*o)\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)\s*/?\s*order',
-            text,
-        )
-        if fo_match:
-            flat = float(fo_match.group(1))
-            for seg in ["equity_futures", "equity_options", "currency_futures",
-                        "currency_options", "commodity_futures", "commodity_options"]:
-                if seg not in result["segments"]:
-                    result["segments"][seg] = {
-                        "brokerage_mode": "flat", "brokerage_pct": 0,
-                        "brokerage_cap": 0, "brokerage_flat": flat, "min_charge": 0,
-                    }
-
-        # DP charge
-        dp_match = re.search(r'dp\s*charges?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
-        if dp_match:
-            result["meta"]["dp_charge"] = float(dp_match.group(1))
-
-        # AMC
-        amc_match = re.search(r'(?:amc|annual\s*maintenance)\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
-        if amc_match:
-            result["meta"]["amc_yearly"] = float(amc_match.group(1))
-
-        if result["segments"]:
-            logger.info("Upstox scraper: extracted %d segments", len(result["segments"]))
-            return result
-
-        logger.warning("Upstox scraper: no segments extracted from HTML")
-        return None
-    except Exception as exc:
-        logger.warning("Upstox scraper parse error: %s", exc)
-        return None
+    return _scrape_generic_tables(html, "Upstox")
 
 
 def _scrape_groww(html: str) -> dict | None:
-    """Parse groww.in/pricing for brokerage rates.
+    """Groww's pricing page has no table with a 'Brokerage' row.
+    The equity brokerage is in body copy like:
+      'Equity Brokerage ₹ 20 0.1% per executed order whichever is lower, minimum ₹5'
 
-    Groww pricing page:
-    - Equity delivery/intraday: 0.1% or ₹20 whichever is lower
-    - F&O: ₹20 flat per order
-    - Min brokerage: ₹5
+    F&O rates are not stated on the page — those fall back to reference.
     """
     try:
         soup = BeautifulSoup(html, "html.parser")
-        text = soup.get_text(" ", strip=True).lower()
+        text = soup.get_text(" ", strip=True)
         result: dict[str, Any] = {"segments": {}, "meta": {}}
 
-        # Equity: pct/cap with min charge
-        equity_match = re.search(
-            r'(?:equity|delivery|intraday)\s*[:\-]?\s*([\d.]+)\s*%\s*or\s*[\u20b9₹]?\s*([\d.]+)',
+        # Isolate the "Equity Brokerage ... ₹X ... Y% ... minimum ₹Z" snippet.
+        # NB: not using re.IGNORECASE because it makes [^A-Z] exclude
+        # lowercase letters too — stops the match at the first letter.
+        m = re.search(
+            r'Equity\s+[Bb]rokerage[^A-Z]{0,200}',
             text,
         )
-        if equity_match:
-            pct = float(equity_match.group(1)) / 100
-            cap = float(equity_match.group(2))
-            min_match = re.search(r'min(?:imum)?\s*(?:brokerage)?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
-            min_charge = float(min_match.group(1)) if min_match else 5.0
-            for seg in ["equity_delivery", "equity_intraday"]:
-                result["segments"][seg] = {
-                    "brokerage_mode": "percent_cap", "brokerage_pct": pct,
-                    "brokerage_cap": cap, "brokerage_flat": 0, "min_charge": min_charge,
-                }
-
-        # F&O flat
-        fo_match = re.search(
-            r'(?:f\s*&\s*o|futures?\s*(?:&|and)\s*options?)\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)\s*/?\s*order',
-            text,
-        )
-        if fo_match:
-            flat = float(fo_match.group(1))
-            for seg in ["equity_futures", "equity_options", "currency_futures",
-                        "currency_options", "commodity_futures", "commodity_options"]:
-                result["segments"][seg] = {
-                    "brokerage_mode": "flat", "brokerage_pct": 0,
-                    "brokerage_cap": 0, "brokerage_flat": flat, "min_charge": 5,
-                }
-
-        # DP charge
-        dp_match = re.search(r'dp\s*charges?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
-        if dp_match:
-            result["meta"]["dp_charge"] = float(dp_match.group(1))
+        if m:
+            snippet = m.group(0)
+            parsed = _parse_brokerage_cell(snippet)
+            if parsed and parsed["brokerage_mode"] == "percent_cap":
+                for seg in ["equity_delivery", "equity_intraday"]:
+                    result["segments"][seg] = dict(parsed)
 
         if result["segments"]:
-            logger.info("Groww scraper: extracted %d segments", len(result["segments"]))
+            logger.info(
+                "Groww scraper: extracted %d segments",
+                len(result["segments"]),
+            )
             return result
 
         logger.warning("Groww scraper: no segments extracted from HTML")
@@ -371,66 +400,7 @@ def _scrape_groww(html: str) -> dict | None:
 
 
 def _scrape_angel_one(html: str) -> dict | None:
-    """Parse angelone.in/exchange-transaction-charges for rates.
-
-    Angel One charges page:
-    - Equity delivery/intraday: 0.1% or ₹20 whichever is lower, min ₹5
-    - F&O: ₹20 flat per order
-    """
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        text = soup.get_text(" ", strip=True).lower()
-        result: dict[str, Any] = {"segments": {}, "meta": {}}
-
-        # Equity pct/cap
-        equity_match = re.search(
-            r'(?:equity|delivery|intraday)\s*[:\-]?\s*([\d.]+)\s*%\s*or\s*[\u20b9₹]?\s*([\d.]+)',
-            text,
-        )
-        if equity_match:
-            pct = float(equity_match.group(1)) / 100
-            cap = float(equity_match.group(2))
-            min_match = re.search(r'min(?:imum)?\s*(?:brokerage)?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
-            min_charge = float(min_match.group(1)) if min_match else 5.0
-            for seg in ["equity_delivery", "equity_intraday"]:
-                result["segments"][seg] = {
-                    "brokerage_mode": "percent_cap", "brokerage_pct": pct,
-                    "brokerage_cap": cap, "brokerage_flat": 0, "min_charge": min_charge,
-                }
-
-        # F&O flat
-        fo_match = re.search(
-            r'(?:f\s*&\s*o|futures?\s*(?:&|and)\s*options?)\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)\s*/?\s*order',
-            text,
-        )
-        if fo_match:
-            flat = float(fo_match.group(1))
-            for seg in ["equity_futures", "equity_options", "currency_futures",
-                        "currency_options", "commodity_futures", "commodity_options"]:
-                result["segments"][seg] = {
-                    "brokerage_mode": "flat", "brokerage_pct": 0,
-                    "brokerage_cap": 0, "brokerage_flat": flat, "min_charge": 0,
-                }
-
-        # DP charge
-        dp_match = re.search(r'dp\s*charges?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
-        if dp_match:
-            result["meta"]["dp_charge"] = float(dp_match.group(1))
-
-        # AMC
-        amc_match = re.search(r'(?:amc|annual\s*maintenance)\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
-        if amc_match:
-            result["meta"]["amc_yearly"] = float(amc_match.group(1))
-
-        if result["segments"]:
-            logger.info("Angel One scraper: extracted %d segments", len(result["segments"]))
-            return result
-
-        logger.warning("Angel One scraper: no segments extracted from HTML")
-        return None
-    except Exception as exc:
-        logger.warning("Angel One scraper parse error: %s", exc)
-        return None
+    return _scrape_generic_tables(html, "Angel One")
 
 
 # ── Statutory rates scraper (from zerodha.com/charges) ───────────────
