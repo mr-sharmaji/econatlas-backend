@@ -50,6 +50,8 @@ JOB_RETRY_POLICIES: dict[str, tuple[int, int]] = {
     "gap_backfill": (2, 60),
     # News embedding backfill — CPU-bound, self-idempotent
     "news_embed": (1, 30),
+    # Weekly broker charges scraper — retries matter, runs once a week
+    "broker_charges": (2, 60),
 }
 
 
@@ -76,6 +78,7 @@ def get_arq_functions() -> list:
     """Lazily import task wrappers and return ARQ function descriptors."""
     from app.queue.tasks import (
         task_brief,
+        task_broker_charges,
         task_commodity,
         task_crypto,
         task_discover_mf_holdings,
@@ -135,4 +138,6 @@ def get_arq_functions() -> list:
         func(task_gap_backfill, name="gap_backfill", timeout=600),
         # CPU-bound embedding — allow up to 30 min for a full backfill pass
         func(task_news_embed, name="news_embed", timeout=1800),
+        # Weekly broker charges scraper — scrapes 4 broker sites
+        func(task_broker_charges, name="broker_charges", timeout=120),
     ]

@@ -227,6 +227,10 @@ async def _run_gap_backfill() -> None:
     await _enqueue("gap_backfill")
 
 
+async def _run_broker_charges() -> None:
+    await _enqueue("broker_charges")
+
+
 # ── Startup collection ───────────────────────────────────────────────
 
 
@@ -505,6 +509,21 @@ def start_scheduler() -> None:
         misfire_grace_time=7200,
     )
     logger.info("Scheduler: db_maintenance weekly Sun 3:00 AM IST")
+    # Weekly broker charges scraper: Sunday 4:00 AM IST
+    _scheduler.add_job(
+        _run_broker_charges,
+        "cron",
+        day_of_week="sun",
+        hour=4,
+        minute=0,
+        timezone="Asia/Kolkata",
+        id="broker_charges",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=43200,
+    )
+    logger.info("Scheduler: broker_charges weekly Sun 4:00 AM IST")
     logger.info(
         "Scheduler: brief=%dm discover_stock=%s %02d:%02d IST retry=%s %02d:%02d IST discover_mf=%s %02d:%02d IST ipo=%dm macro=%dm news=%dm tax=%s",
         intervals["brief_minutes"],

@@ -269,3 +269,9 @@ async def task_news_embed(ctx: dict) -> None:
     from app.scheduler.news_embed_job import run_news_embed_job
 
     await _run_with_retry(ctx, "news_embed", run_news_embed_job)
+
+
+async def task_broker_charges(ctx: dict) -> None:
+    from app.scheduler.broker_charges_job import run_broker_charges_job
+
+    await _run_with_retry(ctx, "broker_charges", run_broker_charges_job)

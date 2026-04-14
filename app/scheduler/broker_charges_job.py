@@ -13,7 +13,13 @@ Sources:
 from __future__ import annotations
 
 import logging
+import re
+import time
 from datetime import datetime, timezone
+from typing import Any
+
+import requests
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
@@ -25,71 +31,76 @@ SEGMENTS = [
     "commodity_futures", "commodity_options",
 ]
 
-# ── Reference broker data (2025-26, from official pricing pages) ─────
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
-_BROKER_DATA: list[dict] = [
-    # --- Zerodha ---
-    *[{"broker": "zerodha", "segment": s, **v, "source_url": "https://zerodha.com/charges"}
-      for s, v in {
-          "equity_delivery":   {"brokerage_mode": "free", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 0, "min_charge": 0},
-          "equity_intraday":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
-          "equity_futures":    {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
-          "equity_options":    {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-          "currency_futures":  {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
-          "currency_options":  {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-          "commodity_futures": {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
-          "commodity_options": {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-      }.items()],
-    # --- Upstox ---
-    *[{"broker": "upstox", "segment": s, **v, "source_url": "https://upstox.com/brokerage-charges/"}
-      for s, v in {
-          "equity_delivery":   {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-          "equity_intraday":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
-          "equity_futures":    {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
-          "equity_options":    {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-          "currency_futures":  {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
-          "currency_options":  {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-          "commodity_futures": {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
-          "commodity_options": {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-      }.items()],
-    # --- Groww ---
-    *[{"broker": "groww", "segment": s, **v, "source_url": "https://groww.in/pricing"}
-      for s, v in {
-          "equity_delivery":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.001, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
-          "equity_intraday":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.001, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
-          "equity_futures":    {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
-          "equity_options":    {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 5},
-          "currency_futures":  {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
-          "currency_options":  {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 5},
-          "commodity_futures": {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
-          "commodity_options": {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 5},
-      }.items()],
-    # --- Angel One (revised Nov 17, 2025) ---
-    *[{"broker": "angel_one", "segment": s, **v, "source_url": "https://www.angelone.in/exchange-transaction-charges"}
-      for s, v in {
-          "equity_delivery":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.001, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
-          "equity_intraday":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.001, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
-          "equity_futures":    {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-          "equity_options":    {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-          "currency_futures":  {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-          "currency_options":  {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-          "commodity_futures": {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-          "commodity_options": {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
-      }.items()],
-]
+_TIMEOUT = 15.0
 
-# Broker metadata (not segment-specific)
-_BROKER_META = {
-    "zerodha":   {"tagline": "Delivery free · 0.05%/₹20 intraday/F&O · AMC free", "dp_charge": 15.34, "dp_includes_gst": False, "amc_yearly": 0, "account_opening_fee": 0, "call_trade_fee": 50},
-    "upstox":    {"tagline": "₹20 delivery · 0.05% intraday/futures · AMC ₹150+GST/yr", "dp_charge": 18.50, "dp_includes_gst": False, "amc_yearly": 177, "account_opening_fee": 0, "call_trade_fee": 88.5},
+
+# ── Fallback reference data (2025-26, from official pricing pages) ────
+
+_FALLBACK_BROKER_DATA: dict[str, dict[str, dict]] = {
+    # Zerodha: 0.03% or ₹20 whichever is lower for intraday/F&O
+    "zerodha": {
+        "equity_delivery":   {"brokerage_mode": "free", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 0, "min_charge": 0},
+        "equity_intraday":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0003, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
+        "equity_futures":    {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0003, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
+        "equity_options":    {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
+        "currency_futures":  {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0003, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
+        "currency_options":  {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
+        "commodity_futures": {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0003, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
+        "commodity_options": {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
+    },
+    # Upstox: ₹20 delivery, 0.1% or ₹20 intraday, 0.05% or ₹20 futures, ₹20 options
+    "upstox": {
+        "equity_delivery":   {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
+        "equity_intraday":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.001, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
+        "equity_futures":    {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
+        "equity_options":    {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
+        "currency_futures":  {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
+        "currency_options":  {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
+        "commodity_futures": {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 0},
+        "commodity_options": {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
+    },
+    "groww": {
+        "equity_delivery":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.001, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
+        "equity_intraday":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.001, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
+        "equity_futures":    {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
+        "equity_options":    {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 5},
+        "currency_futures":  {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
+        "currency_options":  {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 5},
+        "commodity_futures": {"brokerage_mode": "percent_cap", "brokerage_pct": 0.0005, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
+        "commodity_options": {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 5},
+    },
+    "angel_one": {
+        "equity_delivery":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.001, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
+        "equity_intraday":   {"brokerage_mode": "percent_cap", "brokerage_pct": 0.001, "brokerage_cap": 20, "brokerage_flat": 0, "min_charge": 5},
+        "equity_futures":    {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
+        "equity_options":    {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
+        "currency_futures":  {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
+        "currency_options":  {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
+        "commodity_futures": {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
+        "commodity_options": {"brokerage_mode": "flat", "brokerage_pct": 0, "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0},
+    },
+}
+
+_FALLBACK_BROKER_META: dict[str, dict] = {
+    "zerodha":   {"tagline": "Delivery free · 0.03%/₹20 intraday/F&O · AMC free", "dp_charge": 15.34, "dp_includes_gst": False, "amc_yearly": 0, "account_opening_fee": 0, "call_trade_fee": 50},
+    "upstox":    {"tagline": "₹20 delivery · 0.1%/₹20 intraday · AMC ₹300+GST/yr", "dp_charge": 20.0, "dp_includes_gst": False, "amc_yearly": 354, "account_opening_fee": 0, "call_trade_fee": 88.5},
     "groww":     {"tagline": "0.1%/₹20 equity · ₹20 flat F&O · Min ₹5 · AMC free", "dp_charge": 20.0, "dp_includes_gst": False, "amc_yearly": 0, "account_opening_fee": 0, "call_trade_fee": 0},
-    "angel_one": {"tagline": "0.1%/₹20 equity · ₹20 flat F&O · Min ₹5 · AMC ₹240+GST/yr", "dp_charge": 25.50, "dp_includes_gst": False, "amc_yearly": 283.2, "account_opening_fee": 0, "call_trade_fee": 23.6},
+    "angel_one": {"tagline": "0.1%/₹20 equity · ₹20 flat F&O · Min ₹5 · DP ₹20/scrip", "dp_charge": 20.0, "dp_includes_gst": False, "amc_yearly": 0, "account_opening_fee": 0, "call_trade_fee": 0},
 }
 
 # ── Statutory rates (2025-26, revised Oct 2024) ──────────────────────
 
-_STATUTORY_DATA: list[dict] = []
-for seg, rates in {
+_FALLBACK_STATUTORY: dict[str, dict] = {
     "equity_delivery":   {"stt_buy": 0.001, "stt_sell": 0.001, "nse_txn": 0.0000307, "bse_txn": 0.0000375, "stamp": 0.00015, "ipft_nse": 0.000001},
     "equity_intraday":   {"stt_buy": 0, "stt_sell": 0.00025, "nse_txn": 0.0000307, "bse_txn": 0.0000375, "stamp": 0.00003, "ipft_nse": 0.000001},
     "equity_futures":    {"stt_buy": 0, "stt_sell": 0.0002, "nse_txn": 0.0000183, "bse_txn": 0, "stamp": 0.00002, "ipft_nse": 0.000001},
@@ -98,34 +109,508 @@ for seg, rates in {
     "currency_options":  {"stt_buy": 0, "stt_sell": 0, "nse_txn": 0.000311, "bse_txn": 0.00001, "stamp": 0.000001, "ipft_nse": 0},
     "commodity_futures": {"stt_buy": 0, "stt_sell": 0.0001, "nse_txn": 0.000001, "bse_txn": 0, "stamp": 0.00002, "ipft_nse": 0, "mcx_txn": 0.000021},
     "commodity_options": {"stt_buy": 0, "stt_sell": 0.0005, "nse_txn": 0.000001, "bse_txn": 0, "stamp": 0.00003, "ipft_nse": 0, "mcx_txn": 0.000418},
-}.items():
-    for exchange, txn_key in [("nse", "nse_txn"), ("bse", "bse_txn"), ("mcx", "mcx_txn")]:
-        txn = rates.get(txn_key, 0)
-        if txn == 0 and exchange not in ("nse", "bse"):
-            continue
-        _STATUTORY_DATA.append({
-            "segment": seg,
-            "exchange": exchange,
-            "stt_buy_rate": rates["stt_buy"],
-            "stt_sell_rate": rates["stt_sell"],
-            "exchange_txn_rate": txn,
-            "stamp_duty_buy_rate": rates["stamp"],
-            "ipft_rate": rates["ipft_nse"] if exchange == "nse" else 0,
-            "sebi_fee_rate": 0.000001,
-            "gst_rate": 0.18,
-        })
+}
+
+_BROKER_URLS = {
+    "zerodha":   "https://zerodha.com/charges",
+    "upstox":    "https://upstox.com/brokerage-charges/",
+    "groww":     "https://groww.in/pricing",
+    "angel_one": "https://www.angelone.in/exchange-transaction-charges",
+}
+
+
+# ── HTML Scrapers ────────────────────────────────────────────────────
+
+def _fetch_html(url: str) -> str | None:
+    """Fetch a URL and return its HTML, or None on failure."""
+    try:
+        resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        return resp.text
+    except Exception as exc:
+        logger.warning("Failed to fetch %s: %s", url, exc)
+        return None
+
+
+def _parse_rupee(text: str) -> float | None:
+    """Extract a numeric value from text like '₹20', '₹15.34', '20'."""
+    m = re.search(r'[\u20b9₹]?\s*([\d,]+\.?\d*)', text.replace(',', ''))
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+    return None
+
+
+def _parse_percent(text: str) -> float | None:
+    """Extract a percentage from text like '0.05%', '0.1 %'. Returns as decimal (0.0005)."""
+    m = re.search(r'([\d.]+)\s*%', text)
+    if m:
+        try:
+            return float(m.group(1)) / 100
+        except ValueError:
+            pass
+    return None
+
+
+def _scrape_zerodha(html: str) -> dict | None:
+    """Parse zerodha.com/charges for brokerage rates and DP charges.
+
+    Zerodha's charges page uses a table-based layout with segments as
+    columns and charge types as rows. Key data points:
+    - Equity delivery: Zero brokerage
+    - Intraday/F&O: 0.03% or ₹20/executed order (whichever is lower)
+    - DP charges: ₹15.34 per scrip per day
+    """
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        text = soup.get_text(" ", strip=True).lower()
+        result: dict[str, Any] = {"segments": {}, "meta": {}}
+
+        # ── Detect brokerage model ──
+        # Zerodha: "zero brokerage" for delivery, "0.03% or ₹20" for others
+        if "zero brokerage" in text or "free equity delivery" in text:
+            result["segments"]["equity_delivery"] = {
+                "brokerage_mode": "free", "brokerage_pct": 0,
+                "brokerage_cap": 0, "brokerage_flat": 0, "min_charge": 0,
+            }
+
+        # Look for the intraday/F&O rate pattern
+        # Zerodha uses "0.03% or ₹20/executed order whichever is lower"
+        intraday_match = re.search(
+            r'([\d.]+)\s*%\s*or\s*[\u20b9₹]?\s*([\d.]+)\s*/?\s*(?:executed\s*)?order',
+            text,
+        )
+        if intraday_match:
+            pct = float(intraday_match.group(1)) / 100
+            cap = float(intraday_match.group(2))
+            for seg in ["equity_intraday", "equity_futures", "currency_futures", "commodity_futures"]:
+                result["segments"][seg] = {
+                    "brokerage_mode": "percent_cap", "brokerage_pct": pct,
+                    "brokerage_cap": cap, "brokerage_flat": 0, "min_charge": 0,
+                }
+
+        # Options: flat fee per order
+        flat_match = re.search(
+            r'(?:options?|f&o)\s*[:\-]?\s*(?:flat\s*)?[\u20b9₹]?\s*([\d.]+)\s*/?\s*(?:executed\s*)?order',
+            text,
+        )
+        if flat_match:
+            flat = float(flat_match.group(1))
+            for seg in ["equity_options", "currency_options", "commodity_options"]:
+                result["segments"][seg] = {
+                    "brokerage_mode": "flat", "brokerage_pct": 0,
+                    "brokerage_cap": 0, "brokerage_flat": flat, "min_charge": 0,
+                }
+
+        # ── DP charges ──
+        dp_match = re.search(r'dp\s*charges?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
+        if dp_match:
+            result["meta"]["dp_charge"] = float(dp_match.group(1))
+
+        # ── Call & trade fee ──
+        call_match = re.search(r'call\s*(?:&|and)\s*trade\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
+        if call_match:
+            result["meta"]["call_trade_fee"] = float(call_match.group(1))
+
+        if result["segments"]:
+            logger.info("Zerodha scraper: extracted %d segments", len(result["segments"]))
+            return result
+
+        logger.warning("Zerodha scraper: no segments extracted from HTML")
+        return None
+    except Exception as exc:
+        logger.warning("Zerodha scraper parse error: %s", exc)
+        return None
+
+
+def _scrape_upstox(html: str) -> dict | None:
+    """Parse upstox.com/brokerage-charges for rates.
+
+    Upstox charges page has a tabular layout:
+    - Delivery: ₹20 per order
+    - Intraday: ₹20 per order or 0.05% whichever is lower
+    - F&O: ₹20 per order
+    """
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        text = soup.get_text(" ", strip=True).lower()
+        result: dict[str, Any] = {"segments": {}, "meta": {}}
+
+        # Delivery flat fee
+        delivery_match = re.search(
+            r'(?:delivery|cash)\s*(?:trading)?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)\s*/?\s*(?:executed\s*)?order',
+            text,
+        )
+        if delivery_match:
+            flat = float(delivery_match.group(1))
+            result["segments"]["equity_delivery"] = {
+                "brokerage_mode": "flat", "brokerage_pct": 0,
+                "brokerage_cap": 0, "brokerage_flat": flat, "min_charge": 0,
+            }
+
+        # Intraday pct or flat
+        intraday_match = re.search(
+            r'(?:intraday)\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)\s*(?:/?\s*order|or)\s*([\d.]+)\s*%',
+            text,
+        )
+        if not intraday_match:
+            intraday_match = re.search(
+                r'([\d.]+)\s*%\s*or\s*[\u20b9₹]?\s*([\d.]+)\s*/?\s*order',
+                text,
+            )
+        if intraday_match:
+            groups = intraday_match.groups()
+            try:
+                vals = [float(g) for g in groups]
+                pct_val = min(vals)
+                cap_val = max(vals)
+                if pct_val < 1:
+                    pct_val = pct_val / 100
+                result["segments"]["equity_intraday"] = {
+                    "brokerage_mode": "percent_cap", "brokerage_pct": pct_val,
+                    "brokerage_cap": cap_val, "brokerage_flat": 0, "min_charge": 0,
+                }
+            except ValueError:
+                pass
+
+        # F&O flat
+        fo_match = re.search(
+            r'(?:futures?\s*(?:&|and)\s*options?|f\s*&\s*o)\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)\s*/?\s*order',
+            text,
+        )
+        if fo_match:
+            flat = float(fo_match.group(1))
+            for seg in ["equity_futures", "equity_options", "currency_futures",
+                        "currency_options", "commodity_futures", "commodity_options"]:
+                if seg not in result["segments"]:
+                    result["segments"][seg] = {
+                        "brokerage_mode": "flat", "brokerage_pct": 0,
+                        "brokerage_cap": 0, "brokerage_flat": flat, "min_charge": 0,
+                    }
+
+        # DP charge
+        dp_match = re.search(r'dp\s*charges?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
+        if dp_match:
+            result["meta"]["dp_charge"] = float(dp_match.group(1))
+
+        # AMC
+        amc_match = re.search(r'(?:amc|annual\s*maintenance)\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
+        if amc_match:
+            result["meta"]["amc_yearly"] = float(amc_match.group(1))
+
+        if result["segments"]:
+            logger.info("Upstox scraper: extracted %d segments", len(result["segments"]))
+            return result
+
+        logger.warning("Upstox scraper: no segments extracted from HTML")
+        return None
+    except Exception as exc:
+        logger.warning("Upstox scraper parse error: %s", exc)
+        return None
+
+
+def _scrape_groww(html: str) -> dict | None:
+    """Parse groww.in/pricing for brokerage rates.
+
+    Groww pricing page:
+    - Equity delivery/intraday: 0.1% or ₹20 whichever is lower
+    - F&O: ₹20 flat per order
+    - Min brokerage: ₹5
+    """
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        text = soup.get_text(" ", strip=True).lower()
+        result: dict[str, Any] = {"segments": {}, "meta": {}}
+
+        # Equity: pct/cap with min charge
+        equity_match = re.search(
+            r'(?:equity|delivery|intraday)\s*[:\-]?\s*([\d.]+)\s*%\s*or\s*[\u20b9₹]?\s*([\d.]+)',
+            text,
+        )
+        if equity_match:
+            pct = float(equity_match.group(1)) / 100
+            cap = float(equity_match.group(2))
+            min_match = re.search(r'min(?:imum)?\s*(?:brokerage)?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
+            min_charge = float(min_match.group(1)) if min_match else 5.0
+            for seg in ["equity_delivery", "equity_intraday"]:
+                result["segments"][seg] = {
+                    "brokerage_mode": "percent_cap", "brokerage_pct": pct,
+                    "brokerage_cap": cap, "brokerage_flat": 0, "min_charge": min_charge,
+                }
+
+        # F&O flat
+        fo_match = re.search(
+            r'(?:f\s*&\s*o|futures?\s*(?:&|and)\s*options?)\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)\s*/?\s*order',
+            text,
+        )
+        if fo_match:
+            flat = float(fo_match.group(1))
+            for seg in ["equity_futures", "equity_options", "currency_futures",
+                        "currency_options", "commodity_futures", "commodity_options"]:
+                result["segments"][seg] = {
+                    "brokerage_mode": "flat", "brokerage_pct": 0,
+                    "brokerage_cap": 0, "brokerage_flat": flat, "min_charge": 5,
+                }
+
+        # DP charge
+        dp_match = re.search(r'dp\s*charges?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
+        if dp_match:
+            result["meta"]["dp_charge"] = float(dp_match.group(1))
+
+        if result["segments"]:
+            logger.info("Groww scraper: extracted %d segments", len(result["segments"]))
+            return result
+
+        logger.warning("Groww scraper: no segments extracted from HTML")
+        return None
+    except Exception as exc:
+        logger.warning("Groww scraper parse error: %s", exc)
+        return None
+
+
+def _scrape_angel_one(html: str) -> dict | None:
+    """Parse angelone.in/exchange-transaction-charges for rates.
+
+    Angel One charges page:
+    - Equity delivery/intraday: 0.1% or ₹20 whichever is lower, min ₹5
+    - F&O: ₹20 flat per order
+    """
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        text = soup.get_text(" ", strip=True).lower()
+        result: dict[str, Any] = {"segments": {}, "meta": {}}
+
+        # Equity pct/cap
+        equity_match = re.search(
+            r'(?:equity|delivery|intraday)\s*[:\-]?\s*([\d.]+)\s*%\s*or\s*[\u20b9₹]?\s*([\d.]+)',
+            text,
+        )
+        if equity_match:
+            pct = float(equity_match.group(1)) / 100
+            cap = float(equity_match.group(2))
+            min_match = re.search(r'min(?:imum)?\s*(?:brokerage)?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
+            min_charge = float(min_match.group(1)) if min_match else 5.0
+            for seg in ["equity_delivery", "equity_intraday"]:
+                result["segments"][seg] = {
+                    "brokerage_mode": "percent_cap", "brokerage_pct": pct,
+                    "brokerage_cap": cap, "brokerage_flat": 0, "min_charge": min_charge,
+                }
+
+        # F&O flat
+        fo_match = re.search(
+            r'(?:f\s*&\s*o|futures?\s*(?:&|and)\s*options?)\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)\s*/?\s*order',
+            text,
+        )
+        if fo_match:
+            flat = float(fo_match.group(1))
+            for seg in ["equity_futures", "equity_options", "currency_futures",
+                        "currency_options", "commodity_futures", "commodity_options"]:
+                result["segments"][seg] = {
+                    "brokerage_mode": "flat", "brokerage_pct": 0,
+                    "brokerage_cap": 0, "brokerage_flat": flat, "min_charge": 0,
+                }
+
+        # DP charge
+        dp_match = re.search(r'dp\s*charges?\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
+        if dp_match:
+            result["meta"]["dp_charge"] = float(dp_match.group(1))
+
+        # AMC
+        amc_match = re.search(r'(?:amc|annual\s*maintenance)\s*[:\-]?\s*[\u20b9₹]?\s*([\d.]+)', text)
+        if amc_match:
+            result["meta"]["amc_yearly"] = float(amc_match.group(1))
+
+        if result["segments"]:
+            logger.info("Angel One scraper: extracted %d segments", len(result["segments"]))
+            return result
+
+        logger.warning("Angel One scraper: no segments extracted from HTML")
+        return None
+    except Exception as exc:
+        logger.warning("Angel One scraper parse error: %s", exc)
+        return None
+
+
+# ── Statutory rates scraper (from zerodha.com/charges) ───────────────
+
+def _scrape_statutory_from_zerodha(html: str) -> dict | None:
+    """Extract statutory charge rates from Zerodha's charges page.
+
+    Zerodha lists comprehensive statutory charges including STT, exchange
+    transaction charges, stamp duty, SEBI fees, and GST for all segments.
+    These are government/exchange-mandated and same across all brokers.
+    """
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        text = soup.get_text(" ", strip=True).lower()
+        result = {}
+
+        # Look for STT rates in tables
+        tables = soup.find_all("table")
+        for table in tables:
+            headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
+            if any("stt" in h or "security transaction" in h for h in headers):
+                for row in table.find_all("tr"):
+                    cells = [td.get_text(strip=True).lower() for td in row.find_all(["td", "th"])]
+                    if len(cells) >= 2:
+                        seg_text = cells[0]
+                        rate_text = cells[1] if len(cells) > 1 else ""
+                        rate = _parse_percent(rate_text)
+                        if rate is not None:
+                            # Map table rows to our segments
+                            if "delivery" in seg_text:
+                                result.setdefault("equity_delivery", {})["stt_buy"] = rate
+                                result.setdefault("equity_delivery", {})["stt_sell"] = rate
+                            elif "intraday" in seg_text:
+                                result.setdefault("equity_intraday", {})["stt_sell"] = rate
+
+        if result:
+            logger.info("Statutory scraper: extracted rates for %d segments", len(result))
+            return result
+
+        logger.debug("Statutory scraper: no rates extracted (using fallback)")
+        return None
+    except Exception as exc:
+        logger.warning("Statutory scraper parse error: %s", exc)
+        return None
+
+
+_SCRAPERS = {
+    "zerodha":   _scrape_zerodha,
+    "upstox":    _scrape_upstox,
+    "groww":     _scrape_groww,
+    "angel_one": _scrape_angel_one,
+}
+
+
+# ── Main job ─────────────────────────────────────────────────────────
+
+def _build_broker_data() -> tuple[list[dict], dict[str, dict]]:
+    """Scrape broker sites and merge with fallback data.
+
+    Returns (broker_rows, broker_meta) — scraper results override
+    fallback values field-by-field; any fields the scraper doesn't
+    extract keep their fallback value.
+    """
+    broker_meta = dict(_FALLBACK_BROKER_META)
+    all_rows: list[dict] = []
+    scraped_brokers: list[str] = []
+    fallback_brokers: list[str] = []
+
+    for broker, scraper_fn in _SCRAPERS.items():
+        url = _BROKER_URLS[broker]
+        scraped: dict | None = None
+
+        html = _fetch_html(url)
+        if html:
+            scraped = scraper_fn(html)
+
+        fallback_segments = _FALLBACK_BROKER_DATA[broker]
+        meta = dict(_FALLBACK_BROKER_META.get(broker, {}))
+
+        if scraped:
+            scraped_brokers.append(broker)
+            # Merge scraped meta over fallback
+            if scraped.get("meta"):
+                meta.update(scraped["meta"])
+        else:
+            fallback_brokers.append(broker)
+
+        broker_meta[broker] = meta
+
+        # Build rows per segment, merging scraped data over fallback
+        for segment in SEGMENTS:
+            base = dict(fallback_segments.get(segment, {
+                "brokerage_mode": "flat", "brokerage_pct": 0,
+                "brokerage_cap": 0, "brokerage_flat": 20, "min_charge": 0,
+            }))
+            if scraped and segment in scraped.get("segments", {}):
+                base.update(scraped["segments"][segment])
+
+            all_rows.append({
+                "broker": broker,
+                "segment": segment,
+                "source_url": url,
+                **base,
+            })
+
+        # Be polite between broker sites
+        time.sleep(1.5)
+
+    if scraped_brokers:
+        logger.info("Broker scraper: scraped %s", ", ".join(scraped_brokers))
+    if fallback_brokers:
+        logger.info("Broker scraper: using fallback for %s", ", ".join(fallback_brokers))
+
+    return all_rows, broker_meta
+
+
+def _build_statutory_data(zerodha_html: str | None) -> list[dict]:
+    """Build statutory charge rows, merging any scraped data over fallback."""
+    scraped_statutory = None
+    if zerodha_html:
+        scraped_statutory = _scrape_statutory_from_zerodha(zerodha_html)
+
+    rows: list[dict] = []
+    for seg, rates in _FALLBACK_STATUTORY.items():
+        # If we scraped data for this segment, merge it
+        if scraped_statutory and seg in scraped_statutory:
+            merged = dict(rates)
+            merged.update(scraped_statutory[seg])
+            rates = merged
+
+        for exchange, txn_key in [("nse", "nse_txn"), ("bse", "bse_txn"), ("mcx", "mcx_txn")]:
+            txn = rates.get(txn_key, 0)
+            if txn == 0 and exchange not in ("nse", "bse"):
+                continue
+            rows.append({
+                "segment": seg,
+                "exchange": exchange,
+                "stt_buy_rate": rates.get("stt_buy", 0),
+                "stt_sell_rate": rates.get("stt_sell", 0),
+                "exchange_txn_rate": txn,
+                "stamp_duty_buy_rate": rates.get("stamp", 0),
+                "ipft_rate": rates.get("ipft_nse", 0) if exchange == "nse" else 0,
+                "sebi_fee_rate": 0.000001,
+                "gst_rate": 0.18,
+            })
+
+    return rows
 
 
 async def run_broker_charges_job() -> dict:
-    """Seed/refresh broker charges and statutory rates in DB."""
+    """Scrape broker pricing pages and refresh DB.
+
+    Scrapes each broker's official pricing page, extracts brokerage
+    rates per segment, DP charges, and AMC. Falls back to hardcoded
+    reference data for any broker or field that can't be scraped.
+    """
+    import asyncio
+
     from app.core.database import get_pool
+
+    # Run scrapers in thread pool (they use blocking HTTP)
+    loop = asyncio.get_running_loop()
+    broker_rows, broker_meta = await loop.run_in_executor(None, _build_broker_data)
+
+    # Fetch zerodha HTML for statutory rates (may already be cached by _build_broker_data,
+    # but we re-fetch to keep the code decoupled)
+    zerodha_html = await loop.run_in_executor(
+        None, _fetch_html, _BROKER_URLS["zerodha"],
+    )
+    statutory_rows = await loop.run_in_executor(
+        None, _build_statutory_data, zerodha_html,
+    )
+
     pool = await get_pool()
     now = datetime.now(timezone.utc)
 
     # Upsert broker charges
     broker_count = 0
-    for row in _BROKER_DATA:
-        meta = _BROKER_META.get(row["broker"], {})
+    for row in broker_rows:
+        meta = broker_meta.get(row["broker"], {})
         await pool.execute(
             """
             INSERT INTO broker_charges
@@ -161,7 +646,7 @@ async def run_broker_charges_job() -> dict:
 
     # Upsert statutory charges
     stat_count = 0
-    for row in _STATUTORY_DATA:
+    for row in statutory_rows:
         await pool.execute(
             """
             INSERT INTO statutory_charges
