@@ -504,6 +504,10 @@ _DIRECT_RUN_JOBS: dict[str, tuple[str, str]] = {
         "app.services.discover_service",
         "reconcile_stock_snapshots",
     ),
+    "broker_charges_scrape": (
+        "app.scheduler.broker_charges_job",
+        "run_broker_charges_job",
+    ),
     "discover_stock_intraday_backfill": (
         "app.scheduler.discover_stock_intraday_job",
         "run_discover_stock_intraday_backfill",

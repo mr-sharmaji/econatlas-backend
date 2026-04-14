@@ -638,3 +638,40 @@ CREATE TABLE IF NOT EXISTS market_scores (
     computed_at TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (asset, instrument_type)
 );
+
+-- Broker trade charges (scraped from official pricing pages)
+CREATE TABLE IF NOT EXISTS broker_charges (
+    broker TEXT NOT NULL,
+    segment TEXT NOT NULL,
+    brokerage_mode TEXT NOT NULL DEFAULT 'flat',
+    brokerage_pct DOUBLE PRECISION DEFAULT 0,
+    brokerage_cap DOUBLE PRECISION DEFAULT 0,
+    brokerage_flat DOUBLE PRECISION DEFAULT 0,
+    min_charge DOUBLE PRECISION DEFAULT 0,
+    dp_charge DOUBLE PRECISION DEFAULT 0,
+    dp_includes_gst BOOLEAN DEFAULT FALSE,
+    tagline TEXT,
+    amc_yearly DOUBLE PRECISION DEFAULT 0,
+    account_opening_fee DOUBLE PRECISION DEFAULT 0,
+    call_trade_fee DOUBLE PRECISION DEFAULT 0,
+    source_url TEXT,
+    scraped_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (broker, segment)
+);
+
+-- Statutory/regulatory charges (same for all brokers)
+CREATE TABLE IF NOT EXISTS statutory_charges (
+    segment TEXT NOT NULL,
+    exchange TEXT NOT NULL,
+    stt_buy_rate DOUBLE PRECISION DEFAULT 0,
+    stt_sell_rate DOUBLE PRECISION DEFAULT 0,
+    exchange_txn_rate DOUBLE PRECISION DEFAULT 0,
+    stamp_duty_buy_rate DOUBLE PRECISION DEFAULT 0,
+    ipft_rate DOUBLE PRECISION DEFAULT 0,
+    sebi_fee_rate DOUBLE PRECISION DEFAULT 0.000001,
+    gst_rate DOUBLE PRECISION DEFAULT 0.18,
+    effective_from DATE,
+    source_url TEXT,
+    scraped_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (segment, exchange)
+);
