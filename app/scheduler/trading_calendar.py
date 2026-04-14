@@ -139,6 +139,12 @@ def is_exchange_holiday(exchange: str, utc_now: datetime) -> bool:
             return False
         local_date = now.astimezone(_TSE_TZ).date()
         return not cal.is_session(local_date)
+    if exchange == NYSE:
+        cal = _get_nyse()
+        if cal is None:
+            return False
+        local_date = now.astimezone(_NYSE_TZ).date()
+        return not cal.is_session(local_date)
     return False
 
 

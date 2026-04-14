@@ -1361,6 +1361,8 @@ async def _check_missed_open_notifications(
             continue
 
         # Skip holidays
+        if market == "us" and is_exchange_holiday("NYSE", now):
+            continue
         if market == "europe" and is_exchange_holiday("LSE", now):
             continue
         if market == "japan" and is_exchange_holiday("TSE", now):
@@ -1419,6 +1421,21 @@ async def _check_missed_close_notifications(
             in_window = now_ist.hour >= earliest or now_ist.hour <= latest
 
         if not in_window:
+            continue
+
+        # Skip holidays — matches the intent of the three-layer India
+        # holiday gate in run_notification_job (line 1494). Without this,
+        # the outer gate forcing markets["india"] = False on a holiday
+        # makes this function think the close notification was missed
+        # and fires a fallback, even though the market never opened.
+        # Europe/Japan mirror the gates in _check_missed_open_notifications.
+        if market == "india" and not get_india_session_info(now).get("is_trading_day"):
+            continue
+        if market == "us" and is_exchange_holiday("NYSE", now):
+            continue
+        if market == "europe" and is_exchange_holiday("LSE", now):
+            continue
+        if market == "japan" and is_exchange_holiday("TSE", now):
             continue
 
         # Fetch data and send
