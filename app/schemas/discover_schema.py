@@ -252,6 +252,13 @@ class DiscoverMutualFundItemResponse(BaseModel):
     sector_allocation: list[dict] | None = None
     asset_allocation: dict | None = None
     holdings_as_of: str | None = None
+    # History-anchored point-to-point returns computed live from the
+    # NAV history table. Shape:
+    # {"return_1d": -0.83, "return_1m": 1.6, "return_3m": -6.0,
+    #  "return_6m": -3.8, "return_1y": 6.24, "return_3y": 79.84,
+    #  "return_5y": 149.40, "as_of": "2026-04-13"}
+    # Populated only on the detail endpoint; None on list endpoints.
+    point_to_point_returns: dict | None = None
     source_status: SourceStatus
     source_timestamp: datetime
     ingested_at: datetime

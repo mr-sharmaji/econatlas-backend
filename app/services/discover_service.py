@@ -3934,6 +3934,16 @@ async def get_mf_by_scheme_code(*, scheme_code: str) -> dict | None:
         category,
     )
     stats = record_to_dict(cat_stats_rows[0]) if cat_stats_rows else {}
+    # Compute history-anchored point-to-point returns for the detail
+    # payload so the UI's Returns card and top-of-screen period badge
+    # can share a single source of truth (both computed from the same
+    # NAV history used by the chart, not from ETMoney's XIRR values).
+    try:
+        ptp = await get_mf_point_to_point_returns(scheme_code=scheme_code)
+    except Exception:
+        logger.exception("mf_detail: point-to-point returns failed scheme_code=%s", scheme_code)
+        ptp = None
+    d["point_to_point_returns"] = ptp
     return _decorate_mf_row(d, stats)
 
 
@@ -4518,6 +4528,105 @@ async def get_mf_nav_history(*, scheme_code: str, days: int = 365) -> list[dict]
         days,
     )
     return [record_to_dict(r) for r in rows]
+
+
+async def get_mf_point_to_point_returns(*, scheme_code: str) -> dict | None:
+    """Compute point-to-point % returns for 1D/1M/3M/6M/1Y/3Y/5Y from
+    the NAV history table.
+
+    Methodology — matches the frontend chart endpoint:
+      - end   = most recent NAV on record (not CURRENT_DATE, so we stay
+                consistent with a fund whose NAVs lag by a day)
+      - start = first NAV with nav_date >= end_date - N calendar days
+                (SEBI-ish: the first trading day INSIDE the window,
+                not the last trading day before it; we chose this
+                anchor deliberately — see commit c0638a4)
+      - 1D    = latest vs previous trading-day NAV (handles holidays)
+      - % returns are simple (end/start − 1), NOT CAGR/XIRR, so the
+        Returns card matches the top-of-screen period badge exactly.
+
+    Returns None if the scheme has no history or fewer than 2 rows.
+    Single DB round-trip fetches ~5 years of NAVs (1250 rows ≈ small).
+    """
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT nav_date, nav
+        FROM discover_mf_nav_history
+        WHERE scheme_code = $1
+          AND nav_date >= CURRENT_DATE - make_interval(days => 1830)
+        ORDER BY nav_date ASC
+        """,
+        scheme_code,
+    )
+    if not rows or len(rows) < 2:
+        return None
+
+    series: list[tuple[date, float]] = []
+    for r in rows:
+        try:
+            v = float(r["nav"])
+        except (TypeError, ValueError):
+            continue
+        if v <= 0:
+            continue
+        series.append((r["nav_date"], v))
+    if len(series) < 2:
+        return None
+
+    end_date, end_nav = series[-1]
+    prev_date, prev_nav = series[-2]
+
+    def _pct(start: float | None, end: float) -> float | None:
+        if start is None or start <= 0:
+            return None
+        return round(((end - start) / start) * 100, 2)
+
+    def _anchor_nav(n_days: int) -> float | None:
+        """First NAV with date >= end_date - n_days. Linear scan is
+        fine — series has ≤ ~1250 entries and this runs per request."""
+        target = end_date - timedelta(days=n_days)
+        for d, v in series:
+            if d >= target:
+                return v
+        return None
+
+    def _cagr(start: float | None, end: float, years: float) -> float | None:
+        """Annualized return (CAGR) for windows of ≥1Y. For < 1Y this
+        is meaningless, so don't call it there. Uses the same anchor
+        NAV as the absolute return — the two numbers share a single
+        source of truth."""
+        if start is None or start <= 0 or years <= 0:
+            return None
+        ratio = end / start
+        if ratio <= 0:
+            return None
+        return round((ratio ** (1 / years) - 1) * 100, 2)
+
+    start_1y = _anchor_nav(365)
+    start_3y = _anchor_nav(1095)
+    start_5y = _anchor_nav(1825)
+
+    return {
+        # 1D and sub-1Y are always reported as absolute (simple) %
+        # — SEBI convention and industry norm.
+        "return_1d": _pct(prev_nav, end_nav),
+        "return_1m": _pct(_anchor_nav(30), end_nav),
+        "return_3m": _pct(_anchor_nav(90), end_nav),
+        "return_6m": _pct(_anchor_nav(180), end_nav),
+        # ≥1Y also reported as absolute (for the header period badge)
+        # so every figure in the UI derives from the same anchor NAV.
+        "return_1y": _pct(start_1y, end_nav),
+        "return_3y": _pct(start_3y, end_nav),
+        "return_5y": _pct(start_5y, end_nav),
+        # CAGR counterparts for ≥1Y — used by the Returns card. For
+        # 1Y, cagr_1y == return_1y by construction. For 3Y/5Y, CAGR
+        # differs from absolute and represents annualized growth.
+        "cagr_1y": _cagr(start_1y, end_nav, 1.0),
+        "cagr_3y": _cagr(start_3y, end_nav, 3.0),
+        "cagr_5y": _cagr(start_5y, end_nav, 5.0),
+        "as_of": end_date.isoformat() if end_date else None,
+    }
 
 
 async def get_stock_peers(*, symbol: str, limit: int = 5) -> list[dict]:
