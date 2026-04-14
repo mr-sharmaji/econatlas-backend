@@ -1261,10 +1261,7 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
     else:
         # No live transition detected (e.g., server restarted after close).
         # Fallback: check if India is closed and today's close data exists in DB.
-        from app.scheduler.trading_calendar import (
-            get_market_status,
-            get_india_session_info,
-        )
+        from app.scheduler.trading_calendar import get_market_status
 
         # Gate 1: today must actually be an NSE trading day. Saturdays,
         # Sundays and holidays must never trigger a post-market summary
