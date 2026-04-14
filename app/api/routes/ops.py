@@ -23,6 +23,7 @@ _VALID_JOBS = {
     "market", "commodity", "crypto", "brief", "macro", "news",
     "discover_stock", "discover_mutual_funds",
     "discover_stock_price", "discover_mf_nav",
+    "discover_mf_nav_backfill",
     "discover_stock_intraday",
     "discover_stock_intraday_backfill",
     "rescore_stock", "rescore_mf",
@@ -686,6 +687,10 @@ _DIRECT_RUN_JOBS: dict[str, tuple[str, str]] = {
     "discover_mf_nav": (
         "app.scheduler.discover_mf_nav_job",
         "run_discover_mf_nav_job",
+    ),
+    "discover_mf_nav_backfill": (
+        "app.scheduler.discover_mf_nav_job",
+        "run_discover_mf_nav_backfill_job",
     ),
     "reconcile_stock_snapshots": (
         "app.services.discover_service",
