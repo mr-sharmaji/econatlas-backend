@@ -40,8 +40,19 @@ _commodity_spike_state: dict = {
     "alerted": {},  # asset -> last alerted band (2% bands)
 }
 
-# Open notification delay state — wait ~2 min after open for data to arrive
+# Open notification pending state — the market transitioned to open and
+# we're waiting for the scraper to land today's UTC-session row so the
+# notification builder has real numbers to render. Value is the UTC
+# transition time. See the flush loop in run_notification_job for the
+# "fire when data lands, fall back after max wait" logic.
 _open_pending: dict[str, datetime | None] = {}  # market -> transition timestamp
+
+# Hard ceiling on how long we wait for today's row to land before firing
+# a degraded simple-open notification. Under normal conditions today's
+# row appears within 1–3 minutes of the scraper's first post-open tick;
+# 15 minutes is a generous upper bound that still gives the user the
+# "market opened" signal even if the upstream feed is seriously broken.
+_OPEN_DATA_MAX_WAIT_SECONDS = 900
 
 # Post-market summary state
 _post_market_state: dict = {
@@ -159,27 +170,35 @@ async def _fetch_india_close_data() -> dict | None:
         # signal and nothing in the close builder or the AI narrative
         # prompt consumes it anymore.
         #
-        # Freshness gate: only accept rows from the current IST trading
-        # day. On holidays the latest Nifty row is from the previous
-        # trading session (e.g. Friday close still sitting in the DB on
-        # Ambedkar Jayanti) and we must NOT present it as "today's
-        # close". This is a third-layer defence — layers 1 and 2 in
-        # run_notification_job already gate holidays, this gate catches
-        # any future bug path that reaches us without going through
-        # the transition loop.
+        # Freshness gate: only accept rows from the current UTC session
+        # date. market_prices rows are stored with UTC-midnight-of-session
+        # as their timestamp, so comparing UTC dates is the native match.
+        # For India specifically this also happens to equal the IST session
+        # date at every moment India notifications fire (India is closed in
+        # the 18:30–23:59 UTC window where UTC/IST dates would disagree),
+        # so this behaves identically to the previous Asia/Kolkata gate.
+        # Kept unified with every other fetcher in this file so there's a
+        # single convention to reason about.
+        #
+        # On holidays the latest Nifty row is from the previous trading
+        # session (e.g. Friday close still sitting in the DB on Ambedkar
+        # Jayanti) and we must NOT present it as "today's close". This is
+        # a third-layer defence — layers 1 and 2 in run_notification_job
+        # already gate holidays, this gate catches any future bug path
+        # that reaches us without going through the transition loop.
         index_rows = await pool.fetch(
             """
             SELECT asset, change_percent, price, timestamp FROM market_prices
             WHERE asset IN ('Nifty 50', 'Nifty Midcap 150', 'Nifty Smallcap 250')
-              AND (timestamp AT TIME ZONE 'Asia/Kolkata')::date
-                  = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+              AND (timestamp AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
             ORDER BY timestamp DESC
             LIMIT 6
             """
         )
         if not index_rows:
             logger.info(
-                "_fetch_india_close_data: no Nifty rows for today IST — "
+                "_fetch_india_close_data: no Nifty rows for today — "
                 "market was closed or data hasn't arrived yet"
             )
             return None
@@ -218,12 +237,17 @@ async def _fetch_india_close_data() -> dict | None:
         except Exception:
             logger.debug("Breadth data unavailable for India close")
 
-        # Sector indices
+        # Sector indices — gated to today's UTC session to match the
+        # primary Nifty query above. Without this the "sector rotation"
+        # narrative could echo yesterday's bank vs. IT split on a day the
+        # sector scraper hasn't landed today's rows yet.
         sector_rows = await pool.fetch(
             """
             SELECT asset, change_percent FROM market_prices
             WHERE asset IN ('Nifty Bank', 'Nifty IT', 'Nifty Pharma', 'Nifty Auto', 'Nifty Metal')
               AND change_percent IS NOT NULL
+              AND (timestamp AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
             ORDER BY timestamp DESC
             LIMIT 10
             """
@@ -256,10 +280,15 @@ async def _fetch_us_close_data() -> dict | None:
         from app.core.database import get_pool
         pool = await get_pool()
 
+        # Gate to today's UTC session — see _fetch_us_open_data for the
+        # rationale. Prevents the close notification from echoing yesterday's
+        # numbers if the scraper hasn't landed today's row yet.
         index_rows = await pool.fetch(
             """
             SELECT asset, change_percent, price FROM market_prices
             WHERE asset IN ('S&P500', 'NASDAQ', 'Dow Jones')
+              AND (timestamp AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
             ORDER BY timestamp DESC
             LIMIT 6
             """
@@ -325,10 +354,13 @@ async def _fetch_europe_close_data() -> dict | None:
         from app.core.database import get_pool
         pool = await get_pool()
 
+        # Gate to today's UTC session — see _fetch_us_open_data.
         index_rows = await pool.fetch(
             """
             SELECT asset, change_percent, price FROM market_prices
             WHERE asset IN ('FTSE 100', 'DAX', 'CAC 40')
+              AND (timestamp AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
             ORDER BY timestamp DESC
             LIMIT 6
             """
@@ -361,11 +393,14 @@ async def _fetch_europe_close_data() -> dict | None:
             data["relative_context"] = await _get_relative_context(pool, primary_asset, primary_pct)
         data["week52_context"] = await _get_52week_context(pool, primary_asset, primary_close)
 
-        # Brent crude
+        # Brent crude — gated.
         brent_row = await pool.fetchrow(
             """
             SELECT change_percent FROM market_prices
-            WHERE asset = 'brent crude' AND change_percent IS NOT NULL
+            WHERE asset = 'brent crude'
+              AND change_percent IS NOT NULL
+              AND (timestamp AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
             ORDER BY timestamp DESC
             LIMIT 1
             """
@@ -385,10 +420,13 @@ async def _fetch_japan_close_data() -> dict | None:
         from app.core.database import get_pool
         pool = await get_pool()
 
+        # Gate to today's UTC session — see _fetch_us_open_data.
         index_rows = await pool.fetch(
             """
             SELECT asset, change_percent, price FROM market_prices
             WHERE asset IN ('Nikkei 225', 'TOPIX')
+              AND (timestamp AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
             ORDER BY timestamp DESC
             LIMIT 4
             """
@@ -520,27 +558,46 @@ async def _fetch_japan_open_data() -> dict | None:
         from app.core.database import get_pool
         pool = await get_pool()
 
-        # Nikkei 225 and TOPIX latest
-        index_rows = await pool.fetch(
+        # Opening move = (first intraday tick today - previous_close) /
+        # previous_close. See the long comment in _fetch_us_open_data for
+        # the full rationale — same shape, same reason.
+        prev_close_rows = await pool.fetch(
             """
-            SELECT asset, change_percent, price FROM market_prices
+            SELECT asset, previous_close FROM market_prices
             WHERE asset IN ('Nikkei 225', 'TOPIX')
-              AND change_percent IS NOT NULL
-            ORDER BY timestamp DESC
-            LIMIT 4
+              AND instrument_type = 'index'
+              AND previous_close IS NOT NULL
+              AND (timestamp AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
+            """,
+        )
+        prev_close_by_asset: dict[str, float] = {
+            r["asset"]: float(r["previous_close"]) for r in prev_close_rows
+        }
+
+        opening_rows = await pool.fetch(
+            """
+            SELECT DISTINCT ON (asset, instrument_type)
+                asset, price
+            FROM market_prices_intraday
+            WHERE asset IN ('Nikkei 225', 'TOPIX')
+              AND instrument_type = 'index'
+              AND (COALESCE(source_timestamp, "timestamp") AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
+            ORDER BY asset, instrument_type, COALESCE(source_timestamp, "timestamp") ASC
             """,
         )
         data: dict = {}
-        seen: set[str] = set()
-        for row in index_rows:
-            a = row["asset"]
-            if a in seen:
+        for row in opening_rows:
+            asset = row["asset"]
+            prev = prev_close_by_asset.get(asset)
+            if prev is None or prev == 0:
                 continue
-            seen.add(a)
-            pct = float(row["change_percent"])
-            if a == "Nikkei 225":
+            opening_price = float(row["price"])
+            pct = (opening_price - prev) / prev * 100
+            if asset == "Nikkei 225":
                 data["nikkei_pct"] = pct
-            elif a == "TOPIX":
+            elif asset == "TOPIX":
                 data["topix_pct"] = pct
 
         if "nikkei_pct" not in data:
@@ -598,40 +655,63 @@ async def _fetch_europe_open_data() -> dict | None:
         from app.core.database import get_pool
         pool = await get_pool()
 
-        # FTSE 100, DAX, CAC 40 latest
-        index_rows = await pool.fetch(
+        # Opening move = (first intraday tick today - previous_close) /
+        # previous_close. See the long comment in _fetch_us_open_data for
+        # the full rationale — same shape, same reason.
+        prev_close_rows = await pool.fetch(
             """
-            SELECT asset, change_percent, price FROM market_prices
+            SELECT asset, previous_close FROM market_prices
             WHERE asset IN ('FTSE 100', 'DAX', 'CAC 40')
-              AND change_percent IS NOT NULL
-            ORDER BY timestamp DESC
-            LIMIT 6
+              AND instrument_type = 'index'
+              AND previous_close IS NOT NULL
+              AND (timestamp AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
+            """,
+        )
+        prev_close_by_asset: dict[str, float] = {
+            r["asset"]: float(r["previous_close"]) for r in prev_close_rows
+        }
+
+        opening_rows = await pool.fetch(
+            """
+            SELECT DISTINCT ON (asset, instrument_type)
+                asset, price
+            FROM market_prices_intraday
+            WHERE asset IN ('FTSE 100', 'DAX', 'CAC 40')
+              AND instrument_type = 'index'
+              AND (COALESCE(source_timestamp, "timestamp") AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
+            ORDER BY asset, instrument_type, COALESCE(source_timestamp, "timestamp") ASC
             """,
         )
         data: dict = {}
-        seen: set[str] = set()
-        for row in index_rows:
-            a = row["asset"]
-            if a in seen:
+        for row in opening_rows:
+            asset = row["asset"]
+            prev = prev_close_by_asset.get(asset)
+            if prev is None or prev == 0:
                 continue
-            seen.add(a)
-            pct = float(row["change_percent"])
-            if a == "FTSE 100":
+            opening_price = float(row["price"])
+            pct = (opening_price - prev) / prev * 100
+            if asset == "FTSE 100":
                 data["ftse_pct"] = pct
-            elif a == "DAX":
+            elif asset == "DAX":
                 data["dax_pct"] = pct
-            elif a == "CAC 40":
+            elif asset == "CAC 40":
                 data["cac_pct"] = pct
 
         if "ftse_pct" not in data and "dax_pct" not in data:
             return None
 
-        # Asia cues: Nikkei + Nifty 50
+        # Asia cues: Nikkei + Nifty 50 — gated. At Europe open (~08:00 UTC),
+        # Nikkei already closed (06:00 UTC, same UTC day) and Nifty is
+        # mid-session; any row used as a cue must be from today.
         asia_rows = await pool.fetch(
             """
             SELECT asset, change_percent FROM market_prices
             WHERE asset IN ('Nikkei 225', 'Nifty 50')
               AND change_percent IS NOT NULL
+              AND (timestamp AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
             ORDER BY timestamp DESC
             LIMIT 4
             """,
@@ -648,11 +728,14 @@ async def _fetch_europe_open_data() -> dict | None:
             elif a == "Nifty 50":
                 data["nifty_pct"] = pct
 
-        # Brent crude
+        # Brent crude — gated.
         brent_row = await pool.fetchrow(
             """
             SELECT change_percent FROM market_prices
-            WHERE asset = 'brent crude' AND change_percent IS NOT NULL
+            WHERE asset = 'brent crude'
+              AND change_percent IS NOT NULL
+              AND (timestamp AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
             ORDER BY timestamp DESC
             LIMIT 1
             """,
@@ -672,40 +755,83 @@ async def _fetch_us_open_data() -> dict | None:
         from app.core.database import get_pool
         pool = await get_pool()
 
-        # S&P500, NASDAQ, Dow Jones latest
-        index_rows = await pool.fetch(
+        # "S&P 500 opens +X%" must compare the FIRST tick of today's
+        # session to yesterday's close — not the latest tick. Reading
+        # `change_percent` from the daily market_prices row is wrong
+        # because that row is upserted on every scraper cycle
+        # (insert_prices_batch_upsert_daily does DO UPDATE SET price,
+        # change_percent, ...), so the field drifts throughout the
+        # session. By the time the open-notification fire reaches this
+        # function, the row already reflects several minutes of
+        # post-open drift.
+        #
+        # Correct formula:
+        #   opening_tick  = earliest market_prices_intraday row for
+        #                   today's UTC session date
+        #   previous_close = market_prices.previous_close from today's
+        #                    daily row (stable field — the scraper
+        #                    always passes yesterday's close value, so
+        #                    it doesn't drift with intraday upserts)
+        #   pct            = (opening_tick - previous_close) / previous_close
+        #
+        # Both queries are gated to today's UTC session so the function
+        # returns None (→ caller waits for data to land, then falls back
+        # to simple open after _OPEN_DATA_MAX_WAIT_SECONDS) instead of
+        # serving yesterday's numbers.
+        prev_close_rows = await pool.fetch(
             """
-            SELECT asset, change_percent, price FROM market_prices
+            SELECT asset, previous_close FROM market_prices
             WHERE asset IN ('S&P500', 'NASDAQ', 'Dow Jones')
-              AND change_percent IS NOT NULL
-            ORDER BY timestamp DESC
-            LIMIT 6
-            """,
+              AND instrument_type = 'index'
+              AND previous_close IS NOT NULL
+              AND (timestamp AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
+            """
+        )
+        prev_close_by_asset: dict[str, float] = {
+            r["asset"]: float(r["previous_close"]) for r in prev_close_rows
+        }
+
+        opening_rows = await pool.fetch(
+            """
+            SELECT DISTINCT ON (asset, instrument_type)
+                asset, price
+            FROM market_prices_intraday
+            WHERE asset IN ('S&P500', 'NASDAQ', 'Dow Jones')
+              AND instrument_type = 'index'
+              AND (COALESCE(source_timestamp, "timestamp") AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
+            ORDER BY asset, instrument_type, COALESCE(source_timestamp, "timestamp") ASC
+            """
         )
         data: dict = {}
-        seen: set[str] = set()
-        for row in index_rows:
-            a = row["asset"]
-            if a in seen:
+        for row in opening_rows:
+            asset = row["asset"]
+            prev = prev_close_by_asset.get(asset)
+            if prev is None or prev == 0:
                 continue
-            seen.add(a)
-            pct = float(row["change_percent"])
-            if a == "S&P500":
+            opening_price = float(row["price"])
+            pct = (opening_price - prev) / prev * 100
+            if asset == "S&P500":
                 data["sp500_pct"] = pct
-            elif a == "NASDAQ":
+            elif asset == "NASDAQ":
                 data["nasdaq_pct"] = pct
-            elif a == "Dow Jones":
+            elif asset == "Dow Jones":
                 data["dow_pct"] = pct
 
         if "sp500_pct" not in data:
             return None
 
-        # Europe cues: FTSE + DAX
+        # Europe cues: FTSE + DAX — also gated to today's UTC session so
+        # "Europe closed mixed with FTSE +0.1% and DAX +1.2%" never echoes
+        # yesterday's European close when today's row hasn't landed.
         europe_rows = await pool.fetch(
             """
             SELECT asset, change_percent FROM market_prices
             WHERE asset IN ('FTSE 100', 'DAX')
               AND change_percent IS NOT NULL
+              AND (timestamp AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
             ORDER BY timestamp DESC
             LIMIT 4
             """,
@@ -722,11 +848,14 @@ async def _fetch_us_open_data() -> dict | None:
             elif a == "DAX":
                 data["dax_pct"] = pct
 
-        # Crude oil
+        # Crude oil — gated to today's UTC session (same rationale).
         crude_row = await pool.fetchrow(
             """
             SELECT change_percent FROM market_prices
-            WHERE asset = 'crude oil' AND change_percent IS NOT NULL
+            WHERE asset = 'crude oil'
+              AND change_percent IS NOT NULL
+              AND (timestamp AT TIME ZONE 'UTC')::date
+                  = (NOW() AT TIME ZONE 'UTC')::date
             ORDER BY timestamp DESC
             LIMIT 1
             """,
@@ -1557,7 +1686,10 @@ async def run_notification_job() -> None:
                 _prev_state[market] = is_open
                 continue
             if is_open and not was_open:
-                # Transition: closed -> open — delay 2 min so early data is available
+                # Transition: closed -> open — queue the notification and let
+                # the flush loop below fire it as soon as the fetcher returns
+                # today's row (falling back to a simple notification after
+                # _OPEN_DATA_MAX_WAIT_SECONDS if the data never lands).
                 logger.info("Market transition: %s OPENED — queuing open notification", market)
                 # Skip Europe/Japan notifications on exchange holidays
                 if market == "europe" and is_exchange_holiday("LSE", now):
@@ -1596,23 +1728,56 @@ async def run_notification_job() -> None:
                         )
             _prev_state[market] = is_open
 
-        # --- Flush pending open notifications after 2-minute delay ---
+        # --- Flush pending open notifications when today's data lands ---
+        #
+        # The per-market fetchers are gated to today's UTC session date
+        # (see the _fetch_*_open_data functions), so they return None until
+        # the scraper writes today's row. We poll on every notification
+        # tick and fire the rich notification the moment the fetcher
+        # returns real data, instead of using a fixed delay that could
+        # either miss the data (if we fired too early) or silently serve
+        # yesterday's numbers (which is how the 2026-04-14 US open
+        # notification ended up with 2026-04-13 values before this fix).
+        #
+        # Hard ceiling: if today's row still hasn't appeared after
+        # _OPEN_DATA_MAX_WAIT_SECONDS, fall back to the simple
+        # "US Markets Open" banner so the user still learns the
+        # transition happened. This is a degraded but honest outcome
+        # — it never shows stale numbers labelled as today's.
         for market in list(_open_pending):
             pending_time = _open_pending[market]
-            if pending_time and (now - pending_time).total_seconds() >= 120:
-                logger.info("Open notification delay elapsed for %s — sending now", market)
-                open_data = None
-                fetcher = _open_data_fetchers.get(market)
-                if fetcher:
-                    try:
-                        open_data = await fetcher()
-                    except Exception:
-                        logger.warning("Open data fetch failed for %s", market, exc_info=True)
-                dedup_key = f"{today_str}_market_open_{market}"
-                await notification_service.notify_market_open(
-                    market, market_data=open_data, dedup_key=dedup_key,
+            if pending_time is None:
+                continue
+            elapsed = (now - pending_time).total_seconds()
+
+            open_data = None
+            fetcher = _open_data_fetchers.get(market)
+            if fetcher:
+                try:
+                    open_data = await fetcher()
+                except Exception:
+                    logger.warning("Open data fetch failed for %s", market, exc_info=True)
+
+            if open_data is not None:
+                logger.info(
+                    "Open data for %s landed after %.0fs — sending rich notification",
+                    market, elapsed,
                 )
-                del _open_pending[market]
+            elif elapsed >= _OPEN_DATA_MAX_WAIT_SECONDS:
+                logger.warning(
+                    "Open data for %s did not land within %.0fs — "
+                    "falling back to simple notification",
+                    market, elapsed,
+                )
+            else:
+                # Still waiting for today's row to land — check again next tick.
+                continue
+
+            dedup_key = f"{today_str}_market_open_{market}"
+            await notification_service.notify_market_open(
+                market, market_data=open_data, dedup_key=dedup_key,
+            )
+            del _open_pending[market]
 
         # --- DB fallback: send missed open/close notifications after restart ---
         await _check_missed_open_notifications(markets, now, _open_data_fetchers)
