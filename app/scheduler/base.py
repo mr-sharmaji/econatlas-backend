@@ -46,6 +46,14 @@ class BaseScraper:
                 time.monotonic() + cls._RATE_BACKOFF_SEC
             )
         logger.warning("rate_limit: backing off %s for %d s", host, cls._RATE_BACKOFF_SEC)
+        # Bump the Prometheus counter so Grafana can chart per-host
+        # throttle frequency. Imported lazily to avoid a circular
+        # import at scraper-module load time.
+        try:
+            from app.core.metrics import SCRAPER_RATE_LIMITED
+            SCRAPER_RATE_LIMITED.labels(host=host).inc()
+        except Exception:
+            pass
 
     def _parallel_map(
         self,

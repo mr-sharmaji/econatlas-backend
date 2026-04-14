@@ -40,12 +40,36 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
     Always releases the scheduler's ``job_lock:{job_id}`` key on exit, so
     the next scheduler tick can enqueue immediately instead of waiting for
     the 300s TTL to expire.
+
+    Also records Prometheus metrics so Grafana can chart job throughput,
+    duration, success rate, and time-since-last-run per job:
+      - jobs_started_total{job_name}
+      - job_duration_seconds{job_name}  (histogram, observed on completion)
+      - job_errors_total{job_name}      (incremented on permanent failure)
+      - job_last_run_timestamp_seconds{job_name}
+      - job_last_success_timestamp_seconds{job_name}
     """
+    import time as _time
+
+    from app.core.metrics import (
+        JOB_DURATION,
+        JOB_ERRORS,
+        JOB_LAST_RUN_TIMESTAMP,
+        JOB_LAST_SUCCESS_TIMESTAMP,
+        JOBS_STARTED,
+    )
+
     max_retries, delay_base = JOB_RETRY_POLICIES.get(job_name, (3, 10))
     job_try: int = ctx.get("job_try", 1)
     job_id = ctx.get("job_id")
     release_lock = True  # Release on success or permanent failure, not on Retry
 
+    # Only count the FIRST attempt as a started job — retries are part
+    # of the same logical invocation and would otherwise double-count.
+    if job_try == 1:
+        JOBS_STARTED.labels(job_name=job_name).inc()
+
+    started_at = _time.monotonic()
     try:
         await coro_factory()
         # Invalidate response cache after successful job so users see fresh data
@@ -54,6 +78,12 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
             await invalidate_cache()
         except Exception:
             logger.debug("Cache invalidation after %s failed (non-fatal)", job_name)
+        # Record successful completion
+        duration = _time.monotonic() - started_at
+        JOB_DURATION.labels(job_name=job_name).observe(duration)
+        now = _time.time()
+        JOB_LAST_RUN_TIMESTAMP.labels(job_name=job_name).set(now)
+        JOB_LAST_SUCCESS_TIMESTAMP.labels(job_name=job_name).set(now)
     except Exception as exc:
         if max_retries > 0 and job_try <= max_retries:
             delay = delay_base * (2 ** (job_try - 1))
@@ -82,6 +112,11 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
             traceback_text=traceback.format_exc(),
             retry_count=job_try,
         )
+        # Permanent failure → bump the error counter and observe duration
+        # so the histogram reflects all completed runs (success + fail).
+        JOB_ERRORS.labels(job_name=job_name).inc()
+        JOB_DURATION.labels(job_name=job_name).observe(_time.monotonic() - started_at)
+        JOB_LAST_RUN_TIMESTAMP.labels(job_name=job_name).set(_time.time())
     finally:
         if release_lock:
             await _release_job_lock(job_id)

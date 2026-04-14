@@ -101,7 +101,51 @@ JOB_ERRORS = Counter(
     ["job_name"],
 )
 
+# Total job invocations (success or failure) — paired with JOB_ERRORS
+# this gives a clean PromQL success ratio:
+#   1 - (rate(job_errors_total[5m]) / rate(jobs_started_total[5m]))
+JOBS_STARTED = Counter(
+    "jobs_started_total",
+    "Total scheduler job invocations",
+    ["job_name"],
+)
+
 JOB_RUNNING = Gauge("jobs_running_count", "Number of currently running jobs")
+
+# Unix epoch seconds of the most recent run for each job. Subtract from
+# `time()` in Grafana to chart "time since last run". Useful for
+# spotting silently broken cron jobs.
+JOB_LAST_RUN_TIMESTAMP = Gauge(
+    "job_last_run_timestamp_seconds",
+    "Unix timestamp of the last run (success or failure) per job",
+    ["job_name"],
+)
+JOB_LAST_SUCCESS_TIMESTAMP = Gauge(
+    "job_last_success_timestamp_seconds",
+    "Unix timestamp of the last successful run per job",
+    ["job_name"],
+)
+
+# ── ARQ queue depth + DLQ size ────────────────────────────────────────
+# Backed by the background collector reading Redis directly.
+ARQ_QUEUE_DEPTH = Gauge(
+    "arq_queue_depth",
+    "Number of jobs currently queued in ARQ (waiting for a worker)",
+)
+ARQ_DLQ_SIZE = Gauge(
+    "arq_dlq_size",
+    "Number of jobs in the dead letter queue (exhausted retries)",
+)
+
+# ── Scraper rate-limiting ────────────────────────────────────────────
+# Incremented from BaseScraper._mark_rate_limited so we can chart how
+# often each upstream throttles us. Useful when discover_stock_intraday
+# returns 22% updates — you want to know which host pushed back.
+SCRAPER_RATE_LIMITED = Counter(
+    "scraper_rate_limited_total",
+    "Number of times a scraper got rate-limited (HTTP 429/503 or marker)",
+    ["host"],
+)
 
 # ── Data freshness ────────────────────────────────────────────────────
 
@@ -327,18 +371,31 @@ async def _collect_once():
         """)
         DB_DUPLICATES.set(dupes or 0)
 
-        # Data freshness
+        # Data freshness — track time since latest write per critical
+        # table so Grafana can chart "table last updated N minutes ago"
+        # and alert when a scraper silently stops writing.
         for table, col in [
             ("market_prices", "timestamp"),
+            ("market_prices_intraday", "timestamp"),
             ("discover_stock_snapshots", "source_timestamp"),
             ("discover_mutual_fund_snapshots", "source_timestamp"),
+            ("discover_stock_intraday", "timestamp"),
+            ("news_articles", "published_at"),
+            ("economic_events", "event_time"),
+            ("ipo_snapshots", "snapshot_at"),
+            ("broker_charges", "scraped_at"),
         ]:
-            latest = await pool.fetchval(f'SELECT MAX("{col}") FROM {table}')
-            if latest:
-                age = (datetime.now(timezone.utc) - latest).total_seconds()
-                DATA_FRESHNESS.labels(source=table).set(max(0, age))
-            row_count = await pool.fetchval(f"SELECT COUNT(*) FROM {table}")
-            DATA_ROWS_TOTAL.labels(table=table).set(row_count or 0)
+            try:
+                latest = await pool.fetchval(f'SELECT MAX("{col}") FROM {table}')
+                if latest:
+                    age = (datetime.now(timezone.utc) - latest).total_seconds()
+                    DATA_FRESHNESS.labels(source=table).set(max(0, age))
+                row_count = await pool.fetchval(f"SELECT COUNT(*) FROM {table}")
+                DATA_ROWS_TOTAL.labels(table=table).set(row_count or 0)
+            except Exception:
+                # Table may not exist on a fresh DB — skip silently
+                # rather than aborting the entire collection pass.
+                pass
 
         stale = await pool.fetchval(
             "SELECT COUNT(*) FROM discover_stock_snapshots "
@@ -362,6 +419,18 @@ async def _collect_once():
         info = r.info(section="memory")
         REDIS_MEMORY_USED.set(info.get("used_memory", 0))
         REDIS_KEYS.set(r.dbsize())
+
+        # ARQ queue depth — ARQ stores queued jobs in a Redis sorted set
+        # keyed by `arq:queue` (the default queue name). Job IDs that
+        # are currently being processed live in `arq:in-progress:arq:queue`.
+        # Subtracting in-progress from the total gives "waiting" count.
+        try:
+            from arq.constants import default_queue_name, in_progress_key_prefix
+            queued = r.zcard(default_queue_name) or 0
+            in_progress = r.scard(in_progress_key_prefix + default_queue_name) or 0
+            ARQ_QUEUE_DEPTH.set(max(0, queued - in_progress))
+        except Exception:
+            pass
     except Exception:
         REDIS_CONNECTED.set(0)
 
@@ -369,6 +438,17 @@ async def _collect_once():
     try:
         from app.api.routes.ops import _running_direct_jobs
         JOB_RUNNING.set(len(_running_direct_jobs))
+    except Exception:
+        pass
+
+    # ── DLQ size (Postgres job_dead_letters table) ──
+    try:
+        from app.core.database import get_pool
+        pool = await get_pool()
+        dlq_count = await pool.fetchval(
+            "SELECT COUNT(*) FROM job_dead_letters WHERE status = 'dead'"
+        )
+        ARQ_DLQ_SIZE.set(dlq_count or 0)
     except Exception:
         pass
 
