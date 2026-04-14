@@ -127,7 +127,30 @@ def _safe_json_dumps(obj) -> str:
 
 
 def _to_jsonb(value, default):
+    """Serialize a Python value to a JSON string for asyncpg's JSONB
+    text binding.
+
+    Critical nuance: asyncpg returns JSONB columns as Python **strings**
+    in this codebase because no custom type codec is registered. So
+    when a row read via SELECT * is passed back through this function
+    on re-upsert (e.g. the rescore loop), `value` can be a str that
+    is ALREADY JSON — calling `json.dumps` on it would produce a
+    double-encoded JSONB string scalar ('"[...]"') instead of the
+    original array/object. This was the root cause of the detail
+    endpoint 500s after the first scheduler re-run.
+
+    Parse-string-then-re-serialize detects this case: if the value
+    is a string that parses as JSON, we emit the canonical JSON for
+    the parsed object; if parsing fails we fall back to the raw
+    string (which will pass through Postgres's JSONB validator and
+    either succeed or raise a clear error)."""
     payload = value if value is not None else default
+    if isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+        except (ValueError, TypeError):
+            return payload  # let PG reject if truly malformed
+        payload = parsed
     return _safe_json_dumps(payload)
 
 
