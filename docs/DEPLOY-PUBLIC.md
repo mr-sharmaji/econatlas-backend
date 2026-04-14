@@ -119,3 +119,85 @@ From outside your WiFi: `http://<public-ip>:80` (or `:8080`). Set this as the AP
 | Backend on same WiFi  | Use `http://192.168.0.103:8000`. |
 | Backend from internet | **Option 1:** Cloudflare Tunnel + custom domain → e.g. `https://api.yourdomain.com`. **Option 2:** Port forward → `http://<public-ip>:80`. |
 | Use in app            | Set API base URL to the tunnel URL (HTTPS) or `http://<public-ip>:80`. |
+
+---
+
+## Monitoring the Windows host (real CPU/RAM/disk, not the WSL2 VM)
+
+Docker Desktop on Windows runs containers inside a hidden WSL2 Linux
+VM. Anything `psutil` reports from inside the FastAPI container — and
+therefore everything in the `system` section of `/ops/health` and the
+default Grafana dashboard — describes that **VM**, not Windows 11.
+Symptom: Grafana shows 31 % memory used while Task Manager shows 90 %.
+
+To get the real Windows host metrics in Grafana you install
+[`windows_exporter`](https://github.com/prometheus-community/windows_exporter)
+as a Windows service. Prometheus is already preconfigured to scrape it
+on `host.docker.internal:9182`, and the `EconAtlas API` dashboard has a
+"🪟 Windows Host" row that lights up automatically once the exporter
+starts responding.
+
+### Install (PowerShell as Administrator)
+
+The fastest route is `winget`:
+
+```powershell
+winget install --id Prometheus.WindowsExporter
+```
+
+If `winget` isn't available, grab the latest `windows_exporter-X.Y.Z-amd64.msi`
+from the [GitHub releases page](https://github.com/prometheus-community/windows_exporter/releases)
+and run:
+
+```powershell
+msiexec /i windows_exporter-0.30.0-amd64.msi `
+  ENABLED_COLLECTORS=cpu,cs,logical_disk,net,os,memory,system `
+  LISTEN_PORT=9182 /qn
+```
+
+Either method installs and starts a Windows service called
+`windows_exporter` that listens on `http://localhost:9182/metrics`.
+
+### Open the firewall (so Docker can reach it)
+
+```powershell
+New-NetFirewallRule -DisplayName "windows_exporter" `
+  -Direction Inbound -Protocol TCP -LocalPort 9182 -Action Allow
+```
+
+`host.docker.internal` already routes from inside any container to the
+Windows host — no extra Docker network config needed.
+
+### Verify
+
+From your Windows shell:
+
+```powershell
+curl http://localhost:9182/metrics | Select-String windows_cs_physical_memory_bytes
+```
+
+You should see one line ending with the total RAM in bytes.
+
+From inside the `app` container:
+
+```bash
+docker compose exec app curl -s http://host.docker.internal:9182/metrics | head -5
+```
+
+### Pick up in the stack
+
+After installing the exporter, restart Prometheus so it loads the new
+scrape job and Grafana so it re-provisions the dashboard:
+
+```bash
+docker compose restart prometheus grafana
+```
+
+Within ~30 seconds the Grafana dashboard's "🪟 Windows Host" row should
+populate, and `GET /ops/health` will include a new top-level `host`
+section alongside `system` — `system` is the WSL2 VM view (left in
+place for backward compatibility), `host` is the real Windows 11.
+
+If `windows_exporter` isn't installed, both `host` and the dashboard
+panels stay empty. Nothing else breaks — `psutil` continues to report
+the WSL2 VM as before.

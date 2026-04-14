@@ -260,6 +260,74 @@
         { "expr": "rate(python_gc_collections_total[5m])", "legendFormat": "GC Gen {{generation}}", "refId": "A" },
         { "expr": "process_open_fds", "legendFormat": "Open FDs", "refId": "B" }
       ]
+    },
+
+    {
+      "title": "🪟 Windows Host (windows_exporter)",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 47 },
+      "collapsed": false
+    },
+    {
+      "title": "Windows CPU %",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 48 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 60}, {"color": "red", "value": 85}] } } },
+      "targets": [{ "expr": "(1 - avg(rate(windows_cpu_time_total{mode=\"idle\"}[1m]))) * 100", "refId": "A" }]
+    },
+    {
+      "title": "Windows Memory %",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 48 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 70}, {"color": "red", "value": 90}] } } },
+      "targets": [{ "expr": "(1 - windows_os_physical_memory_free_bytes / windows_cs_physical_memory_bytes) * 100", "refId": "A" }]
+    },
+    {
+      "title": "Windows Memory (GB)",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 48 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "decgbytes" } },
+      "targets": [
+        { "expr": "(windows_cs_physical_memory_bytes - windows_os_physical_memory_free_bytes) / 1024 / 1024 / 1024", "legendFormat": "Used", "refId": "A" },
+        { "expr": "windows_cs_physical_memory_bytes / 1024 / 1024 / 1024", "legendFormat": "Total", "refId": "B" }
+      ]
+    },
+    {
+      "title": "Windows Disk % per volume",
+      "type": "bargauge",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 48 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 75}, {"color": "red", "value": 90}] } } },
+      "options": { "orientation": "horizontal", "displayMode": "lcd" },
+      "targets": [
+        { "expr": "(1 - windows_logical_disk_free_bytes / windows_logical_disk_size_bytes) * 100", "legendFormat": "{{volume}}", "refId": "A", "instant": true }
+      ]
+    },
+    {
+      "title": "Windows CPU% over time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 53 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "fillOpacity": 15, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "(1 - avg(rate(windows_cpu_time_total{mode=\"idle\"}[1m]))) * 100", "legendFormat": "Total CPU %", "refId": "A" },
+        { "expr": "avg(rate(windows_cpu_time_total{mode=\"user\"}[1m])) * 100", "legendFormat": "User", "refId": "B" },
+        { "expr": "avg(rate(windows_cpu_time_total{mode=\"privileged\"}[1m])) * 100", "legendFormat": "Kernel", "refId": "C" }
+      ]
+    },
+    {
+      "title": "Windows Network throughput",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 53 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "Bps", "custom": { "fillOpacity": 10, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "sum(rate(windows_net_bytes_received_total[1m]))", "legendFormat": "RX", "refId": "A" },
+        { "expr": "sum(rate(windows_net_bytes_sent_total[1m]))", "legendFormat": "TX", "refId": "B" }
+      ]
     }
   ],
   "refresh": "15s",

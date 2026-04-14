@@ -88,6 +88,173 @@ async def _get_pool():
 
 
 # ═════════════════════════════════════════════════════════════════════
+# Windows host metrics via windows_exporter
+# ═════════════════════════════════════════════════════════════════════
+#
+# When this stack is hosted on Windows 11 + Docker Desktop (which uses
+# WSL2 underneath), psutil inside the container reports the WSL2 Linux
+# VM, not the actual Windows 11 host. To see real Windows host stats we
+# scrape `windows_exporter` running as a Windows service on the host.
+#
+# `host.docker.internal` is a Docker Desktop magic DNS name that routes
+# from any container to the Windows host. Default windows_exporter port
+# is 9182.
+#
+# This helper takes TWO snapshots (default 1 s apart) and computes CPU
+# percent from the delta between them — same approach as
+# `psutil.cpu_percent(interval=1)`. Memory / disk / net are read from
+# the second snapshot only since they're already gauges or absolute
+# counters at a point in time.
+#
+# Returns None if windows_exporter is unreachable (not installed yet,
+# wrong port, network issue) — callers fall back to in-container psutil.
+
+_WINDOWS_EXPORTER_URL = "http://host.docker.internal:9182/metrics"
+_WINDOWS_EXPORTER_TIMEOUT = 2.0
+
+
+def _parse_prom_text(text: str) -> dict[str, list[tuple[dict, float]]]:
+    """Parse Prometheus text exposition into {metric: [(labels, value), ...]}."""
+    result: dict[str, list[tuple[dict, float]]] = {}
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        # metric_name{label="v",...} value [timestamp]
+        try:
+            if "{" in line:
+                name, rest = line.split("{", 1)
+                labels_str, _, value_str = rest.partition("}")
+                value_str = value_str.strip().split(" ", 1)[0]
+                labels = {}
+                for pair in re.findall(r'(\w+)="([^"]*)"', labels_str):
+                    labels[pair[0]] = pair[1]
+            else:
+                parts = line.split(" ", 1)
+                if len(parts) != 2:
+                    continue
+                name, value_str = parts[0], parts[1].strip().split(" ", 1)[0]
+                labels = {}
+            value = float(value_str)
+        except (ValueError, IndexError):
+            continue
+        result.setdefault(name, []).append((labels, value))
+    return result
+
+
+async def _fetch_windows_exporter() -> dict | None:
+    """Fetch Windows host metrics via windows_exporter.
+
+    Takes two scrapes 1 s apart so we can derive CPU% from the
+    `windows_cpu_time_total` counter delta. Returns None when
+    windows_exporter is unreachable (the caller should fall back to
+    in-container psutil).
+    """
+    try:
+        import httpx
+    except ImportError:
+        return None
+
+    async def _scrape() -> dict | None:
+        try:
+            async with httpx.AsyncClient(timeout=_WINDOWS_EXPORTER_TIMEOUT) as client:
+                r = await client.get(_WINDOWS_EXPORTER_URL)
+                r.raise_for_status()
+                return _parse_prom_text(r.text)
+        except Exception:
+            return None
+
+    snap1 = await _scrape()
+    if snap1 is None:
+        return None
+    await asyncio.sleep(1.0)
+    snap2 = await _scrape()
+    if snap2 is None:
+        return None
+
+    def _sum(metric: str, label_filter=None) -> float:
+        rows = snap2.get(metric, [])
+        if label_filter is None:
+            return sum(v for _, v in rows)
+        return sum(v for lbls, v in rows if all(lbls.get(k) == val for k, val in label_filter.items()))
+
+    def _delta_sum(metric: str, label_filter=None) -> float:
+        a = snap1.get(metric, [])
+        b = snap2.get(metric, [])
+
+        def _bucketize(rows):
+            d: dict[tuple, float] = {}
+            for lbls, v in rows:
+                if label_filter and not all(lbls.get(k) == val for k, val in label_filter.items()):
+                    continue
+                key = tuple(sorted(lbls.items()))
+                d[key] = v
+            return d
+
+        ba, bb = _bucketize(a), _bucketize(b)
+        return sum(bb[k] - ba.get(k, 0.0) for k in bb)
+
+    # ── CPU% across all cores from the delta ──
+    # windows_exporter exposes one row per (core, mode). idle ↑ during
+    # the 1 s window means CPU was idle; total time ↑ regardless. The
+    # busy fraction is (1 - idle_delta / total_delta).
+    total_delta = _delta_sum("windows_cpu_time_total")
+    idle_delta = _delta_sum("windows_cpu_time_total", {"mode": "idle"})
+    if total_delta > 0:
+        cpu_busy = max(0.0, min(100.0, (1.0 - idle_delta / total_delta) * 100.0))
+    else:
+        cpu_busy = 0.0
+
+    # CPU core count: number of distinct `core` labels in the metric
+    cores = len({lbls.get("core") for lbls, _ in snap2.get("windows_cpu_time_total", []) if lbls.get("core")})
+
+    # ── Memory ──
+    mem_total = _sum("windows_cs_physical_memory_bytes")
+    mem_free = _sum("windows_os_physical_memory_free_bytes")
+    mem_used = max(0.0, mem_total - mem_free)
+    mem_pct = (mem_used / mem_total * 100.0) if mem_total > 0 else 0.0
+
+    # ── Disk: aggregate across all logical drives, exclude removable ──
+    # windows_exporter labels each drive with `volume` (C:, D:, …).
+    disk_size_rows = snap2.get("windows_logical_disk_size_bytes", [])
+    disk_free_rows = snap2.get("windows_logical_disk_free_bytes", [])
+    disks = []
+    free_by_vol = {lbls.get("volume"): v for lbls, v in disk_free_rows}
+    for lbls, total in disk_size_rows:
+        vol = lbls.get("volume", "?")
+        if total <= 0:
+            continue
+        free = free_by_vol.get(vol, 0.0)
+        used = max(0.0, total - free)
+        disks.append({
+            "volume": vol,
+            "total_gb": round(total / 1024 / 1024 / 1024, 1),
+            "used_gb": round(used / 1024 / 1024 / 1024, 1),
+            "free_gb": round(free / 1024 / 1024 / 1024, 1),
+            "percent": round(used / total * 100.0, 1),
+        })
+    disks.sort(key=lambda d: d["volume"])
+
+    # ── Network ──
+    net_sent = _sum("windows_net_bytes_sent_total")
+    net_recv = _sum("windows_net_bytes_received_total")
+
+    return {
+        "source": "windows_exporter",
+        "cpu_percent": round(cpu_busy, 1),
+        "cpu_count": cores or None,
+        "memory_used_mb": round(mem_used / 1024 / 1024),
+        "memory_total_mb": round(mem_total / 1024 / 1024),
+        "memory_free_mb": round(mem_free / 1024 / 1024),
+        "memory_percent": round(mem_pct, 1),
+        "disks": disks,
+        "network": {
+            "bytes_sent_mb": round(net_sent / 1024 / 1024, 1),
+            "bytes_recv_mb": round(net_recv / 1024 / 1024, 1),
+        },
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════
 # Server Health
 # ═════════════════════════════════════════════════════════════════════
 
@@ -156,6 +323,24 @@ async def ops_server_health(
         }
     except Exception as exc:
         result["system"] = {"error": str(exc)}
+
+    # ── Windows host metrics (real Windows 11 stats, not WSL2 VM) ──
+    #
+    # When deployed via Docker Desktop on Windows, the `system` section
+    # above reports the WSL2 Linux VM's view, not the actual host. If
+    # `windows_exporter` is installed and reachable on
+    # host.docker.internal:9182, surface its data here so callers can
+    # see the real Windows 11 CPU / memory / disk / network usage.
+    #
+    # Returns None silently when windows_exporter isn't installed —
+    # the `system` section above remains the source of truth in that
+    # case (and on non-Windows deployments).
+    try:
+        host = await _fetch_windows_exporter()
+        if host is not None:
+            result["host"] = host
+    except Exception as exc:
+        logger.debug("windows_exporter scrape failed: %s", exc)
 
     # ── Database metrics ──
     try:

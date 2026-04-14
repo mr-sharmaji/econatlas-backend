@@ -9,3 +9,33 @@ scrape_configs:
       - targets: ["app:8000"]
         labels:
           service: "econatlas-backend"
+
+  # ── Windows host metrics (windows_exporter) ────────────────────────
+  #
+  # The FastAPI container's `psutil` calls report the WSL2 Linux VM,
+  # not the Windows 11 host that's actually running Docker Desktop.
+  # `windows_exporter` runs as a Windows service on the host and
+  # exposes real CPU / memory / disk / net metrics on port 9182.
+  #
+  # `host.docker.internal` is a Docker Desktop magic DNS name that
+  # routes from inside any container to the Windows host. This is
+  # the only way for the Linux-side Prometheus container to reach
+  # the Windows-side exporter.
+  #
+  # If windows_exporter isn't installed yet, this scrape job will
+  # log a "connection refused" every 15s — harmless, ignored by
+  # /ops/health which has its own fallback to in-container psutil.
+  #
+  # Install on the Windows host (run as Administrator in PowerShell):
+  #
+  #   winget install --id Prometheus.WindowsExporter
+  #
+  # or download the MSI from
+  # https://github.com/prometheus-community/windows_exporter/releases
+  # and run with default collectors enabled.
+  - job_name: "windows-host"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["host.docker.internal:9182"]
+        labels:
+          service: "windows-host"
