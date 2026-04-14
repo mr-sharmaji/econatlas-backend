@@ -54,6 +54,26 @@ _open_pending: dict[str, datetime | None] = {}  # market -> transition timestamp
 # "market opened" signal even if the upstream feed is seriously broken.
 _OPEN_DATA_MAX_WAIT_SECONDS = 900
 
+# Close notification pending state — on the open→closed transition we
+# queue the notification and let the flush loop fire it after the daily
+# market_prices row has had time to settle on the actual closing
+# auction print. Without this delay the transition fires at the exact
+# moment the market closes, and the daily row still holds the last
+# pre-close intraday tick (insert_prices_batch_upsert_daily drifts on
+# every scraper cycle), so the notification reports a value that's off
+# by the close-auction move. India is excluded — its close routes
+# through _check_post_market_summary which already has a 5-minute
+# settle delay. Value is the UTC transition time. See the close flush
+# loop in run_notification_job.
+_close_pending: dict[str, datetime | None] = {}  # market -> transition timestamp
+
+# How long to wait after the market-close transition before fetching
+# data and firing the close notification. Three minutes is enough for
+# yahoo_finance_api to surface the closing auction print across NYSE,
+# LSE/XETRA/Euronext, and TSE in practice, without meaningfully delaying
+# the user-visible notification.
+_CLOSE_SETTLE_SECONDS = 180
+
 # Post-market summary state
 _post_market_state: dict = {
     "last_date": None,
@@ -1699,33 +1719,27 @@ async def run_notification_job() -> None:
                 else:
                     _open_pending[market] = now
             elif not is_open and was_open:
-                # Transition: open -> closed
-                logger.info("Market transition: %s CLOSED", market)
-                # Skip Europe/Japan notifications on exchange holidays
+                # Transition: open -> closed. India routes through
+                # _check_post_market_summary (5-minute settle delay, rich
+                # builder). US/Europe/Japan get queued onto _close_pending
+                # so the flush loop below fires them after
+                # _CLOSE_SETTLE_SECONDS — otherwise the daily market_prices
+                # row still holds the last pre-close intraday tick instead
+                # of the actual closing auction print.
+                logger.info("Market transition: %s CLOSED — queuing close notification", market)
                 if market == "europe" and is_exchange_holiday("LSE", now):
                     logger.info("Skipping Europe close notification — LSE holiday")
                 elif market == "japan" and is_exchange_holiday("TSE", now):
                     logger.info("Skipping Japan close notification — TSE holiday")
+                elif market == "india":
+                    # India close fires from _check_post_market_summary
+                    # on a 5-minute delay so the data (breadth, sectors)
+                    # has time to settle. Both paths eventually go
+                    # through notify_market_close("india", close_data)
+                    # → _build_india_close.
+                    india_closed_transition = True
                 else:
-                    close_data = None
-                    fetcher = _close_data_fetchers.get(market)
-                    if fetcher:
-                        try:
-                            close_data = await fetcher()
-                        except Exception:
-                            logger.warning("Close data fetch failed for %s", market, exc_info=True)
-                    if market == "india":
-                        # India close fires from _check_post_market_summary
-                        # on a 5-minute delay so the data (breadth, sectors)
-                        # has time to settle. Both paths eventually go
-                        # through notify_market_close("india", close_data)
-                        # → _build_india_close.
-                        india_closed_transition = True
-                    else:
-                        dedup_key = f"{today_str}_market_close_{market}"
-                        await notification_service.notify_market_close(
-                            market, market_data=close_data, dedup_key=dedup_key,
-                        )
+                    _close_pending[market] = now
             _prev_state[market] = is_open
 
         # --- Flush pending open notifications when today's data lands ---
@@ -1778,6 +1792,53 @@ async def run_notification_job() -> None:
                 market, market_data=open_data, dedup_key=dedup_key,
             )
             del _open_pending[market]
+
+        # --- Flush pending close notifications after settle delay ---
+        #
+        # On the open→closed transition we queue _close_pending[market]
+        # rather than firing immediately. The flush here waits
+        # _CLOSE_SETTLE_SECONDS so the daily market_prices row has time
+        # to pick up the closing auction print (insert_prices_batch_upsert_daily
+        # drifts on every scraper cycle, so at the exact transition
+        # moment it still holds the last pre-close intraday tick). Once
+        # the delay elapses we fetch and fire — with whatever data is
+        # available at that point. If the fetcher still returns None
+        # (upstream broken, holiday edge case, etc.) we fall back to
+        # the simple close banner so the user still learns the market
+        # closed.
+        for market in list(_close_pending):
+            pending_time = _close_pending[market]
+            if pending_time is None:
+                continue
+            elapsed = (now - pending_time).total_seconds()
+            if elapsed < _CLOSE_SETTLE_SECONDS:
+                continue  # still settling
+
+            close_data = None
+            fetcher = _close_data_fetchers.get(market)
+            if fetcher:
+                try:
+                    close_data = await fetcher()
+                except Exception:
+                    logger.warning("Close data fetch failed for %s", market, exc_info=True)
+
+            if close_data is not None:
+                logger.info(
+                    "Close data for %s settled after %.0fs — sending rich notification",
+                    market, elapsed,
+                )
+            else:
+                logger.warning(
+                    "Close data for %s unavailable %.0fs after close — "
+                    "falling back to simple notification",
+                    market, elapsed,
+                )
+
+            dedup_key = f"{today_str}_market_close_{market}"
+            await notification_service.notify_market_close(
+                market, market_data=close_data, dedup_key=dedup_key,
+            )
+            del _close_pending[market]
 
         # --- DB fallback: send missed open/close notifications after restart ---
         await _check_missed_open_notifications(markets, now, _open_data_fetchers)
