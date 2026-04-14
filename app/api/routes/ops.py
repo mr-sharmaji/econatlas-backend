@@ -864,65 +864,16 @@ async def trigger_job(
 async def clear_stale_jobs(
     x_ops_token: str | None = Header(default=None),
 ) -> dict:
-    """Clear ALL stale job state from Redis.
+    """Clear ALL stale job state from Redis (manual trigger).
 
-    When the server restarts mid-job, ARQ leaves behind:
-    1. The in-progress set (`arq:in-progress:arq:queue`)
-    2. Individual job hashes (`arq:job:{id}`) with stale status
-    This endpoint nukes all of them so the worker can pick up fresh jobs.
+    Delegates to ``app.queue.stale_cleanup.clear_stale_arq_state`` which
+    is the same helper run automatically on every app startup. Use this
+    endpoint mid-session if you suspect a wedge without waiting for the
+    next deploy — rare, since startup self-heals, but still handy.
     """
     _authorize(x_ops_token)
-    from arq.constants import default_queue_name, in_progress_key_prefix, job_key_prefix
-
-    from app.queue.settings import expand_job_family_ids
-    from app.queue.redis_pool import get_redis_pool
-
-    pool = await get_redis_pool()
-    cleared_progress = []
-    cleared_per_job = []
-    cleared_jobs = []
-
-    # 1. Clear the in-progress set
-    in_progress_key = in_progress_key_prefix + default_queue_name
-    raw_members = await pool.smembers(in_progress_key)
-    for raw_id in raw_members or set():
-        job_id = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
-        await pool.srem(in_progress_key, raw_id)
-        cleared_progress.append(job_id)
-
-    # 2. Delete per-job-id in-progress keys (`arq:in-progress:{job_id}`)
-    #    THIS is what causes "already running elsewhere" — a TTL string key.
-    async for key in pool.scan_iter(match=f"{in_progress_key_prefix}*"):
-        key_str = key.decode() if isinstance(key, bytes) else str(key)
-        if key_str == in_progress_key:
-            continue
-        await pool.delete(key)
-        cleared_per_job.append(key_str.removeprefix(in_progress_key_prefix))
-
-    # 3. Delete individual job hash keys for known startup/manual jobs
-    known_ids: set[str] = set()
-    for name in _VALID_JOBS:
-        known_ids.update(expand_job_family_ids(name))
-    for jid in known_ids:
-        job_key = job_key_prefix + jid
-        if await pool.exists(job_key):
-            await pool.delete(job_key)
-            cleared_jobs.append(jid)
-
-    # 4. Also scan for timestamped manual job keys
-    async for key in pool.scan_iter(match=f"{job_key_prefix}*_manual_*"):
-        key_str = key.decode() if isinstance(key, bytes) else str(key)
-        await pool.delete(key)
-        cleared_jobs.append(key_str.removeprefix(job_key_prefix))
-
-    total = len(cleared_progress) + len(cleared_per_job) + len(cleared_jobs)
-    logger.warning("Cleared stale state: %d set entries, %d per-job locks, %d job hashes", len(cleared_progress), len(cleared_per_job), len(cleared_jobs))
-    return {
-        "cleared_in_progress_set": cleared_progress,
-        "cleared_per_job_locks": cleared_per_job,
-        "cleared_job_keys": cleared_jobs,
-        "total": total,
-    }
+    from app.queue.stale_cleanup import clear_stale_arq_state
+    return await clear_stale_arq_state()
 
 
 @router.post("/jobs/abort/{job_name}")

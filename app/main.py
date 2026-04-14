@@ -79,8 +79,21 @@ async def _warm_artha_cache() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await init_pool()           # 1. PostgreSQL pool
-    await start_worker()        # 2. ARQ worker (ready to pick up jobs)
-    start_scheduler()           # 3. APScheduler (starts enqueuing into Redis)
+    # 2. Self-heal any arq state left behind by a prior SIGKILL. Safe at
+    #    startup because the worker we're about to start owns nothing
+    #    yet, so every arq:in-progress:* key we find here is necessarily
+    #    orphaned. Without this, docker compose redeploys that kill a
+    #    long-running job (e.g. startup_discover_mutual_funds) leave
+    #    TTL-bound lock keys in Redis that block every subsequent
+    #    dispatch with "already running elsewhere". See
+    #    app/queue/stale_cleanup.py for the full story.
+    try:
+        from app.queue.stale_cleanup import clear_stale_arq_state
+        await clear_stale_arq_state()
+    except Exception:
+        logger.warning("startup: clear_stale_arq_state failed, continuing", exc_info=True)
+    await start_worker()        # 3. ARQ worker (ready to pick up jobs)
+    start_scheduler()           # 4. APScheduler (starts enqueuing into Redis)
     # 4. Warm the Artha LLM caches in the background — non-blocking
     import asyncio as _asyncio
     _asyncio.create_task(_warm_artha_cache())

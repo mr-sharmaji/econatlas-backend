@@ -235,7 +235,14 @@ async def _run_broker_charges() -> None:
 
 
 async def _startup_collection() -> None:
-    """Enqueue all jobs once at startup so the ARQ worker processes them."""
+    """Enqueue all jobs once at startup so the ARQ worker processes them.
+
+    Also acts as the safety net for the stale-lock scenario: combined
+    with ``clear_stale_arq_state`` at lifespan init, every backend
+    restart re-runs the full data-collection suite even if APScheduler's
+    misfire grace window has already expired for a missed cron. This is
+    why deploys can't silently skip a day of data.
+    """
     logger.info("Enqueuing startup data collection...")
     startup_jobs = [
         "market", "commodity", "crypto", "brief",
@@ -243,7 +250,22 @@ async def _startup_collection() -> None:
     ]
     settings = get_settings()
     if getattr(settings, "discover_cron_enabled", False):
-        startup_jobs.extend(["discover_stock", "discover_mutual_funds"])
+        # discover_mf_nav is included in the startup safety net so a
+        # SIGKILL during its 22:30 IST cron window doesn't strand a
+        # day of NAV data. Its writer is idempotent (ON CONFLICT upsert),
+        # so a second run on the same data is safe — at worst it's a
+        # redundant upstream API call.
+        #
+        # discover_mf_holdings is deliberately NOT included: it's
+        # scheduled weekly (Sun 3 AM IST), its MoneyControl pass is
+        # currently broken (returns 0 rows across all attempts as of
+        # 2026-04-14), and daily re-runs would just hammer ET Money
+        # with no corresponding data gain.
+        startup_jobs.extend([
+            "discover_stock",
+            "discover_mutual_funds",
+            "discover_mf_nav",
+        ])
     else:
         logger.info("Skipping discover jobs at startup (discover_cron_enabled=false)")
     for name in startup_jobs:
