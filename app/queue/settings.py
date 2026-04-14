@@ -39,7 +39,6 @@ JOB_RETRY_POLICIES: dict[str, tuple[int, int]] = {
     # manually triggered. If it fails, re-trigger explicitly.
     "discover_stock_intraday_backfill": (0, 0),
     "discover_mf_nav": (3, 60),
-    "discover_mf_holdings": (3, 60),
     "market_score": (2, 60),
     "fertilizer": (2, 60),
     # High-frequency (30s interval) — re-enqueued soon, no retry needed
@@ -81,7 +80,6 @@ def get_arq_functions() -> list:
         task_broker_charges,
         task_commodity,
         task_crypto,
-        task_discover_mf_holdings,
         task_discover_mf_nav,
         task_discover_mutual_funds,
         task_discover_stock,
@@ -126,7 +124,6 @@ def get_arq_functions() -> list:
             timeout=1200,
         ),
         func(task_discover_mf_nav, name="discover_mf_nav", timeout=7200),
-        func(task_discover_mf_holdings, name="discover_mf_holdings", timeout=7200),
         func(task_rescore_stock, name="rescore_stock", timeout=600),
         func(task_rescore_mf, name="rescore_mf", timeout=600),
         func(task_ipo, name="ipo"),

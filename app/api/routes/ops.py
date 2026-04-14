@@ -25,9 +25,6 @@ _VALID_JOBS = {
     "discover_stock_price", "discover_mf_nav",
     "discover_stock_intraday",
     "discover_stock_intraday_backfill",
-    "discover_mf_holdings",
-    "discover_mf_holdings_etmoney",
-    "discover_mf_holdings_moneycontrol",
     "rescore_stock", "rescore_mf",
     "reconcile_stock_snapshots",
     "ipo", "tax", "market_score", "fertilizer",
@@ -689,18 +686,6 @@ _DIRECT_RUN_JOBS: dict[str, tuple[str, str]] = {
     "discover_mf_nav": (
         "app.scheduler.discover_mf_nav_job",
         "run_discover_mf_nav_job",
-    ),
-    "discover_mf_holdings": (
-        "app.scheduler.discover_mf_holdings_job",
-        "run_discover_mf_holdings_job",
-    ),
-    "discover_mf_holdings_etmoney": (
-        "app.scheduler.discover_mf_holdings_job",
-        "run_discover_mf_holdings_etmoney_job",
-    ),
-    "discover_mf_holdings_moneycontrol": (
-        "app.scheduler.discover_mf_holdings_job",
-        "run_discover_mf_holdings_moneycontrol_job",
     ),
     "reconcile_stock_snapshots": (
         "app.services.discover_service",

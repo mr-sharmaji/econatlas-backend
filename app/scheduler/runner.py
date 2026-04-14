@@ -195,10 +195,6 @@ async def _run_discover_mf_nav() -> None:
     await _enqueue("discover_mf_nav")
 
 
-async def _run_discover_mf_holdings() -> None:
-    await _enqueue("discover_mf_holdings")
-
-
 async def _run_ipo() -> None:
     await _enqueue("ipo")
 
@@ -256,11 +252,9 @@ async def _startup_collection() -> None:
         # so a second run on the same data is safe — at worst it's a
         # redundant upstream API call.
         #
-        # discover_mf_holdings is deliberately NOT included: it's
-        # scheduled weekly (Sun 3 AM IST), its MoneyControl pass is
-        # currently broken (returns 0 rows across all attempts as of
-        # 2026-04-14), and daily re-runs would just hammer ET Money
-        # with no corresponding data gain.
+        # Note: holdings data comes from Groww via the main
+        # discover_mutual_funds job (filled_fields={'top_holdings': 1771, ...}
+        # on each run), so there is no separate holdings job to add here.
         startup_jobs.extend([
             "discover_stock",
             "discover_mutual_funds",
@@ -431,20 +425,6 @@ def start_scheduler() -> None:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=10800,
-        )
-        # Weekly MF holdings scrape (Sundays 3AM IST)
-        _scheduler.add_job(
-            _run_discover_mf_holdings,
-            "cron",
-            day_of_week="sun",
-            hour=3,
-            minute=0,
-            timezone="Asia/Kolkata",
-            id="discover_mf_holdings",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=43200,
         )
         logger.info(
             "Scheduler: discover cron ENABLED — stocks %s@%02d:%02d IST, MF %s@%02d:%02d IST",
