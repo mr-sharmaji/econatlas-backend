@@ -91,24 +91,23 @@ _FALLBACK_BROKER_DATA: dict[str, dict[str, dict]] = {
     },
 }
 
-# AMC notes — every Indian broker distinguishes BSDA vs non-BSDA demat.
-# BSDA (Basic Services Demat Account) is an SEBI-mandated low-cost tier
-# for small investors; AMC varies by holding value. Most tiers convert
-# to standard non-BSDA once holdings cross ₹10 lakh, losing BSDA status.
-# `amc_yearly` stores the non-BSDA (standard) figure; taglines surface
-# BSDA so users can self-identify.
+# Taglines are BROKERAGE-ONLY one-liners. AMC details live in
+# broker_charges_service._BROKER_AMC_NOTES (served as amc_note +
+# amc_rules fields on the API response). `amc_yearly` stores the
+# non-BSDA (standard) figure as a single numeric value for sorting
+# and headline display only — it is NOT the whole story.
+#
+# dp_includes_gst note:
+#   Zerodha publishes ₹15.34 as ₹3.5 CDSL + ₹9.5 Zerodha + ₹2.34 GST
+#   — ALREADY GST-inclusive, so we must NOT re-apply GST on top or
+#   the calculator over-estimates by ~₹2.76 per delivery trade.
+#   Upstox/Groww/Angel One quote a clean ₹20 which is also treated
+#   as consumer-facing (GST-inclusive) to stay consistent.
 _FALLBACK_BROKER_META: dict[str, dict] = {
-    # Zerodha: BSDA free <₹4L, ₹100/yr ₹4-10L, ₹300/yr >₹10L (BSDA lost).
-    # Non-BSDA: ₹300/yr + 18% GST = ₹354/yr (₹75/qtr base + GST).
-    "zerodha":   {"tagline": "Delivery free · 0.03%/₹20 intraday/F&O · AMC: BSDA free <₹4L, else ₹300+GST/yr", "dp_charge": 15.34, "dp_includes_gst": False, "amc_yearly": 354, "account_opening_fee": 0, "call_trade_fee": 50},
-    # Upstox: Year-1 AMC free for users onboarded from 14-Feb-2025.
-    # After year 1: BSDA tiered; non-BSDA ₹300 + GST = ₹354/yr.
-    "upstox":    {"tagline": "₹20 delivery · 0.1%/₹20 intraday · 0.05% futures · AMC: free year 1, then ₹300+GST/yr (non-BSDA)", "dp_charge": 20.0, "dp_includes_gst": False, "amc_yearly": 354, "account_opening_fee": 0, "call_trade_fee": 88.5},
-    # Groww: advertises "Zero AMC" (₹0 maintenance charges on page).
-    "groww":     {"tagline": "0.1%/₹20 equity · ₹20 flat F&O · Min ₹5 · AMC free", "dp_charge": 20.0, "dp_includes_gst": False, "amc_yearly": 0, "account_opening_fee": 0, "call_trade_fee": 0},
-    # Angel One: non-BSDA ₹450/yr (or ₹2950 lifetime), BSDA ₹60+GST/qtr
-    # (~₹283/yr) charged only after first trade. Year-1 AMC free.
-    "angel_one": {"tagline": "0.1%/₹20 equity · ₹20 flat F&O · Min ₹5 · AMC: free year 1, then ₹450/yr (non-BSDA) or ₹60+GST/qtr (BSDA)", "dp_charge": 20.0, "dp_includes_gst": False, "amc_yearly": 450, "account_opening_fee": 0, "call_trade_fee": 0},
+    "zerodha":   {"tagline": "Delivery free · 0.03%/₹20 intraday/F&O · options flat ₹20", "dp_charge": 15.34, "dp_includes_gst": True,  "amc_yearly": 354, "account_opening_fee": 0, "call_trade_fee": 50},
+    "upstox":    {"tagline": "₹20 delivery · 0.1%/₹20 intraday · 0.05% futures · ₹20 options", "dp_charge": 20.0,  "dp_includes_gst": True,  "amc_yearly": 354, "account_opening_fee": 0, "call_trade_fee": 88.5},
+    "groww":     {"tagline": "0.1%/₹20 equity · ₹20 flat F&O · Min ₹5", "dp_charge": 20.0,  "dp_includes_gst": True,  "amc_yearly": 0,   "account_opening_fee": 0, "call_trade_fee": 0},
+    "angel_one": {"tagline": "0.1%/₹20 equity · ₹20 flat F&O · Min ₹5", "dp_charge": 20.0,  "dp_includes_gst": True,  "amc_yearly": 450, "account_opening_fee": 0, "call_trade_fee": 0},
 }
 
 # ── Statutory rates (2025-26, revised Oct 2024) ──────────────────────

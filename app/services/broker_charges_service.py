@@ -9,6 +9,55 @@ from app.core.database import get_pool, record_to_dict
 logger = logging.getLogger(__name__)
 
 
+# ── AMC details ──────────────────────────────────────────────────────
+#
+# Every Indian broker has TWO separate AMC models (BSDA vs non-BSDA)
+# and the numbers can't be compressed into a single `amc_yearly` value
+# — e.g. a Zerodha BSDA user with <₹4L holdings pays ₹0/yr while a
+# non-BSDA user pays ₹354/yr for the exact same account. The DB column
+# stores the non-BSDA (standard) figure as a representative number;
+# these notes are the full rules, served alongside it, and rendered on
+# the client as multi-line detail text.
+#
+# Sources (verified against live HTML Apr 2026):
+#   - zerodha.com/charges   "AMC" section
+#   - upstox.com/brokerage-charges  "AMC" card
+#   - groww.in/pricing       "Account Maintenance Charges ₹0"
+#   - angelone.in/exchange-transaction-charges  AMC card
+_BROKER_AMC_NOTES: dict[str, dict] = {
+    "zerodha": {
+        "headline": "₹0 – ₹354/yr depending on account type",
+        "rules": [
+            "BSDA: free for holdings up to ₹4 lakh",
+            "BSDA: ₹100/yr for ₹4L–₹10L (charged quarterly)",
+            "Non-BSDA (or >₹10L holdings): ₹300/yr + 18% GST = ₹354/yr",
+        ],
+    },
+    "upstox": {
+        "headline": "Free year 1, then ₹354/yr non-BSDA",
+        "rules": [
+            "Free for new users onboarded from 14-Feb-2025 for the first year",
+            "Non-BSDA: ₹300/yr + 18% GST = ₹354/yr after year 1",
+            "BSDA: tiered by holdings (see upstox.com)",
+        ],
+    },
+    "groww": {
+        "headline": "Zero maintenance charges",
+        "rules": [
+            "Groww advertises ₹0 AMC across all account tiers",
+        ],
+    },
+    "angel_one": {
+        "headline": "Free year 1, then ₹450/yr or ₹2,950 lifetime",
+        "rules": [
+            "Free for the first year",
+            "Non-BSDA: ₹450/yr OR ₹2,950 one-time lifetime charge",
+            "BSDA: ₹60 + GST per quarter, charged only after first trade",
+        ],
+    },
+}
+
+
 async def get_all_broker_charges() -> dict:
     """Return all broker presets + statutory rates from DB.
 
@@ -48,12 +97,15 @@ async def get_all_broker_charges() -> dict:
         broker = row["broker"]
         segment = row["segment"]
         if broker not in brokers:
+            amc_note = _BROKER_AMC_NOTES.get(broker, {})
             brokers[broker] = {
                 "name": broker.replace("_", " ").title(),
                 "tagline": row.get("tagline", ""),
                 "dp_charge": row.get("dp_charge", 0),
                 "dp_includes_gst": row.get("dp_includes_gst", False),
                 "amc_yearly": row.get("amc_yearly", 0),
+                "amc_note": amc_note.get("headline", ""),
+                "amc_rules": amc_note.get("rules", []),
                 "account_opening_fee": row.get("account_opening_fee", 0),
                 "call_trade_fee": row.get("call_trade_fee", 0),
                 "segments": {},
