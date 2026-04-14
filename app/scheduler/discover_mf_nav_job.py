@@ -52,12 +52,16 @@ ON CONFLICT (scheme_code, nav_date) DO NOTHING
 
 
 def _fetch_mf_nav(
-    scheme_code: int, cutoff_days: int = 7,
+    scheme_code: int, cutoff_days: int | None = 7,
 ) -> list[tuple[int, datetime, float]]:
-    """Fetch NAV history from mfapi.in, keep only rows newer than
-    `cutoff_days` days old. `cutoff_days=7` is the default daily
-    append; `cutoff_days=1830` (≈5y) is used by the backfill job to
-    repair historical gaps in discover_mf_nav_history."""
+    """Fetch NAV history from mfapi.in.
+
+    `cutoff_days`:
+      - 7 (default) — keep only last 7 days, used by the daily append
+      - None — keep ALL rows mfapi returns, used by the full backfill
+        (mfapi typically serves 15+ years per scheme, some as far back
+        as fund inception in the late 1990s)
+    """
     url = MFAPI_URL.format(scheme_code=scheme_code)
     for attempt in range(MAX_RETRIES):
         try:
@@ -75,7 +79,9 @@ def _fetch_mf_nav(
         return []
 
     payload = resp.json()
-    cutoff = datetime.now(tz=timezone.utc).date() - timedelta(days=cutoff_days)
+    cutoff = None
+    if cutoff_days is not None:
+        cutoff = datetime.now(tz=timezone.utc).date() - timedelta(days=cutoff_days)
     nav_entries = payload.get("data", [])
 
     rows: list[tuple[int, datetime, float]] = []
@@ -84,7 +90,7 @@ def _fetch_mf_nav(
             nav_date = datetime.strptime(entry["date"], "%d-%m-%Y").date()
         except (ValueError, KeyError):
             continue
-        if nav_date < cutoff:
+        if cutoff is not None and nav_date < cutoff:
             continue
         try:
             nav_value = float(entry["nav"])
@@ -99,14 +105,11 @@ def _fetch_mf_nav_7d(scheme_code: int) -> list[tuple[int, datetime, float]]:
     return _fetch_mf_nav(scheme_code, cutoff_days=7)
 
 
-# Backfill window — matches the point-to-point returns helper in
-# discover_service which reads ≤5y of NAV history. No point filling
-# gaps older than that since nothing in the UI reads from there.
-_BACKFILL_WINDOW_DAYS = 1830
-
-
 def _fetch_mf_nav_backfill(scheme_code: int) -> list[tuple[int, datetime, float]]:
-    return _fetch_mf_nav(scheme_code, cutoff_days=_BACKFILL_WINDOW_DAYS)
+    """Fetch every NAV mfapi serves for this scheme, back to inception.
+    ON CONFLICT DO NOTHING on the upsert means existing rows are
+    never touched — only missing historical dates get filled."""
+    return _fetch_mf_nav(scheme_code, cutoff_days=None)
 
 
 async def run_discover_mf_nav_job() -> None:
@@ -179,13 +182,17 @@ async def run_discover_mf_nav_job() -> None:
 
 
 async def run_discover_mf_nav_backfill_job() -> None:
-    """One-shot backfill: fetch ≤5y NAV history for every scheme and
-    upsert. Uses ON CONFLICT DO NOTHING so existing rows are untouched
-    — only gaps get filled. Same parallelism/spacing as the daily job
-    so it's safe to run on top of normal traffic.
+    """One-shot backfill: fetch every NAV mfapi.in serves for each
+    scheme (back to fund inception) and upsert. Uses ON CONFLICT DO
+    NOTHING so existing rows are untouched — only missing historical
+    dates get filled. Same parallelism/spacing as the daily job so
+    it's safe to run on top of normal traffic.
 
-    Runs ~7-10 minutes for ~6k schemes at 16 req/s aggregate. Log
-    progress every 250 schemes like the daily job.
+    Runs ~10-20 minutes for ~6k schemes at 16 req/s aggregate. Each
+    mfapi response carries the scheme's entire history in a single
+    payload (3000+ entries for older funds), so the network cost is
+    the same as a 7-day fetch; DB write volume is higher on the
+    first pass. Log progress every 250 schemes like the daily job.
     """
     pool = await get_pool()
     codes = await pool.fetch(
@@ -194,10 +201,9 @@ async def run_discover_mf_nav_backfill_job() -> None:
     code_list = [row["scheme_code"] for row in codes]
     total = len(code_list)
     logger.info(
-        "MF NAV BACKFILL: %d scheme codes, window=%d days, "
+        "MF NAV BACKFILL: %d scheme codes, window=inception (unbounded), "
         "concurrency=%d, spacing=%.2fs.",
-        total, _BACKFILL_WINDOW_DAYS, _MAX_CONCURRENCY,
-        _PER_WORKER_SPACING_SECONDS,
+        total, _MAX_CONCURRENCY, _PER_WORKER_SPACING_SECONDS,
     )
 
     executor = get_job_executor("discover-mf-nav", max_workers=_MAX_CONCURRENCY)

@@ -452,6 +452,13 @@ async def init_pool() -> asyncpg.Pool:
         await conn.execute(
             "ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS holdings_as_of DATE"
         )
+        # 10-year CAGR — persisted from recompute_mf_returns_all so
+        # the Returns card's 10Y column, list-endpoint sorting, and
+        # peer scoring all share the same methodology as 1Y/3Y/5Y.
+        # Nullable for funds younger than 10 years.
+        await conn.execute(
+            "ALTER TABLE discover_mutual_fund_snapshots ADD COLUMN IF NOT EXISTS returns_10y DOUBLE PRECISION"
+        )
         # --- Artha AI Chat tables ---
         await conn.execute(
             """

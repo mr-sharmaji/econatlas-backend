@@ -22,8 +22,8 @@ _running_direct_jobs: dict[str, asyncio.Task] = {}
 _VALID_JOBS = {
     "market", "commodity", "crypto", "brief", "macro", "news",
     "discover_stock", "discover_mutual_funds",
-    "discover_stock_price", "discover_mf_nav",
-    "discover_mf_nav_backfill",
+    "discover_stock_price", "discover_stock_price_backfill",
+    "discover_mf_nav", "discover_mf_nav_backfill",
     "recompute_mf_returns",
     "discover_stock_intraday",
     "discover_stock_intraday_backfill",
@@ -684,6 +684,10 @@ _DIRECT_RUN_JOBS: dict[str, tuple[str, str]] = {
     "discover_stock_price": (
         "app.scheduler.discover_stock_price_job",
         "run_discover_stock_price_job",
+    ),
+    "discover_stock_price_backfill": (
+        "app.scheduler.discover_stock_price_job",
+        "run_discover_stock_price_backfill_job",
     ),
     "discover_mf_nav": (
         "app.scheduler.discover_mf_nav_job",

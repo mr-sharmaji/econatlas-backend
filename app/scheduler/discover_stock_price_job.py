@@ -21,7 +21,7 @@ from app.core.database import get_pool
 
 logger = logging.getLogger(__name__)
 
-YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS?range=7d&interval=1d"
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS?range={range}&interval=1d"
 MAX_RETRIES = 5
 CONCURRENCY = 10          # parallel threads
 BASE_DELAY = 0.5          # seconds between requests per thread
@@ -41,9 +41,17 @@ HEADERS = {
 }
 
 
-def _fetch_yahoo_7d(symbol: str, stats: dict) -> list[tuple[str, datetime, float, int | None]]:
-    """Fetch last 7 days of daily prices from Yahoo Finance (sync, thread-safe)."""
-    url = YAHOO_CHART_URL.format(symbol=symbol)
+def _fetch_yahoo(
+    symbol: str, stats: dict, yf_range: str = "7d",
+) -> list[tuple[str, datetime, float, int | None]]:
+    """Fetch daily prices from Yahoo Finance (sync, thread-safe).
+
+    `yf_range` is any valid Yahoo range string — "7d" for the daily
+    append, "max" for the inception backfill. Yahoo's `max` goes
+    back to the stock's listing date (often 2000s for NSE names,
+    1980s-2000s for US blue chips).
+    """
+    url = YAHOO_CHART_URL.format(symbol=symbol, range=yf_range)
     for attempt in range(MAX_RETRIES):
         try:
             resp = requests.get(url, headers=HEADERS, timeout=15)
@@ -90,14 +98,28 @@ def _fetch_yahoo_7d(symbol: str, stats: dict) -> list[tuple[str, datetime, float
     return []
 
 
-async def run_discover_stock_price_job() -> None:
-    """Fetch last 7 days of prices for all discover stocks using thread pool."""
+def _fetch_yahoo_7d(symbol: str, stats: dict) -> list[tuple[str, datetime, float, int | None]]:
+    return _fetch_yahoo(symbol, stats, yf_range="7d")
+
+
+def _fetch_yahoo_max(symbol: str, stats: dict) -> list[tuple[str, datetime, float, int | None]]:
+    return _fetch_yahoo(symbol, stats, yf_range="max")
+
+
+async def _run_stock_price_pipeline(
+    fetch_fn, label: str,
+) -> None:
+    """Shared driver for the daily and backfill jobs. Only the
+    per-symbol fetch function differs between them — everything
+    else (parallelism, throttling, logging, upsert path) is the
+    same. ON CONFLICT DO NOTHING protects existing good rows on
+    the backfill pass."""
     pool = await get_pool()
     symbols = await pool.fetch(
         "SELECT DISTINCT symbol FROM discover_stock_snapshots ORDER BY symbol"
     )
     symbol_list = [row["symbol"] for row in symbols]
-    logger.info("Stock price daily update: %d symbols, %d workers.", len(symbol_list), CONCURRENCY)
+    logger.info("Stock price %s: %d symbols, %d workers.", label, len(symbol_list), CONCURRENCY)
 
     # Shuffle to spread load across Yahoo endpoints
     random.shuffle(symbol_list)
@@ -119,7 +141,7 @@ async def run_discover_stock_price_job() -> None:
 
         # Fetch chunk in parallel threads
         futures = [
-            loop.run_in_executor(executor, _fetch_yahoo_7d, sym, stats)
+            loop.run_in_executor(executor, fetch_fn, sym, stats)
             for sym in chunk
         ]
         results = await asyncio.gather(*futures, return_exceptions=True)
@@ -140,8 +162,8 @@ async def run_discover_stock_price_job() -> None:
 
         if stats["done"] % BATCH_LOG_EVERY < chunk_size:
             logger.info(
-                "Stock price progress: %d / %d done (%d rows, %d errors, %d timeouts)",
-                stats["done"], stats["total"], stats["inserted"], stats["errors"], stats["timeouts"],
+                "Stock price %s progress: %d / %d done (%d rows, %d errors, %d timeouts)",
+                label, stats["done"], stats["total"], stats["inserted"], stats["errors"], stats["timeouts"],
             )
 
         # Small delay between chunks
@@ -149,6 +171,21 @@ async def run_discover_stock_price_job() -> None:
 
     executor.shutdown(wait=False)
     logger.info(
-        "Stock price daily update complete: %d symbols, %d rows upserted, %d errors, %d timeouts.",
-        stats["total"], stats["inserted"], stats["errors"], stats["timeouts"],
+        "Stock price %s complete: %d symbols, %d rows upserted, %d errors, %d timeouts.",
+        label, stats["total"], stats["inserted"], stats["errors"], stats["timeouts"],
     )
+
+
+async def run_discover_stock_price_job() -> None:
+    """Daily 7-day append — fast, runs every day at ~4:30 PM IST."""
+    await _run_stock_price_pipeline(_fetch_yahoo_7d, label="daily 7d")
+
+
+async def run_discover_stock_price_backfill_job() -> None:
+    """One-shot backfill: fetch every daily close Yahoo serves for
+    each stock (range=max — back to listing date) and upsert with
+    ON CONFLICT DO NOTHING. Only missing historical rows get filled;
+    existing good data is untouched. Larger response per symbol than
+    the 7d variant but same request count, so network cost is the
+    same order of magnitude."""
+    await _run_stock_price_pipeline(_fetch_yahoo_max, label="backfill max")

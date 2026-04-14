@@ -214,6 +214,7 @@ class DiscoverMutualFundItemResponse(BaseModel):
     returns_1y: float | None = None
     returns_3y: float | None = None
     returns_5y: float | None = None
+    returns_10y: float | None = None
     std_dev: float | None = None
     sharpe: float | None = None
     sortino: float | None = None

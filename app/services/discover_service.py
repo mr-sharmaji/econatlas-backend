@@ -3271,7 +3271,7 @@ async def list_discover_mutual_funds(
             plan_type, option_type, nav, nav_date,
             expense_ratio, aum_cr, risk_level,
             returns_1m, returns_3m, returns_6m,
-            returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
+            returns_1y, returns_3y, returns_5y, returns_10y, std_dev, sharpe, sortino,
             score, score_return, score_risk, score_cost, score_consistency,
             score_performance, score_category_fit,
             score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
@@ -4568,7 +4568,9 @@ async def get_mf_point_to_point_returns(*, scheme_code: str) -> dict | None:
         Returns card matches the top-of-screen period badge exactly.
 
     Returns None if the scheme has no history or fewer than 2 rows.
-    Single DB round-trip fetches ~5 years of NAVs (1250 rows ≈ small).
+    Single DB round-trip fetches ~10 years of NAVs (~2500 rows),
+    which is still tiny (< 100 KB) and the (scheme_code, nav_date)
+    index keeps it fast.
     """
     pool = await get_pool()
     rows = await pool.fetch(
@@ -4576,7 +4578,7 @@ async def get_mf_point_to_point_returns(*, scheme_code: str) -> dict | None:
         SELECT nav_date, nav
         FROM discover_mf_nav_history
         WHERE scheme_code = $1
-          AND nav_date >= CURRENT_DATE - make_interval(days => 1830)
+          AND nav_date >= CURRENT_DATE - make_interval(days => 3710)
         ORDER BY nav_date ASC
         """,
         scheme_code,
@@ -4628,6 +4630,7 @@ async def get_mf_point_to_point_returns(*, scheme_code: str) -> dict | None:
     start_1y = _anchor_nav(365)
     start_3y = _anchor_nav(1095)
     start_5y = _anchor_nav(1825)
+    start_10y = _anchor_nav(3650)
 
     return {
         # 1D and sub-1Y are always reported as absolute (simple) %
@@ -4641,12 +4644,15 @@ async def get_mf_point_to_point_returns(*, scheme_code: str) -> dict | None:
         "return_1y": _pct(start_1y, end_nav),
         "return_3y": _pct(start_3y, end_nav),
         "return_5y": _pct(start_5y, end_nav),
+        "return_10y": _pct(start_10y, end_nav),
         # CAGR counterparts for ≥1Y — used by the Returns card. For
-        # 1Y, cagr_1y == return_1y by construction. For 3Y/5Y, CAGR
-        # differs from absolute and represents annualized growth.
+        # 1Y, cagr_1y == return_1y by construction. For 3Y/5Y/10Y,
+        # CAGR differs from absolute and represents annualized growth.
+        # cagr_10y is None for funds younger than 10 years.
         "cagr_1y": _cagr(start_1y, end_nav, 1.0),
         "cagr_3y": _cagr(start_3y, end_nav, 3.0),
         "cagr_5y": _cagr(start_5y, end_nav, 5.0),
+        "cagr_10y": _cagr(start_10y, end_nav, 10.0),
         "as_of": end_date.isoformat() if end_date else None,
     }
 
@@ -4707,7 +4713,8 @@ async def recompute_mf_returns_all() -> dict:
                 returns_6m = COALESCE($4, returns_6m),
                 returns_1y = COALESCE($5, returns_1y),
                 returns_3y = COALESCE($6, returns_3y),
-                returns_5y = COALESCE($7, returns_5y)
+                returns_5y = COALESCE($7, returns_5y),
+                returns_10y = COALESCE($8, returns_10y)
             WHERE scheme_code = $1
             """,
             scheme_code,
@@ -4717,6 +4724,7 @@ async def recompute_mf_returns_all() -> dict:
             ptp.get("cagr_1y"),
             ptp.get("cagr_3y"),
             ptp.get("cagr_5y"),
+            ptp.get("cagr_10y"),
         )
         updated += 1
         if (i + 1) % 500 == 0:
@@ -4848,7 +4856,7 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
             plan_type, option_type, nav, nav_date,
             expense_ratio, aum_cr, risk_level,
             returns_1m, returns_3m, returns_6m,
-            returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
+            returns_1y, returns_3y, returns_5y, returns_10y, std_dev, sharpe, sortino,
             score, score_return, score_risk, score_cost, score_consistency,
             score_performance, score_category_fit,
             score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
@@ -4882,7 +4890,7 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
                 scheme_code, scheme_name, amc, category, sub_category,
                 plan_type, option_type, nav, nav_date,
                 expense_ratio, aum_cr, risk_level,
-                returns_1y, returns_3y, returns_5y, std_dev, sharpe, sortino,
+                returns_1y, returns_3y, returns_5y, returns_10y, std_dev, sharpe, sortino,
                 score, score_return, score_risk, score_cost, score_consistency,
                 score_breakdown, tags_v2, source_status, source_timestamp, ingested_at,
                 primary_source, secondary_source,
