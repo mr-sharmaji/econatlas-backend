@@ -419,8 +419,7 @@ voice, lifts to -20 dB when voice is silent).
 - **Fires**: Mon–Fri — **polling cron every 30 min from 17:00 to 21:30 IST**
   (waits for today's FII/DII data in `macro_indicators`, which arrives at
   irregular times post-close — sometimes 17:00, sometimes 20:00+)
-- **Skip condition**: NSE holiday — quick sentinel check on
-  `market_prices_intraday` row count for today (<50 rows = closed)
+- **Skip condition**: NSE holiday — check `get_india_session_info().is_trading_day` which uses the XBOM exchange calendar. Row-count sentinels on `market_prices_intraday` DO NOT work on India-only holidays because crypto/commodities/Nikkei/FTSE keep writing ticks.
 - **Idempotency**: unique index on `(type, generated_at::date)` ensures
   only one daily recap per date regardless of how many cron firings hit
 - **Duration**: 45 s (~130 words @ Neerja pace)
@@ -857,7 +856,7 @@ async def task_video_daily(ctx: dict) -> None:
     Polling task — fires up to 10 times Mon-Fri between 17:00 and 21:30 IST.
     Each firing:
       1. Skip if today's video already exists in DB (idempotent)
-      2. Skip if market was closed today (<50 rows in market_prices_intraday)
+      2. Skip if NSE was closed today (via `get_india_session_info().is_trading_day`, NOT row-count on `market_prices_intraday` — that table has non-India market data and is non-zero on India-only holidays)
       3. Skip if FII/DII data for today is missing in macro_indicators
       4. All conditions met → generate the video, insert DB row
       5. Give up at the 21:30 firing if still no FII/DII — generate
@@ -882,14 +881,29 @@ async def task_video_daily(ctx: dict) -> None:
         logger.debug("video_daily: already generated for %s", today)
         return
 
-    # 2. Holiday gate — was the market open today?
-    intraday_rows = await pool.fetchval(
-        "SELECT COUNT(*) FROM market_prices_intraday "
-        "WHERE timestamp::date = $1",
-        today,
+    # 2. Holiday gate — was NSE actually open today?
+    #
+    # WRONG approach: SELECT COUNT(*) FROM market_prices_intraday
+    # WHERE timestamp::date = today — this breaks on India-only
+    # holidays like Ambedkar Jayanti. Non-Indian markets (crypto,
+    # commodities, Nikkei, FTSE, DAX, etc.) keep trading and keep
+    # writing thousands of intraday rows. The count is NOT a proxy
+    # for "was NSE open".
+    #
+    # RIGHT approach: ask the trading calendar directly via
+    # get_india_session_info() which goes through XBOM (the
+    # exchange_calendars library's Indian exchange calendar that
+    # correctly identifies NSE holidays).
+    from app.scheduler.trading_calendar import get_india_session_info
+
+    india_info = get_india_session_info(
+        datetime.now(timezone.utc)
     )
-    if (intraday_rows or 0) < 50:
-        logger.info("video_daily: market closed today (%d rows) — skip", intraday_rows)
+    if not india_info.get("is_trading_day"):
+        logger.info(
+            "video_daily: NSE holiday today (%s) — skip",
+            india_info.get("source"),
+        )
         return
 
     # 3. FII/DII gate — wait for flows to land
