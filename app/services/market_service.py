@@ -357,8 +357,11 @@ async def get_prices(
             args.append(instrument_type)
             n += 1
         where = " AND ".join(conditions)
-        # Cap at 1825 days (5 years) for chart — no need for more
-        effective_limit = 1825 if limit == -1 else limit
+        # When limit=-1 ("All"), return every dedup'd daily point we
+        # have. Hard-capped at 25000 days (~68 years) which easily
+        # covers our deepest assets (S&P500 back to 1976, Dow 1992,
+        # etc.) without opening an unbounded query.
+        effective_limit = 25000 if limit == -1 else limit
         rows = await pool.fetch(
             f"""
             SELECT DISTINCT ON (asset, instrument_type, ("timestamp"::date))

@@ -277,7 +277,10 @@ async def get_mf_detail(scheme_code: str, response: Response) -> DiscoverMutualF
 @router.get("/stocks/{symbol}/history", response_model=PriceHistoryResponse)
 async def get_stock_history(
     symbol: str,
-    days: int = Query(default=365, ge=7, le=1825),
+    days: int = Query(
+        default=365, ge=7, le=20000,
+        description="Window in days. Upper bound ~55y so 'All' can return full inception history.",
+    ),
 ) -> PriceHistoryResponse:
     try:
         points = await discover_service.get_stock_price_history(symbol=symbol, days=days)
@@ -316,7 +319,10 @@ async def get_stock_intraday(symbol: str) -> PriceHistoryResponse:
 @router.get("/mutual-funds/{scheme_code}/history", response_model=PriceHistoryResponse)
 async def get_mf_history(
     scheme_code: str,
-    days: int = Query(default=365, ge=7, le=1825),
+    days: int = Query(
+        default=365, ge=7, le=20000,
+        description="Window in days. Upper bound ~55y so 'All' can return full inception history.",
+    ),
 ) -> PriceHistoryResponse:
     try:
         points = await discover_service.get_mf_nav_history(scheme_code=scheme_code, days=days)
