@@ -42,6 +42,27 @@ def _configure_logging(level_name: str | None) -> int:
             handler.setLevel(level)
             if handler.formatter is None:
                 handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    # Cap chatty third-party loggers at WARNING even when the root is
+    # DEBUG — otherwise every HTTP request generates dozens of urllib3
+    # handshake lines and a single discover_mf_nav run (6500 requests)
+    # would produce ~130k log records, making logs/app.log rotate faster
+    # than the 7-day window and making /ops/logs queries slow. The app's
+    # own debug logs still flow at the global `level`.
+    _NOISY_LIBS = (
+        "urllib3",
+        "urllib3.connectionpool",
+        "urllib3.util.retry",
+        "charset_normalizer",
+        "httpcore",
+        "httpcore.http11",
+        "httpcore.connection",
+        "httpx",
+        "asyncio",
+        "apscheduler.executors.default",
+        "asyncpg",
+    )
+    for name in _NOISY_LIBS:
+        logging.getLogger(name).setLevel(logging.WARNING)
     return level
 
 

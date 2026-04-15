@@ -8,7 +8,13 @@ class Settings(BaseSettings):
 
     app_name: str = "EconAtlas"
     debug: bool = False
-    log_level: str = "INFO"
+    # Default level for the root logger + all app handlers (in-memory
+    # ring buffer + rotating file sink). DEBUG-by-default during the
+    # active MF/screener investigation so `/ops/logs` captures the full
+    # request/retry/decision trail instead of dropping it. Override via
+    # the LOG_LEVEL env var if you want to dial this back after
+    # triage — pydantic-settings reads LOG_LEVEL automatically.
+    log_level: str = "DEBUG"
 
     market_interval_minutes: int = 1
     commodity_interval_minutes: int = 1
