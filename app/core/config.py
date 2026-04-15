@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     ops_logs_enabled: bool = True
     ops_log_buffer_size: int = 5000
     ops_logs_token: str | None = None
+    # Persistent ops-log retention window. Logs older than this in the
+    # ops_logs table are purged hourly by a background task.
+    ops_log_retention_days: int = 7
 
     # Gift Nifty default sessions in IST.
     gift_nifty_session1_open: str = "06:30"

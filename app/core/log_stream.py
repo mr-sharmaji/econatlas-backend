@@ -45,6 +45,13 @@ class _InMemoryLogHandler(logging.Handler):
             with _lock:
                 _entries.append(payload)
                 _next_id += 1
+            # Mirror into the persistent 7-day store (non-blocking,
+            # thread-safe, drops silently if not yet configured).
+            try:
+                from app.core.log_store import enqueue_entry
+                enqueue_entry(payload)
+            except Exception:
+                pass
         except Exception:
             # Never break logging pipeline due to diagnostics handler.
             return

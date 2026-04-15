@@ -6,6 +6,10 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Header, HTTPException, Path, Query
 
 from app.core.config import get_settings
+from app.core.log_store import (
+    is_enabled as log_store_enabled,
+    query_log_entries as query_persistent_log_entries,
+)
 from app.core.log_stream import get_log_entries
 from app.schemas.market_intel_schema import DataHealthResponse
 from app.schemas.ops_schema import LogEntryResponse, LogListResponse
@@ -648,22 +652,60 @@ async def ops_notification_ai_metrics(
 
 @router.get("/logs", response_model=LogListResponse)
 async def ops_logs(
-    limit: int = Query(default=200, ge=1, le=2000),
+    limit: int = Query(default=200, ge=1, le=5000),
     after_id: int | None = Query(default=None, ge=0, description="Return logs strictly after this id"),
     min_level: str | None = Query(default=None, description="Minimum level: DEBUG/INFO/WARNING/ERROR/CRITICAL"),
     contains: str | None = Query(default=None, description="Substring filter on message"),
     logger_name: str | None = Query(default=None, description="Substring filter on logger name"),
+    since: datetime | None = Query(
+        default=None,
+        description="Return logs with timestamp >= this ISO datetime (persistent store only)",
+    ),
+    until: datetime | None = Query(
+        default=None,
+        description="Return logs with timestamp <= this ISO datetime (persistent store only)",
+    ),
+    source: str | None = Query(
+        default=None,
+        description="Force 'memory' (in-memory ring buffer) or 'db' (7-day persistent store). "
+                    "Defaults to db when available, else memory.",
+    ),
     x_ops_token: str | None = Header(default=None),
 ) -> LogListResponse:
-    """Tail current in-memory application logs for debugging scheduler/feed issues."""
+    """Tail application logs for debugging scheduler/feed issues.
+
+    By default this reads from the persistent ``ops_logs`` table (7-day
+    retention), which preserves history across restarts and grows far
+    beyond the in-memory ring buffer. Pass ``source=memory`` to hit the
+    live ring buffer instead (lower latency, bounded size, volatile).
+    """
     _authorize(x_ops_token)
-    rows, latest_id = get_log_entries(
-        limit=limit,
-        after_id=after_id,
-        min_level=min_level,
-        contains=contains,
-        logger_name=logger_name,
-    )
+
+    use_db = log_store_enabled() and (source or "db").lower() != "memory"
+    if use_db:
+        try:
+            rows, latest_id = await query_persistent_log_entries(
+                limit=limit,
+                after_id=after_id,
+                min_level=min_level,
+                contains=contains,
+                logger_name=logger_name,
+                since=since,
+                until=until,
+            )
+        except Exception as exc:
+            logger.warning("ops_logs: DB query failed, falling back to memory: %s", exc)
+            use_db = False
+
+    if not use_db:
+        rows, latest_id = get_log_entries(
+            limit=limit,
+            after_id=after_id,
+            min_level=min_level,
+            contains=contains,
+            logger_name=logger_name,
+        )
+
     entries = [LogEntryResponse(**r) for r in rows]
     return LogListResponse(entries=entries, count=len(entries), latest_id=latest_id)
 

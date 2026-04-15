@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.database import close_pool, init_pool
+from app.core.log_store import setup_log_persistence, stop_log_persistence
 from app.core.log_stream import setup_log_stream
 from app.queue.redis_pool import close_redis_pool
 from app.queue.worker import start_worker, stop_worker
@@ -79,6 +80,17 @@ async def _warm_artha_cache() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await init_pool()           # 1. PostgreSQL pool
+    # 1b. Persistent ops-log store (7-day retention). Must run after
+    #     init_pool so the writer task can acquire connections, and
+    #     before anything heavy so startup logs are captured too.
+    _settings = get_settings()
+    if _settings.ops_logs_enabled:
+        try:
+            await setup_log_persistence(
+                retention_days=_settings.ops_log_retention_days,
+            )
+        except Exception:
+            logger.warning("ops_logs: setup_log_persistence failed", exc_info=True)
     # 2. Self-heal any arq state left behind by a prior SIGKILL. Safe at
     #    startup because the worker we're about to start owns nothing
     #    yet, so every arq:in-progress:* key we find here is necessarily
@@ -109,7 +121,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     stop_scheduler()            # 1. Stop enqueuing new jobs
     await stop_worker()         # 2. Drain in-flight ARQ jobs
     await close_redis_pool()    # 3. Close Redis connection
-    await close_pool()          # 4. Close PostgreSQL pool
+    # 4. Flush and stop the persistent log writer before closing the DB
+    #    pool so any in-flight log batch can still be committed.
+    try:
+        await stop_log_persistence()
+    except Exception:
+        pass
+    await close_pool()          # 5. Close PostgreSQL pool
 
 
 def create_app() -> FastAPI:
