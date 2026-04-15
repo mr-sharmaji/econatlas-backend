@@ -3149,8 +3149,14 @@ async def list_discover_mutual_funds(
             " AND LOWER(COALESCE(fund_classification, sub_category, '')) NOT LIKE '%large%')"
         )
     elif preset_norm == "debt":
+        # Include Debt Index sub-category so target-maturity debt
+        # indices (SDL/G-Sec/CRISIL-IBX/PSU Bond) surface under the
+        # Debt segment even though they're technically category='Index'
+        # in SEBI classification. Without this, users searching for
+        # target-maturity bond products under Debt find nothing.
         conds.append(
             "(LOWER(COALESCE(category, '')) ~ '(debt|bond|gilt|money market|liquid|overnight|ultra short)'"
+            " OR sub_category = 'Debt Index'"
             " OR fund_type = 'debt')"
         )
     elif preset_norm == "equity":
@@ -3231,10 +3237,38 @@ async def list_discover_mutual_funds(
         conds.append("(sub_category ILIKE '%low%dur%')")
     elif preset_norm == "medium-duration":
         conds.append("(sub_category ILIKE '%medium%dur%' AND sub_category NOT ILIKE '%long%')")
+    elif preset_norm == "medium-long-duration":
+        conds.append("(sub_category ILIKE '%medium%long%' OR sub_category ILIKE '%medium to long%')")
+    elif preset_norm == "long-duration":
+        # Match "Long Duration" but NOT "Medium to Long Duration".
+        conds.append("(sub_category ILIKE '%long%duration%' AND sub_category NOT ILIKE '%medium%')")
+    elif preset_norm == "gilt-10yr":
+        conds.append("(sub_category ILIKE '%gilt%10%year%' OR sub_category ILIKE '%gilt%10%yr%' OR sub_category ILIKE '%10 year constant%')")
+    elif preset_norm == "debt-index":
+        conds.append("(sub_category = 'Debt Index')")
+    elif preset_norm == "sectoral-index":
+        conds.append("(sub_category = 'Sectoral Index')")
+    elif preset_norm == "smart-beta-index":
+        conds.append("(sub_category = 'Smart Beta Index')")
+    elif preset_norm == "international-index":
+        conds.append("(sub_category = 'International Index')")
+    elif preset_norm == "retirement-solutions":
+        # Hybrid SEBI category "Retirement Solutions" — distinct from
+        # Solution Oriented > Retirement Fund. The broader "retirement"
+        # preset below catches both via pattern match.
+        conds.append("(category ILIKE '%hybrid%' AND sub_category ILIKE '%retirement%')")
     elif preset_norm == "floater":
         conds.append("(sub_category ILIKE '%floater%')")
     elif preset_norm == "target-maturity":
-        conds.append("(sub_category ILIKE '%target%maturity%' OR fund_classification ILIKE '%target%maturity%')")
+        # After the 2026-04 taxonomy cleanup, target-maturity debt
+        # indices live in sub_category='Debt Index'. Keep the old
+        # ILIKE fallback for classifier-tagged rows that still use
+        # explicit "target maturity" phrasing.
+        conds.append(
+            "(sub_category = 'Debt Index'"
+            " OR sub_category ILIKE '%target%maturity%'"
+            " OR fund_classification ILIKE '%target%maturity%')"
+        )
     elif preset_norm == "credit-risk":
         conds.append("(sub_category ILIKE '%credit%risk%')")
     elif preset_norm == "other":
