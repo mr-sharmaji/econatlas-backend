@@ -3136,8 +3136,15 @@ async def list_discover_mutual_funds(
             "(LOWER(COALESCE(category, '')) LIKE '%flexi%' OR LOWER(COALESCE(sub_category, '')) LIKE '%flexi%')"
         )
     elif preset_norm == "index":
+        # The "Index" chip lives under the Equity segment, so it should
+        # surface equity-flavored index funds (Large/Mid/Small Cap Index,
+        # Sectoral Index, Smart Beta, International, etc.) but NOT
+        # debt-flavored indices like Nifty SDL / G-Sec / CRISIL-IBX /
+        # AAA Bond target-maturity funds. Those belong under Debt >
+        # Target Maturity and would confuse users by appearing twice.
         conds.append(
-            "(LOWER(COALESCE(category, '')) LIKE '%index%' OR LOWER(COALESCE(sub_category, '')) LIKE '%index%')"
+            "((LOWER(COALESCE(category, '')) LIKE '%index%' OR LOWER(COALESCE(sub_category, '')) LIKE '%index%')"
+            " AND sub_category != 'Debt Index')"
         )
     elif preset_norm == "low-risk":
         conds.append(
