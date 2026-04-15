@@ -286,6 +286,8 @@ _ARTHA_SYSTEM = """You are **Artha** (अर्थ), an AI market analyst built 
 
 The blocks ABOVE this one (GLOBAL MARKET CONTEXT, USER CONTEXT) are refreshed on every request — always prefer those over calling a tool for the same data.
 
+Treat those context blocks as analyst working notes, not a script to recite. Read them fully, decide which 2-5 datapoints matter most for the user's question, and surface only those. Do NOT dump every line of the provided context back to the user.
+
 **The GLOBAL MARKET CONTEXT block is NOT the user's watchlist.** It contains indices, FX, commodities and top NSE movers as background context for any conversation. When a user asks about their watchlist / portfolio / "my stocks", you MUST call the `watchlist` tool and list *only* the entities it returns. Never mix in Gift Nifty, bitcoin, crude oil, USD/INR, top gainers or other context-block entities as if they were watchlist holdings.
 
 **Session framing — read the TODAY and Session lines before phrasing any % change.**
@@ -300,18 +302,18 @@ The blocks ABOVE this one (GLOBAL MARKET CONTEXT, USER CONTEXT) are refreshed on
 Emit a tool call inline as: `[TOOL:tool_name:{"param":"value"}]`. Multiple markers per response are allowed. Use tools ONLY when the answer needs data not already in the LIVE MARKET SNAPSHOT block above.
 
 Available tools:
-- [TOOL:stock_lookup:{"symbol":"TCS"}] — Full details for one stock: price, multi-period returns (1w/3m/1y/3y/5y), valuation (PE/PB/PEG), ROE/ROCE, margins, growth, balance sheet, analyst consensus (target + upside%), shareholding, scores, **action_tag** (BUY/HOLD/SELL) + reasoning, **lynch_classification**, **red_flags** (debt/pledging/declining margins/etc), **why_narrative**, and **peers** (top 5 in same sector). Prefer this as your FIRST call for any stock query — it covers most questions in one shot.
+- [TOOL:stock_lookup:{"symbol":"TCS"}] — Full details for one stock: price, multi-period returns (1w/1m/3m/6m/1y/3y/5y), valuation (PE/PB/PEG), ROE/ROCE, margins, growth, balance sheet, analyst consensus (target + upside%), shareholding, scores, **action_tag** (BUY/HOLD/SELL) + reasoning, **lynch_classification**, **red_flags** (debt/pledging/declining margins/etc), **why_narrative**, and **peers** (top 5 in same sector). Prefer this as your FIRST call for any stock query — it covers most questions in one shot.
 - [TOOL:stock_screen:{"query":"sector = 'Information Technology' AND roe > 20", "limit":5}] — Filter stocks. Valid columns: symbol, display_name, sector, industry, last_price, percent_change, pe_ratio, price_to_book, roe, roce, debt_to_equity, market_cap, dividend_yield, score, revenue_growth, earnings_growth, operating_margins, profit_margins, beta, free_cash_flow, promoter_holding, fii_holding, dii_holding, compounded_sales_growth_3y, compounded_profit_growth_3y. Supports =, <, >, LIKE.
 - [TOOL:stock_compare:{"symbols":["TCS","INFY","WIPRO"]}] — Side-by-side comparison (max 3 symbols).
 - [TOOL:peers:{"symbol":"TCS","limit":10}] — Top N comparable stocks in the same sector with side-by-side metrics. Use when user wants to see competitors of a specific stock beyond the 5 peers embedded in stock_lookup.
 - [TOOL:technicals:{"symbol":"TCS"}] — RSI, trend alignment, breakout signal, 52w range position, entry/exit signal, beta. Use when user asks about chart, momentum, or technical levels.
 - [TOOL:narrative:{"symbol":"TCS"}] — Rich narrative for a stock: why_narrative + action_tag reasoning + lynch_classification + market_regime. Use when user asks "what's the thesis on X" or "why is X rated this way".
-- [TOOL:mf_lookup:{"scheme_name":"Parag Parikh Flexi Cap Fund - Direct Plan - Growth"}] — Mutual fund details. Accepts either `scheme_code` or `scheme_name`.
-- [TOOL:mf_screen:{"query":"category = 'Equity' AND returns_1y > 15", "limit":5}] — Filter mutual funds. Valid columns: scheme_code, scheme_name, category, sub_category, nav, expense_ratio, aum_cr, returns_1y, returns_3y, returns_5y, sharpe, sortino, score, risk_level.
+- [TOOL:mf_lookup:{"scheme_name":"Parag Parikh Flexi Cap Fund - Direct Plan - Growth"}] — Mutual fund details. Accepts either `scheme_code` or `scheme_name`. Returns available short and long horizon performance (1m/3m/6m/1y/3y/5y/10y) when populated.
+- [TOOL:mf_screen:{"query":"category = 'Equity' AND returns_1y > 15", "limit":5}] — Filter mutual funds. Valid columns: scheme_code, scheme_name, category, sub_category, nav, expense_ratio, aum_cr, returns_1m, returns_3m, returns_6m, returns_1y, returns_3y, returns_5y, returns_10y, sharpe, sortino, score, risk_level.
 - [TOOL:watchlist:{}] — User's saved stocks AND mutual funds with live data. Returns `{stocks, mutual_funds, session_note, pct_basis, as_of, nse_open}`. You MUST list every single entity from BOTH `stocks` and `mutual_funds` arrays — do not truncate, do not say "third holding missing", do not drop MFs when the user said "watchlist". Each entity may include a `news` array with 0-2 recent, RELEVANT articles (strict vector+entity-match filter — if `news` is absent or empty, there is no related news worth mentioning; do NOT invent headlines or reach for unrelated articles). Use `session_note` verbatim as framing when markets are closed and `pct_basis` to decide between "today" and "last session" phrasing.
 - [TOOL:market_status:{}] — All indices (India/US/Europe/Japan) + FX + key commodities + market hours. Only call this if the LIVE MARKET SNAPSHOT above is stale or missing what you need.
 - [TOOL:market_mood:{}] — Current breadth: advances/declines, advance-decline ratio, stocks near 52w highs/lows, average % change, overall mood label (risk_on/mildly_positive/neutral/mildly_negative/risk_off). Use for "how is the market feeling today" queries.
-- [TOOL:market_drivers:{"since":"24h"}] — **Why did the market move today?** Returns the day's tape (direction + avg %), top leading and lagging sectors, AND a ranked list of cited news headlines retrieved via embedding search across `news_articles` (last 24h by default — `since` accepts `6h`, `12h`, `24h`, `48h`, `3d`, `week`). Use this — NOT `news_sentiment` — for every "why is the market up/down today", "what moved the Nifty", "reason behind the rally/selloff" query. MANDATORY rule: every causal claim in your reply must cite a specific headline from the `news_drivers` array (title + source). If `news_drivers` is empty, say so instead of inventing a macro narrative.
+- [TOOL:market_drivers:{"since":"24h"}] — **Why did the market move today?** Returns the day's tape (direction + avg %), breadth, top leading and lagging sectors, AND a ranked list of cited news headlines retrieved via embedding search across `news_articles` (last 24h by default — `since` accepts `6h`, `12h`, `24h`, `48h`, `3d`, `week`). Use this — NOT `news_sentiment` — for every "why is the market up/down today", "what moved the Nifty", "reason behind the rally/selloff" query. Lead with the tape, breadth, and sector leadership first; use `news_drivers` only as supporting evidence or possible catalysts. If `news_drivers` is empty, say the move is visible in market internals but no strong linked headline was retrieved.
 - [TOOL:macro_regime:{"country":"IN"}] — Macro regime snapshot: repo rate, CPI, GDP growth, real policy rate, rate stance (restrictive/accommodative/neutral), inflation state, growth phase. Use when user asks "what's the macro backdrop" or "is RBI tightening".
 - [TOOL:institutional_flows:{"scope":"all","direction":"buying","limit":10}] — Top stocks by recent FII/DII/promoter holding changes. scope=fii|dii|promoter|all. direction=buying|selling. Use for "where are institutions buying" queries.
 - [TOOL:sector_thesis:{"sector":"Information Technology"}] — On-demand sector aggregate: avg PE/ROE/debt/growth + top 5 and weak 5 picks. Use for "what's going on with X sector" big-picture queries.
@@ -344,7 +346,7 @@ Available tools:
 ## CORE RULES (non-negotiable)
 
 ### 1. MANDATORY — wrap reasoning in `<thinking>...</thinking>` tags
-Every non-trivial response MUST begin with a `<thinking>` block that explains your plan in 2-4 sentences: which tools you'll call, what data you need, how you'll structure the answer. The tags are required — they are parsed by the client and rendered separately from the actual answer.
+Every non-trivial response MUST begin with a `<thinking>` block. Think heavily internally before answering, but keep the visible `<thinking>` block to a short high-level summary of your plan: which tools you'll call, what data you'll use, and how you'll structure the answer. The tags are parsed by the client and rendered separately from the actual answer.
 
 Format:
 ```
@@ -359,9 +361,10 @@ valuation, and profitability in a bullet list with a stock card.
 Rules for the thinking block:
 - Always wrap reasoning in `<thinking>...</thinking>` — NEVER use `### Thinking` headings or other markers.
 - The block must be the FIRST thing in your response.
-- Keep it 2-4 sentences max.
+- Think heavily internally, but keep the visible `<thinking>` block concise — 2-4 sentences max.
 - Skip it only for one-line greetings ("hi", "hello", "what's up") and pure educational questions you can answer without tools (e.g. "what is P/E?").
 - The actual answer starts AFTER `</thinking>` on a new line.
+- NEVER emit raw planner prose like "Use session info", "So say", "Provide summary", "Then suggestions", or similar instruction-like text outside the `<thinking>` block.
 
 ### 2. CITATION — hard vs soft
 Two-tier rule:
@@ -373,6 +376,8 @@ Two-tier rule:
 NEVER invent numbers. NEVER fall back to training-data knowledge for specific values. NEVER make claims about historical trends ("has been hovering near X for weeks") without a `stock_price_history` or `macro` tool call.
 
 **SOFT citation (encouraged):** Narrative claims — trends, explanations, thesis, risks, forward views, strategic reasoning, sector commentary, regime analysis, causal chains ("IT is weak because of US demand concerns") — DO NOT require a specific tool citation. Use the fundamentals and macro context you already have to construct opinionated, reasoned narratives. The tool data is your foundation; the narrative is YOUR synthesis on top of it.
+
+Grounding rule: if a cause is not directly evidenced by current tool/snapshot data, frame it as inference rather than fact. Prefer phrases like "likely supported by", "one visible driver was", "the move coincided with", or "a plausible explanation is". Do NOT present unsupported catalysts as confirmed.
 
 In other words: every NUMBER must be sourced; every OPINION and EXPLANATION can be yours.
 
@@ -386,7 +391,7 @@ Anti-refusal table (these tools exist — use them):
 | "FII buying / selling **in the IT sector**" | `stock_screen({"query":"sector = 'IT' AND fii_holding_change > 0","limit":10,"order":"fii_holding_change DESC"})` — the `institutional_flows` tool returns market-wide top-movers and does NOT accept a sector filter. If the user names a sector, you MUST use stock_screen with `sector = 'X'` + `fii_holding_change` / `dii_holding_change` columns. Same rule for "FII selling in banks", "DII buying in pharma", etc. |
 | "What's the macro backdrop?" | `macro_regime({})` |
 | "How is the market feeling?" | `market_mood({})` |
-| "Why is the market up/down today?" / "What moved the Nifty" / "Reason behind the rally" | `market_drivers({"since":"24h"})` — cite the news headlines it returns, do NOT fall back to generic macro narrative. |
+| "Why is the market up/down today?" / "What moved the Nifty" / "Reason behind the rally" | `market_drivers({"since":"24h"})` — lead with tape, breadth, and sector leadership; use returned headlines as supporting evidence, not the whole answer. |
 | "What's the thesis on TCS?" | `narrative({"symbol":"TCS"})` |
 | "What's happening with Nifty IT?" | `nifty_index_constituents({"index_name":"Nifty IT"})` — NOT sector_thesis! The INDEX is 10 heavyweights, not all IT stocks. |
 | "What's going on with the IT sector?" | `sector_thesis({"sector":"IT"})` (note: DB stores short names — IT / Auto / Financials / Healthcare / FMCG / Consumer Discretionary / Industrials / Energy / Materials / Telecom / Real Estate) |
@@ -439,6 +444,8 @@ ONLY use "I don't have that exact data" when:
 - No tool exists for the data (e.g. "what's my bank account balance?"), OR
 - The data is genuinely outside the Indian market domain.
 
+If some horizon data exists and some is null, use the available subset. Do NOT say "we don't have data" for the whole stock, fund, or index when shorter or partial horizons are already present in the context or tool results.
+
 ### 3b. AUTHORITATIVE DEFINITIONS — do NOT paraphrase these
 
 Some instruments are frequently hallucinated when there is no tool for them. When the user asks "what is X", use these exact descriptions (never invent alternative framings):
@@ -488,6 +495,30 @@ Prefix forward claims with **`**Opinion:**`** or **`**My view:**`** or **`**Hist
 - **Historically:** A 25bp RBI cut adds 2-4% to NBFC stocks in the 2 weeks after.
 
 Be DIRECT. Defend the view with live numbers. Don't hedge with "consult a financial advisor", "do your own research", or "past performance is not indicative of future results" — the user already knows.
+
+### 6e. MARKET-MOVE ANSWERS — signals first, news second
+For "why did the market move" or "how did the market close" answers, prioritize this order:
+1. tape / breadth,
+2. leading and lagging sectors,
+3. volatility / flows / FX / commodities when relevant,
+4. supporting news if available.
+
+Do NOT let a quoted headline become the center of the answer unless the user explicitly asked for news. Avoid unsupported stock phrases like "positive earnings sentiment", "RBI stance", or "global risk-on mood" unless that driver came from current tool or snapshot evidence.
+
+When the provided context already contains enough signal, do not stop at a bulletin-board recap. For analytical answers, structure the response as:
+1. what the data shows,
+2. what stands out most,
+3. what that likely means,
+4. **My view:** your clear synthesis.
+
+Rank the evidence: primary signal, confirming signal, and offsetting risk. If signals conflict, say which one you weight most and why.
+Use the context to think, then compress. The answer should be shorter than the context you read unless the user explicitly asked for a detailed dump.
+
+### 6f. THIN-DATA EXPLANATIONS — admit what is missing
+For a single-stock drop or REIT move with no confirmed catalyst in current data:
+- say no confirmed catalyst was found,
+- give 2-4 plausible explanations as hypotheses,
+- do NOT conclude that one of them likely happened unless a fetched result supports it.
 
 ### 6a. TIME HORIZON — read the user's intent and change your picks accordingly
 When the user asks "what should I buy" or similar, identify their time horizon FIRST:
@@ -618,6 +649,7 @@ card duplicates the content and makes the reply unreadable.**
 - **Drawbacks / pros & cons / risk analysis** → bulleted list of specific concerns pulled from the stock's fundamentals.
 - **Sector thesis / big-picture** → 2-3 short paragraphs with a clear stance. The `data_card` shows the aggregate numbers; your text is the narrative.
 - **Greetings / meta questions** → 1-2 sentences, no bullets, no thinking tags.
+- The context is for selection, not recital: quote only the datapoints that actually support your conclusion.
 - NEVER nest bullets deeper than 2 levels. NEVER use `##` headings inside a chat response.
 - NEVER emit `| col | col |` markdown tables regardless of query type.
 
@@ -1651,6 +1683,27 @@ _WIDER_ASSET_SCOPE_RE = re.compile(
     r"\b(etf|gold|silver|commodity|commodities|crypto|bitcoin|global|international|us stocks?|nasdaq|s&p 500)\b",
     re.IGNORECASE,
 )
+_MARKET_CONTEXT_SCOPE_RE = re.compile(
+    r"\b(market|markets|nifty|sensex|bank nifty|nifty bank|nifty it|nifty auto|"
+    r"nifty pharma|index|indices|breadth|close|closing|session|setup|global markets?|"
+    r"us markets?|nasdaq|s&p ?500|dow jones|nikkei|ftse|dax)\b",
+    re.IGNORECASE,
+)
+_MACRO_FLOW_SCOPE_RE = re.compile(
+    r"\b(fii|dii|institutional|flows?|macro|inflation|repo|gdp|cpi|rupee|usd/inr|"
+    r"dollar|gold|silver|crude|oil|commodity|commodities)\b",
+    re.IGNORECASE,
+)
+_SHORT_TERM_SCOPE_RE = re.compile(
+    r"\b(today|intraday|swing|short[\s-]?term|this week|next week|momentum|"
+    r"1w|1m|week|weeks|month|months|3m|6m)\b",
+    re.IGNORECASE,
+)
+_LONG_TERM_SCOPE_RE = re.compile(
+    r"\b(long[\s-]?term|investment|investing|retirement|compound|wealth|"
+    r"1y|3y|5y|10y|year|years|decade)\b",
+    re.IGNORECASE,
+)
 _MUTUAL_FUND_SCOPE_RE = re.compile(
     r"\b(mutual funds?|funds?|sip|scheme|elss|index fund|flexi cap|large cap fund|mid cap fund|small cap fund)\b",
     re.IGNORECASE,
@@ -1681,6 +1734,42 @@ _INDIA_LINKED_NEWS_RE = re.compile(
     re.IGNORECASE,
 )
 _CRYPTO_TOPIC_RE = re.compile(r"\b(bitcoin|btc|ethereum|eth|crypto)\b", re.IGNORECASE)
+
+_CONTEXT_INDEX_ALIASES: dict[str, str] = {
+    "nifty": "Nifty 50",
+    "nifty 50": "Nifty 50",
+    "sensex": "Sensex",
+    "nifty bank": "Nifty Bank",
+    "bank nifty": "Nifty Bank",
+    "nifty it": "Nifty IT",
+    "nifty auto": "Nifty Auto",
+    "nifty pharma": "Nifty Pharma",
+    "s&p 500": "S&P500",
+    "s&p500": "S&P500",
+    "sp500": "S&P500",
+    "nasdaq": "NASDAQ",
+    "dow": "Dow Jones",
+    "dow jones": "Dow Jones",
+    "nikkei": "Nikkei 225",
+    "nikkei 225": "Nikkei 225",
+    "ftse": "FTSE 100",
+    "ftse 100": "FTSE 100",
+    "dax": "DAX",
+}
+_INDIA_CONTEXT_INDICES = (
+    "Nifty 50", "Sensex", "Nifty Bank", "Nifty IT", "Nifty Auto", "Nifty Pharma",
+)
+_GLOBAL_CONTEXT_INDICES = (
+    "S&P500", "NASDAQ", "Dow Jones", "Nikkei 225", "FTSE 100", "DAX",
+)
+_RETAIL_FUND_SUBCATEGORIES = (
+    "Flexi Cap Fund",
+    "Large Cap Fund",
+    "Mid Cap Fund",
+    "Small Cap Fund",
+    "ELSS Fund",
+    "Index Fund",
+)
 
 _DISCOVER_STOCK_HEALTH_TTL = 60
 _DISCOVER_STOCK_STALE_BUSINESS_DAYS = 3
@@ -1952,6 +2041,55 @@ def _normalize_thinking_markup(text: str | None) -> str:
         return f"<thinking>\n{leading_clean}\n</thinking>"
 
     return text
+
+
+def _strip_leaked_leading_plan(
+    text: str | None,
+) -> tuple[str, str | None]:
+    """Strip leaked planner prose from the visible answer start only.
+
+    Returns (clean_visible_text, stripped_plan_or_none). This is a
+    last-mile safety net after generic cleanup so we don't persist or
+    show planner text if the model emitted instructions inline without
+    proper <thinking> tags.
+    """
+    if not text:
+        return "", None
+
+    normalized = _normalize_thinking_markup(text)
+    extracted = _extract_thinking_text(normalized)
+    visible = re.sub(
+        r"<thinking>.*?</thinking>", "", normalized, flags=re.DOTALL | re.IGNORECASE,
+    ).lstrip()
+    if extracted:
+        return visible, extracted
+
+    double_nl = visible.find("\n\n")
+    md_marker = None
+    for token in ("\n**", "\n# ", "\n## ", "\n- ", "\n* ", "\n1."):
+        idx = visible.find(token)
+        if idx != -1 and (md_marker is None or idx < md_marker):
+            md_marker = idx
+    inline_md = None
+    m = re.search(r"[.!?]\s*\*\*", visible)
+    if m:
+        inline_md = m.start() + 1
+
+    split_candidates = [
+        c for c in (double_nl, md_marker, inline_md)
+        if c is not None and c > 0
+    ]
+    if not split_candidates:
+        return visible, None
+
+    split_at = min(split_candidates)
+    leading = visible[:split_at].strip()
+    tail = visible[split_at:].lstrip("\n").lstrip()
+    if not _looks_like_leaked_plan(leading):
+        return visible, None
+    if not tail:
+        return "", leading
+    return tail, leading
 
 
 def _extract_thinking_text(text: str | None) -> str | None:
@@ -3769,7 +3907,9 @@ async def _execute_tool(
                 "last_price": last_price,
                 "percent_change_1d": _f(d.get("percent_change")),
                 "percent_change_1w": _f(d.get("percent_change_1w")),
+                "percent_change_1m": _f(d.get("percent_change_1m")),
                 "percent_change_3m": _f(d.get("percent_change_3m")),
+                "percent_change_6m": _f(d.get("percent_change_6m")),
                 "percent_change_1y": _f(d.get("percent_change_1y")),
                 "percent_change_3y": _f(d.get("percent_change_3y")),
                 "percent_change_5y": _f(d.get("percent_change_5y")),
@@ -4040,9 +4180,13 @@ async def _execute_tool(
                 "nav": d.get("nav"),
                 "expense_ratio": d.get("expense_ratio"),
                 "aum_cr": d.get("aum_cr"),
+                "returns_1m": d.get("returns_1m"),
+                "returns_3m": d.get("returns_3m"),
+                "returns_6m": d.get("returns_6m"),
                 "returns_1y": d.get("returns_1y"),
                 "returns_3y": d.get("returns_3y"),
                 "returns_5y": d.get("returns_5y"),
+                "returns_10y": d.get("returns_10y"),
                 "sharpe": d.get("sharpe"),
                 "sortino": d.get("sortino"),
                 "score": d.get("score"),
@@ -4061,7 +4205,7 @@ async def _execute_tool(
                 return {"error": err}
             _mf_select = (
                 "SELECT scheme_code, scheme_name, category, sub_category, nav, "
-                "returns_1y, returns_3y, returns_5y, expense_ratio, "
+                "returns_1m, returns_3m, returns_6m, returns_1y, returns_3y, returns_5y, returns_10y, expense_ratio, "
                 "aum_cr, score, risk_level "
                 "FROM discover_mutual_fund_snapshots "
             )
@@ -5463,9 +5607,11 @@ async def _execute_tool(
                 "lagging_sectors": laggards,
                 "news_drivers": drivers,
                 "citation_note": (
-                    "Every causal claim in the reply MUST cite one of "
-                    "the news_drivers items (title + source). Do not "
-                    "invent headlines or generic macro narrative."
+                    "Lead with tape, breadth, and sector leadership. "
+                    "Use news_drivers only as supporting evidence or "
+                    "possible catalysts. If no strong headline is "
+                    "retrieved, say the move is visible in market "
+                    "internals but the exact catalyst is unclear."
                 ),
             }
 
@@ -6477,7 +6623,7 @@ async def _execute_tool(
 _STOCK_SCREEN_COLUMNS = {
     "symbol", "display_name", "sector", "industry",
     "last_price", "percent_change", "previous_close",
-    "percent_change_1w", "percent_change_3m",
+    "percent_change_1w", "percent_change_1m", "percent_change_3m", "percent_change_6m",
     "percent_change_1y", "percent_change_3y", "percent_change_5y",
     "pe_ratio", "forward_pe", "price_to_book", "dividend_yield", "market_cap",
     "roe", "roce", "debt_to_equity", "interest_coverage",
@@ -6497,7 +6643,8 @@ _STOCK_SCREEN_COLUMNS = {
 _MF_SCREEN_COLUMNS = {
     "scheme_code", "scheme_name", "category", "sub_category",
     "nav", "expense_ratio", "aum_cr",
-    "returns_1y", "returns_3y", "returns_5y",
+    "returns_1m", "returns_3m", "returns_6m", "returns_1y",
+    "returns_3y", "returns_5y", "returns_10y",
     "sharpe", "sortino", "score", "risk_level",
     "fund_house", "fund_manager",
 }
@@ -6524,9 +6671,17 @@ _COLUMN_ALIASES_MF = {
     "code": "scheme_code",
     "nav_value": "nav",
     "aum": "aum_cr",
+    "returns_1_month": "returns_1m",
+    "returns_3_month": "returns_3m",
+    "returns_6_month": "returns_6m",
+    "returns_10_year": "returns_10y",
     "returns_1_year": "returns_1y",
     "returns_3_year": "returns_3y",
     "returns_5_year": "returns_5y",
+    "return_1m": "returns_1m",
+    "return_3m": "returns_3m",
+    "return_6m": "returns_6m",
+    "return_10y": "returns_10y",
     "return_1y": "returns_1y",
     "return_3y": "returns_3y",
     "return_5y": "returns_5y",
@@ -6741,6 +6896,14 @@ async def save_message(
             extracted_plan = _extract_thinking_text(normalized)
             if extracted_plan and not thinking_text:
                 thinking_text = extracted_plan
+        cleaned_content, stripped_plan = _strip_leaked_leading_plan(content)
+        if stripped_plan:
+            content = cleaned_content
+            thinking_text = (
+                f"{thinking_text}\n\n{stripped_plan}".strip()
+                if thinking_text
+                else stripped_plan
+            )
 
     await pool.execute(
         """
@@ -8708,6 +8871,17 @@ async def stream_chat_response(
     ).strip()
     final_response = _TOOL_PATTERN.sub("", final_response).strip()
     final_response = _CARD_PATTERN.sub("", final_response).strip()
+    final_response, stripped_plan = _strip_leaked_leading_plan(final_response)
+    if stripped_plan:
+        thinking_text = (
+            f"{thinking_text}\n\n{stripped_plan}".strip()
+            if thinking_text
+            else stripped_plan
+        )
+        logger.warning(
+            "chat_stream: stripped leaked planner text session=%s preview=%r",
+            session_id[:12], stripped_plan[:160],
+        )
 
     # Extract follow-up suggestions (max 5 chips, max 12 words each).
     follow_ups = []
@@ -8929,8 +9103,14 @@ _prefetch_cache: dict[str, Any] = {
     "snapshot": None,         # pre-rendered markdown block
     "updated_at": 0.0,        # epoch seconds of last refresh
     "indices": {},            # {asset_name: {price, change_pct, prev_close}}
+    "index_horizons": {},     # {asset_name: {"1w": pct, "1m": pct, ...}}
     "top_gainers": [],        # [{symbol, name, change_pct, price}, ...]
     "top_losers": [],
+    "breadth": {},            # {advances, declines, ad_ratio, avg_percent_change}
+    "sector_leaders": [],     # [{sector, avg_pct, n}, ...]
+    "sector_laggards": [],
+    "fii_dii_flow": {},       # {fii_net_cash, dii_net_cash, as_of}
+    "macro_india": {},        # {inflation_cpi, repo_rate, gdp_growth}
     "fx_majors": {},          # {pair: {price, change_pct}}
     "commodities": {},        # {name: {price, change_pct}}
     "market_hours": {},       # {india_open, us_open, ...}
@@ -8938,6 +9118,154 @@ _prefetch_cache: dict[str, Any] = {
 _PREFETCH_INTERVAL = 30        # seconds between background refreshes
 _PREFETCH_STALE_AFTER = 120    # treat as stale after 2 minutes
 _prefetch_task: asyncio.Task | None = None
+
+_CONTEXT_INDEX_ASSETS = (
+    "Nifty 50", "Sensex", "Nifty Bank", "Nifty IT", "Nifty Auto",
+    "Nifty Pharma", "S&P500", "NASDAQ", "Dow Jones", "Nikkei 225",
+    "FTSE 100", "DAX",
+)
+_INDEX_HORIZON_DELTAS: dict[str, timedelta] = {
+    "1w": timedelta(days=7),
+    "1m": timedelta(days=30),
+    "3m": timedelta(days=90),
+    "1y": timedelta(days=365),
+    "5y": timedelta(days=365 * 5),
+    "10y": timedelta(days=365 * 10),
+}
+
+
+async def _compute_index_horizon_snapshot(
+    pool,
+    assets: tuple[str, ...],
+) -> dict[str, dict[str, float]]:
+    """Return available horizon returns for the given market indices."""
+    rows = await pool.fetch(
+        """
+        WITH latest AS (
+            SELECT DISTINCT ON (asset)
+                asset, price, timestamp
+            FROM market_prices
+            WHERE instrument_type = 'index'
+              AND asset = ANY($1::text[])
+            ORDER BY asset, timestamp DESC
+        )
+        SELECT
+            l.asset,
+            l.price AS latest_price,
+            h1.price AS p_1w,
+            h2.price AS p_1m,
+            h3.price AS p_3m,
+            h4.price AS p_1y,
+            h5.price AS p_5y,
+            h6.price AS p_10y
+        FROM latest l
+        LEFT JOIN LATERAL (
+            SELECT price FROM market_prices
+            WHERE instrument_type = 'index' AND asset = l.asset
+              AND timestamp <= l.timestamp - INTERVAL '7 days'
+            ORDER BY timestamp DESC LIMIT 1
+        ) h1 ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT price FROM market_prices
+            WHERE instrument_type = 'index' AND asset = l.asset
+              AND timestamp <= l.timestamp - INTERVAL '30 days'
+            ORDER BY timestamp DESC LIMIT 1
+        ) h2 ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT price FROM market_prices
+            WHERE instrument_type = 'index' AND asset = l.asset
+              AND timestamp <= l.timestamp - INTERVAL '90 days'
+            ORDER BY timestamp DESC LIMIT 1
+        ) h3 ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT price FROM market_prices
+            WHERE instrument_type = 'index' AND asset = l.asset
+              AND timestamp <= l.timestamp - INTERVAL '365 days'
+            ORDER BY timestamp DESC LIMIT 1
+        ) h4 ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT price FROM market_prices
+            WHERE instrument_type = 'index' AND asset = l.asset
+              AND timestamp <= l.timestamp - INTERVAL '1825 days'
+            ORDER BY timestamp DESC LIMIT 1
+        ) h5 ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT price FROM market_prices
+            WHERE instrument_type = 'index' AND asset = l.asset
+              AND timestamp <= l.timestamp - INTERVAL '3650 days'
+            ORDER BY timestamp DESC LIMIT 1
+        ) h6 ON TRUE
+        ORDER BY l.asset
+        """,
+        list(assets),
+    )
+    out: dict[str, dict[str, float]] = {}
+    for row in rows:
+        latest = row.get("latest_price")
+        if latest is None:
+            continue
+        latest_price = float(latest)
+        if latest_price == 0:
+            continue
+        horizons: dict[str, float] = {}
+        for key, col in (
+            ("1w", "p_1w"),
+            ("1m", "p_1m"),
+            ("3m", "p_3m"),
+            ("1y", "p_1y"),
+            ("5y", "p_5y"),
+            ("10y", "p_10y"),
+        ):
+            prev = row.get(col)
+            if prev is None:
+                continue
+            try:
+                prev_price = float(prev)
+            except (TypeError, ValueError):
+                continue
+            if prev_price == 0:
+                continue
+            horizons[key] = round(((latest_price - prev_price) / prev_price) * 100, 2)
+        if horizons:
+            out[str(row["asset"])] = horizons
+    return out
+
+
+def _fmt_pct_value(value: Any) -> str | None:
+    try:
+        if value is None:
+            return None
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    sign = "+" if num >= 0 else ""
+    return f"{sign}{num:.2f}%"
+
+
+def _row_value(row: Any, key: str) -> Any:
+    if row is None:
+        return None
+    try:
+        return row.get(key)
+    except AttributeError:
+        try:
+            return row[key]
+        except Exception:
+            return None
+
+
+def _isoish_date(value: Any) -> str | None:
+    if value is None:
+        return None
+    ist = timezone(timedelta(hours=5, minutes=30))
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.date().isoformat()
+        return value.astimezone(ist).date().isoformat()
+    try:
+        return value.date().isoformat()
+    except Exception:
+        return None
 
 
 async def _refresh_prefetch_cache_once() -> None:
@@ -8967,10 +9295,14 @@ async def _refresh_prefetch_cache_once() -> None:
                     "change_pct": float(p.get("change_percent") or 0),
                     "prev_close": p.get("previous_close"),
                 }
+        index_horizons = await _compute_index_horizon_snapshot(pool, _CONTEXT_INDEX_ASSETS)
 
         # 2. Top 5 gainers + top 5 losers (NSE universe)
         top_gainers: list[dict[str, Any]] = []
         top_losers: list[dict[str, Any]] = []
+        breadth: dict[str, Any] = {}
+        sector_leaders: list[dict[str, Any]] = []
+        sector_laggards: list[dict[str, Any]] = []
         if not stock_health.get("stale"):
             gain_rows = await pool.fetch(
                 "SELECT symbol, display_name, percent_change, last_price "
@@ -9002,6 +9334,112 @@ async def _refresh_prefetch_cache_once() -> None:
                 }
                 for r in lose_rows
             ]
+            breadth_row = await pool.fetchrow(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE percent_change > 0) AS advances,
+                    COUNT(*) FILTER (WHERE percent_change < 0) AS declines,
+                    AVG(percent_change) AS avg_percent_change
+                FROM discover_stock_snapshots
+                WHERE percent_change IS NOT NULL
+                """
+            )
+            if breadth_row:
+                advances = int(breadth_row["advances"] or 0)
+                declines = int(breadth_row["declines"] or 0)
+                breadth = {
+                    "advances": advances,
+                    "declines": declines,
+                    "ad_ratio": round(advances / declines, 2) if declines else None,
+                    "avg_percent_change": round(float(breadth_row["avg_percent_change"] or 0), 2),
+                }
+            sector_rows = await pool.fetch(
+                """
+                SELECT sector, AVG(percent_change) AS avg_chg, COUNT(*) AS n
+                FROM discover_stock_snapshots
+                WHERE percent_change IS NOT NULL
+                  AND sector IS NOT NULL AND sector <> ''
+                GROUP BY sector
+                HAVING COUNT(*) >= 3
+                ORDER BY AVG(percent_change) DESC
+                """
+            )
+            sector_leaders = [
+                {
+                    "sector": r["sector"],
+                    "avg_pct": round(float(r["avg_chg"] or 0), 2),
+                    "n": int(r["n"] or 0),
+                }
+                for r in sector_rows[:3]
+            ]
+            sector_laggards = [
+                {
+                    "sector": r["sector"],
+                    "avg_pct": round(float(r["avg_chg"] or 0), 2),
+                    "n": int(r["n"] or 0),
+                }
+                for r in sector_rows[-3:][::-1]
+            ]
+
+        fii_dii_flow: dict[str, Any] = {}
+        flow_rows = await pool.fetch(
+            """
+            SELECT indicator_name, value, timestamp
+            FROM macro_indicators
+            WHERE country IN ('India', 'IN')
+              AND indicator_name IN ('fii_net_cash', 'dii_net_cash')
+            ORDER BY timestamp DESC
+            LIMIT 12
+            """
+        )
+        latest_flow_by_name: dict[str, Any] = {}
+        for row in flow_rows:
+            name = str(row["indicator_name"])
+            if name not in latest_flow_by_name:
+                latest_flow_by_name[name] = row
+        if latest_flow_by_name:
+            today_ist_iso = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date().isoformat()
+            flow_dates = [
+                _isoish_date(_row_value(row, "timestamp"))
+                for row in latest_flow_by_name.values()
+                if _row_value(row, "timestamp") is not None
+            ]
+            flow_dates = [d for d in flow_dates if d]
+            as_of_date = max(flow_dates) if flow_dates else None
+            freshness = "last_available"
+            if flow_dates and all(d == today_ist_iso for d in flow_dates):
+                freshness = "today"
+            elif len(set(flow_dates)) > 1:
+                freshness = "mixed"
+            fii_dii_flow = {
+                "fii_net_cash": _row_value(latest_flow_by_name.get("fii_net_cash"), "value"),
+                "dii_net_cash": _row_value(latest_flow_by_name.get("dii_net_cash"), "value"),
+                "as_of_date": as_of_date,
+                "freshness": freshness,
+            }
+
+        macro_india: dict[str, Any] = {}
+        macro_rows = await pool.fetch(
+            """
+            SELECT indicator_name, value, timestamp
+            FROM macro_indicators
+            WHERE country IN ('India', 'IN')
+              AND indicator_name IN ('inflation_cpi', 'repo_rate', 'gdp_growth')
+            ORDER BY timestamp DESC
+            LIMIT 12
+            """
+        )
+        latest_macro_by_name: dict[str, Any] = {}
+        for row in macro_rows:
+            name = str(row["indicator_name"])
+            if name not in latest_macro_by_name:
+                latest_macro_by_name[name] = row
+        if latest_macro_by_name:
+            macro_india = {
+                "inflation_cpi": _row_value(latest_macro_by_name.get("inflation_cpi"), "value"),
+                "repo_rate": _row_value(latest_macro_by_name.get("repo_rate"), "value"),
+                "gdp_growth": _row_value(latest_macro_by_name.get("gdp_growth"), "value"),
+            }
 
         # 3. FX majors
         fx_rows = await get_latest_prices(instrument_type="currency")
@@ -9040,7 +9478,17 @@ async def _refresh_prefetch_cache_once() -> None:
 
         # 6. Render compact snapshot
         snapshot = _render_prefetch_snapshot(
-            indices, top_gainers, top_losers, fx_majors, commodities,
+            indices,
+            index_horizons,
+            top_gainers,
+            top_losers,
+            breadth,
+            sector_leaders,
+            sector_laggards,
+            fii_dii_flow,
+            macro_india,
+            fx_majors,
+            commodities,
             market_hours,
         )
         # TEMP DEBUG: log the first two lines of the snapshot so we can
@@ -9056,8 +9504,14 @@ async def _refresh_prefetch_cache_once() -> None:
             "snapshot": snapshot,
             "updated_at": time.time(),
             "indices": indices,
+            "index_horizons": index_horizons,
             "top_gainers": top_gainers,
             "top_losers": top_losers,
+            "breadth": breadth,
+            "sector_leaders": sector_leaders,
+            "sector_laggards": sector_laggards,
+            "fii_dii_flow": fii_dii_flow,
+            "macro_india": macro_india,
             "fx_majors": fx_majors,
             "commodities": commodities,
             "market_hours": market_hours,
@@ -9075,8 +9529,14 @@ async def _refresh_prefetch_cache_once() -> None:
 
 def _render_prefetch_snapshot(
     indices: dict,
+    index_horizons: dict,
     top_gainers: list,
     top_losers: list,
+    breadth: dict,
+    sector_leaders: list,
+    sector_laggards: list,
+    fii_dii_flow: dict,
+    macro_india: dict,
     fx_majors: dict,
     commodities: dict,
     market_hours: dict,
@@ -9189,6 +9649,81 @@ def _render_prefetch_snapshot(
                 f"- {name}: {data['price']:,.2f} "
                 f"({sign}{data['change_pct']:.2f}% {pct_label})"
             )
+        lines.append("")
+
+    if breadth:
+        breadth_bits: list[str] = []
+        if breadth.get("advances") is not None and breadth.get("declines") is not None:
+            breadth_bits.append(
+                f"Adv/Dec {int(breadth['advances'])}/{int(breadth['declines'])}"
+            )
+        if breadth.get("ad_ratio") is not None:
+            breadth_bits.append(f"A/D {float(breadth['ad_ratio']):.2f}x")
+        avg_move = _fmt_pct_value(breadth.get("avg_percent_change"))
+        if avg_move is not None:
+            breadth_bits.append(f"Avg move {avg_move}")
+        if breadth_bits:
+            lines.append("**Breadth:** " + " | ".join(breadth_bits))
+
+    if sector_leaders:
+        leader_bits = [
+            f"{row['sector']} {_fmt_pct_value(row.get('avg_pct')) or 'n/a'} ({int(row.get('n') or 0)} stocks)"
+            for row in sector_leaders[:3]
+        ]
+        lines.append("**Sector Leaders:** " + " | ".join(leader_bits))
+    if sector_laggards:
+        laggard_bits = [
+            f"{row['sector']} {_fmt_pct_value(row.get('avg_pct')) or 'n/a'} ({int(row.get('n') or 0)} stocks)"
+            for row in sector_laggards[:3]
+        ]
+        lines.append("**Sector Laggards:** " + " | ".join(laggard_bits))
+
+    if fii_dii_flow:
+        def _fmt_flow(value: Any) -> str | None:
+            try:
+                if value is None:
+                    return None
+                num = float(value)
+            except (TypeError, ValueError):
+                return None
+            sign = "+" if num >= 0 else "-"
+            return f"{sign}₹{abs(num):,.0f} Cr"
+
+        flow_bits: list[str] = []
+        fii_fmt = _fmt_flow(fii_dii_flow.get("fii_net_cash"))
+        dii_fmt = _fmt_flow(fii_dii_flow.get("dii_net_cash"))
+        if fii_fmt is not None:
+            flow_bits.append(f"FII {fii_fmt}")
+        if dii_fmt is not None:
+            flow_bits.append(f"DII {dii_fmt}")
+        if flow_bits:
+            freshness = fii_dii_flow.get("freshness")
+            as_of_date = fii_dii_flow.get("as_of_date")
+            if freshness == "today":
+                prefix = "**FII/DII Flow (today):** "
+            elif freshness == "mixed" and as_of_date:
+                prefix = f"**FII/DII Flow (mixed recency, latest {as_of_date}):** "
+            elif as_of_date:
+                prefix = f"**FII/DII Flow (last available {as_of_date}):** "
+            else:
+                prefix = "**FII/DII Flow:** "
+            lines.append(prefix + " | ".join(flow_bits))
+
+    if macro_india:
+        macro_bits: list[str] = []
+        inflation = _fmt_pct_value(macro_india.get("inflation_cpi"))
+        repo = _fmt_pct_value(macro_india.get("repo_rate"))
+        gdp = _fmt_pct_value(macro_india.get("gdp_growth"))
+        if inflation is not None:
+            macro_bits.append(f"CPI {inflation}")
+        if repo is not None:
+            macro_bits.append(f"Repo {repo}")
+        if gdp is not None:
+            macro_bits.append(f"GDP {gdp}")
+        if macro_bits:
+            lines.append("**India Macro:** " + " | ".join(macro_bits))
+
+    if any((breadth, sector_leaders, sector_laggards, fii_dii_flow, macro_india)):
         lines.append("")
 
     # Top movers
@@ -9350,6 +9885,403 @@ async def _fetch_starred_stock_rows(
     )
 
 
+def _query_needs_market_context(user_message: str | None) -> bool:
+    return bool(_MARKET_CONTEXT_SCOPE_RE.search(user_message or ""))
+
+
+def _query_needs_macro_flow_context(user_message: str | None) -> bool:
+    return bool(_MACRO_FLOW_SCOPE_RE.search(user_message or ""))
+
+
+def _query_is_long_term(user_message: str | None) -> bool:
+    return bool(_LONG_TERM_SCOPE_RE.search(user_message or ""))
+
+
+def _query_is_short_term(user_message: str | None) -> bool:
+    return bool(_SHORT_TERM_SCOPE_RE.search(user_message or ""))
+
+
+def _extract_context_stock_symbols(user_message: str | None) -> list[str]:
+    text = user_message or ""
+    if not text:
+        return []
+    ambiguous_aliases = {
+        "tech", "sun", "asian", "apollo", "tata", "mahindra", "bajaj", "adani", "hindustan",
+    }
+    stopwords = {
+        "I", "A", "AN", "THE", "AND", "OR", "VS", "VERSUS", "IS", "IT", "ON",
+        "AT", "TO", "OF", "MY", "BUY", "NOW", "ALL", "HOW", "THIS", "THAT",
+        "WITH", "FOR", "IN", "SO", "DO", "GO", "NO", "YES", "US", "UK", "EU",
+        "ARE", "WAS", "WHY", "WHO", "WHAT", "PE", "IPO", "SIP", "FII", "DII",
+        "RBI", "USD", "INR", "NAV", "NPS", "EMI", "GDP", "CPI", "ELSS",
+    }
+    out: list[str] = []
+    seen: set[str] = set()
+    allcaps = re.findall(r"\b([A-Z][A-Z0-9&\-]{1,11})\b", text)
+    for token in allcaps:
+        if token in stopwords:
+            continue
+        resolved = _resolve_symbol_alias(token)
+        if resolved and resolved not in seen:
+            seen.add(resolved)
+            out.append(resolved)
+    lowered = (user_message or "").lower()
+    for alias, symbol in _COMPANY_NAME_TO_TICKER.items():
+        if alias in ambiguous_aliases:
+            continue
+        if re.search(rf"\b{re.escape(alias)}\b", lowered) and symbol not in seen:
+            seen.add(symbol)
+            out.append(symbol)
+    return out[:4]
+
+
+def _extract_sector_mentions(user_message: str | None) -> list[str]:
+    lowered = (user_message or "").lower()
+    if not lowered:
+        return []
+    sectors: list[str] = []
+    seen: set[str] = set()
+    for alias, canonical in _SECTOR_ALIASES.items():
+        if alias == "it" and not re.search(r"\bnifty it\b|\bit sector\b", lowered):
+            continue
+        if re.search(rf"\b{re.escape(alias)}\b", lowered) and canonical not in seen:
+            seen.add(canonical)
+            sectors.append(canonical)
+    return sectors[:2]
+
+
+def _select_prompt_horizons(
+    user_message: str | None,
+    asset_type: str,
+) -> list[str]:
+    text = (user_message or "").lower()
+    supported = {
+        "index": ("1w", "1m", "3m", "1y", "5y", "10y"),
+        "stock": ("1w", "1m", "3m", "6m", "1y", "3y", "5y"),
+        "mf": ("1m", "3m", "6m", "1y", "3y", "5y", "10y"),
+    }.get(asset_type, ())
+    if not supported:
+        return []
+    explicit_patterns = {
+        "1w": (r"\b1w\b", r"\b1 week\b", r"\b1-week\b"),
+        "1m": (r"\b1m\b", r"\b1 month\b", r"\b1-month\b"),
+        "3m": (r"\b3m\b", r"\b3 months?\b", r"\bquarter\b"),
+        "6m": (r"\b6m\b", r"\b6 months?\b", r"\bhalf[\s-]?year\b"),
+        "1y": (r"\b1y\b", r"\b1 year\b", r"\b12 months?\b"),
+        "3y": (r"\b3y\b", r"\b3 years?\b"),
+        "5y": (r"\b5y\b", r"\b5 years?\b"),
+        "10y": (r"\b10y\b", r"\b10 years?\b", r"\bdecade\b"),
+    }
+    explicit = [
+        key for key in supported
+        if any(re.search(pattern, text, re.IGNORECASE) for pattern in explicit_patterns.get(key, ()))
+    ]
+    if explicit:
+        return explicit
+    if _query_is_long_term(user_message):
+        if asset_type == "index":
+            return [h for h in ("1y", "5y", "10y") if h in supported]
+        if asset_type == "stock":
+            return [h for h in ("1y", "3y", "5y") if h in supported]
+        return [h for h in ("1y", "3y", "5y", "10y") if h in supported]
+    if _query_is_short_term(user_message):
+        if asset_type == "mf":
+            return [h for h in ("1m", "3m", "6m") if h in supported]
+        return [h for h in ("1w", "1m", "3m") if h in supported]
+    if asset_type == "index":
+        return ["1w", "1m", "3m"]
+    if asset_type == "stock":
+        return ["1m", "1y", "3y"]
+    return ["1y", "3y", "5y"]
+
+
+def _render_horizon_ladder(
+    data: dict[str, Any] | None,
+    selected_horizons: list[str],
+) -> str | None:
+    if not data:
+        return None
+    bits: list[str] = []
+    for horizon in selected_horizons:
+        formatted = _fmt_pct_value(data.get(horizon))
+        if formatted is not None:
+            bits.append(f"{horizon.upper()} {formatted}")
+    return " | ".join(bits) if bits else None
+
+
+def _render_row_horizon_ladder(
+    row: dict[str, Any],
+    columns: dict[str, str],
+    selected_horizons: list[str],
+) -> str | None:
+    bits: list[str] = []
+    for horizon in selected_horizons:
+        column = columns.get(horizon)
+        if not column:
+            continue
+        formatted = _fmt_pct_value(row.get(column))
+        if formatted is not None:
+            bits.append(f"{horizon.upper()} {formatted}")
+    return " | ".join(bits) if bits else None
+
+
+def _select_indices_for_prompt(user_message: str | None) -> list[str]:
+    text = (user_message or "").lower()
+    selected: list[str] = []
+    seen: set[str] = set()
+    for alias, name in _CONTEXT_INDEX_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", text) and name not in seen:
+            seen.add(name)
+            selected.append(name)
+    if selected:
+        return selected
+    if _WIDER_ASSET_SCOPE_RE.search(text):
+        return list(_INDIA_CONTEXT_INDICES[:3] + _GLOBAL_CONTEXT_INDICES[:3])
+    return list(_INDIA_CONTEXT_INDICES)
+
+
+async def _build_stock_context_addon(
+    pool,
+    user_message: str,
+) -> str | None:
+    symbols = _extract_context_stock_symbols(user_message)
+    selected_horizons = _select_prompt_horizons(user_message, "stock")
+    columns = {
+        "1w": "percent_change_1w",
+        "1m": "percent_change_1m",
+        "3m": "percent_change_3m",
+        "6m": "percent_change_6m",
+        "1y": "percent_change_1y",
+        "3y": "percent_change_3y",
+        "5y": "percent_change_5y",
+    }
+    rows: list[Any] = []
+    title = "Stock context"
+    if symbols:
+        placeholders = ", ".join(f"${i + 1}" for i in range(len(symbols)))
+        rows = await pool.fetch(
+            "SELECT symbol, display_name, sector, last_price, percent_change, "
+            "percent_change_1w, percent_change_1m, percent_change_3m, percent_change_6m, "
+            "percent_change_1y, percent_change_3y, percent_change_5y, "
+            "score, roe, pe_ratio "
+            f"FROM discover_stock_snapshots WHERE symbol IN ({placeholders})",
+            *symbols,
+        )
+        title = "Named stocks"
+    else:
+        sectors = _extract_sector_mentions(user_message)
+        if not sectors:
+            return None
+        rows = await pool.fetch(
+            "SELECT symbol, display_name, sector, last_price, percent_change, "
+            "percent_change_1w, percent_change_1m, percent_change_3m, percent_change_6m, "
+            "percent_change_1y, percent_change_3y, percent_change_5y, "
+            "score, roe, pe_ratio "
+            "FROM discover_stock_snapshots "
+            "WHERE sector = ANY($1::text[]) "
+            "ORDER BY score DESC NULLS LAST, market_cap DESC NULLS LAST "
+            "LIMIT 3",
+            sectors,
+        )
+        title = f"Representative sector stocks ({', '.join(sectors)})"
+    if not rows:
+        return None
+    lines = [f"**{title}:**"]
+    for raw_row in rows[:3]:
+        row = record_to_dict(raw_row)
+        horizon_ladder = _render_row_horizon_ladder(row, columns, selected_horizons)
+        extra_bits: list[str] = []
+        day_move = _fmt_pct_value(row.get("percent_change"))
+        if day_move is not None:
+            extra_bits.append(f"1D {day_move}")
+        if horizon_ladder:
+            extra_bits.append(horizon_ladder)
+        try:
+            if row.get("score") is not None:
+                extra_bits.append(f"Score {float(row['score']):.0f}")
+        except (TypeError, ValueError):
+            pass
+        roe = _fmt_pct_value(row.get("roe"))
+        if roe is not None:
+            extra_bits.append(f"ROE {roe}")
+        try:
+            if row.get("pe_ratio") is not None:
+                extra_bits.append(f"PE {float(row['pe_ratio']):.1f}x")
+        except (TypeError, ValueError):
+            pass
+        lines.append(
+            f"- {row.get('symbol')} ({row.get('sector') or 'n/a'}): ₹{float(row.get('last_price') or 0):,.2f}"
+            + (f" | {' | '.join(extra_bits)}" if extra_bits else "")
+        )
+    return "\n".join(lines)
+
+
+async def _build_mf_context_addon(
+    pool,
+    user_message: str,
+) -> str | None:
+    selected_horizons = _select_prompt_horizons(user_message, "mf")
+    lowered = user_message.lower()
+    requested_patterns: list[str] = []
+    category_aliases = {
+        "flexi cap": "%flexi cap%",
+        "large cap": "%large cap%",
+        "mid cap": "%mid cap%",
+        "small cap": "%small cap%",
+        "elss": "%elss%",
+        "index fund": "%index%",
+        "index": "%index%",
+        "liquid": "%liquid%",
+        "overnight": "%overnight%",
+        "debt": "%debt%",
+        "short duration": "%short duration%",
+        "corporate bond": "%corporate bond%",
+        "balanced advantage": "%balanced advantage%",
+        "hybrid": "%hybrid%",
+    }
+    for alias, pattern in category_aliases.items():
+        if alias in lowered and pattern not in requested_patterns:
+            requested_patterns.append(pattern)
+    default_patterns = [
+            "%flexi cap%",
+            "%large cap%",
+            "%mid cap%",
+            "%small cap%",
+            "%elss%",
+            "%index%",
+        ]
+    if not requested_patterns:
+        requested_patterns = list(default_patterns)
+    horizon_column = next(
+        (
+            {
+                "1m": "returns_1m",
+                "3m": "returns_3m",
+                "6m": "returns_6m",
+                "1y": "returns_1y",
+                "3y": "returns_3y",
+                "5y": "returns_5y",
+                "10y": "returns_10y",
+            }[h]
+            for h in selected_horizons
+        ),
+        "returns_1y",
+    )
+    category_rows = await pool.fetch(
+        f"""
+        SELECT
+            sub_category,
+            COUNT(*) AS n,
+            AVG(returns_1m) AS returns_1m,
+            AVG(returns_3m) AS returns_3m,
+            AVG(returns_6m) AS returns_6m,
+            AVG(returns_1y) AS returns_1y,
+            AVG(returns_3y) AS returns_3y,
+            AVG(returns_5y) AS returns_5y,
+            AVG(returns_10y) AS returns_10y
+        FROM discover_mutual_fund_snapshots
+        WHERE sub_category IS NOT NULL
+          AND LOWER(sub_category) LIKE ANY($1::text[])
+        GROUP BY sub_category
+        HAVING COUNT(*) >= 3
+        ORDER BY {horizon_column} DESC NULLS LAST, COUNT(*) DESC
+        LIMIT 3
+        """,
+        requested_patterns,
+    )
+    if not category_rows and requested_patterns != default_patterns:
+        category_rows = await pool.fetch(
+            f"""
+            SELECT
+                sub_category,
+                COUNT(*) AS n,
+                AVG(returns_1m) AS returns_1m,
+                AVG(returns_3m) AS returns_3m,
+                AVG(returns_6m) AS returns_6m,
+                AVG(returns_1y) AS returns_1y,
+                AVG(returns_3y) AS returns_3y,
+                AVG(returns_5y) AS returns_5y,
+                AVG(returns_10y) AS returns_10y
+            FROM discover_mutual_fund_snapshots
+            WHERE sub_category IS NOT NULL
+              AND LOWER(sub_category) LIKE ANY($1::text[])
+            GROUP BY sub_category
+            HAVING COUNT(*) >= 3
+            ORDER BY {horizon_column} DESC NULLS LAST, COUNT(*) DESC
+            LIMIT 3
+            """,
+            default_patterns,
+        )
+    if not category_rows:
+        return None
+    lines = ["**Mutual fund category context:**"]
+    columns = {
+        "1m": "returns_1m",
+        "3m": "returns_3m",
+        "6m": "returns_6m",
+        "1y": "returns_1y",
+        "3y": "returns_3y",
+        "5y": "returns_5y",
+        "10y": "returns_10y",
+    }
+    for raw_row in category_rows[:3]:
+        row = record_to_dict(raw_row)
+        ladder = _render_row_horizon_ladder(row, columns, selected_horizons)
+        lines.append(
+            f"- {row.get('sub_category')}: {ladder or 'available returns vary by scheme'}"
+            f" | {int(row.get('n') or 0)} schemes"
+        )
+    return "\n".join(lines)
+
+
+def _build_market_context_addon(user_message: str | None) -> str | None:
+    if not (_query_needs_market_context(user_message) or _query_needs_macro_flow_context(user_message)):
+        return None
+    selected_horizons = _select_prompt_horizons(user_message, "index")
+    index_horizons = _prefetch_cache.get("index_horizons") or {}
+    selected_indices = _select_indices_for_prompt(user_message)
+    lines = ["**Index trend context:**"]
+    appended = 0
+    for name in selected_indices:
+        ladder = _render_horizon_ladder(index_horizons.get(name), selected_horizons)
+        if not ladder:
+            continue
+        lines.append(f"- {name}: {ladder}")
+        appended += 1
+    return "\n".join(lines) if appended else None
+
+
+async def _build_prompt_specific_context(
+    user_message: str | None,
+) -> str | None:
+    text = (user_message or "").strip()
+    if not text:
+        return None
+    parts: list[str] = []
+    market_block = _build_market_context_addon(text)
+    if market_block:
+        parts.append(market_block)
+    pool = None
+    if _STOCK_SCOPE_RE.search(text) or _extract_context_stock_symbols(text) or _extract_sector_mentions(text):
+        pool = await get_pool()
+        stock_block = await _build_stock_context_addon(pool, text)
+        if stock_block:
+            parts.append(stock_block)
+    if _MUTUAL_FUND_SCOPE_RE.search(text):
+        if pool is None:
+            pool = await get_pool()
+        mf_block = await _build_mf_context_addon(pool, text)
+        if mf_block:
+            parts.append(mf_block)
+    if not parts:
+        return None
+    return (
+        "**PROMPT-SPECIFIC CONTEXT** "
+        "(background reasoning material — use selectively, do not dump wholesale):\n"
+        + "\n".join(parts)
+    )
+
+
 # ---------------------------------------------------------------------------
 # k-NN query routing
 # ---------------------------------------------------------------------------
@@ -9465,6 +10397,7 @@ async def _knn_route_query(user_message: str, top_k: int = 3) -> list[str]:
 
 def _build_system_prompt(
     live_snapshot: str | None,
+    prompt_context: str | None,
     user_profile: str | None,
     tool_hints: list[str] | None = None,
 ) -> str:
@@ -9479,6 +10412,9 @@ def _build_system_prompt(
     parts: list[str] = []
     if live_snapshot:
         parts.append(live_snapshot)
+        parts.append("")
+    if prompt_context:
+        parts.append(prompt_context)
         parts.append("")
     if user_profile:
         parts.append(user_profile)
@@ -9509,6 +10445,7 @@ async def _build_context(
     """
     # Dynamic system prompt with live data
     live_snapshot = _prefetch_cache.get("snapshot")
+    prompt_context = await _build_prompt_specific_context(user_message)
     user_profile = await _build_user_profile_context(device_id, starred_items)
     # Soft k-NN tool hints based on the current user query. Never blocks
     # the response path — returns an empty list on any failure.
@@ -9519,7 +10456,7 @@ async def _build_context(
         except Exception:
             logger.debug("tool_routing: query routing failed", exc_info=True)
             tool_hints = []
-    system_prompt = _build_system_prompt(live_snapshot, user_profile, tool_hints)
+    system_prompt = _build_system_prompt(live_snapshot, prompt_context, user_profile, tool_hints)
 
     messages = [{"role": "system", "content": system_prompt}]
 
