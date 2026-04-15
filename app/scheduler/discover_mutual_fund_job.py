@@ -405,7 +405,8 @@ class DiscoverMutualFundScraper(BaseScraper):
 
         option_type = None
         slug_low = slug.lower()
-        if "growth" in slug_low:
+        # Accept "cumulative" as a Growth synonym (ICICI legacy naming).
+        if "growth" in slug_low or "cumulative" in slug_low:
             option_type = "Growth"
         elif "idcw" in slug_low or "dividend" in slug_low:
             option_type = "IDCW"
@@ -808,9 +809,18 @@ class DiscoverMutualFundScraper(BaseScraper):
             category, sub_category = self._split_category(current_category)
             option_type = None
             name_lower = scheme_name.lower()
-            if "growth" in name_lower:
+            # ICICI Prudential uses "Cumulative Option" as a legacy
+            # synonym for Growth in several of their index + equity
+            # schemes (Nifty 50 Index, BSE Sensex Index, Manufacturing,
+            # India Opportunities, Pharma Healthcare, Equity Savings).
+            # Treat it as Growth so the _is_direct_growth filter doesn't
+            # silently drop them.
+            if "growth" in name_lower or "cumulative" in name_lower:
                 option_type = "Growth"
-            elif "idcw" in name_lower or "dividend" in name_lower:
+            elif "idcw" in name_lower or (
+                "dividend" in name_lower
+                and "dividend yield" not in (current_category or "").lower()
+            ):
                 option_type = "IDCW"
 
             amc = current_amc
@@ -2903,16 +2913,33 @@ class DiscoverMutualFundScraper(BaseScraper):
                 return False
             name = (row.get("scheme_name") or "").lower()
             opt = (row.get("option_type") or "").lower()
+            sub_cat = (row.get("sub_category") or "").lower()
             # Drop anything that's clearly IDCW/Dividend. Includes the
             # SEBI long-form "Income Distribution cum Capital
             # Withdrawal" that was silently leaving option_type=NULL
             # and passing the old plan_type-only filter.
             if "idcw" in name or "idcw" in opt:
                 return False
-            if "dividend" in name or "dividend" in opt:
-                return False
             if "income distribution" in name:
                 return False
+            # "Dividend" is ambiguous — it's both a plan option AND
+            # part of the legit SEBI sub-category "Dividend Yield Fund"
+            # (funds that invest in dividend-paying stocks, but still
+            # offer a Growth plan). Only reject when "dividend" signals
+            # the plan OPTION, not when it's in the category name.
+            # Sub-category takes precedence: if sub_category is
+            # 'Dividend Yield Fund' we never reject on name match.
+            if "dividend yield" not in sub_cat:
+                if opt == "dividend":
+                    return False
+                # Explicit dividend-plan indicators in the name.
+                if (
+                    "dividend payout" in name
+                    or "dividend reinvestment" in name
+                    or "dividend option" in name
+                    or "- dividend" in name
+                ):
+                    return False
             # Drop closed/legacy/periodic variants by keyword match.
             # Keep this list in sync with the one in _enrich_from_mfapi
             # above — both paths should agree on what "active Direct
