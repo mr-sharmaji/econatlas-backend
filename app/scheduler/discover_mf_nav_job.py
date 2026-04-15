@@ -234,7 +234,12 @@ async def _ingest_amfi_rows(pool) -> tuple[int, int]:  # noqa: ANN001
     t_pre = _dt.now(tz=_tz.utc)
     async with pool.acquire() as conn:
         logger.debug("amfi: pre-ingest snapshot at %s", t_pre.isoformat())
-        payload = [(c, d, n, "amfi") for (c, d, n) in filtered]
+        # scheme_code column is TEXT in discover_mf_nav_history.
+        # asyncpg's executemany doesn't auto-coerce int → text and
+        # will raise DataError on the first int bind. Cast at the
+        # boundary so the int-typed parser output (consistent with
+        # mfapi) flows through to the text-typed column.
+        payload = [(str(c), d, n, "amfi") for (c, d, n) in filtered]
         await conn.executemany(INSERT_SQL, payload)
         actually_new = await conn.fetchval(
             "SELECT COUNT(*) FROM discover_mf_nav_history WHERE ingested_at >= $1",
@@ -444,8 +449,9 @@ async def run_discover_mf_nav_job() -> None:
                     scheme_code, len(rows),
                 )
                 if rows:
-                    # Attach 'mfapi' source to each (code, date, nav) tuple.
-                    rows_with_source = [(c, d, n, "mfapi") for (c, d, n) in rows]
+                    # Attach 'mfapi' source + cast scheme_code to str
+                    # (column is TEXT, see _ingest_amfi_rows note).
+                    rows_with_source = [(str(c), d, n, "mfapi") for (c, d, n) in rows]
                     await pool.executemany(INSERT_SQL, rows_with_source)
                     counters["inserted"] += len(rows)
                     logger.debug(
@@ -570,7 +576,8 @@ async def run_discover_mf_nav_backfill_job() -> None:
                 if rows:
                     # executemany preserves ON CONFLICT DO NOTHING, so
                     # existing good rows are not modified.
-                    rows_with_source = [(c, d, n, "mfapi") for (c, d, n) in rows]
+                    # scheme_code → str (column is TEXT).
+                    rows_with_source = [(str(c), d, n, "mfapi") for (c, d, n) in rows]
                     await pool.executemany(INSERT_SQL, rows_with_source)
                     counters["inserted"] += len(rows)
             except Exception:
