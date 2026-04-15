@@ -379,6 +379,40 @@ async def task_news_embed(ctx: dict) -> None:
     await _run_with_retry(ctx, "news_embed", run_news_embed_job)
 
 
+async def task_stock_future_prospects(ctx: dict) -> None:
+    from app.scheduler.stock_future_prospects_job import run_stock_future_prospects_job
+
+    await _run_with_retry(
+        ctx,
+        "stock_future_prospects",
+        run_stock_future_prospects_job,
+    )
+
+
+async def task_stock_future_prospects_recent(ctx: dict) -> None:
+    from app.scheduler.stock_future_prospects_job import (
+        run_stock_future_prospects_recent_job,
+    )
+
+    await _run_with_retry(
+        ctx,
+        "stock_future_prospects_recent",
+        run_stock_future_prospects_recent_job,
+    )
+
+
+async def task_stock_future_prospects_embed(ctx: dict) -> None:
+    from app.scheduler.stock_future_prospects_embed_job import (
+        run_stock_future_prospects_embed_job,
+    )
+
+    await _run_with_retry(
+        ctx,
+        "stock_future_prospects_embed",
+        run_stock_future_prospects_embed_job,
+    )
+
+
 async def task_broker_charges(ctx: dict) -> None:
     from app.scheduler.broker_charges_job import run_broker_charges_job
 

@@ -37,6 +37,21 @@ def _get_intervals() -> dict:
         "discover_mf_daily_hour_ist": getattr(settings, "discover_mf_daily_hour_ist", 22),
         "discover_mf_daily_minute_ist": getattr(settings, "discover_mf_daily_minute_ist", 0),
         "discover_mf_daily_days": getattr(settings, "discover_mf_daily_days", "mon-fri"),
+        "stock_future_prospects_daily_hour_ist": getattr(
+            settings, "stock_future_prospects_daily_hour_ist", 19
+        ),
+        "stock_future_prospects_daily_minute_ist": getattr(
+            settings, "stock_future_prospects_daily_minute_ist", 0
+        ),
+        "stock_future_prospects_daily_days": getattr(
+            settings, "stock_future_prospects_daily_days", "mon-fri"
+        ),
+        "stock_future_prospects_recent_minutes": getattr(
+            settings, "stock_future_prospects_recent_minutes", 180
+        ),
+        "stock_future_prospects_embed_minutes": getattr(
+            settings, "stock_future_prospects_embed_minutes", 240
+        ),
         "ipo_minutes": getattr(settings, "ipo_interval_minutes", 5),
         "macro_minutes": getattr(settings, "macro_interval_minutes", 60),
         "news_minutes": getattr(settings, "news_interval_minutes", 30),
@@ -228,6 +243,18 @@ async def _run_gap_backfill() -> None:
     await _enqueue("gap_backfill")
 
 
+async def _run_stock_future_prospects() -> None:
+    await _enqueue("stock_future_prospects")
+
+
+async def _run_stock_future_prospects_recent() -> None:
+    await _enqueue("stock_future_prospects_recent")
+
+
+async def _run_stock_future_prospects_embed() -> None:
+    await _enqueue("stock_future_prospects_embed")
+
+
 async def _run_broker_charges() -> None:
     await _enqueue("broker_charges")
 
@@ -298,6 +325,8 @@ async def _startup_collection() -> None:
             "discover_stock",
             "discover_mutual_funds",
             "discover_mf_nav",
+            "stock_future_prospects_recent",
+            "stock_future_prospects_embed",
             # Self-healing stock intraday sweeper — kicks off on deploy
             # so outages/scheduler-misses get repaired within ~3 min
             # of app start, even if the next cron tick is 10 min away.
@@ -494,14 +523,50 @@ def start_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=10800,
         )
+        _scheduler.add_job(
+            _run_stock_future_prospects,
+            "cron",
+            day_of_week=intervals["stock_future_prospects_daily_days"],
+            hour=intervals["stock_future_prospects_daily_hour_ist"],
+            minute=intervals["stock_future_prospects_daily_minute_ist"],
+            timezone="Asia/Kolkata",
+            id="stock_future_prospects",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=10800,
+        )
+        _scheduler.add_job(
+            _run_stock_future_prospects_recent,
+            "interval",
+            minutes=intervals["stock_future_prospects_recent_minutes"],
+            id="stock_future_prospects_recent",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=900,
+        )
+        _scheduler.add_job(
+            _run_stock_future_prospects_embed,
+            "interval",
+            minutes=intervals["stock_future_prospects_embed_minutes"],
+            id="stock_future_prospects_embed",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=1800,
+        )
         logger.info(
-            "Scheduler: discover cron ENABLED — stocks %s@%02d:%02d IST, MF %s@%02d:%02d IST",
+            "Scheduler: discover cron ENABLED — stocks %s@%02d:%02d IST, MF %s@%02d:%02d IST, future prospects %s@%02d:%02d IST",
             intervals["discover_stock_daily_days"],
             intervals["discover_stock_daily_hour_ist"],
             intervals["discover_stock_daily_minute_ist"],
             intervals["discover_mf_daily_days"],
             intervals["discover_mf_daily_hour_ist"],
             intervals["discover_mf_daily_minute_ist"],
+            intervals["stock_future_prospects_daily_days"],
+            intervals["stock_future_prospects_daily_hour_ist"],
+            intervals["stock_future_prospects_daily_minute_ist"],
         )
     else:
         logger.warning(

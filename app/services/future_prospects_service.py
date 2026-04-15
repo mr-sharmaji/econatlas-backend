@@ -1,0 +1,888 @@
+"""Future-prospects evidence extraction and retrieval for stocks.
+
+This service builds a small, queryable evidence layer for stock future
+outlook questions. It stores:
+1. document-level structured signals, and
+2. passage-level future-looking chunks with embeddings.
+
+v1 intentionally stays pragmatic: it mines future-facing evidence from
+public-web news already ingested into the backend, and combines that
+with structured stock-snapshot signals so chat can form a more grounded
+forward view without inventing unsupported catalysts.
+"""
+from __future__ import annotations
+
+import logging
+import re
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import numpy as np
+
+from app.core.database import ensure_vector_registered, get_pool, record_to_dict
+
+logger = logging.getLogger(__name__)
+
+_FORWARD_SIGNAL_RE = re.compile(
+    r"\b("
+    r"guidance|outlook|forecast|expected|expects|expecting|"
+    r"plan(?:s|ned)?|planned|pipeline|order book|booked|"
+    r"capex|capacity|expansion|ramp(?:-?up)?|visibility|"
+    r"demand|margin outlook|margin expansion|tailwind|headwind|"
+    r"cautious|optimistic|confident|target(?:ing)?|strategy|"
+    r"next quarter|next year|coming quarters|coming year|"
+    r"long term|long-term|medium term|medium-term|multi-year"
+    r")\b",
+    re.IGNORECASE,
+)
+_RISK_RE = re.compile(
+    r"\b(risk|headwind|pressure|slowdown|delay|weakness|uncertain|"
+    r"volatility|competition|margin pressure|execution risk|debt|"
+    r"regulatory|litigation|downgrade|stretched valuation)\b",
+    re.IGNORECASE,
+)
+_DEMAND_RE = re.compile(
+    r"\b(demand|order book|pipeline|deal win|booking|backlog|"
+    r"utili[sz]ation|enquiry|inflow)\b",
+    re.IGNORECASE,
+)
+_BALANCE_SHEET_RE = re.compile(
+    r"\b(balance sheet|cash|cash flow|free cash flow|deleverag|"
+    r"debt reduction|net cash|interest coverage)\b",
+    re.IGNORECASE,
+)
+_VALUATION_RE = re.compile(
+    r"\b(valuation|cheap|expensive|premium|discount|forward pe|"
+    r"target price|upside|multiple|rerating|re-rating)\b",
+    re.IGNORECASE,
+)
+_POSITIVE_TONE_RE = re.compile(
+    r"\b(strong|healthy|robust|improving|confident|optimistic|"
+    r"expansion|accelerat|tailwind|visibility)\b",
+    re.IGNORECASE,
+)
+_NEGATIVE_TONE_RE = re.compile(
+    r"\b(cautious|weak|soft|pressure|headwind|slowdown|risk|"
+    r"challenge|volatile|uncertain)\b",
+    re.IGNORECASE,
+)
+_COMPANY_SUFFIX_RE = re.compile(
+    r"\b(limited|ltd|inc|india|industries|company|co|corp|corporation)\b",
+    re.IGNORECASE,
+)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _normalize_company_key(value: str | None) -> str:
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+    text = text.replace("&", " and ")
+    text = re.sub(r"[^a-z0-9 ]+", " ", text)
+    text = _COMPANY_SUFFIX_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _trim_sentence(text: str, *, limit: int = 360) -> str:
+    text = re.sub(r"\s+", " ", (text or "")).strip(" .;:-")
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _split_sentences(text: str) -> list[str]:
+    raw = re.sub(r"\s+", " ", (text or "")).strip()
+    if not raw:
+        return []
+    pieces = re.split(r"(?<=[.!?])\s+", raw)
+    return [_trim_sentence(piece) for piece in pieces if _trim_sentence(piece)]
+
+
+def _classify_passage(text: str) -> str:
+    lowered = text.lower()
+    if _RISK_RE.search(lowered):
+        return "risk"
+    if _BALANCE_SHEET_RE.search(lowered):
+        return "balance_sheet"
+    if _VALUATION_RE.search(lowered):
+        return "valuation"
+    if _DEMAND_RE.search(lowered):
+        return "demand"
+    if "capex" in lowered or "capacity" in lowered or "expansion" in lowered:
+        return "growth_driver"
+    if "guidance" in lowered or "outlook" in lowered or "forecast" in lowered:
+        return "outlook"
+    return "future_signal"
+
+
+def _estimate_confidence(text: str) -> float:
+    score = 0.45
+    if _FORWARD_SIGNAL_RE.search(text):
+        score += 0.2
+    if len(text.split()) >= 8:
+        score += 0.1
+    if re.search(r"\d", text):
+        score += 0.1
+    if _RISK_RE.search(text) or _DEMAND_RE.search(text) or _VALUATION_RE.search(text):
+        score += 0.05
+    return round(min(score, 0.95), 2)
+
+
+def _extract_forward_passages(text: str, *, max_passages: int = 6) -> list[dict[str, Any]]:
+    passages: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for sentence in _split_sentences(text):
+        if not _FORWARD_SIGNAL_RE.search(sentence):
+            continue
+        norm = sentence.lower()
+        if norm in seen:
+            continue
+        seen.add(norm)
+        passages.append(
+            {
+                "passage_text": sentence,
+                "passage_type": _classify_passage(sentence),
+                "extraction_confidence": _estimate_confidence(sentence),
+            }
+        )
+        if len(passages) >= max_passages:
+            break
+    return passages
+
+
+def _append_unique(bucket: list[str], text: str, *, limit: int = 5) -> None:
+    cleaned = _trim_sentence(text, limit=220)
+    if cleaned and cleaned not in bucket and len(bucket) < limit:
+        bucket.append(cleaned)
+
+
+def _extract_structured_fields(passages: list[dict[str, Any]]) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "growth_drivers": [],
+        "risks": [],
+        "demand_signals": [],
+        "execution_positives": [],
+        "balance_sheet_support": [],
+        "valuation_context": [],
+        "management_tone": "balanced",
+        "passage_count": len(passages),
+    }
+    tone_score = 0
+    for passage in passages:
+        text = str(passage.get("passage_text") or "").strip()
+        ptype = str(passage.get("passage_type") or "")
+        if not text:
+            continue
+        if ptype in {"growth_driver", "outlook", "future_signal"}:
+            _append_unique(fields["growth_drivers"], text)
+            _append_unique(fields["execution_positives"], text)
+        if ptype == "risk":
+            _append_unique(fields["risks"], text)
+        if ptype == "demand":
+            _append_unique(fields["demand_signals"], text)
+            _append_unique(fields["growth_drivers"], text)
+        if ptype == "balance_sheet":
+            _append_unique(fields["balance_sheet_support"], text)
+        if ptype == "valuation":
+            _append_unique(fields["valuation_context"], text)
+
+        if _POSITIVE_TONE_RE.search(text):
+            tone_score += 1
+        if _NEGATIVE_TONE_RE.search(text):
+            tone_score -= 1
+
+    if tone_score >= 2:
+        fields["management_tone"] = "optimistic"
+    elif tone_score <= -2:
+        fields["management_tone"] = "cautious"
+    return fields
+
+
+def _recency_bucket(ts: datetime | None) -> str:
+    if ts is None:
+        return "unknown"
+    now = _utc_now()
+    delta = now - ts
+    if delta <= timedelta(days=7):
+        return "fresh"
+    if delta <= timedelta(days=30):
+        return "recent"
+    if delta <= timedelta(days=90):
+        return "stale"
+    return "old"
+
+
+def _build_snapshot_passages(row: dict[str, Any]) -> list[dict[str, Any]]:
+    symbol = str(row.get("symbol") or "").strip().upper()
+    name = str(row.get("display_name") or symbol).strip()
+    passages: list[dict[str, Any]] = []
+
+    def _maybe_float(value: Any) -> float | None:
+        try:
+            return float(value) if value is not None else None
+        except Exception:
+            return None
+
+    revenue_growth = _maybe_float(row.get("revenue_growth"))
+    earnings_growth = _maybe_float(row.get("earnings_growth"))
+    if revenue_growth is not None or earnings_growth is not None:
+        parts: list[str] = []
+        if revenue_growth is not None:
+            parts.append(f"revenue growth is {revenue_growth:.1f}%")
+        if earnings_growth is not None:
+            parts.append(f"earnings growth is {earnings_growth:.1f}%")
+        if parts:
+            passages.append(
+                {
+                    "passage_text": f"{name} currently shows {' and '.join(parts)}, which supports its medium-term growth case.",
+                    "passage_type": "growth_driver",
+                    "extraction_confidence": 0.78,
+                }
+            )
+
+    analyst_target = _maybe_float(row.get("analyst_target_mean"))
+    last_price = _maybe_float(row.get("last_price"))
+    analyst_count = _maybe_float(row.get("analyst_count"))
+    if analyst_target is not None and last_price and last_price > 0:
+        upside = ((analyst_target - last_price) / last_price) * 100.0
+        passages.append(
+            {
+                "passage_text": (
+                    f"Analyst target for {symbol} is ₹{analyst_target:.2f}, "
+                    f"about {upside:.1f}% versus the latest price, which offers a valuation-based forward marker."
+                ),
+                "passage_type": "valuation",
+                "extraction_confidence": 0.8 if analyst_count and analyst_count > 0 else 0.68,
+            }
+        )
+
+    forward_pe = _maybe_float(row.get("forward_pe"))
+    pe_ratio = _maybe_float(row.get("pe_ratio"))
+    if forward_pe is not None or pe_ratio is not None:
+        if forward_pe is not None and pe_ratio is not None:
+            if forward_pe <= pe_ratio:
+                text = (
+                    f"{symbol} trades at {pe_ratio:.1f}x trailing PE and {forward_pe:.1f}x forward PE, "
+                    "which suggests expectations are not expanding faster than earnings."
+                )
+            else:
+                text = (
+                    f"{symbol} trades at {pe_ratio:.1f}x trailing PE and {forward_pe:.1f}x forward PE, "
+                    "so the forward valuation still needs growth delivery to hold up."
+                )
+        elif forward_pe is not None:
+            text = f"{symbol} trades at roughly {forward_pe:.1f}x forward PE, making forward valuation part of the outlook."
+        else:
+            text = f"{symbol} trades at roughly {pe_ratio:.1f}x PE, so future returns still depend on execution and valuation discipline."
+        passages.append(
+            {
+                "passage_text": text,
+                "passage_type": "valuation",
+                "extraction_confidence": 0.72,
+            }
+        )
+
+    fii_change = _maybe_float(row.get("fii_holding_change"))
+    dii_change = _maybe_float(row.get("dii_holding_change"))
+    promoter_change = _maybe_float(row.get("promoter_holding_change"))
+    change_parts: list[str] = []
+    if fii_change is not None and abs(fii_change) >= 0.05:
+        change_parts.append(f"FII holding changed by {fii_change:+.2f}pp")
+    if dii_change is not None and abs(dii_change) >= 0.05:
+        change_parts.append(f"DII holding changed by {dii_change:+.2f}pp")
+    if promoter_change is not None and abs(promoter_change) >= 0.05:
+        change_parts.append(f"promoter holding changed by {promoter_change:+.2f}pp")
+    if change_parts:
+        passages.append(
+            {
+                "passage_text": f"For {symbol}, {'; '.join(change_parts)}, which is a useful ownership signal for the forward view.",
+                "passage_type": "future_signal",
+                "extraction_confidence": 0.69,
+            }
+        )
+
+    debt_to_equity = _maybe_float(row.get("debt_to_equity"))
+    free_cash_flow = _maybe_float(row.get("free_cash_flow"))
+    if debt_to_equity is not None or free_cash_flow is not None:
+        bits: list[str] = []
+        if debt_to_equity is not None:
+            bits.append(f"debt-to-equity is {debt_to_equity:.2f}")
+        if free_cash_flow is not None:
+            bits.append(f"free cash flow is ₹{free_cash_flow:.0f} crore")
+        if bits:
+            passages.append(
+                {
+                    "passage_text": (
+                        f"{name}'s balance-sheet support matters for future growth: "
+                        f"{' and '.join(bits)}."
+                    ),
+                    "passage_type": "balance_sheet",
+                    "extraction_confidence": 0.7,
+                }
+            )
+
+    return passages[:6]
+
+
+async def _upsert_document(
+    conn,
+    *,
+    symbol: str,
+    display_name: str,
+    source_kind: str,
+    source_name: str | None,
+    source_url: str | None,
+    source_title: str | None,
+    document_key: str,
+    document_type: str,
+    source_published_at: datetime | None,
+    extracted_fields: dict[str, Any],
+    extraction_confidence: float,
+) -> Any:
+    return await conn.fetchval(
+        """
+        INSERT INTO stock_future_prospect_documents (
+            symbol,
+            display_name,
+            source_kind,
+            source_name,
+            source_url,
+            source_title,
+            document_key,
+            document_type,
+            source_published_at,
+            recency_bucket,
+            extracted_fields,
+            extraction_confidence,
+            updated_at
+        )
+        VALUES (
+            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,NOW()
+        )
+        ON CONFLICT (document_key)
+        DO UPDATE SET
+            symbol = EXCLUDED.symbol,
+            display_name = EXCLUDED.display_name,
+            source_kind = EXCLUDED.source_kind,
+            source_name = EXCLUDED.source_name,
+            source_url = EXCLUDED.source_url,
+            source_title = EXCLUDED.source_title,
+            document_type = EXCLUDED.document_type,
+            source_published_at = EXCLUDED.source_published_at,
+            recency_bucket = EXCLUDED.recency_bucket,
+            extracted_fields = EXCLUDED.extracted_fields,
+            extraction_confidence = EXCLUDED.extraction_confidence,
+            updated_at = NOW()
+        RETURNING id
+        """,
+        symbol,
+        display_name,
+        source_kind,
+        source_name,
+        source_url,
+        source_title,
+        document_key,
+        document_type,
+        source_published_at,
+        _recency_bucket(source_published_at),
+        extracted_fields,
+        extraction_confidence,
+    )
+
+
+async def _replace_passages(
+    conn,
+    *,
+    document_id: Any,
+    symbol: str,
+    source_published_at: datetime | None,
+    passages: list[dict[str, Any]],
+    inline_embeddings: list[list[float]] | None = None,
+) -> tuple[int, int]:
+    await conn.execute(
+        "DELETE FROM stock_future_prospect_passages WHERE document_id = $1",
+        document_id,
+    )
+    if not passages:
+        return 0, 0
+
+    ready = 0
+    failed = 0
+    for idx, passage in enumerate(passages):
+        vec = inline_embeddings[idx] if inline_embeddings and idx < len(inline_embeddings) else []
+        status = "ready" if vec else "failed"
+        ready += 1 if vec else 0
+        failed += 0 if vec else 1
+        await conn.execute(
+            """
+            INSERT INTO stock_future_prospect_passages (
+                document_id,
+                symbol,
+                passage_index,
+                passage_type,
+                passage_text,
+                source_published_at,
+                embedding_status,
+                embedding
+            )
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+            """,
+            document_id,
+            symbol,
+            idx,
+            str(passage.get("passage_type") or "future_signal"),
+            str(passage.get("passage_text") or "").strip(),
+            source_published_at,
+            status,
+            np.array(vec, dtype=np.float32) if vec else None,
+        )
+    return ready, failed
+
+
+def _news_document_key(news_id: str, symbol: str) -> str:
+    return f"news:{news_id}:{symbol.upper()}"
+
+
+def _snapshot_document_key(symbol: str, source_ts: datetime | None) -> str:
+    stamp = source_ts.date().isoformat() if source_ts else "latest"
+    return f"snapshot:{symbol.upper()}:{stamp}"
+
+
+async def _fetch_snapshot_rows(
+    conn,
+    *,
+    symbols: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    fields = """
+        symbol, display_name, sector, industry, source_timestamp,
+        primary_source, last_price, pe_ratio, forward_pe,
+        revenue_growth, earnings_growth, analyst_target_mean,
+        analyst_count, analyst_recommendation,
+        fii_holding_change, dii_holding_change, promoter_holding_change,
+        free_cash_flow, debt_to_equity
+    """
+    if symbols:
+        rows = await conn.fetch(
+            f"SELECT {fields} FROM discover_stock_snapshots WHERE symbol = ANY($1::text[])",
+            symbols,
+        )
+    else:
+        rows = await conn.fetch(
+            f"SELECT {fields} FROM discover_stock_snapshots ORDER BY market_cap DESC NULLS LAST, symbol ASC"
+        )
+    return [dict(r) for r in rows]
+
+
+async def _fetch_news_rows(
+    conn,
+    *,
+    since_hours: int,
+    symbols: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    symbol_filter = ""
+    params: list[Any] = [since_hours]
+    if symbols:
+        symbol_filter = " AND s.symbol = ANY($2::text[])"
+        params.append(symbols)
+    rows = await conn.fetch(
+        f"""
+        SELECT
+            s.symbol,
+            s.display_name,
+            n.id AS news_id,
+            n.title,
+            n.summary,
+            n.body,
+            n.url,
+            n.source,
+            n.timestamp,
+            n.primary_entity
+        FROM news_articles n
+        JOIN discover_stock_snapshots s
+          ON LOWER(COALESCE(n.primary_entity, '')) = LOWER(s.symbol)
+          OR LOWER(COALESCE(n.primary_entity, '')) = LOWER(s.display_name)
+        WHERE n.timestamp >= NOW() - ($1 * INTERVAL '1 hour')
+          {symbol_filter}
+        ORDER BY n.timestamp DESC
+        """,
+        *params,
+    )
+    return [dict(r) for r in rows]
+
+
+async def run_stock_future_prospects_ingestion(
+    *,
+    recent_only: bool = False,
+    news_lookback_hours: int | None = None,
+) -> dict[str, Any]:
+    """Ingest forward-looking stock evidence from public and internal sources."""
+    pool = await get_pool()
+    since_hours = news_lookback_hours or (72 if recent_only else 24 * 60)
+    logger.info(
+        "stock_future_prospects: START recent_only=%s news_lookback_hours=%s",
+        recent_only,
+        since_hours,
+    )
+
+    embed_texts = None
+    inline_embed_enabled = False
+    try:
+        from app.services.embedding_service import embed_texts as _embed_texts, warmup
+
+        inline_embed_enabled = await warmup()
+        if inline_embed_enabled:
+            embed_texts = _embed_texts
+    except Exception:
+        logger.warning("stock_future_prospects: embedding warmup failed", exc_info=True)
+
+    total_docs = 0
+    total_passages = 0
+    embedded_passages = 0
+    failed_embeddings = 0
+    symbol_scope: list[str] | None = None
+
+    async with pool.acquire() as conn:
+        vector_registered = await ensure_vector_registered(conn)
+        if not vector_registered:
+            logger.warning("stock_future_prospects: pgvector unavailable; embeddings will be deferred")
+
+        news_rows = await _fetch_news_rows(
+            conn,
+            since_hours=since_hours,
+            symbols=None,
+        )
+        if recent_only:
+            symbol_scope = sorted(
+                {str(r.get("symbol") or "").upper() for r in news_rows if r.get("symbol")}
+            )
+            if not symbol_scope:
+                return {
+                    "status": "ok",
+                    "recent_only": True,
+                    "symbols": 0,
+                    "documents": 0,
+                    "passages": 0,
+                    "embedded_passages": 0,
+                    "failed_embeddings": 0,
+                }
+
+        snapshot_rows = await _fetch_snapshot_rows(conn, symbols=symbol_scope)
+
+        for snapshot in snapshot_rows:
+            symbol = str(snapshot.get("symbol") or "").upper().strip()
+            if not symbol:
+                continue
+            passages = _build_snapshot_passages(snapshot)
+            if not passages:
+                continue
+            extracted_fields = _extract_structured_fields(passages)
+            avg_conf = round(
+                sum(float(p.get("extraction_confidence") or 0.0) for p in passages) / max(len(passages), 1),
+                2,
+            )
+            doc_id = await _upsert_document(
+                conn,
+                symbol=symbol,
+                display_name=str(snapshot.get("display_name") or symbol),
+                source_kind="stock_snapshot",
+                source_name=str(snapshot.get("primary_source") or "discover_stock_snapshots"),
+                source_url=None,
+                source_title=f"{snapshot.get('display_name') or symbol} snapshot signals",
+                document_key=_snapshot_document_key(symbol, snapshot.get("source_timestamp")),
+                document_type="snapshot_signal",
+                source_published_at=snapshot.get("source_timestamp"),
+                extracted_fields=extracted_fields,
+                extraction_confidence=avg_conf,
+            )
+            vectors = None
+            if inline_embed_enabled and vector_registered and embed_texts is not None:
+                vectors = await embed_texts(
+                    [f"{symbol}: {p['passage_text']}" for p in passages]
+                )
+            ok, fail = await _replace_passages(
+                conn,
+                document_id=doc_id,
+                symbol=symbol,
+                source_published_at=snapshot.get("source_timestamp"),
+                passages=passages,
+                inline_embeddings=vectors,
+            )
+            total_docs += 1
+            total_passages += len(passages)
+            embedded_passages += ok
+            failed_embeddings += fail
+
+        for row in news_rows:
+            symbol = str(row.get("symbol") or "").upper().strip()
+            if not symbol:
+                continue
+            source_parts = [
+                str(row.get("title") or "").strip(),
+                str(row.get("summary") or "").strip(),
+                str(row.get("body") or "").strip(),
+            ]
+            combined = ". ".join(part for part in source_parts if part)
+            passages = _extract_forward_passages(combined)
+            if not passages:
+                continue
+            extracted_fields = _extract_structured_fields(passages)
+            avg_conf = round(
+                sum(float(p.get("extraction_confidence") or 0.0) for p in passages) / max(len(passages), 1),
+                2,
+            )
+            news_id = str(row.get("news_id") or "")
+            doc_id = await _upsert_document(
+                conn,
+                symbol=symbol,
+                display_name=str(row.get("display_name") or symbol),
+                source_kind="news_article",
+                source_name=str(row.get("source") or "news"),
+                source_url=row.get("url"),
+                source_title=row.get("title"),
+                document_key=_news_document_key(news_id, symbol),
+                document_type="news_article",
+                source_published_at=row.get("timestamp"),
+                extracted_fields=extracted_fields,
+                extraction_confidence=avg_conf,
+            )
+            vectors = None
+            if inline_embed_enabled and vector_registered and embed_texts is not None:
+                vectors = await embed_texts(
+                    [f"{symbol}: {p['passage_text']}" for p in passages]
+                )
+            ok, fail = await _replace_passages(
+                conn,
+                document_id=doc_id,
+                symbol=symbol,
+                source_published_at=row.get("timestamp"),
+                passages=passages,
+                inline_embeddings=vectors,
+            )
+            total_docs += 1
+            total_passages += len(passages)
+            embedded_passages += ok
+            failed_embeddings += fail
+
+    summary = {
+        "status": "ok",
+        "recent_only": recent_only,
+        "symbols": len(symbol_scope or snapshot_rows),
+        "documents": total_docs,
+        "passages": total_passages,
+        "embedded_passages": embedded_passages,
+        "failed_embeddings": failed_embeddings,
+        "news_lookback_hours": since_hours,
+    }
+    logger.info("stock_future_prospects: COMPLETE %s", summary)
+    return summary
+
+
+async def get_stock_future_prospects(
+    *,
+    symbol: str,
+    query: str | None = None,
+    limit: int = 6,
+) -> dict[str, Any]:
+    """Retrieve the best current future-looking evidence for a stock."""
+    pool = await get_pool()
+    symbol = (symbol or "").upper().strip()
+    if not symbol:
+        return {"error": "No symbol provided"}
+
+    async with pool.acquire() as conn:
+        stock = await conn.fetchrow(
+            """
+            SELECT
+                symbol, display_name, sector, industry, last_price,
+                percent_change, percent_change_1w, percent_change_1m,
+                percent_change_3m, percent_change_6m, percent_change_1y,
+                percent_change_3y, percent_change_5y,
+                pe_ratio, forward_pe, price_to_book,
+                roe, roce, debt_to_equity, free_cash_flow,
+                revenue_growth, earnings_growth, analyst_target_mean,
+                analyst_count, analyst_recommendation,
+                fii_holding_change, dii_holding_change, promoter_holding_change,
+                market_cap, source_timestamp
+            FROM discover_stock_snapshots
+            WHERE symbol = $1
+            """,
+            symbol,
+        )
+        if not stock:
+            return {"error": f"Stock '{symbol}' not found"}
+        stock_dict = record_to_dict(stock)
+
+        doc_rows = await conn.fetch(
+            """
+            SELECT
+                id, source_kind, source_name, source_url, source_title,
+                source_published_at, recency_bucket, extracted_fields,
+                extraction_confidence
+            FROM stock_future_prospect_documents
+            WHERE symbol = $1
+            ORDER BY source_published_at DESC NULLS LAST, updated_at DESC
+            LIMIT 20
+            """,
+            symbol,
+        )
+        documents = [record_to_dict(r) for r in doc_rows]
+
+        passages: list[dict[str, Any]] = []
+        vector_registered = await ensure_vector_registered(conn)
+        used_vector = False
+        if query and vector_registered:
+            try:
+                from app.services.embedding_service import embed_text
+
+                qv = await embed_text(f"{symbol}: {query}")
+            except Exception:
+                qv = []
+            if qv:
+                used_vector = True
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        p.passage_text,
+                        p.passage_type,
+                        p.source_published_at,
+                        d.source_kind,
+                        d.source_name,
+                        d.source_url,
+                        d.source_title,
+                        (p.embedding <=> $1) AS distance
+                    FROM stock_future_prospect_passages p
+                    JOIN stock_future_prospect_documents d ON d.id = p.document_id
+                    WHERE p.symbol = $2
+                      AND p.embedding IS NOT NULL
+                    ORDER BY p.embedding <=> $1
+                    LIMIT $3
+                    """,
+                    np.array(qv, dtype=np.float32),
+                    symbol,
+                    limit,
+                )
+                passages = [record_to_dict(r) for r in rows]
+
+        if not passages:
+            rows = await conn.fetch(
+                """
+                SELECT
+                    p.passage_text,
+                    p.passage_type,
+                    p.source_published_at,
+                    d.source_kind,
+                    d.source_name,
+                    d.source_url,
+                    d.source_title
+                FROM stock_future_prospect_passages p
+                JOIN stock_future_prospect_documents d ON d.id = p.document_id
+                WHERE p.symbol = $1
+                ORDER BY p.source_published_at DESC NULLS LAST, p.created_at DESC
+                LIMIT $2
+                """,
+                symbol,
+                limit,
+            )
+            passages = [record_to_dict(r) for r in rows]
+
+        aggregated: dict[str, list[str] | str] = {
+            "growth_drivers": [],
+            "risks": [],
+            "demand_signals": [],
+            "execution_positives": [],
+            "balance_sheet_support": [],
+            "valuation_context": [],
+            "management_tone": "balanced",
+        }
+        tone_votes: defaultdict[str, int] = defaultdict(int)
+        for doc in documents:
+            fields = doc.get("extracted_fields") or {}
+            if not isinstance(fields, dict):
+                continue
+            for key in (
+                "growth_drivers",
+                "risks",
+                "demand_signals",
+                "execution_positives",
+                "balance_sheet_support",
+                "valuation_context",
+            ):
+                for item in fields.get(key) or []:
+                    _append_unique(aggregated[key], str(item))
+            tone = str(fields.get("management_tone") or "").strip()
+            if tone:
+                tone_votes[tone] += 1
+        if tone_votes:
+            aggregated["management_tone"] = max(
+                tone_votes.items(), key=lambda item: item[1]
+            )[0]
+
+        upcoming_events = await conn.fetch(
+            """
+            SELECT event_name, institution, event_date, event_type, importance
+            FROM economic_calendar
+            WHERE event_date >= CURRENT_DATE
+              AND event_date <= CURRENT_DATE + 45
+              AND (
+                institution ILIKE $1
+                OR event_name ILIKE $1
+              )
+            ORDER BY event_date ASC
+            LIMIT 3
+            """,
+            f"%{stock_dict.get('display_name') or symbol}%",
+        )
+
+        return {
+            "symbol": stock_dict.get("symbol"),
+            "display_name": stock_dict.get("display_name"),
+            "sector": stock_dict.get("sector"),
+            "industry": stock_dict.get("industry"),
+            "snapshot": stock_dict,
+            "structured_signals": aggregated,
+            "evidence_passages": passages,
+            "documents": [
+                {
+                    "source_kind": doc.get("source_kind"),
+                    "source_name": doc.get("source_name"),
+                    "source_title": doc.get("source_title"),
+                    "source_url": doc.get("source_url"),
+                    "source_published_at": doc.get("source_published_at"),
+                    "recency_bucket": doc.get("recency_bucket"),
+                    "extraction_confidence": doc.get("extraction_confidence"),
+                }
+                for doc in documents[:8]
+            ],
+            "upcoming_events": [
+                {
+                    "event_name": row.get("event_name"),
+                    "institution": row.get("institution"),
+                    "event_date": (
+                        row["event_date"].isoformat()
+                        if row.get("event_date") and hasattr(row["event_date"], "isoformat")
+                        else row.get("event_date")
+                    ),
+                    "event_type": row.get("event_type"),
+                    "importance": row.get("importance"),
+                }
+                for row in map(record_to_dict, upcoming_events)
+            ],
+            "coverage": {
+                "document_count": len(documents),
+                "passage_count": len(passages),
+                "retrieval_mode": "vector" if used_vector else "latest",
+                "freshest_source": next(
+                    (doc.get("source_published_at") for doc in documents if doc.get("source_published_at")),
+                    None,
+                ),
+            },
+            "citation_note": (
+                "Use these passages as evidence, not a script. Pull only the few "
+                "signals that matter most for future growth, then give a view."
+            ),
+        }

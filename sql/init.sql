@@ -95,6 +95,50 @@ CREATE TABLE IF NOT EXISTS economic_events (
 
 CREATE INDEX IF NOT EXISTS idx_economic_events_created_at ON economic_events (created_at DESC);
 
+-- Stock future-prospects evidence store
+CREATE TABLE IF NOT EXISTS stock_future_prospect_documents (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    symbol TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_name TEXT,
+    source_url TEXT,
+    source_title TEXT,
+    document_key TEXT NOT NULL,
+    document_type TEXT NOT NULL,
+    source_published_at TIMESTAMPTZ,
+    recency_bucket TEXT,
+    extracted_fields JSONB NOT NULL DEFAULT '{}'::jsonb,
+    extraction_confidence DOUBLE PRECISION,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_future_docs_key
+ON stock_future_prospect_documents (document_key);
+CREATE INDEX IF NOT EXISTS idx_stock_future_docs_symbol_published
+ON stock_future_prospect_documents (symbol, source_published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stock_future_docs_kind
+ON stock_future_prospect_documents (source_kind, source_published_at DESC);
+
+CREATE TABLE IF NOT EXISTS stock_future_prospect_passages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    document_id UUID NOT NULL REFERENCES stock_future_prospect_documents(id) ON DELETE CASCADE,
+    symbol TEXT NOT NULL,
+    passage_index INTEGER NOT NULL,
+    passage_type TEXT,
+    passage_text TEXT NOT NULL,
+    source_published_at TIMESTAMPTZ,
+    embedding_status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_future_passages_doc_idx
+ON stock_future_prospect_passages (document_id, passage_index);
+CREATE INDEX IF NOT EXISTS idx_stock_future_passages_symbol_published
+ON stock_future_prospect_passages (symbol, source_published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_stock_future_passages_embedding_status
+ON stock_future_prospect_passages (embedding_status, created_at DESC);
+
 -- Devices (for future push notifications)
 CREATE TABLE IF NOT EXISTS devices (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -41,6 +41,9 @@ _VALID_JOBS = {
     "news_embed",
     # Artha semantic layer backfills
     "stock_narrative_embed",
+    "stock_future_prospects",
+    "stock_future_prospects_recent",
+    "stock_future_prospects_embed",
     "economic_events_embed",
     "educational_concepts_seed",
     # Weekly broker pricing scrape — task is registered in

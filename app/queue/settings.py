@@ -50,6 +50,9 @@ JOB_RETRY_POLICIES: dict[str, tuple[int, int]] = {
     "gap_backfill": (2, 60),
     # News embedding backfill — CPU-bound, self-idempotent
     "news_embed": (1, 30),
+    "stock_future_prospects": (1, 60),
+    "stock_future_prospects_recent": (1, 30),
+    "stock_future_prospects_embed": (1, 30),
     # Weekly broker charges scraper — retries matter, runs once a week
     "broker_charges": (2, 60),
 }
@@ -101,6 +104,9 @@ def get_arq_functions() -> list:
         task_fertilizer,
         task_market_score,
         task_news_embed,
+        task_stock_future_prospects,
+        task_stock_future_prospects_recent,
+        task_stock_future_prospects_embed,
         task_notification_check,
         task_tax,
     )
@@ -143,6 +149,17 @@ def get_arq_functions() -> list:
         func(task_gap_backfill, name="gap_backfill", timeout=600),
         # CPU-bound embedding — allow up to 30 min for a full backfill pass
         func(task_news_embed, name="news_embed", timeout=1800),
+        func(task_stock_future_prospects, name="stock_future_prospects", timeout=3600),
+        func(
+            task_stock_future_prospects_recent,
+            name="stock_future_prospects_recent",
+            timeout=1800,
+        ),
+        func(
+            task_stock_future_prospects_embed,
+            name="stock_future_prospects_embed",
+            timeout=1800,
+        ),
         # Weekly broker charges scraper — scrapes 4 broker sites
         func(task_broker_charges, name="broker_charges", timeout=120),
     ]

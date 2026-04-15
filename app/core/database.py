@@ -628,6 +628,90 @@ async def init_pool() -> asyncpg.Pool:
             logger.info("economic_events embedding column + HNSW index ensured")
         except Exception as e:
             logger.warning("Failed to create economic_events embedding: %s", e)
+        # stock_future_prospect_* — future-looking evidence store for stock
+        # outlook questions. Document rows keep structured extracted fields;
+        # passage rows keep embedding-backed chunks for semantic retrieval.
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stock_future_prospect_documents (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                symbol TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_name TEXT,
+                source_url TEXT,
+                source_title TEXT,
+                document_key TEXT NOT NULL,
+                document_type TEXT NOT NULL,
+                source_published_at TIMESTAMPTZ,
+                recency_bucket TEXT,
+                extracted_fields JSONB NOT NULL DEFAULT '{}'::jsonb,
+                extraction_confidence DOUBLE PRECISION,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stock_future_prospect_passages (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                document_id UUID NOT NULL
+                    REFERENCES stock_future_prospect_documents(id)
+                    ON DELETE CASCADE,
+                symbol TEXT NOT NULL,
+                passage_index INTEGER NOT NULL,
+                passage_type TEXT,
+                passage_text TEXT NOT NULL,
+                source_published_at TIMESTAMPTZ,
+                embedding_status TEXT NOT NULL DEFAULT 'pending',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_future_docs_key "
+            "ON stock_future_prospect_documents (document_key)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_stock_future_docs_symbol_published "
+            "ON stock_future_prospect_documents (symbol, source_published_at DESC)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_stock_future_docs_kind "
+            "ON stock_future_prospect_documents (source_kind, source_published_at DESC)"
+        )
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_future_passages_doc_idx "
+            "ON stock_future_prospect_passages (document_id, passage_index)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_stock_future_passages_symbol_published "
+            "ON stock_future_prospect_passages (symbol, source_published_at DESC)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_stock_future_passages_embedding_status "
+            "ON stock_future_prospect_passages (embedding_status, created_at DESC)"
+        )
+        try:
+            await conn.execute(
+                "ALTER TABLE stock_future_prospect_passages "
+                "ADD COLUMN IF NOT EXISTS embedding vector(384)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_stock_future_passages_embedding_hnsw "
+                "ON stock_future_prospect_passages USING hnsw "
+                "(embedding vector_cosine_ops)"
+            )
+            logger.info(
+                "stock_future_prospect_passages embedding column + HNSW index ensured"
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to create stock_future_prospect_passages embedding: %s",
+                e,
+            )
         # artha_educational_concepts — seeded at startup with ~40 baseline
         # finance/investing concepts (P/E, ROCE, SIP, NPS, etc.) so Artha
         # can answer meta/educational queries without hitting an LLM tool.

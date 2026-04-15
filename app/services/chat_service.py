@@ -309,6 +309,7 @@ Available tools:
 - [TOOL:peers:{"symbol":"TCS","limit":10}] — Top N comparable stocks in the same sector with side-by-side metrics. Use when user wants to see competitors of a specific stock beyond the 5 peers embedded in stock_lookup.
 - [TOOL:technicals:{"symbol":"TCS"}] — RSI, trend alignment, breakout signal, 52w range position, entry/exit signal, beta. Use when user asks about chart, momentum, or technical levels.
 - [TOOL:narrative:{"symbol":"TCS"}] — Rich narrative for a stock: why_narrative + action_tag reasoning + lynch_classification + market_regime. Use when user asks "what's the thesis on X" or "why is X rated this way".
+- [TOOL:future_prospects:{"symbol":"TCS"}] — Future-growth evidence for a stock: structured forward-looking signals, embedded future-looking passages, supporting fundamentals, and near-term company events. Use for "future prospects of TCS", "can Reliance grow from here", "future growth potential of Infosys", or "long-term outlook for HDFC Bank".
 - [TOOL:mf_lookup:{"scheme_name":"Parag Parikh Flexi Cap Fund - Direct Plan - Growth"}] — Mutual fund details for **active direct-growth plans only**. Accepts either `scheme_code` or `scheme_name`. Returns available short and long horizon performance (1m/3m/6m/1y/3y/5y/10y) when populated.
 - [TOOL:mf_screen:{"query":"category = 'Equity' AND returns_1y > 15", "limit":5}] — Filter mutual funds across **active direct-growth plans only**. Valid columns: scheme_code, scheme_name, category, sub_category, nav, expense_ratio, aum_cr, returns_1m, returns_3m, returns_6m, returns_1y, returns_3y, returns_5y, returns_10y, sharpe, sortino, score, risk_level.
 - [TOOL:watchlist:{}] — User's saved stocks AND mutual funds with live data. Returns `{stocks, mutual_funds, session_note, pct_basis, as_of, nse_open}`. You MUST list every single entity from BOTH `stocks` and `mutual_funds` arrays — do not truncate, do not say "third holding missing", do not drop MFs when the user said "watchlist". Each entity may include a `news` array with 0-2 recent, RELEVANT articles (strict vector+entity-match filter — if `news` is absent or empty, there is no related news worth mentioning; do NOT invent headlines or reach for unrelated articles). Use `session_note` verbatim as framing when markets are closed and `pct_basis` to decide between "today" and "last session" phrasing.
@@ -395,6 +396,7 @@ Anti-refusal table (these tools exist — use them):
 | "Why is the Indian market / Nifty / Sensex up or down today?" / "What moved the Nifty" / "Reason behind the rally" | `market_drivers({"since":"24h"})` — India-only; lead with tape, breadth, and sector leadership; use returned headlines as supporting evidence, not the whole answer. |
 | "What's driving the S&P 500 / Nasdaq / Dow / Wall Street?" | `market_status({})` + `global_macro({"event":"overview"})` or `news({"entity":"Wall Street"})` — do NOT use `market_drivers`, which is India-only. |
 | "What's the thesis on TCS?" | `narrative({"symbol":"TCS"})` |
+| "Future prospects of TCS" / "Can Reliance grow from here?" / "Long-term outlook for HDFC Bank" | `future_prospects({"symbol":"TCS"})` — use the forward-looking evidence, then explain what supports growth, what can limit it, and your view. |
 | "What's happening with Nifty IT?" | `nifty_index_constituents({"index_name":"Nifty IT"})` — NOT sector_thesis! The INDEX is 10 heavyweights, not all IT stocks. |
 | "What's going on with the IT sector?" | `sector_thesis({"sector":"IT"})` (note: DB stores short names — IT / Auto / Financials / Healthcare / FMCG / Consumer Discretionary / Industrials / Energy / Materials / Telecom / Real Estate) |
 | "Best flexi cap fund?" | `mf_screen({"query":"sub_category = 'Flexi Cap' AND returns_1y > 12"})` (canonicalizer adds the " Fund" suffix automatically) |
@@ -2542,6 +2544,22 @@ def _canonicalize_tool_params(tool_name: str, params: dict[str, Any] | None) -> 
             if normalized.get(key) is not None:
                 normalized[key] = str(normalized[key]).strip()
 
+    if tool_name == "future_prospects":
+        if normalized.get("identifier") and not normalized.get("symbol"):
+            normalized["symbol"] = normalized["identifier"]
+        if normalized.get("ticker") and not normalized.get("symbol"):
+            normalized["symbol"] = normalized["ticker"]
+        if normalized.get("name") and not normalized.get("symbol"):
+            normalized["symbol"] = normalized["name"]
+        if normalized.get("company") and not normalized.get("symbol"):
+            normalized["symbol"] = normalized["company"]
+        if normalized.get("prompt") and not normalized.get("query"):
+            normalized["query"] = normalized["prompt"]
+        if normalized.get("symbol") is not None:
+            normalized["symbol"] = str(normalized["symbol"]).strip().upper()
+        if normalized.get("query") is not None:
+            normalized["query"] = str(normalized["query"]).strip()
+
     return normalized
 
 
@@ -3731,6 +3749,19 @@ def _summarize_tool_result_for_compose(
 
     if tool_name == "stock_lookup":
         return f"[stock_lookup] SUCCESS: {_summarize_stock_for_compose(result)}"
+
+    if tool_name == "future_prospects":
+        coverage = result.get("coverage") or {}
+        structured = result.get("structured_signals") or {}
+        growth = ", ".join((structured.get("growth_drivers") or [])[:2]) or "none"
+        risks = ", ".join((structured.get("risks") or [])[:2]) or "none"
+        return (
+            f"[future_prospects] SUCCESS for {result.get('symbol')}: "
+            f"docs={coverage.get('document_count')}, "
+            f"mode={coverage.get('retrieval_mode')}, "
+            f"tone={structured.get('management_tone')}, "
+            f"growth={growth}, risks={risks}"
+        )
 
     if tool_name in {"mf_screen"}:
         funds = result.get("funds") or []
@@ -5831,6 +5862,56 @@ async def _execute_tool(
                 "market_regime": sb.get("market_regime"),
                 "score_confidence": sb.get("score_confidence"),
             }
+
+        elif tool_name == "future_prospects":
+            raw_symbol = (
+                params.get("symbol")
+                or params.get("identifier")
+                or params.get("ticker")
+                or params.get("name")
+                or params.get("company")
+                or ""
+            )
+            symbol = _resolve_symbol_alias(str(raw_symbol).upper().strip())
+            if not symbol:
+                return {"error": "No symbol provided"}
+            from app.services.future_prospects_service import (
+                get_stock_future_prospects,
+            )
+
+            query = str(params.get("query") or f"future prospects of {symbol}").strip()
+            try:
+                limit = int(params.get("limit") or 6)
+            except Exception:
+                limit = 6
+            result = await get_stock_future_prospects(
+                symbol=symbol,
+                query=query,
+                limit=limit,
+            )
+            if result.get("error") and "not found" in str(result.get("error")).lower():
+                like_pat = f"%{symbol}%"
+                prefix_pat = f"{symbol}%"
+                candidates = await pool.fetch(
+                    "SELECT symbol, display_name, sector, industry, "
+                    "last_price, market_cap, score "
+                    "FROM discover_stock_snapshots "
+                    "WHERE symbol ILIKE $1 OR display_name ILIKE $1 "
+                    "   OR symbol ILIKE $2 "
+                    "ORDER BY "
+                    "  CASE WHEN symbol ILIKE $2 THEN 0 ELSE 1 END, "
+                    "  market_cap DESC NULLS LAST "
+                    "LIMIT 3",
+                    like_pat,
+                    prefix_pat,
+                )
+                return {
+                    "status": "not_found_exact",
+                    "requested_symbol": symbol,
+                    "error": result.get("error"),
+                    "candidates": [record_to_dict(c) for c in candidates],
+                }
+            return result
 
         elif tool_name == "news_sentiment":
             # Hybrid news search + naive sentiment tallies.
@@ -10554,6 +10635,7 @@ _TOOL_DESCRIPTIONS: dict[str, str] = {
     "peers": "Comparable companies in the same sector as a given stock, with side-by-side metrics.",
     "technicals": "Technical indicators for a stock: RSI, trend alignment, breakout signal, 52w range position, beta.",
     "narrative": "Thesis and reasoning for why a stock is rated the way it is: action tag reasoning, Lynch classification, market regime, why-narrative.",
+    "future_prospects": "Forward-looking evidence for a stock: future-facing passages, supporting fundamentals, outlook signals, and future-growth risks.",
     "mf_lookup": "Mutual fund scheme details including NAV, returns, expense ratio, risk, category; resolves by scheme code or scheme name.",
     "mf_screen": "Filter mutual funds by category, returns, Sharpe, cost, risk, AUM.",
     "watchlist": "The user's personal saved stocks with live prices and fundamentals.",
