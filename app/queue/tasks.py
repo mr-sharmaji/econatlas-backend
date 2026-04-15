@@ -25,11 +25,16 @@ async def _release_job_lock(job_id: str | None) -> None:
     restart or completed run — causing missed market-open notifications.
     """
     if not job_id:
+        logger.debug("_release_job_lock: no job_id, nothing to release")
         return
     try:
         from app.queue.redis_pool import get_redis_pool
         pool = await get_redis_pool()
-        await pool.delete(f"job_lock:{job_id}")
+        deleted = await pool.delete(f"job_lock:{job_id}")
+        logger.debug(
+            "_release_job_lock: deleted job_lock:%s (keys removed=%s)",
+            job_id, deleted,
+        )
     except Exception:
         logger.debug("Failed to release job_lock:%s (non-fatal)", job_id, exc_info=True)
 
@@ -62,20 +67,52 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
     max_retries, delay_base = JOB_RETRY_POLICIES.get(job_name, (3, 10))
     job_try: int = ctx.get("job_try", 1)
     job_id = ctx.get("job_id")
+    enqueue_time = ctx.get("enqueue_time")
+    score = ctx.get("score")
     release_lock = True  # Release on success or permanent failure, not on Retry
+
+    # Entry log with every piece of arq context that's worth seeing in
+    # /ops/logs. `job_try` > 1 means we're on a retry. `score` is the
+    # Redis sorted-set score arq uses for deferred execution — useful
+    # for diagnosing "why didn't this fire at its scheduled time".
+    queue_latency = None
+    if enqueue_time is not None:
+        try:
+            queue_latency = _time.time() - enqueue_time.timestamp()
+        except Exception:
+            queue_latency = None
+    logger.debug(
+        "arq task enter: name=%s job_id=%s try=%d/%d max_retries=%d "
+        "queue_latency=%s score=%s",
+        job_name, job_id, job_try, job_try, max_retries,
+        f"{queue_latency:.3f}s" if queue_latency is not None else "?",
+        score,
+    )
 
     # Only count the FIRST attempt as a started job — retries are part
     # of the same logical invocation and would otherwise double-count.
     if job_try == 1:
         JOBS_STARTED.labels(job_name=job_name).inc()
+        logger.debug("arq task: first attempt, incremented JOBS_STARTED counter")
+    else:
+        logger.debug("arq task: retry attempt %d, skipping JOBS_STARTED increment", job_try)
 
     started_at = _time.monotonic()
     try:
+        logger.debug("arq task: invoking %s coroutine", job_name)
         await coro_factory()
+        logger.debug(
+            "arq task: %s coroutine returned cleanly after %.2fs",
+            job_name, _time.monotonic() - started_at,
+        )
         # Invalidate response cache after successful job so users see fresh data
         try:
             from app.core.cache import invalidate_cache
-            await invalidate_cache()
+            inv_result = await invalidate_cache()
+            logger.debug(
+                "arq task: cache invalidation after %s done (%s)",
+                job_name, inv_result,
+            )
         except Exception:
             logger.debug("Cache invalidation after %s failed (non-fatal)", job_name)
         # Record successful completion
@@ -84,7 +121,18 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
         now = _time.time()
         JOB_LAST_RUN_TIMESTAMP.labels(job_name=job_name).set(now)
         JOB_LAST_SUCCESS_TIMESTAMP.labels(job_name=job_name).set(now)
+        logger.debug(
+            "arq task success: name=%s duration=%.2fs — recorded JOB_DURATION, "
+            "JOB_LAST_RUN_TIMESTAMP, JOB_LAST_SUCCESS_TIMESTAMP",
+            job_name, duration,
+        )
     except Exception as exc:
+        logger.debug(
+            "arq task: %s raised %s after %.2fs — retry decision: "
+            "max_retries=%d, job_try=%d",
+            job_name, type(exc).__name__, _time.monotonic() - started_at,
+            max_retries, job_try,
+        )
         if max_retries > 0 and job_try <= max_retries:
             delay = delay_base * (2 ** (job_try - 1))
             logger.warning(
@@ -98,6 +146,11 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
             # Keep the lock held so the scheduler doesn't double-enqueue
             # while we wait for the retry backoff to fire.
             release_lock = False
+            logger.debug(
+                "arq task: scheduling retry via arq.Retry(defer=%ds), "
+                "holding job_lock",
+                delay,
+            )
             raise Retry(defer=delay) from exc
 
         logger.error(
@@ -117,9 +170,20 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
         JOB_ERRORS.labels(job_name=job_name).inc()
         JOB_DURATION.labels(job_name=job_name).observe(_time.monotonic() - started_at)
         JOB_LAST_RUN_TIMESTAMP.labels(job_name=job_name).set(_time.time())
+        logger.debug(
+            "arq task permanent failure: name=%s — recorded JOB_ERRORS, "
+            "wrote to DLQ",
+            job_name,
+        )
     finally:
         if release_lock:
+            logger.debug("arq task finally: releasing job_lock:%s", job_id)
             await _release_job_lock(job_id)
+        else:
+            logger.debug(
+                "arq task finally: NOT releasing job_lock:%s (Retry in flight)",
+                job_id,
+            )
 
 
 # ── Individual task entry-points ─────────────────────────────────────

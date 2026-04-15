@@ -1849,14 +1849,45 @@ class DiscoverStockScraper(BaseScraper):
                         logger.warning("Screener %d for %s; retry in %.0fs (%d/%d)", status, nse_symbol, wait, attempt + 1, self._screener_max_retries)
                         time_mod.sleep(wait)
                         continue
+                    # Retries exhausted or non-retryable status — log it
+                    # so the failure isn't silent. Previously the loop
+                    # would just `break` here with no log line, leaving
+                    # Prometheus increments as the only evidence.
+                    logger.warning(
+                        "Screener HTTP error exhausted for %s: status=%d url=%s attempts=%d",
+                        nse_symbol, status, url, attempt + 1,
+                    )
                     break
-                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+                except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
                     if attempt < self._screener_max_retries - 1:
+                        logger.debug(
+                            "Screener network retryable for %s: %s (attempt %d/%d)",
+                            nse_symbol, type(exc).__name__, attempt + 1, self._screener_max_retries,
+                        )
                         time_mod.sleep(self._screener_retry_delay)
                         continue
+                    # Previously: silent break. This is the code path
+                    # that almost certainly fed the "ext API error rate
+                    # > 25%" alert — timeouts to screener.in that never
+                    # made it into /ops/logs. Promoted to WARNING with
+                    # the exception class so tomorrow's triage can
+                    # distinguish timeout-storm vs 429-storm at a glance.
+                    logger.warning(
+                        "Screener network error exhausted for %s: %s url=%s attempts=%d",
+                        nse_symbol, type(exc).__name__, url, attempt + 1,
+                    )
                     break
                 except Exception:
-                    logger.debug("Screener fundamentals fetch failed for %s url=%s", nse_symbol, url, exc_info=True)
+                    # Unexpected failure (JSON parse, BeautifulSoup,
+                    # attribute error on a schema drift, etc). Previously
+                    # DEBUG which dropped on the floor at INFO-level
+                    # handlers — promoted to WARNING so schema drifts at
+                    # screener.in surface without waiting for somebody
+                    # to open the Grafana panel.
+                    logger.warning(
+                        "Screener fundamentals fetch failed for %s url=%s",
+                        nse_symbol, url, exc_info=True,
+                    )
                     break
         return {
             "pe_ratio": None, "roe": None, "roce": None,
@@ -5340,6 +5371,11 @@ class DiscoverStockScraper(BaseScraper):
                     "3 workers, 0.5s delay",
                     len(fund_list),
                 )
+                logger.debug(
+                    "screener pre-fetch symbols: first=%s last=%s sample=%s",
+                    fund_list[0], fund_list[-1], fund_list[:5],
+                )
+                _t_scr = time_mod.time()
                 results = self._parallel_map(
                     host="www.screener.in",
                     workers=3,
@@ -5347,13 +5383,39 @@ class DiscoverStockScraper(BaseScraper):
                     items=fund_list,
                     fetch_fn=lambda sym: self._fetch_screener_fundamentals(sym),
                 )
+                _scr_elapsed = time_mod.time() - _t_scr
+                _scr_ok = 0
+                _scr_empty = 0
                 for sym, result in zip(fund_list, results):
                     if result is not None:
                         self._screener_cache[sym] = result
+                        _scr_ok += 1
+                    else:
+                        _scr_empty += 1
+                        logger.debug("screener pre-fetch empty for %s", sym)
                 logger.info(
-                    "Screener pre-fetch complete: %d/%d cached",
-                    len(self._screener_cache), len(fund_list),
+                    "Screener pre-fetch complete: %d/%d cached (%d empty) "
+                    "in %.1fs (%.1f sym/s)",
+                    len(self._screener_cache), len(fund_list), _scr_empty,
+                    _scr_elapsed, len(fund_list) / max(_scr_elapsed, 0.01),
                 )
+                # Silent-degradation detector mirroring the MF NAV guard.
+                # If >25% of fundamentals came back empty, screener was
+                # almost certainly rate-limiting us or returning HTML
+                # error pages. This is the line that makes the Grafana
+                # "ext API error rate > 25%" alert self-correlating in
+                # /ops/logs instead of a blind metric-only alert.
+                if fund_list and _scr_empty > (len(fund_list) * 0.25):
+                    logger.warning(
+                        "Screener pre-fetch degraded: %d/%d symbols "
+                        "returned empty (%.1f%%). Likely rate limiting "
+                        "or upstream errors at screener.in — check "
+                        "surrounding WARNING lines for HTTP status "
+                        "breakdown and external_api_requests_total "
+                        "Prometheus counter.",
+                        _scr_empty, len(fund_list),
+                        100.0 * _scr_empty / len(fund_list),
+                    )
 
             # ── Parallel pre-fetch: Yahoo v10 enrichment ────────────
             # Yahoo v10 quoteSummary (beta, analyst data, forward PE,

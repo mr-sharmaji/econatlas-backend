@@ -2088,16 +2088,26 @@ class DiscoverMutualFundScraper(BaseScraper):
         guaranteed to return a valid NEXT_DATA blob. ~1900 funds
         typically listed.
         """
+        logger.debug("groww: fetching sitemap url=%s", self._GROWW_SITEMAP_URL)
         try:
             xml = self._get_text(self._GROWW_SITEMAP_URL, timeout=20)
         except Exception:
             logger.warning("groww: sitemap fetch failed", exc_info=True)
             return []
+        logger.debug("groww: sitemap fetched len=%d bytes", len(xml))
         slugs = re.findall(
             r"<loc>https://groww\.in/mutual-funds/([a-z0-9-]+)</loc>",
             xml,
         )
         logger.info("groww: sitemap returned %d slugs", len(slugs))
+        if len(slugs) < 1000:
+            logger.warning(
+                "groww: sitemap slug count unexpectedly low (%d, expected ~1900). "
+                "Upstream sitemap format may have changed — regex "
+                "'<loc>https://groww.in/mutual-funds/([a-z0-9-]+)</loc>' "
+                "matched fewer entries than normal.",
+                len(slugs),
+            )
         return slugs
 
     def _fetch_groww_blob_by_slug(self, slug: str) -> dict | None:
@@ -2957,14 +2967,36 @@ def _fetch_discover_mf_rows_sync() -> list[dict]:
 
 
 async def run_discover_mutual_fund_job() -> None:
+    logger.debug("run_discover_mutual_fund_job: entry")
+    _t_job = time.monotonic() if hasattr(time, "monotonic") else 0.0
     try:
         loop = asyncio.get_event_loop()
+        logger.debug(
+            "run_discover_mutual_fund_job: dispatching _fetch_discover_mf_rows_sync "
+            "to discover-mf executor"
+        )
         rows = await loop.run_in_executor(
             get_job_executor("discover-mf"),
             _fetch_discover_mf_rows_sync,
         )
+        logger.debug(
+            "run_discover_mutual_fund_job: fetch returned %d rows, upserting",
+            len(rows) if rows else 0,
+        )
         count = await discover_service.upsert_discover_mutual_fund_snapshots(rows)
         logger.info("Discover mutual fund job complete: %d snapshots upserted", count)
+        # Silent-degradation guard — mirrors the one in discover_mf_nav_job.
+        # Healthy runs touch ~6500 schemes; anything <1000 with a >0 fetch
+        # almost certainly means Groww/etmoney/amfi scraping broke and
+        # we're working with a truncated universe.
+        if rows and count < 1000:
+            logger.warning(
+                "Discover MF: suspiciously small upsert — %d snapshots "
+                "from %d fetched rows. Expected ~6500 for a healthy run. "
+                "Check upstream scraper health (groww sitemap, etmoney "
+                "pagination, amfi NAVAll.txt).",
+                count, len(rows),
+            )
 
         # Overwrite returns_1m/3m/6m/1y/3y/5y columns with history-
         # anchored values computed from discover_mf_nav_history. The

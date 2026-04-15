@@ -63,19 +63,36 @@ def _fetch_mf_nav(
         as fund inception in the late 1990s)
     """
     url = MFAPI_URL.format(scheme_code=scheme_code)
+    logger.debug(
+        "mfapi fetch start scheme=%s cutoff_days=%s url=%s",
+        scheme_code, cutoff_days, url,
+    )
     for attempt in range(MAX_RETRIES):
         try:
             resp = requests.get(url, timeout=15)
-        except requests.exceptions.RequestException:
-            time.sleep(2 ** attempt)
+        except requests.exceptions.RequestException as exc:
+            wait = 2 ** attempt
+            logger.debug(
+                "mfapi network error scheme=%s attempt=%d/%d wait=%.1fs err=%r",
+                scheme_code, attempt + 1, MAX_RETRIES, wait, exc,
+            )
+            time.sleep(wait)
             continue
         if resp.status_code == 429 or resp.status_code >= 500:
             wait = (2 ** attempt) * 3
+            logger.debug(
+                "mfapi retryable status scheme=%s status=%d attempt=%d/%d wait=%.1fs",
+                scheme_code, resp.status_code, attempt + 1, MAX_RETRIES, wait,
+            )
             time.sleep(wait)
             continue
         resp.raise_for_status()
         break
     else:
+        logger.debug(
+            "mfapi retries exhausted scheme=%s — returning empty",
+            scheme_code,
+        )
         return []
 
     payload = resp.json()
@@ -83,21 +100,37 @@ def _fetch_mf_nav(
     if cutoff_days is not None:
         cutoff = datetime.now(tz=timezone.utc).date() - timedelta(days=cutoff_days)
     nav_entries = payload.get("data", [])
+    logger.debug(
+        "mfapi response scheme=%s status=%d raw_entries=%d cutoff=%s",
+        scheme_code, resp.status_code, len(nav_entries), cutoff,
+    )
 
     rows: list[tuple[int, datetime, float]] = []
+    dropped_date_parse = 0
+    dropped_cutoff = 0
+    dropped_nav_parse = 0
     for entry in nav_entries:
         try:
             nav_date = datetime.strptime(entry["date"], "%d-%m-%Y").date()
         except (ValueError, KeyError):
+            dropped_date_parse += 1
             continue
         if cutoff is not None and nav_date < cutoff:
+            dropped_cutoff += 1
             continue
         try:
             nav_value = float(entry["nav"])
         except (ValueError, KeyError):
+            dropped_nav_parse += 1
             continue
         rows.append((scheme_code, nav_date, nav_value))
 
+    logger.debug(
+        "mfapi parsed scheme=%s kept=%d dropped_date_parse=%d "
+        "dropped_cutoff=%d dropped_nav_parse=%d newest_date=%s",
+        scheme_code, len(rows), dropped_date_parse, dropped_cutoff,
+        dropped_nav_parse, max((r[1] for r in rows), default=None),
+    )
     return rows
 
 
@@ -121,12 +154,19 @@ async def run_discover_mf_nav_job() -> None:
     rows via asyncpg. Per-worker spacing provides the rate limit.
     See module docstring for rationale + tuning.
     """
+    logger.debug("run_discover_mf_nav_job: entry, fetching scheme codes from snapshots")
     pool = await get_pool()
     codes = await pool.fetch(
         "SELECT DISTINCT scheme_code FROM discover_mutual_fund_snapshots ORDER BY scheme_code"
     )
     code_list = [row["scheme_code"] for row in codes]
     total = len(code_list)
+    logger.debug(
+        "run_discover_mf_nav_job: fetched %d codes, first=%s last=%s",
+        total,
+        code_list[0] if code_list else None,
+        code_list[-1] if code_list else None,
+    )
     logger.info(
         "MF NAV daily update: %d scheme codes to process (concurrency=%d, spacing=%.2fs).",
         total, _MAX_CONCURRENCY, _PER_WORKER_SPACING_SECONDS,
@@ -146,13 +186,27 @@ async def run_discover_mf_nav_job() -> None:
 
     async def process_one(scheme_code: int) -> None:
         async with semaphore:
+            logger.debug("process_one: acquired slot scheme=%s", scheme_code)
             try:
                 rows = await loop.run_in_executor(
                     executor, _fetch_mf_nav_7d, scheme_code,
                 )
+                logger.debug(
+                    "process_one: fetch returned scheme=%s rows=%d",
+                    scheme_code, len(rows),
+                )
                 if rows:
                     await pool.executemany(INSERT_SQL, rows)
                     counters["inserted"] += len(rows)
+                    logger.debug(
+                        "process_one: upsert done scheme=%s rows=%d (ON CONFLICT DO NOTHING, actual new rows may be fewer)",
+                        scheme_code, len(rows),
+                    )
+                else:
+                    logger.debug(
+                        "process_one: empty result scheme=%s — no upsert",
+                        scheme_code,
+                    )
             except Exception:
                 counters["errors"] += 1
                 logger.exception("Error updating NAV for %s — skipping.", scheme_code)
@@ -179,6 +233,33 @@ async def run_discover_mf_nav_job() -> None:
         "%d errors, %.1fs elapsed.",
         total, counters["inserted"], counters["errors"], elapsed,
     )
+
+    # Silent-success detector: if the job processed the full universe
+    # but upserted far fewer rows than expected, the upstream mfapi data
+    # was stale when we called it (ON CONFLICT DO NOTHING swallows the
+    # "nothing new" case). A healthy weekday run hits ~(total * 7)
+    # upserts before de-dup, so anything <10% of that for a >0 total
+    # run is almost certainly a stale-source problem, not a code bug.
+    # This is the line that would have flagged Apr 15's 5-row run in
+    # real time instead of us finding it via SQL archaeology a day
+    # later. Kept as WARNING so it shows up in any min_level=WARNING
+    # query to /ops/logs. See post-mortem in this session for context.
+    if total > 100 and counters["inserted"] < (total * 0.10):
+        logger.warning(
+            "MF NAV: suspiciously thin upsert — %d rows across %d schemes "
+            "(expected ≥ %d for a healthy weekday run). Likely stale "
+            "upstream at mfapi.in (AMFI publishes ~23:00 IST; cron "
+            "fires at 22:30 IST). Re-run after 01:00 IST or adjust "
+            "discover_mf_daily_minute_ist.",
+            counters["inserted"], total, int(total * 0.10),
+        )
+    if counters["errors"] > (total * 0.25):
+        logger.warning(
+            "MF NAV: high error rate — %d / %d schemes failed (%.1f%%). "
+            "Check mfapi.in availability and recent debug logs for the "
+            "failure pattern.",
+            counters["errors"], total, 100.0 * counters["errors"] / max(total, 1),
+        )
 
 
 async def run_discover_mf_nav_backfill_job() -> None:

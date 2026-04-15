@@ -63,6 +63,15 @@ def _configure_logging(level_name: str | None) -> int:
     )
     for name in _NOISY_LIBS:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    # arq is NOT in _NOISY_LIBS — we explicitly want arq's own internal
+    # DEBUG logs (job poll, in-progress locks, retry decisions, worker
+    # lifecycle) flowing to the file sink during the MF/screener
+    # investigation. Pin them to `level` just in case something upstream
+    # had set them higher. Includes `arq.worker`, `arq.main`, `arq.jobs`,
+    # `arq.connections` — arq uses module-level loggers so pinning the
+    # `arq` parent is enough (children inherit unless overridden).
+    logging.getLogger("arq").setLevel(level)
     return level
 
 
