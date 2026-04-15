@@ -3082,9 +3082,18 @@ async def list_discover_mutual_funds(
         )
 
     # Exclude dead/discontinued/closed-ended funds:
-    # - NAV not updated in the last 90 days (discontinued/merged/matured)
+    # - NAV not updated in the last 14 days. Active daily-publishers sit
+    #   at 0-3 days stale, weekly publishers at <= 7 days. Anything past
+    #   14 days is either a closed-ended scheme past maturity, a
+    #   wind-down portfolio (IL&FS / side-pockets), a pre-merger stale
+    #   code, or a target-maturity fund that already matured. A natural
+    #   gap in the stale-day histogram sits between 4-7 days (3 schemes)
+    #   and 15-30 days (6 schemes), so 14d is the safe cut — see the
+    #   2026-04-15 orphan audit in the session notes for the histogram.
     # - Scheme names containing FMP/Fixed Maturity/Close Ended/Interval
-    conds.append("nav_date >= CURRENT_DATE - INTERVAL '90 days'")
+    #   (defense in depth against anything that slips past the staleness
+    #   cut).
+    conds.append("nav_date >= CURRENT_DATE - INTERVAL '14 days'")
     conds.append(
         "(scheme_name NOT ILIKE '%fmp%'"
         " AND scheme_name NOT ILIKE '%fixed maturity%'"
@@ -3492,7 +3501,7 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
                COALESCE(score, 0) AS score
         FROM {MF_TABLE}
         WHERE (scheme_name ILIKE $1 OR scheme_code ILIKE $1)
-          AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
+          AND nav_date >= CURRENT_DATE - INTERVAL '14 days'
           AND category != 'Income'
           AND scheme_name NOT ILIKE '%fmp%'
           AND scheme_name NOT ILIKE '%fixed maturity%'
@@ -3769,7 +3778,7 @@ async def get_discover_home_data() -> dict:
                 WHERE plan_type = 'direct'
                   AND score IS NOT NULL
                   AND (returns_1y IS NOT NULL OR returns_3y IS NOT NULL)
-                  AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
+                  AND nav_date >= CURRENT_DATE - INTERVAL '14 days'
                   {where_extra}
             ) sub WHERE rn <= 2
             ORDER BY {order} LIMIT {limit}
@@ -3786,7 +3795,7 @@ async def get_discover_home_data() -> dict:
         return {"key": key, "title": title, "subtitle": subtitle, "items": items}
 
     _mf_alive = """AND category != 'Income'
-               AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
+               AND nav_date >= CURRENT_DATE - INTERVAL '14 days'
                AND scheme_name NOT ILIKE '%%fmp%%'
                AND scheme_name NOT ILIKE '%%fixed maturity%%'
                AND scheme_name NOT ILIKE '%%fixed horizon%%'
@@ -4933,7 +4942,7 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
           AND scheme_code != $2
           AND LOWER(COALESCE(plan_type, 'direct')) = 'direct'
           AND category != 'Income'
-          AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
+          AND nav_date >= CURRENT_DATE - INTERVAL '14 days'
           AND score IS NOT NULL
         ORDER BY score DESC NULLS LAST
         LIMIT $3
@@ -4963,7 +4972,7 @@ async def get_mf_peers(*, scheme_code: str, limit: int = 5) -> list[dict]:
               AND scheme_code != $2
               AND LOWER(COALESCE(plan_type, 'direct')) = 'direct'
               AND category != 'Income'
-              AND nav_date >= CURRENT_DATE - INTERVAL '90 days'
+              AND nav_date >= CURRENT_DATE - INTERVAL '14 days'
               AND score IS NOT NULL
             ORDER BY score DESC NULLS LAST
             LIMIT $3
