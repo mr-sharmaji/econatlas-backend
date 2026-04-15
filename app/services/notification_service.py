@@ -120,20 +120,21 @@ async def send_topic_notification(
         return False
     try:
         from firebase_admin import messaging
-        # Android BigTextStyle lets long multi-sentence bodies (e.g. the
-        # 4-sentence post-market summary) expand fully when the user pulls
-        # down the notification shade, instead of being truncated to a
-        # single ellipsized line.
-        android_config = messaging.AndroidConfig(
-            priority="high",
-            notification=messaging.AndroidNotification(
-                title=title,
-                body=body,
-                channel_id="market_alerts",
-                default_sound=True,
-            ),
-        )
-        # APNS uses native expansion for long bodies — nothing special required.
+        # ── Data-only on Android; APNS alert on iOS ──
+        # We deliberately omit the top-level `notification` field AND
+        # android.notification so Android does NOT auto-render the
+        # system default template (which clips multi-sentence bodies
+        # to a single ellipsized line and gives us no control over
+        # expansion). Instead the Flutter client's background /
+        # foreground handlers read title/body from `data` and build
+        # a local notification with BigTextStyleInformation — the
+        # only reliable way to show full multi-line bodies across
+        # OEM skins and app states.
+        #
+        # iOS is unaffected: APNSPayload.alert still displays the
+        # notification natively, and iOS handles long bodies well
+        # out of the box.
+        android_config = messaging.AndroidConfig(priority="high")
         apns_config = messaging.APNSConfig(
             payload=messaging.APNSPayload(
                 aps=messaging.Aps(
@@ -143,11 +144,18 @@ async def send_topic_notification(
                 ),
             ),
         )
+        # Merge title/body into the data payload so the Android client
+        # can reconstruct the notification. FCM requires all data
+        # values to be strings.
+        merged_data: dict[str, str] = {str(k): str(v) for k, v in (data or {}).items()}
+        merged_data["title"] = title
+        merged_data["body"] = body
+        if notification_type:
+            merged_data.setdefault("type", str(notification_type))
         message = messaging.Message(
-            notification=messaging.Notification(title=title, body=body),
             android=android_config,
             apns=apns_config,
-            data=data or {},
+            data=merged_data,
             topic=topic,
         )
         loop = asyncio.get_running_loop()
@@ -1263,9 +1271,22 @@ async def send_device_notification(
     try:
         from firebase_admin import messaging
 
+        # Same data-only-on-Android + APNS-alert-on-iOS strategy as
+        # _send_push — see that function for the rationale.
+        merged_data: dict[str, str] = {str(k): str(v) for k, v in (data or {}).items()}
+        merged_data["title"] = title
+        merged_data["body"] = body
         message = messaging.Message(
-            notification=messaging.Notification(title=title, body=body),
-            data=data or {},
+            android=messaging.AndroidConfig(priority="high"),
+            apns=messaging.APNSConfig(
+                payload=messaging.APNSPayload(
+                    aps=messaging.Aps(
+                        alert=messaging.ApsAlert(title=title, body=body),
+                        sound="default",
+                    ),
+                ),
+            ),
+            data=merged_data,
             token=fcm_token,
         )
         loop = asyncio.get_running_loop()
@@ -1305,10 +1326,22 @@ async def send_to_devices(
     try:
         from firebase_admin import messaging
 
+        # Data-only on Android, APNS alert on iOS — see _send_push.
+        merged_data: dict[str, str] = {str(k): str(v) for k, v in (data or {}).items()}
+        merged_data["title"] = title
+        merged_data["body"] = body
         messages = [
             messaging.Message(
-                notification=messaging.Notification(title=title, body=body),
-                data=data or {},
+                android=messaging.AndroidConfig(priority="high"),
+                apns=messaging.APNSConfig(
+                    payload=messaging.APNSPayload(
+                        aps=messaging.Aps(
+                            alert=messaging.ApsAlert(title=title, body=body),
+                            sound="default",
+                        ),
+                    ),
+                ),
+                data=merged_data,
                 token=token,
             )
             for token in fcm_tokens
