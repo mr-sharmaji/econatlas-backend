@@ -530,7 +530,21 @@ async def get_latest_prices(
                     if pv and pv != 0:
                         db_change = round(((p - pv) / pv) * 100, 2)
                         src_change = d.get("change_percent")
-                        if src_change is None or abs((src_change or 0) - db_change) > 0.1:
+                        # Only override the source-provided change_percent
+                        # when the DB computation is NOT a tautological
+                        # zero. For closed-market assets (FTSE/DAX/CAC/
+                        # Euro Stoxx before European open) the ingestion
+                        # job writes today's row with yesterday's close,
+                        # so prev == current and db_change == 0 — that's
+                        # a false zero that previously shadowed the
+                        # upstream's real yesterday-vs-day-before change.
+                        db_is_zero_tautology = (
+                            abs(p - pv) < 1e-6 and abs(db_change) < 0.005
+                        )
+                        if db_is_zero_tautology and src_change is not None:
+                            # Keep the source value — it's the real move.
+                            pass
+                        elif src_change is None or abs((src_change or 0) - db_change) > 0.1:
                             d["change_percent"] = db_change
                             d["previous_close"] = pv
                 except (TypeError, ZeroDivisionError):
