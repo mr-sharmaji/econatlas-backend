@@ -9043,6 +9043,14 @@ async def _refresh_prefetch_cache_once() -> None:
             indices, top_gainers, top_losers, fx_majors, commodities,
             market_hours,
         )
+        # TEMP DEBUG: log the first two lines of the snapshot so we can
+        # verify the new TODAY/Session header is actually reaching the
+        # LLM. Remove after the weekday-drift bug is confirmed fixed.
+        try:
+            _dbg_head = "\\n".join(snapshot.splitlines()[:3])
+            logger.info("prefetch_snapshot_head: %s", _dbg_head)
+        except Exception:
+            pass
 
         _prefetch_cache.update({
             "snapshot": snapshot,
