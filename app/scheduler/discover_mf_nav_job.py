@@ -1,17 +1,35 @@
 """Daily job to update mutual fund NAV history for the last 7 days.
 
-Fetches recent NAV data from mfapi.in and upserts into
-discover_mf_nav_history. Lightweight — only appends new data via
-INSERT ON CONFLICT DO NOTHING.
+Two-phase update:
+
+1. **AMFI NAVAll.txt first.** One HTTP call to portal.amfiindia.com
+   returns the latest NAV for every scheme AMFI tracks (~8000 schemes
+   on a normal trading day). This is the authoritative upstream and
+   is usually fresh within minutes of the 23:00 IST AMFI publish. We
+   parse the semicolon-delimited file, upsert every row with
+   source='amfi', and use that as the primary signal for "did we get
+   today's data".
+
+2. **mfapi.in 7-day history fallback.** mfapi.in mirrors AMFI but runs
+   a scheduled scrape on its own cadence, so it's sometimes 1-2 days
+   stale. It does give us 7 trailing days per request though, which
+   is useful for backfilling gaps left by previous job outages. We
+   still call it after AMFI for every scheme — ON CONFLICT DO NOTHING
+   means AMFI's fresh row wins and mfapi fills historical holes.
+
+This two-phase design was added after the 2026-04-15 incident where
+mfapi.in stopped serving Apr 15 data even though AMFI had published
+it. mfapi-only builds are vulnerable to that specific kind of
+upstream lag; AMFI-first builds are not.
 
 Runs after the main discover_mutual_fund_job (~10:30 PM IST weekdays).
 
-Uses bounded parallelism: _MAX_CONCURRENCY scheme fetches run
-concurrently in a dedicated thread pool (because mfapi.in is hit via
-the blocking `requests` library), coordinated by an asyncio.Semaphore
-on the coroutine side. Each worker spaces its own requests by
-_PER_WORKER_SPACING_SECONDS so the aggregate request rate stays
-bounded. Prior to this, the job was strictly serial with a 1 s
+Uses bounded parallelism for the mfapi phase: _MAX_CONCURRENCY scheme
+fetches run concurrently in a dedicated thread pool (because mfapi.in
+is hit via the blocking `requests` library), coordinated by an
+asyncio.Semaphore on the coroutine side. Each worker spaces its own
+requests by _PER_WORKER_SPACING_SECONDS so the aggregate request rate
+stays bounded. Prior to this, the job was strictly serial with a 1 s
 rate-limit sleep per scheme and took ~37 minutes for ~2,200 schemes;
 with concurrency=8 and spacing=0.5 s it finishes in ~5 minutes.
 _fetch_mf_nav_7d already retries with exponential backoff on 429/5xx
@@ -33,6 +51,7 @@ from app.core.database import get_pool
 logger = logging.getLogger(__name__)
 
 MFAPI_URL = "https://api.mfapi.in/mf/{scheme_code}"
+AMFI_NAVALL_URL = "https://portal.amfiindia.com/spages/NAVAll.txt"
 MAX_RETRIES = 3
 
 # Bounded-parallelism tuning. Aggregate req/sec ≈
@@ -44,11 +63,175 @@ MAX_RETRIES = 3
 _MAX_CONCURRENCY = 8
 _PER_WORKER_SPACING_SECONDS = 0.5
 
+# AMFI date format in NAVAll.txt: "15-Apr-2026"
+_AMFI_DATE_FORMAT = "%d-%b-%Y"
+
+# Parameterized so both AMFI and mfapi upserts go through the same path.
 INSERT_SQL = """
 INSERT INTO discover_mf_nav_history (scheme_code, nav_date, nav, source)
-VALUES ($1, $2, $3, 'mfapi')
+VALUES ($1, $2, $3, $4)
 ON CONFLICT (scheme_code, nav_date) DO NOTHING
 """
+
+
+def _fetch_amfi_navall_sync() -> list[tuple[int, "datetime.date", float]]:
+    """Fetch AMFI's NAVAll.txt and return (scheme_code, nav_date, nav) tuples.
+
+    Format (semicolon-delimited, with section headers and blank lines):
+
+        Scheme Code;ISIN Div Payout/ ISIN Growth;ISIN Div Reinvestment;Scheme Name;Net Asset Value;Date
+
+        Open Ended Schemes(Debt Scheme - Banking and PSU Fund)
+
+        Aditya Birla Sun Life Mutual Fund
+
+        119551;INF209KA12Z1;INF209KA13Z9;Scheme Name;104.7901;15-Apr-2026
+        ...
+
+    Rows that don't match the 6-column numeric layout are silently
+    skipped (headers, category dividers, fund-house banners, blank
+    lines). Rows with non-numeric scheme_code or NAV, or unparseable
+    dates, are also skipped with a DEBUG log — we don't want a single
+    malformed line to abort the whole ingest.
+
+    The file is ~3-5 MB and returns ~8000 parseable rows on a typical
+    trading day. One HTTP call covers the entire MF universe for the
+    latest business day.
+    """
+    logger.debug("amfi: fetching NAVAll.txt url=%s", AMFI_NAVALL_URL)
+    t0 = time.monotonic()
+    try:
+        resp = requests.get(AMFI_NAVALL_URL, timeout=30, allow_redirects=True)
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        logger.warning("amfi: NAVAll.txt fetch failed: %r", exc)
+        return []
+    text = resp.text
+    logger.debug(
+        "amfi: NAVAll.txt fetched bytes=%d elapsed=%.2fs",
+        len(text), time.monotonic() - t0,
+    )
+
+    rows: list[tuple[int, "datetime.date", float]] = []
+    lines = text.splitlines()
+    dropped_format = 0
+    dropped_code = 0
+    dropped_nav = 0
+    dropped_date = 0
+    date_histogram: dict[str, int] = {}
+
+    for raw in lines:
+        line = raw.strip()
+        if not line or ";" not in line:
+            continue
+        parts = line.split(";")
+        if len(parts) < 6:
+            dropped_format += 1
+            continue
+        # Column 0 = scheme_code, column 4 = NAV, column 5 = date.
+        scheme_code_s = parts[0].strip()
+        nav_s = parts[4].strip()
+        date_s = parts[5].strip()
+        if not scheme_code_s or not scheme_code_s.isdigit():
+            # Header row and section dividers end up here — silent skip.
+            dropped_code += 1
+            continue
+        try:
+            scheme_code = int(scheme_code_s)
+        except ValueError:
+            dropped_code += 1
+            continue
+        try:
+            nav_value = float(nav_s)
+        except ValueError:
+            dropped_nav += 1
+            continue
+        try:
+            nav_date = datetime.strptime(date_s, _AMFI_DATE_FORMAT).date()
+        except ValueError:
+            dropped_date += 1
+            continue
+        rows.append((scheme_code, nav_date, nav_value))
+        date_histogram[date_s] = date_histogram.get(date_s, 0) + 1
+
+    logger.info(
+        "amfi: parsed NAVAll.txt — kept=%d rows across %d distinct dates, "
+        "dropped_format=%d dropped_code=%d dropped_nav=%d dropped_date=%d",
+        len(rows), len(date_histogram),
+        dropped_format, dropped_code, dropped_nav, dropped_date,
+    )
+    # Log the date histogram so stale-upstream states (like 2026-04-15
+    # where most schemes were still on Apr 13) are visible at a glance.
+    top_dates = sorted(date_histogram.items(), key=lambda kv: -kv[1])[:5]
+    logger.debug("amfi: date histogram top-5 %s", top_dates)
+    return rows
+
+
+async def _ingest_amfi_rows(pool) -> tuple[int, int]:  # noqa: ANN001
+    """Fetch AMFI's NAVAll.txt, filter to the snapshot universe, and
+    upsert every row. Returns ``(fetched, actually_new)`` where
+    ``actually_new`` is computed via BIGSERIAL id delta on
+    discover_mf_nav_history — asyncpg's executemany doesn't return
+    affected-row counts for ON CONFLICT DO NOTHING so we can't use
+    len(rows) as the signal for "did we get anything new."
+
+    The filter matters: NAVAll.txt contains ~14k schemes including
+    long-dead funds from 2018 and earlier that our snapshots table
+    doesn't track. Writing history for funds we never surface in the
+    UI is dead weight and skews the silent-success guard's row-count
+    math, so we drop anything not in discover_mutual_fund_snapshots."""
+    loop = asyncio.get_event_loop()
+    executor = get_job_executor("discover-mf-nav", max_workers=_MAX_CONCURRENCY)
+    logger.debug("amfi: dispatching NAVAll.txt fetch to executor")
+    amfi_rows = await loop.run_in_executor(executor, _fetch_amfi_navall_sync)
+    if not amfi_rows:
+        logger.warning(
+            "amfi: NAVAll.txt returned zero rows — skipping AMFI phase entirely. "
+            "mfapi fallback will still run."
+        )
+        return 0, 0
+
+    # Filter to schemes we actually track.
+    universe_rows = await pool.fetch(
+        "SELECT scheme_code FROM discover_mutual_fund_snapshots"
+    )
+    universe: set[int] = {int(r["scheme_code"]) for r in universe_rows}
+    logger.debug(
+        "amfi: universe filter — %d schemes in discover_mutual_fund_snapshots",
+        len(universe),
+    )
+    filtered = [(c, d, n) for (c, d, n) in amfi_rows if c in universe]
+    dropped_not_in_universe = len(amfi_rows) - len(filtered)
+    logger.info(
+        "amfi: filtered to universe — kept=%d, dropped_not_in_universe=%d",
+        len(filtered), dropped_not_in_universe,
+    )
+    if not filtered:
+        logger.warning(
+            "amfi: no NAVAll.txt rows intersect the snapshot universe — "
+            "possible mismatch between scheme_codes in snapshots and AMFI."
+        )
+        return 0, 0
+
+    # Count actually-new rows via BIGSERIAL id delta.
+    async with pool.acquire() as conn:
+        max_id_before = await conn.fetchval(
+            "SELECT COALESCE(MAX(id), 0) FROM discover_mf_nav_history"
+        )
+        logger.debug("amfi: pre-ingest max(id)=%s", max_id_before)
+        payload = [(c, d, n, "amfi") for (c, d, n) in filtered]
+        await conn.executemany(INSERT_SQL, payload)
+        max_id_after = await conn.fetchval(
+            "SELECT COALESCE(MAX(id), 0) FROM discover_mf_nav_history"
+        )
+    actually_new = int(max_id_after - max_id_before)
+    logger.info(
+        "amfi: upsert complete — fetched=%d kept=%d actually_new=%d "
+        "(%.1f%% new; the rest were already in DB)",
+        len(amfi_rows), len(filtered), actually_new,
+        100.0 * actually_new / max(len(filtered), 1),
+    )
+    return len(filtered), actually_new
 
 
 def _fetch_mf_nav(
@@ -146,16 +329,41 @@ def _fetch_mf_nav_backfill(scheme_code: int) -> list[tuple[int, datetime, float]
 
 
 async def run_discover_mf_nav_job() -> None:
-    """Fetch last 7 days of NAV for all discover mutual funds and upsert.
+    """Two-phase NAV history refresh.
 
-    Parallelized: _MAX_CONCURRENCY coroutines run concurrently,
-    each dispatching blocking mfapi.in fetches to a dedicated
-    thread pool (same size) and then persisting the resulting
-    rows via asyncpg. Per-worker spacing provides the rate limit.
-    See module docstring for rationale + tuning.
+    **Phase 1 — AMFI NAVAll.txt.** One HTTP call, returns latest NAV
+    for the entire MF universe. Upserts every parseable row with
+    source='amfi'. This is the authoritative, fresh source and the
+    primary reason Apr 15 (and any future stale-mfapi episode) lands
+    in the DB the same day AMFI publishes.
+
+    **Phase 2 — mfapi.in 7-day history.** Per-scheme HTTP calls through
+    a bounded-parallelism thread pool (see _MAX_CONCURRENCY,
+    _PER_WORKER_SPACING_SECONDS). mfapi can lag AMFI by 1-2 days but
+    gives 7 trailing days per call, so it's still useful for filling
+    historical gaps that the single-day AMFI phase can't cover.
+
+    See module docstring for the full rationale — this design came
+    out of the 2026-04-15 mfapi staleness incident.
     """
-    logger.debug("run_discover_mf_nav_job: entry, fetching scheme codes from snapshots")
+    logger.debug("run_discover_mf_nav_job: entry")
     pool = await get_pool()
+
+    # ── Phase 1: AMFI NAVAll.txt ──────────────────────────────────
+    t_amfi = time.monotonic()
+    try:
+        amfi_fetched, amfi_new = await _ingest_amfi_rows(pool)
+    except Exception:
+        logger.exception(
+            "amfi: unexpected failure — continuing to mfapi fallback"
+        )
+        amfi_fetched, amfi_new = 0, 0
+    logger.info(
+        "MF NAV phase 1/2 (AMFI): %d rows fetched, %d actually new, %.1fs elapsed",
+        amfi_fetched, amfi_new, time.monotonic() - t_amfi,
+    )
+
+    # ── Phase 2: mfapi.in 7-day history ───────────────────────────
     codes = await pool.fetch(
         "SELECT DISTINCT scheme_code FROM discover_mutual_fund_snapshots ORDER BY scheme_code"
     )
@@ -168,8 +376,19 @@ async def run_discover_mf_nav_job() -> None:
         code_list[-1] if code_list else None,
     )
     logger.info(
-        "MF NAV daily update: %d scheme codes to process (concurrency=%d, spacing=%.2fs).",
+        "MF NAV phase 2/2 (mfapi): %d scheme codes to process (concurrency=%d, spacing=%.2fs).",
         total, _MAX_CONCURRENCY, _PER_WORKER_SPACING_SECONDS,
+    )
+
+    # Capture pre-phase-2 max(id) so we can count actually-new rows
+    # from the mfapi phase the same way we did for AMFI.
+    async with pool.acquire() as _conn_preflight:
+        mfapi_max_id_before = await _conn_preflight.fetchval(
+            "SELECT COALESCE(MAX(id), 0) FROM discover_mf_nav_history"
+        )
+    logger.debug(
+        "run_discover_mf_nav_job: mfapi phase starting max(id)=%s",
+        mfapi_max_id_before,
     )
 
     # Size the thread pool to match asyncio concurrency so run_in_executor
@@ -196,7 +415,9 @@ async def run_discover_mf_nav_job() -> None:
                     scheme_code, len(rows),
                 )
                 if rows:
-                    await pool.executemany(INSERT_SQL, rows)
+                    # Attach 'mfapi' source to each (code, date, nav) tuple.
+                    rows_with_source = [(c, d, n, "mfapi") for (c, d, n) in rows]
+                    await pool.executemany(INSERT_SQL, rows_with_source)
                     counters["inserted"] += len(rows)
                     logger.debug(
                         "process_one: upsert done scheme=%s rows=%d (ON CONFLICT DO NOTHING, actual new rows may be fewer)",
@@ -228,37 +449,52 @@ async def run_discover_mf_nav_job() -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
     elapsed = time.monotonic() - t_start
+    # Compute actually-new rows from phase 2 the same way AMFI does —
+    # BIGSERIAL id delta. `counters["inserted"]` is misleading (it's
+    # attempted-upsert count, not actual inserts) so we report both for
+    # transparency but key decisions off mfapi_new.
+    async with pool.acquire() as _conn_post:
+        mfapi_max_id_after = await _conn_post.fetchval(
+            "SELECT COALESCE(MAX(id), 0) FROM discover_mf_nav_history"
+        )
+    mfapi_new = int(mfapi_max_id_after - mfapi_max_id_before)
+    total_new = amfi_new + mfapi_new
     logger.info(
-        "MF NAV daily update complete: %d scheme codes, %d rows upserted, "
-        "%d errors, %.1fs elapsed.",
-        total, counters["inserted"], counters["errors"], elapsed,
+        "MF NAV daily update complete: amfi_new=%d mfapi_attempted=%d "
+        "mfapi_new=%d total_new=%d errors=%d elapsed=%.1fs",
+        amfi_new, counters["inserted"], mfapi_new, total_new,
+        counters["errors"], elapsed,
     )
 
-    # Silent-success detector: if the job processed the full universe
-    # but upserted far fewer rows than expected, the upstream mfapi data
-    # was stale when we called it (ON CONFLICT DO NOTHING swallows the
-    # "nothing new" case). A healthy weekday run hits ~(total * 7)
-    # upserts before de-dup, so anything <10% of that for a >0 total
-    # run is almost certainly a stale-source problem, not a code bug.
-    # This is the line that would have flagged Apr 15's 5-row run in
-    # real time instead of us finding it via SQL archaeology a day
-    # later. Kept as WARNING so it shows up in any min_level=WARNING
-    # query to /ops/logs. See post-mortem in this session for context.
-    if total > 100 and counters["inserted"] < (total * 0.10):
+    # Silent-success detector, now keyed off actually-new row count
+    # across BOTH phases (AMFI + mfapi). Before the Apr 15 fix this
+    # checked attempted-upsert count which wildly over-reported — the
+    # job could look healthy while writing zero new rows. Now we
+    # compare total_new (real DB inserts) against what a healthy
+    # weekday run should produce: at minimum one new row per scheme
+    # (today's NAV) from AMFI alone. A run that adds <10% of the
+    # universe in new rows is almost certainly a stale-upstream
+    # problem or a Saturday/Sunday/holiday, and deserves a WARNING.
+    if total > 100 and total_new < (total * 0.10):
         logger.warning(
-            "MF NAV: suspiciously thin upsert — %d rows across %d schemes "
-            "(expected ≥ %d for a healthy weekday run). Likely stale "
-            "upstream at mfapi.in (AMFI publishes ~23:00 IST; cron "
-            "fires at 22:30 IST). Re-run after 01:00 IST or adjust "
-            "discover_mf_daily_minute_ist.",
-            counters["inserted"], total, int(total * 0.10),
+            "MF NAV: suspiciously thin ingest — only %d NEW rows across "
+            "%d schemes (amfi_new=%d, mfapi_new=%d). Expected ≥ %d on a "
+            "healthy trading day. Likely causes: (a) weekend/holiday — "
+            "AMFI publishes few or no NAVs, (b) AMFI publish delayed, "
+            "(c) both AMFI and mfapi stale at the same time (rare). "
+            "Check AMFI portal and recent debug logs for the ingest "
+            "histogram.",
+            total_new, total, amfi_new, mfapi_new, int(total * 0.10),
         )
     if counters["errors"] > (total * 0.25):
         logger.warning(
-            "MF NAV: high error rate — %d / %d schemes failed (%.1f%%). "
-            "Check mfapi.in availability and recent debug logs for the "
+            "MF NAV: high mfapi error rate — %d / %d schemes failed "
+            "(%.1f%%). AMFI phase still provided %d new rows. Check "
+            "mfapi.in availability and recent debug logs for the "
             "failure pattern.",
-            counters["errors"], total, 100.0 * counters["errors"] / max(total, 1),
+            counters["errors"], total,
+            100.0 * counters["errors"] / max(total, 1),
+            amfi_new,
         )
 
 
@@ -303,7 +539,8 @@ async def run_discover_mf_nav_backfill_job() -> None:
                 if rows:
                     # executemany preserves ON CONFLICT DO NOTHING, so
                     # existing good rows are not modified.
-                    await pool.executemany(INSERT_SQL, rows)
+                    rows_with_source = [(c, d, n, "mfapi") for (c, d, n) in rows]
+                    await pool.executemany(INSERT_SQL, rows_with_source)
                     counters["inserted"] += len(rows)
             except Exception:
                 counters["errors"] += 1
