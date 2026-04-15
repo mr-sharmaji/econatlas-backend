@@ -33,6 +33,7 @@ _VALID_JOBS = {
     "ipo", "tax", "market_score", "fertilizer",
     "notification_check", "ipo_notification",
     "gap_backfill",
+    "market_intraday_backfill",
     "news_embed",
     # Artha semantic layer backfills
     "stock_narrative_embed",
@@ -713,6 +714,14 @@ _DIRECT_RUN_JOBS: dict[str, tuple[str, str]] = {
     "discover_stock_intraday_backfill": (
         "app.scheduler.discover_stock_intraday_job",
         "run_discover_stock_intraday_backfill",
+    ),
+    # End-of-session catch-up for Yahoo-backed indices + FX. The live
+    # intraday loop drops post-session ticks, so the NSE/BSE closing
+    # auction print never lands naturally. Call this on demand to
+    # backfill the full 1m bar series for today from Yahoo's chart API.
+    "market_intraday_backfill": (
+        "app.scheduler.market_job",
+        "run_market_intraday_backfill_job",
     ),
     "discover_stock_intraday_autofill": (
         "app.scheduler.discover_stock_intraday_job",

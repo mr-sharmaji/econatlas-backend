@@ -1205,7 +1205,7 @@ def build_market_intraday_rows_last_session_yahoo(
 
     # Single point for assets without Yahoo intraday (Gift Nifty, bonds)
     yahoo_asset_set = set(asset_to_symbol.keys())
-    for r in market_rows:
+    for r in (market_rows or []):
         if r.get("asset") in yahoo_asset_set:
             continue
         ts = r.get("timestamp")
@@ -1226,6 +1226,65 @@ def build_market_intraday_rows_last_session_yahoo(
             "session_source": r.get("session_source"),
         })
     return rows_out
+
+
+async def run_market_intraday_backfill_job() -> None:
+    """Backfill today's full 1-minute intraday bar history for every
+    market index and FX pair with a Yahoo symbol.
+
+    The live intraday loop intentionally refuses post-session ticks
+    (see market_job's session gate) which means the closing auction
+    print for NSE/BSE/LSE/XETRA/Euronext/TSE never lands in
+    market_prices_intraday through the normal path. The 1D chart
+    and the notification freshness gate both read the last intraday
+    tick, so without this job the closing auction is effectively
+    invisible after market hours.
+
+    This job hits Yahoo's v8/chart endpoint (1m interval, 7d range)
+    once per Yahoo-backed symbol, filters to today's trading date
+    per exchange, and upserts every bar into market_prices_intraday
+    via insert_intraday_batch. Provider tag 'yahoo_1m' so repeat
+    runs are idempotent (ON CONFLICT DO UPDATE on
+    (asset, instrument_type, source_timestamp, provider)).
+
+    Triggered manually via /ops/jobs/trigger/market_intraday_backfill
+    — not wired into the cron schedule because it duplicates what
+    the live intraday loop already writes during market hours; it
+    only earns its keep for end-of-session catch-up.
+    """
+    loop = asyncio.get_event_loop()
+    now = datetime.now(timezone.utc)
+
+    def _build_date_targets() -> dict[str, set[date]]:
+        """Compute today's trading date for each exchange we care about."""
+        return {
+            NSE:      {get_trading_date(now, NSE)},
+            NYSE:     {get_trading_date(now, NYSE)},
+            LSE:      {get_trading_date(now, LSE)},
+            XETRA:    {get_trading_date(now, XETRA)},
+            EURONEXT: {get_trading_date(now, EURONEXT)},
+            TSE:      {get_trading_date(now, TSE)},
+        }
+
+    def _sync_build_rows() -> list[dict]:
+        trading_date_by_exchange = _build_date_targets()
+        return build_market_intraday_rows_last_session_yahoo(
+            market_rows=[],
+            trading_date_by_exchange=trading_date_by_exchange,
+        )
+
+    rows = await loop.run_in_executor(
+        get_job_executor("market"),
+        _sync_build_rows,
+    )
+    if not rows:
+        logger.info("market_intraday_backfill: no rows built")
+        return
+    inserted = await market_service.insert_intraday_batch(rows)
+    logger.info(
+        "market_intraday_backfill: %d bars built, %d upserted",
+        len(rows), inserted,
+    )
 
 
 def _fetch_market_rows_sync() -> tuple[List[Dict], bool, List[Dict]]:
