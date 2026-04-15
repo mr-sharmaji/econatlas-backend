@@ -74,6 +74,16 @@ _close_pending: dict[str, datetime | None] = {}  # market -> transition timestam
 # the user-visible notification.
 _CLOSE_SETTLE_SECONDS = 180
 
+# India-specific settle. NSE's closing auction publishes ~1–3 min after
+# 15:30 IST and Yahoo's spot endpoint surfaces it a minute or two later.
+# Five minutes was not enough in practice — the post-market notification
+# was firing with the last pre-close intraday tick (e.g. Nifty +1.5%
+# instead of the actual close +1.63%). Bumped to 10 min; the
+# freshness gate in _fetch_india_close_data will also refuse to send
+# until the daily row diverges from the last intraday tick, so this
+# value is an upper bound on the wait, not a rigid fire time.
+_POST_MARKET_SETTLE_SECONDS_INDIA = 600
+
 # Post-market summary state
 _post_market_state: dict = {
     "last_date": None,
@@ -241,6 +251,57 @@ async def _fetch_india_close_data() -> dict | None:
 
         if "nifty_change_pct" not in data:
             return None
+
+        # ── Closing-auction freshness gate ──
+        #
+        # The daily market_prices row gets rewritten by every market_job
+        # tick from whatever Yahoo's spot endpoint is reporting. Between
+        # 15:30 and ~15:33 IST Yahoo typically still returns the last
+        # pre-close intraday price, not the closing auction print, so a
+        # notification fired in that window reports (e.g.) Nifty +1.54%
+        # when the actual close is +1.63% — a measurable drift the user
+        # will compare against Google's live widget.
+        #
+        # Detect "close auction has landed" by comparing the daily row's
+        # Nifty 50 price against the most recent market_prices_intraday
+        # tick for Nifty 50 today. The intraday gate in market_job drops
+        # post-session ticks, so the last intraday row is ALWAYS the
+        # last pre-close tick. Once Yahoo publishes the auction print,
+        # market_job writes it to the daily row only — the intraday row
+        # stays frozen — and the two diverge. That divergence is our
+        # "ready" signal. No clock arithmetic required.
+        #
+        # If the two rows are still identical (within 0.05 points of
+        # slop for float rounding), return None so the caller retries
+        # on the next notification tick. The post-market pending loop
+        # will keep polling until either the divergence appears or the
+        # hard ceiling in _check_post_market_summary fires the fallback.
+        if nifty_close is not None:
+            last_intra = await pool.fetchrow(
+                """
+                SELECT price
+                FROM market_prices_intraday
+                WHERE asset = 'Nifty 50'
+                  AND instrument_type = 'index'
+                  AND (source_timestamp AT TIME ZONE 'UTC')::date
+                      = (NOW() AT TIME ZONE 'UTC')::date
+                ORDER BY source_timestamp DESC
+                LIMIT 1
+                """
+            )
+            if last_intra is not None and last_intra["price"] is not None:
+                try:
+                    last_intra_price = float(last_intra["price"])
+                    if abs(last_intra_price - nifty_close) < 0.05:
+                        logger.info(
+                            "_fetch_india_close_data: daily Nifty 50 has not "
+                            "diverged from last intraday tick (%.2f vs %.2f) — "
+                            "waiting for closing auction print",
+                            last_intra_price, nifty_close,
+                        )
+                        return None
+                except (TypeError, ValueError):
+                    pass
 
         # Relative context for Nifty 50
         data["relative_context"] = await _get_relative_context(
@@ -1403,9 +1464,12 @@ async def _check_post_market_summary(now: datetime, india_closed_transition: boo
         return
 
     if _post_market_state.get("pending"):
-        # Waiting for 5-minute delay after live transition
+        # Waiting for the post-market settle window after a live transition.
+        # See _POST_MARKET_SETTLE_SECONDS_INDIA for rationale on the 10-min
+        # floor — the data-driven freshness gate in _fetch_india_close_data
+        # still has the final say within this window.
         close_time = _post_market_state.get("close_time")
-        if close_time and (now - close_time).total_seconds() < 300:
+        if close_time and (now - close_time).total_seconds() < _POST_MARKET_SETTLE_SECONDS_INDIA:
             return
     else:
         # No live transition detected (e.g., server restarted after close).
@@ -1580,6 +1644,21 @@ async def _check_missed_close_notifications(
         # Europe/Japan mirror the gates in _check_missed_open_notifications.
         if market == "india" and not get_india_session_info(now).get("is_trading_day"):
             continue
+
+        # India is owned by _check_post_market_summary for the first
+        # _POST_MARKET_SETTLE_SECONDS_INDIA after NSE close — that path
+        # has the closing-auction freshness gate and the settle delay.
+        # If we fire from here instead, we race ahead of the settle and
+        # send the last pre-close intraday tick (the "Nifty +1.5% vs
+        # Google's +1.63%" bug). Only fall through to this fallback
+        # after the settle window when post_market_summary has had a
+        # real chance to run; the dedup key inside notify_market_close
+        # still prevents a double-send.
+        if market == "india":
+            total_minutes = now_ist.hour * 60 + now_ist.minute
+            post_close_minutes = total_minutes - 930  # 930 = 15:30 IST
+            if 0 <= post_close_minutes * 60 < _POST_MARKET_SETTLE_SECONDS_INDIA:
+                continue
         if market == "us" and is_exchange_holiday("NYSE", now):
             continue
         if market == "europe" and is_exchange_holiday("LSE", now):
