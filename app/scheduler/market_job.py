@@ -1337,6 +1337,34 @@ def build_market_intraday_rows_for_open(
         source_dt = parse_ts(r.get("source_timestamp")) if r.get("source_timestamp") else None
         if source_dt is not None and source_dt.tzinfo is None:
             source_dt = source_dt.replace(tzinfo=timezone.utc)
+
+        # ── Stale-repeat dedupe ──────────────────────────────────
+        # If the scraped price exactly equals the same response's
+        # previous_close, the upstream is almost certainly serving
+        # a cached "last known close" instead of a real live tick.
+        # Real intraday prices essentially never return EXACTLY the
+        # previous close to 4+ decimal places — when they do it's
+        # a cache artifact (Google Finance and Yahoo both do this
+        # for closed/pre-open exchanges).
+        #
+        # The session-time gate below catches the case where the
+        # provider's cache-refresh timestamp falls outside session
+        # hours, but it MISSES the case where the cache refreshed
+        # at e.g. 08:00 UTC (Frankfurt is technically open) with
+        # yesterday's close still in the cache. This dedupe catches
+        # that residual case. The only legitimate sacrifice is the
+        # vanishingly rare opening tick that prints exactly at
+        # the previous close — the next minute's tick still gets
+        # through.
+        try:
+            price_v = float(r.get("price")) if r.get("price") is not None else None
+            prev_v = float(r.get("previous_close")) if r.get("previous_close") is not None else None
+        except (TypeError, ValueError):
+            price_v = prev_v = None
+        if (price_v is not None and prev_v is not None
+                and abs(price_v - prev_v) < 1e-6):
+            continue
+
         # Anchor the open-check to the row's CLAIMED source time
         # (source_timestamp), not wall-clock now_utc. Google Finance
         # for closed exchanges publishes a "last update time" of
