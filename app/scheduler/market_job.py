@@ -1309,7 +1309,26 @@ def build_market_intraday_rows_for_open(
     """Build intraday rows for 1D chart.
     Currencies are written every run (24/7 behavior).
     Gift Nifty follows dedicated Gift Nifty session status.
-    Other indices/bonds follow exchange open status."""
+    Other indices/bonds follow exchange open status — if the
+    exchange is closed at fetch time the row is dropped entirely.
+
+    Why no post-close grace anymore: the scraper sets
+    source_timestamp to wall-clock now() rather than the upstream's
+    actual price-update time, so _within_post_close_grace saw
+    age_seconds ≈ 0 and let stale closes through hours after the
+    session ended. The visible bug: at 04:30 UTC (10:00 IST), 13
+    hours after Frankfurt close, our scraper polled Google Finance,
+    got DAX = 24044.22 (= yesterday's close, served as "current
+    quote" by Google when the market is shut), and inserted it as
+    a fresh intraday row. The Markets tab then showed "Updated 3
+    hours ago" with a stale price, and the AI notification job
+    generated "European shares rise as DAX up 1.3%" before
+    Frankfurt was even open. Hard exchange-hours gate is the only
+    correct boundary until the scraper learns to honour real
+    upstream timestamps. The closing print at exactly the
+    session-end minute is still captured because
+    is_exchange_expected_open is inclusive of the close bell.
+    """
     intraday_rows = []
     now_utc = datetime.now(timezone.utc)
     for r in market_rows:
@@ -1325,8 +1344,6 @@ def build_market_intraday_rows_for_open(
             include = bool(status.get("gift_nifty_open"))
         elif exchange in {NSE, NYSE, LSE, XETRA, EURONEXT, TSE}:
             include = is_exchange_expected_open(exchange, now_utc, status=status)
-            if not include and _within_post_close_grace(exchange, now_utc, source_dt):
-                include = True
         if include:
             if source_dt is None:
                 source_dt = datetime.now(timezone.utc)
