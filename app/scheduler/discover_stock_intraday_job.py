@@ -1486,11 +1486,53 @@ async def run_discover_stock_intraday_autofill_job() -> None:
         except Exception:
             logger.exception("intraday_autofill: snapshot UPDATE failed")
 
+    # UPSERT today's row into discover_stock_price_history so the
+    # daily-history table always has an "as-of-now" close for today,
+    # not just the EOD job's 16:00 IST first-write. Every consumer
+    # of the history table (chart endpoint, scoring, peer card,
+    # chat context) then sees today without read-path patches.
+    #
+    # Conflict handling:
+    #   - source='intraday_snapshot' marks our placeholder rows.
+    #   - The EOD discover_stock_price job writes source='yahoo'
+    #     and uses ON CONFLICT DO UPDATE so it always replaces our
+    #     placeholder with the canonical close at 16:00 IST.
+    #   - Our WHERE guard refuses to overwrite a 'yahoo' row, so
+    #     a late autofill tick (last cron at 15:54 IST) can't
+    #     clobber an EOD row that just landed.
+    history_rows: list[tuple] = []
+    today_ist = datetime.now(_IST).date()
+    for symbol, (ts_utc, price, vol) in latest_tick.items():
+        history_rows.append((symbol, today_ist, price, vol))
+
+    history_upserted = 0
+    if history_rows:
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.executemany(
+                        """
+                        INSERT INTO discover_stock_price_history
+                            (symbol, trade_date, close, volume, source)
+                        VALUES ($1, $2, $3, $4, 'intraday_snapshot')
+                        ON CONFLICT (symbol, trade_date) DO UPDATE
+                        SET close = EXCLUDED.close,
+                            volume = COALESCE(EXCLUDED.volume, discover_stock_price_history.volume),
+                            source = EXCLUDED.source
+                        WHERE discover_stock_price_history.source != 'yahoo'
+                        """,
+                        history_rows,
+                    )
+            history_upserted = len(history_rows)
+        except Exception:
+            logger.exception("intraday_autofill: history UPSERT failed")
+
     elapsed = time.monotonic() - t0
     logger.warning(
         "intraday_autofill: DONE in %.1fs — symbols_ok=%d empty=%d "
-        "rows_queued=%d snapshots_updated=%d",
-        elapsed, fetched_symbols, fetched_empty, rows_inserted, snapshots_updated,
+        "rows_queued=%d snapshots_updated=%d history_upserted=%d",
+        elapsed, fetched_symbols, fetched_empty, rows_inserted,
+        snapshots_updated, history_upserted,
     )
 
 

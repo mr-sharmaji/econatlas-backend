@@ -32,7 +32,10 @@ GLOBAL_PAUSE_SECONDS = 60 # all workers pause on sustained 429s
 INSERT_SQL = """
 INSERT INTO discover_stock_price_history (symbol, trade_date, close, volume, source)
 VALUES ($1, $2, $3, $4, 'yahoo')
-ON CONFLICT (symbol, trade_date) DO NOTHING
+ON CONFLICT (symbol, trade_date) DO UPDATE
+SET close = EXCLUDED.close,
+    volume = COALESCE(EXCLUDED.volume, discover_stock_price_history.volume),
+    source = EXCLUDED.source
 """
 
 HEADERS = {
