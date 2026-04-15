@@ -1252,7 +1252,9 @@ async def run_discover_stock_intraday_autofill_job() -> None:
     # post-open fire lands at 09:24 IST.
     today_ist = datetime.now(_IST).date()
     h, m = _ist_hour_minute()
-    is_opening_sweep = (h == 9 and m <= 30)
+    # (Legacy flag retained as `_` for clarity; we now fetch 1-min
+    # bars on every sweep so an explicit opening sweep is unneeded.)
+    _ = (h == 9 and m <= 30)
 
     # Yesterday-catchup gate: read coverage from DB before touching
     # Upstox. If yesterday had a decent live pass we skip the extra
@@ -1342,19 +1344,26 @@ async def run_discover_stock_intraday_autofill_job() -> None:
             if key is None:
                 return
             async with sem:
-                # Today's 30-min bars via intraday endpoint.
-                pts_30m = await _fetch_upstox_intraday_for_symbol(
-                    client, key, interval="30minute",
+                # Use 1-minute bars for every sweep. With 30-minute
+                # bars, a stock that isn't in the NSE bulk feed (e.g.
+                # BALUFORGE) sees its snapshot age to 30 minutes old
+                # before the next 30m bar closes and autofill picks
+                # it up. Minute bars cut that freshness lag to
+                # ≤ 1 autofill period (10 min).
+                #
+                # Upstox historical-candle/intraday returns all of
+                # today's completed 1-min bars (~60 per symbol this
+                # early in the session, up to ~375 near close).
+                # Dedup via ON CONFLICT DO NOTHING means the 2nd+
+                # autofill tick is cheap — it re-fetches the same
+                # series and only the minute-or-two of new bars
+                # actually INSERT.
+                pts = await _fetch_upstox_intraday_for_symbol(
+                    client, key, interval="1minute",
                 )
-                # Opening 1-min bars: only on the first post-open tick.
-                pts_1m: list[tuple[datetime, float, int | None]] = []
-                if is_opening_sweep:
-                    pts_1m = await _fetch_upstox_intraday_for_symbol(
-                        client, key, interval="1minute",
-                    )
                 await asyncio.sleep(_UPSTOX_INTER_CALL_DELAY_SEC)
 
-            combined = pts_30m + pts_1m
+            combined = pts
             if not combined:
                 async with counters_lock:
                     counters["empty"] += 1
@@ -1376,9 +1385,8 @@ async def run_discover_stock_intraday_autofill_job() -> None:
         fetched_symbols = counters["ok"]
         fetched_empty = counters["empty"]
         logger.warning(
-            "intraday_autofill: today sweep done — ok=%d empty=%d rows_queued=%d "
-            "(opening_sweep=%s)",
-            fetched_symbols, fetched_empty, len(all_rows), is_opening_sweep,
+            "intraday_autofill: today sweep done — ok=%d empty=%d rows_queued=%d",
+            fetched_symbols, fetched_empty, len(all_rows),
         )
 
         # Yesterday-catchup pass — uses the historical-candle endpoint
