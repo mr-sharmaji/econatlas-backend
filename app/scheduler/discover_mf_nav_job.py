@@ -223,18 +223,24 @@ async def _ingest_amfi_rows(pool) -> tuple[int, int]:  # noqa: ANN001
         )
         return 0, 0
 
-    # Count actually-new rows via BIGSERIAL id delta.
+    # Count actually-new rows via ingested_at timestamp delta. We
+    # originally tried MAX(id) but discover_mf_nav_history.id is a
+    # UUID (gen_random_uuid() default), and Postgres has no MAX(uuid)
+    # function. ingested_at defaults to NOW() and is monotonic per row,
+    # so any row with ingested_at >= our pre-upsert wall-clock is a
+    # row we just inserted (ON CONFLICT DO NOTHING means existing
+    # rows aren't touched, so they retain their old ingested_at).
+    from datetime import datetime as _dt, timezone as _tz
+    t_pre = _dt.now(tz=_tz.utc)
     async with pool.acquire() as conn:
-        max_id_before = await conn.fetchval(
-            "SELECT COALESCE(MAX(id), 0) FROM discover_mf_nav_history"
-        )
-        logger.debug("amfi: pre-ingest max(id)=%s", max_id_before)
+        logger.debug("amfi: pre-ingest snapshot at %s", t_pre.isoformat())
         payload = [(c, d, n, "amfi") for (c, d, n) in filtered]
         await conn.executemany(INSERT_SQL, payload)
-        max_id_after = await conn.fetchval(
-            "SELECT COALESCE(MAX(id), 0) FROM discover_mf_nav_history"
+        actually_new = await conn.fetchval(
+            "SELECT COUNT(*) FROM discover_mf_nav_history WHERE ingested_at >= $1",
+            t_pre,
         )
-    actually_new = int(max_id_after - max_id_before)
+    actually_new = int(actually_new or 0)
     logger.info(
         "amfi: upsert complete — fetched=%d kept=%d actually_new=%d "
         "(%.1f%% new; the rest were already in DB)",
@@ -404,15 +410,14 @@ async def run_discover_mf_nav_job() -> None:
         total, _MAX_CONCURRENCY, _PER_WORKER_SPACING_SECONDS,
     )
 
-    # Capture pre-phase-2 max(id) so we can count actually-new rows
-    # from the mfapi phase the same way we did for AMFI.
-    async with pool.acquire() as _conn_preflight:
-        mfapi_max_id_before = await _conn_preflight.fetchval(
-            "SELECT COALESCE(MAX(id), 0) FROM discover_mf_nav_history"
-        )
+    # Capture pre-phase-2 wall-clock so we can count actually-new rows
+    # from the mfapi phase via ingested_at delta. (id is uuid — see
+    # _ingest_amfi_rows for the rationale.)
+    from datetime import datetime as _dt2, timezone as _tz2
+    mfapi_t_pre = _dt2.now(tz=_tz2.utc)
     logger.debug(
-        "run_discover_mf_nav_job: mfapi phase starting max(id)=%s",
-        mfapi_max_id_before,
+        "run_discover_mf_nav_job: mfapi phase starting at %s",
+        mfapi_t_pre.isoformat(),
     )
 
     # Size the thread pool to match asyncio concurrency so run_in_executor
@@ -473,15 +478,17 @@ async def run_discover_mf_nav_job() -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
     elapsed = time.monotonic() - t_start
-    # Compute actually-new rows from phase 2 the same way AMFI does —
-    # BIGSERIAL id delta. `counters["inserted"]` is misleading (it's
-    # attempted-upsert count, not actual inserts) so we report both for
-    # transparency but key decisions off mfapi_new.
+    # Compute actually-new rows from phase 2 via ingested_at delta.
+    # `counters["inserted"]` is misleading (it's attempted-upsert count,
+    # not actual inserts) so we report both for transparency but key
+    # decisions off mfapi_new.
     async with pool.acquire() as _conn_post:
-        mfapi_max_id_after = await _conn_post.fetchval(
-            "SELECT COALESCE(MAX(id), 0) FROM discover_mf_nav_history"
+        mfapi_new_val = await _conn_post.fetchval(
+            "SELECT COUNT(*) FROM discover_mf_nav_history "
+            "WHERE ingested_at >= $1 AND source = 'mfapi'",
+            mfapi_t_pre,
         )
-    mfapi_new = int(mfapi_max_id_after - mfapi_max_id_before)
+    mfapi_new = int(mfapi_new_val or 0)
     total_new = amfi_new + mfapi_new
     logger.info(
         "MF NAV daily update complete: amfi_new=%d mfapi_attempted=%d "
