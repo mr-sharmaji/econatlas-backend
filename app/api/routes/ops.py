@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Header, HTTPException, Path, Query
 
 from app.core.config import get_settings
-from app.core.log_store import (
-    is_enabled as log_store_enabled,
-    query_log_entries as query_persistent_log_entries,
+from app.core.log_files import (
+    is_enabled as log_files_enabled,
+    tail_log_files,
 )
 from app.core.log_stream import get_log_entries
 from app.schemas.market_intel_schema import DataHealthResponse
@@ -667,45 +667,50 @@ async def ops_logs(
     ),
     source: str | None = Query(
         default=None,
-        description="Force 'memory' (in-memory ring buffer) or 'db' (7-day persistent store). "
-                    "Defaults to db when available, else memory.",
+        description="Force 'memory' (in-memory ring buffer) or 'file' (7-day rotating file logs). "
+                    "Defaults to file when available, else memory.",
     ),
     x_ops_token: str | None = Header(default=None),
 ) -> LogListResponse:
     """Tail application logs for debugging scheduler/feed issues.
 
-    By default this reads from the persistent ``ops_logs`` table (7-day
-    retention), which preserves history across restarts and grows far
-    beyond the in-memory ring buffer. Pass ``source=memory`` to hit the
-    live ring buffer instead (lower latency, bounded size, volatile).
+    By default this reads from the 7-day rotating log files on disk
+    (``logs/app.log`` + rotated siblings), which preserve history across
+    restarts and grow far beyond the in-memory ring buffer. Pass
+    ``source=memory`` to hit the live ring buffer instead — lower
+    latency, bounded size, volatile, but also returns an ``after_id``
+    cursor for incremental tailing.
     """
     _authorize(x_ops_token)
 
-    use_db = log_store_enabled() and (source or "db").lower() != "memory"
-    if use_db:
+    requested = (source or "").lower()
+    use_files = log_files_enabled() and requested != "memory"
+
+    if use_files:
         try:
-            rows, latest_id = await query_persistent_log_entries(
+            file_rows = tail_log_files(
                 limit=limit,
-                after_id=after_id,
                 min_level=min_level,
                 contains=contains,
                 logger_name=logger_name,
                 since=since,
                 until=until,
             )
+            entries = [LogEntryResponse(**r) for r in file_rows]
+            # File logs have no monotonic id — `latest_id` is not
+            # meaningful here, so return 0. Clients that need
+            # incremental tailing should use `source=memory`.
+            return LogListResponse(entries=entries, count=len(entries), latest_id=0)
         except Exception as exc:
-            logger.warning("ops_logs: DB query failed, falling back to memory: %s", exc)
-            use_db = False
+            logger.warning("ops_logs: file tail failed, falling back to memory: %s", exc)
 
-    if not use_db:
-        rows, latest_id = get_log_entries(
-            limit=limit,
-            after_id=after_id,
-            min_level=min_level,
-            contains=contains,
-            logger_name=logger_name,
-        )
-
+    rows, latest_id = get_log_entries(
+        limit=limit,
+        after_id=after_id,
+        min_level=min_level,
+        contains=contains,
+        logger_name=logger_name,
+    )
     entries = [LogEntryResponse(**r) for r in rows]
     return LogListResponse(entries=entries, count=len(entries), latest_id=latest_id)
 

@@ -98,9 +98,16 @@ class Settings(BaseSettings):
     ops_logs_enabled: bool = True
     ops_log_buffer_size: int = 5000
     ops_logs_token: str | None = None
-    # Persistent ops-log retention window. Logs older than this in the
-    # ops_logs table are purged hourly by a background task.
+    # Rotating file logs — 7-day retention on disk. TimedRotatingFileHandler
+    # rotates at local midnight and keeps `ops_log_retention_days` historical
+    # files before deleting. /ops/logs tails these files so history survives
+    # restarts and extends past the in-memory ring buffer.
     ops_log_retention_days: int = 7
+    # Directory (relative to backend repo root) where rotating log files live.
+    ops_log_dir: str = "logs"
+    # Base filename for the rotating handler. Rotated copies are suffixed
+    # with the date, e.g. app.log, app.log.2026-04-15.
+    ops_log_filename: str = "app.log"
 
     # Gift Nifty default sessions in IST.
     gift_nifty_session1_open: str = "06:30"
