@@ -191,13 +191,23 @@ async def _ingest_amfi_rows(pool) -> tuple[int, int]:  # noqa: ANN001
         )
         return 0, 0
 
-    # Filter to schemes we actually track.
+    # Filter to the same user-visible Direct Growth universe the mfapi
+    # phase uses. Writing NAV history for IDCW variants or Income-
+    # category FMPs pollutes the history table with rows that no user-
+    # facing query ever reads. The 14-day nav_date filter keeps the
+    # universe in sync with list/search/peer queries in discover_service.
     universe_rows = await pool.fetch(
-        "SELECT scheme_code FROM discover_mutual_fund_snapshots"
+        """
+        SELECT scheme_code FROM discover_mutual_fund_snapshots
+        WHERE LOWER(COALESCE(plan_type, 'direct')) = 'direct'
+          AND COALESCE(option_type, '') = 'Growth'
+          AND COALESCE(category, '') != 'Income'
+          AND nav_date >= CURRENT_DATE - INTERVAL '14 days'
+        """
     )
     universe: set[int] = {int(r["scheme_code"]) for r in universe_rows}
     logger.debug(
-        "amfi: universe filter — %d schemes in discover_mutual_fund_snapshots",
+        "amfi: universe filter — %d Direct Growth schemes in snapshots",
         len(universe),
     )
     filtered = [(c, d, n) for (c, d, n) in amfi_rows if c in universe]
