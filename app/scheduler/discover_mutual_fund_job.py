@@ -2880,29 +2880,87 @@ class DiscoverMutualFundScraper(BaseScraper):
             base_row["secondary_source"] = "amfi_nav_file"
             merged[best_code] = base_row
 
-        # Enrich missing data from mfapi.in (fund_age, risk metrics) — only active funds
-        direct_merged = {}
-        for code, row in merged.items():
+        # ── Direct-Growth-only filter ──────────────────────────────
+        # We surface ONLY Direct Plan + Growth option in the discover
+        # UI. Keeping non-Growth variants (IDCW, FMP, Bonus, weekly/
+        # monthly IDCW, legacy Cumulative, Capital Protection, etc.)
+        # in discover_mutual_fund_snapshots just bloats every
+        # downstream path: scoring, ranking, mfapi NAV calls, API
+        # responses. The same filter used to apply only to the mfapi
+        # enrichment pass — now it runs at the final upsert boundary
+        # too, so new rows never enter the snapshot universe unless
+        # they're Direct Growth.
+        #
+        # Existing non-Direct-Growth rows will age out naturally: the
+        # snapshot upsert is a full-universe overwrite, so rows that
+        # don't appear in a fresh run stop getting updated (their
+        # `source_timestamp` goes stale) and existing retention/cleanup
+        # paths drop them. If you want them gone immediately, do a
+        # targeted DELETE in SQL — the ingest-time filter is the safe
+        # path; the DELETE is the fast path.
+        def _is_direct_growth(row: dict) -> bool:
             if str(row.get("plan_type") or "").lower() != "direct":
-                continue
+                return False
             name = (row.get("scheme_name") or "").lower()
             opt = (row.get("option_type") or "").lower()
-            # Skip non-growth, IDCW, dead, and other filtered variants
-            if "idcw" in name or "idcw" in opt or "income distribution" in name:
-                continue
-            if any(kw in name for kw in ["fmp", "fixed maturity", "close ended", "closed ended",
-                                          "capital protection", "fixed term", "unclaimed",
-                                          "bonus", "payout", "icdw", "idwc", "weekly",
-                                          "daily", "linked insurance", "interval fund",
-                                          "p f option", "- monthly", "- quarterly",
-                                          "- half yearly", "- annual"]):
-                continue
-            direct_merged[code] = row
+            # Drop anything that's clearly IDCW/Dividend. Includes the
+            # SEBI long-form "Income Distribution cum Capital
+            # Withdrawal" that was silently leaving option_type=NULL
+            # and passing the old plan_type-only filter.
+            if "idcw" in name or "idcw" in opt:
+                return False
+            if "dividend" in name or "dividend" in opt:
+                return False
+            if "income distribution" in name:
+                return False
+            # Drop closed/legacy/periodic variants by keyword match.
+            # Keep this list in sync with the one in _enrich_from_mfapi
+            # above — both paths should agree on what "active Direct
+            # Growth" means.
+            _SKIP_KEYWORDS = (
+                "fmp", "fixed maturity", "close ended", "closed ended",
+                "capital protection", "fixed term", "unclaimed",
+                "bonus", "payout", "icdw", "idwc", "weekly",
+                "daily", "linked insurance", "interval fund",
+                "p f option", "- monthly", "- quarterly",
+                "- half yearly", "- annual",
+            )
+            if any(kw in name for kw in _SKIP_KEYWORDS):
+                return False
+            # Require option_type to be Growth (or legacy "Cumulative"
+            # which some AMCs still use for what AMFI would call
+            # Growth). If option_type is None, the classifier upstream
+            # couldn't pin it down — we err on the side of skipping
+            # since nearly all NULLs we've seen in prod were
+            # misclassified IDCW variants.
+            if opt in ("growth", "cumulative"):
+                return True
+            # Last-resort: if option_type is None BUT the scheme name
+            # explicitly says "Growth", accept it. Catches a handful of
+            # legit Growth schemes where the parser failed.
+            if opt in ("", "none") and "growth" in name and "no growth" not in name:
+                return True
+            return False
+
+        # Enrich missing data from mfapi.in (fund_age, risk metrics) — only active funds
+        direct_merged = {
+            code: row for code, row in merged.items() if _is_direct_growth(row)
+        }
         logger.info("Active direct funds for mfapi enrichment: %d", len(direct_merged))
         self._enrich_from_mfapi(direct_merged)
         merged.update(direct_merged)
 
-        rows = [row for row in merged.values() if str(row.get("plan_type") or "").lower() == "direct"]
+        # Final upsert payload: apply the same Direct Growth filter here
+        # so rows that entered `merged` from AMFI/etmoney but aren't
+        # Direct Growth never reach discover_mutual_fund_snapshots.
+        rows_total = len(merged)
+        rows = [row for row in merged.values() if _is_direct_growth(row)]
+        logger.info(
+            "Direct Growth filter: kept %d / %d rows (%.1f%%) — "
+            "rest were IDCW/closed/legacy variants and will not be upserted",
+            len(rows), rows_total,
+            100.0 * len(rows) / max(rows_total, 1),
+        )
 
         # ── Fix misclassified index fund sub_categories ──────────────────
         for row in rows:
