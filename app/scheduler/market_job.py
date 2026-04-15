@@ -1337,13 +1337,22 @@ def build_market_intraday_rows_for_open(
         source_dt = parse_ts(r.get("source_timestamp")) if r.get("source_timestamp") else None
         if source_dt is not None and source_dt.tzinfo is None:
             source_dt = source_dt.replace(tzinfo=timezone.utc)
+        # Anchor the open-check to the row's CLAIMED source time
+        # (source_timestamp), not wall-clock now_utc. Google Finance
+        # for closed exchanges publishes a "last update time" of
+        # e.g. 04:30 UTC even though Frankfurt opens at 07:00 UTC,
+        # so checking now_utc admits a stale-price row whenever
+        # we happen to scrape during the exchange's session. The
+        # row's source_timestamp is the only honest signal of when
+        # the price was actually current.
+        gate_time = source_dt if source_dt is not None else now_utc
         include = False
         if instrument_type == "currency":
             include = True
         elif r.get("asset") == "Gift Nifty":
             include = bool(status.get("gift_nifty_open"))
         elif exchange in {NSE, NYSE, LSE, XETRA, EURONEXT, TSE}:
-            include = is_exchange_expected_open(exchange, now_utc, status=status)
+            include = is_exchange_expected_open(exchange, gate_time, status=status)
         if include:
             if source_dt is None:
                 source_dt = datetime.now(timezone.utc)
