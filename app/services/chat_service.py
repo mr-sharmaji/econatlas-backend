@@ -17,7 +17,7 @@ import re
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Mapping, Sequence
 
 import httpx
 
@@ -297,6 +297,7 @@ Treat those context blocks as analyst working notes, not a script to recite. Rea
 3. If NSE is OPEN, percents mean "today" (intraday move). If NSE is CLOSED and the last session was TODAY, percents still mean "today" (at today's close). If NSE is CLOSED and the last session was an EARLIER date, percents mean that date's close — say "on {that weekday}" or "at the last close", never "today".
 4. If the user asserts a different day ("today is Wednesday") and it contradicts the TODAY line, politely clarify with the TODAY line — do NOT capitulate to the user's claim.
 5. The `watchlist` tool result also includes `session_note`, `pct_basis` (`today` vs `last session`), and `as_of`. Use those literally for watchlist answers.
+6. Treat FII/DII dates literally. If the latest flow snapshot is from a previous date, call it "last available" or mention that date explicitly — do not relabel it as "today's" flow.
 
 ## Your tools
 Emit a tool call inline as: `[TOOL:tool_name:{"param":"value"}]`. Multiple markers per response are allowed. Use tools ONLY when the answer needs data not already in the LIVE MARKET SNAPSHOT block above.
@@ -308,12 +309,12 @@ Available tools:
 - [TOOL:peers:{"symbol":"TCS","limit":10}] — Top N comparable stocks in the same sector with side-by-side metrics. Use when user wants to see competitors of a specific stock beyond the 5 peers embedded in stock_lookup.
 - [TOOL:technicals:{"symbol":"TCS"}] — RSI, trend alignment, breakout signal, 52w range position, entry/exit signal, beta. Use when user asks about chart, momentum, or technical levels.
 - [TOOL:narrative:{"symbol":"TCS"}] — Rich narrative for a stock: why_narrative + action_tag reasoning + lynch_classification + market_regime. Use when user asks "what's the thesis on X" or "why is X rated this way".
-- [TOOL:mf_lookup:{"scheme_name":"Parag Parikh Flexi Cap Fund - Direct Plan - Growth"}] — Mutual fund details. Accepts either `scheme_code` or `scheme_name`. Returns available short and long horizon performance (1m/3m/6m/1y/3y/5y/10y) when populated.
-- [TOOL:mf_screen:{"query":"category = 'Equity' AND returns_1y > 15", "limit":5}] — Filter mutual funds. Valid columns: scheme_code, scheme_name, category, sub_category, nav, expense_ratio, aum_cr, returns_1m, returns_3m, returns_6m, returns_1y, returns_3y, returns_5y, returns_10y, sharpe, sortino, score, risk_level.
+- [TOOL:mf_lookup:{"scheme_name":"Parag Parikh Flexi Cap Fund - Direct Plan - Growth"}] — Mutual fund details for **active direct-growth plans only**. Accepts either `scheme_code` or `scheme_name`. Returns available short and long horizon performance (1m/3m/6m/1y/3y/5y/10y) when populated.
+- [TOOL:mf_screen:{"query":"category = 'Equity' AND returns_1y > 15", "limit":5}] — Filter mutual funds across **active direct-growth plans only**. Valid columns: scheme_code, scheme_name, category, sub_category, nav, expense_ratio, aum_cr, returns_1m, returns_3m, returns_6m, returns_1y, returns_3y, returns_5y, returns_10y, sharpe, sortino, score, risk_level.
 - [TOOL:watchlist:{}] — User's saved stocks AND mutual funds with live data. Returns `{stocks, mutual_funds, session_note, pct_basis, as_of, nse_open}`. You MUST list every single entity from BOTH `stocks` and `mutual_funds` arrays — do not truncate, do not say "third holding missing", do not drop MFs when the user said "watchlist". Each entity may include a `news` array with 0-2 recent, RELEVANT articles (strict vector+entity-match filter — if `news` is absent or empty, there is no related news worth mentioning; do NOT invent headlines or reach for unrelated articles). Use `session_note` verbatim as framing when markets are closed and `pct_basis` to decide between "today" and "last session" phrasing.
 - [TOOL:market_status:{}] — All indices (India/US/Europe/Japan) + FX + key commodities + market hours. Only call this if the LIVE MARKET SNAPSHOT above is stale or missing what you need.
 - [TOOL:market_mood:{}] — Current breadth: advances/declines, advance-decline ratio, stocks near 52w highs/lows, average % change, overall mood label (risk_on/mildly_positive/neutral/mildly_negative/risk_off). Use for "how is the market feeling today" queries.
-- [TOOL:market_drivers:{"since":"24h"}] — **Why did the market move today?** Returns the day's tape (direction + avg %), breadth, top leading and lagging sectors, AND a ranked list of cited news headlines retrieved via embedding search across `news_articles` (last 24h by default — `since` accepts `6h`, `12h`, `24h`, `48h`, `3d`, `week`). Use this — NOT `news_sentiment` — for every "why is the market up/down today", "what moved the Nifty", "reason behind the rally/selloff" query. Lead with the tape, breadth, and sector leadership first; use `news_drivers` only as supporting evidence or possible catalysts. If `news_drivers` is empty, say the move is visible in market internals but no strong linked headline was retrieved.
+- [TOOL:market_drivers:{"since":"24h"}] — **India-only market driver tool.** Returns the Indian market's tape (direction + avg %), breadth, top leading and lagging sectors, AND a ranked list of cited news headlines retrieved via embedding search across `news_articles` (last 24h by default — `since` accepts `6h`, `12h`, `24h`, `48h`, `3d`, `week`). Use this — NOT `news_sentiment` — for "why is the Nifty / Indian market up or down today", "what moved the Sensex", "reason behind the Indian rally/selloff" queries. Do NOT use it for S&P 500 / Nasdaq / Dow / Nikkei / FTSE / DAX questions. Lead with the tape, breadth, and sector leadership first; use `news_drivers` only as supporting evidence or possible catalysts. If `news_drivers` is empty, say the move is visible in market internals but no strong linked headline was retrieved.
 - [TOOL:macro_regime:{"country":"IN"}] — Macro regime snapshot: repo rate, CPI, GDP growth, real policy rate, rate stance (restrictive/accommodative/neutral), inflation state, growth phase. Use when user asks "what's the macro backdrop" or "is RBI tightening".
 - [TOOL:institutional_flows:{"scope":"all","direction":"buying","limit":10}] — Top stocks by recent FII/DII/promoter holding changes. scope=fii|dii|promoter|all. direction=buying|selling. Use for "where are institutions buying" queries.
 - [TOOL:sector_thesis:{"sector":"Information Technology"}] — On-demand sector aggregate: avg PE/ROE/debt/growth + top 5 and weak 5 picks. Use for "what's going on with X sector" big-picture queries.
@@ -391,7 +392,8 @@ Anti-refusal table (these tools exist — use them):
 | "FII buying / selling **in the IT sector**" | `stock_screen({"query":"sector = 'IT' AND fii_holding_change > 0","limit":10,"order":"fii_holding_change DESC"})` — the `institutional_flows` tool returns market-wide top-movers and does NOT accept a sector filter. If the user names a sector, you MUST use stock_screen with `sector = 'X'` + `fii_holding_change` / `dii_holding_change` columns. Same rule for "FII selling in banks", "DII buying in pharma", etc. |
 | "What's the macro backdrop?" | `macro_regime({})` |
 | "How is the market feeling?" | `market_mood({})` |
-| "Why is the market up/down today?" / "What moved the Nifty" / "Reason behind the rally" | `market_drivers({"since":"24h"})` — lead with tape, breadth, and sector leadership; use returned headlines as supporting evidence, not the whole answer. |
+| "Why is the Indian market / Nifty / Sensex up or down today?" / "What moved the Nifty" / "Reason behind the rally" | `market_drivers({"since":"24h"})` — India-only; lead with tape, breadth, and sector leadership; use returned headlines as supporting evidence, not the whole answer. |
+| "What's driving the S&P 500 / Nasdaq / Dow / Wall Street?" | `market_status({})` + `global_macro({"event":"overview"})` or `news({"entity":"Wall Street"})` — do NOT use `market_drivers`, which is India-only. |
 | "What's the thesis on TCS?" | `narrative({"symbol":"TCS"})` |
 | "What's happening with Nifty IT?" | `nifty_index_constituents({"index_name":"Nifty IT"})` — NOT sector_thesis! The INDEX is 10 heavyweights, not all IT stocks. |
 | "What's going on with the IT sector?" | `sector_thesis({"sector":"IT"})` (note: DB stores short names — IT / Auto / Financials / Healthcare / FMCG / Consumer Discretionary / Industrials / Energy / Materials / Telecom / Real Estate) |
@@ -578,6 +580,7 @@ Never invent exact figures, dates, or company-specific facts you didn't fetch. N
   - Natural gas: `$2.67/MMBtu`
 - **Cryptocurrencies** → USD with `$` (`$67,450`)
 - **FX pairs** → quote currency as-is (`USD/INR at ₹92.64`, `EUR/USD at $1.08`)
+- **FX direction sanity** → `USD/INR` up means the rupee is weaker; `USD/INR` down means the rupee is stronger. Do not invert that relationship.
 - **Conversions** → exact math. `$100 at ₹92.64 = ₹9,264` (not `₹9,200`).
 - **Percentages** → 2 decimals with explicit sign. Positive always gets `+` prefix: `+1.23%`, `-0.45%`.
 
@@ -1649,8 +1652,41 @@ _FUND_VARIANT_PATTERNS = (
     (re.compile(r"\bidcw\b", re.IGNORECASE), "idcw"),
 )
 _FUND_SEARCH_STOPWORDS = frozenset({"fund", "plan", "option"})
+_FUND_DISTINCTIVE_STOPWORDS = frozenset({
+    "fund", "plan", "option", "growth", "direct", "regular", "idcw",
+    "and", "the",
+})
+_FUND_CATEGORY_KEYWORDS = frozenset({
+    "flexi", "mid", "small", "large", "multi", "contra", "focused",
+    "value", "arbitrage", "liquid", "overnight", "credit", "gilt",
+    "banking", "psu", "hybrid", "equity", "debt", "elss", "index",
+    "thematic", "balanced", "savings", "tax", "dynamic", "short",
+    "ultra", "duration", "opportunities", "bluechip", "pharma",
+})
+_ENTITY_MATCH_STOPWORDS = frozenset({
+    "limited", "ltd", "inc", "corp", "corporation", "company", "co",
+    "plc", "fund", "plan", "option", "direct", "growth", "regular",
+    "the", "and",
+})
 _STOCK_SCREEN_SECTOR_LITERAL_RE = re.compile(
     r"(sector\s*(?:=|LIKE)\s*['\"])([^'\"]+)(['\"])",
+    re.IGNORECASE,
+)
+_NON_INDIAN_MARKET_RE = re.compile(
+    r"\b("
+    r"s&p\s*500|sp500|nasdaq|dow(?:\s+jones)?|wall\s*street|"
+    r"u\.?s\.?\s*market|us\s*market|american\s*market|"
+    r"ftse|dax|nikkei|hang\s*seng|euro\s*stoxx|european\s*market|"
+    r"japanese\s*market|japan\s*market"
+    r")\b",
+    re.IGNORECASE,
+)
+_INDIAN_MARKET_RE = re.compile(
+    r"\b("
+    r"nifty|sensex|nse|bse|bank\s*nifty|gift\s*nifty|"
+    r"nifty\s*bank|nifty\s*it|nifty\s*auto|nifty\s*pharma|"
+    r"india(?:n)?\s*market|rbi|fii|dii|usd/?inr|rupee"
+    r")\b",
     re.IGNORECASE,
 )
 _RECOMMENDATION_REQUEST_RE = re.compile(
@@ -2131,6 +2167,75 @@ def _normalize_fund_name(name: str | None) -> str:
     return text
 
 
+def _fund_distinctive_tokens(name: str | None) -> set[str]:
+    normalized = _normalize_fund_name(name)
+    return {
+        token
+        for token in normalized.split()
+        if len(token) >= 3 and token not in _FUND_DISTINCTIVE_STOPWORDS
+    }
+
+
+def _extract_entity_match_terms(entity: str | None) -> list[str]:
+    normalized = re.sub(r"[^a-z0-9]+", " ", (entity or "").lower()).strip()
+    if not normalized:
+        return []
+    tokens = [
+        token
+        for token in normalized.split()
+        if len(token) >= 3 and token not in _ENTITY_MATCH_STOPWORDS
+    ]
+    terms: list[str] = []
+    if len(tokens) >= 2:
+        phrase = " ".join(tokens)
+        if len(phrase) >= 6:
+            terms.append(phrase)
+    terms.extend(tokens)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        if term not in seen:
+            deduped.append(term)
+            seen.add(term)
+    return deduped
+
+
+def _article_matches_entity_terms(
+    article: Mapping[str, Any] | dict[str, Any],
+    match_terms: Sequence[str],
+) -> bool:
+    if not match_terms:
+        return True
+    blob = " ".join([
+        str(article.get("title") or ""),
+        str(article.get("summary") or ""),
+        str(article.get("primary_entity") or ""),
+    ]).lower()
+    normalized_blob = re.sub(r"[^a-z0-9]+", " ", blob).strip()
+    if not normalized_blob:
+        return False
+    phrase_hits = {
+        term for term in match_terms if " " in term and term in normalized_blob
+    }
+    if phrase_hits:
+        return True
+    token_terms = [term for term in match_terms if " " not in term]
+    if not token_terms:
+        return False
+    token_hits = {term for term in token_terms if term in normalized_blob}
+    required_hits = 2 if len(token_terms) >= 2 else 1
+    return len(token_hits) >= required_hits
+
+
+def _query_targets_non_indian_market(user_message: str | None) -> bool:
+    text = (user_message or "").strip()
+    if not text:
+        return False
+    return bool(_NON_INDIAN_MARKET_RE.search(text)) and not bool(
+        _INDIAN_MARKET_RE.search(text)
+    )
+
+
 def _score_fund_candidate(query: str, candidate_name: str) -> float:
     """Prefer exact variant matches and high token overlap for fund names."""
     import difflib
@@ -2152,6 +2257,25 @@ def _score_fund_candidate(query: str, candidate_name: str) -> float:
         None, normalized_query, normalized_candidate,
     ).ratio() * 100.0
     score += overlap_ratio * 50.0
+
+    distinctive_query = _fund_distinctive_tokens(query)
+    distinctive_candidate = _fund_distinctive_tokens(candidate_name)
+    shared_distinctive = distinctive_query & distinctive_candidate
+    missing_distinctive = distinctive_query - distinctive_candidate
+    missing_category = {
+        token for token in missing_distinctive if token in _FUND_CATEGORY_KEYWORDS
+    }
+    extra_category = {
+        token
+        for token in (distinctive_candidate - distinctive_query)
+        if token in _FUND_CATEGORY_KEYWORDS
+    }
+    score += len(shared_distinctive) * 18.0
+    if distinctive_query and not missing_distinctive:
+        score += 45.0
+    score -= len(missing_distinctive) * 20.0
+    score -= len(missing_category) * 30.0
+    score -= len(extra_category) * 8.0
 
     for variant in ("direct", "regular", "growth", "idcw", "etf", "index"):
         if variant in query_tokens:
@@ -2940,6 +3064,10 @@ async def _resolve_mutual_fund_row(
     params: dict[str, Any],
 ):
     """Resolve a mutual fund by exact code, exact name, then conservative fuzzy match."""
+    _DIRECT_GROWTH_FILTER = (
+        "plan_type = 'direct' AND "
+        "(option_type IS NULL OR LOWER(option_type) = 'growth')"
+    )
     code = str(params.get("scheme_code") or "").strip()
     raw_query = str(
         params.get("scheme_name")
@@ -2951,13 +3079,14 @@ async def _resolve_mutual_fund_row(
 
     if code:
         row = await pool.fetchrow(
-            "SELECT * FROM discover_mutual_fund_snapshots WHERE scheme_code = $1",
+            "SELECT * FROM discover_mutual_fund_snapshots "
+            f"WHERE scheme_code = $1 AND {_DIRECT_GROWTH_FILTER}",
             code,
         )
         if row:
             return row, None
         if not raw_query:
-            return None, f"Fund '{code}' not found"
+            return None, f"Fund '{code}' not found among supported direct-growth plans"
 
     if not raw_query:
         return None, "No scheme_code or scheme_name provided"
@@ -2967,6 +3096,8 @@ async def _resolve_mutual_fund_row(
         SELECT *
         FROM discover_mutual_fund_snapshots
         WHERE LOWER(TRIM(scheme_name)) = LOWER(TRIM($1))
+          AND plan_type = 'direct'
+          AND (option_type IS NULL OR LOWER(option_type) = 'growth')
         LIMIT 1
         """,
         raw_query,
@@ -2981,6 +3112,8 @@ async def _resolve_mutual_fund_row(
             SELECT *
             FROM discover_mutual_fund_snapshots
             WHERE REGEXP_REPLACE(LOWER(scheme_name), '[^a-z0-9]+', ' ', 'g') = $1
+              AND plan_type = 'direct'
+              AND (option_type IS NULL OR LOWER(option_type) = 'growth')
             LIMIT 1
             """,
             normalized_query,
@@ -3004,7 +3137,7 @@ async def _resolve_mutual_fund_row(
             seen_patterns.add(pattern)
 
     if not deduped_patterns:
-        return None, f"Fund '{raw_query}' not found"
+        return None, f"Fund '{raw_query}' not found among supported direct-growth plans"
 
     clauses = " OR ".join(
         f"scheme_name ILIKE ${idx}" for idx in range(1, len(deduped_patterns) + 1)
@@ -3013,14 +3146,36 @@ async def _resolve_mutual_fund_row(
         f"""
         SELECT *
         FROM discover_mutual_fund_snapshots
-        WHERE {clauses}
+        WHERE ({clauses})
+          AND {_DIRECT_GROWTH_FILTER}
         ORDER BY score DESC NULLS LAST, returns_3y DESC NULLS LAST, aum_cr DESC NULLS LAST
         LIMIT 25
         """,
         *deduped_patterns,
     )
     if not rows:
-        return None, f"Fund '{raw_query}' not found"
+        return None, f"Fund '{raw_query}' not found among supported direct-growth plans"
+
+    distinctive_query_tokens = _fund_distinctive_tokens(raw_query)
+    if distinctive_query_tokens:
+        rows_with_full_match = [
+            row
+            for row in rows
+            if distinctive_query_tokens <= _fund_distinctive_tokens(row["scheme_name"])
+        ]
+        if rows_with_full_match:
+            rows = rows_with_full_match
+        else:
+            overlap_counts = {
+                id(row): len(
+                    distinctive_query_tokens
+                    & _fund_distinctive_tokens(row["scheme_name"])
+                )
+                for row in rows
+            }
+            max_overlap = max(overlap_counts.values(), default=0)
+            if max_overlap > 0:
+                rows = [row for row in rows if overlap_counts.get(id(row)) == max_overlap]
 
     ranked = sorted(
         rows,
@@ -3030,7 +3185,7 @@ async def _resolve_mutual_fund_row(
     best = ranked[0]
     best_score = _score_fund_candidate(raw_query, best["scheme_name"])
     if best_score < 78:
-        return None, f"Fund '{raw_query}' not found"
+        return None, f"Fund '{raw_query}' not found among supported direct-growth plans"
 
     if len(ranked) >= 2:
         second = ranked[1]
@@ -4008,6 +4163,7 @@ async def _execute_tool(
 
         elif tool_name == "stock_screen":
             query_where = params.get("query", "")
+            order_by = (params.get("order") or "").strip()
             limit = min(int(params.get("limit", 5)), 50)
             if not query_where:
                 return {"error": "No query provided"}
@@ -4017,15 +4173,37 @@ async def _execute_tool(
             ok, err = _validate_screen_query(query_where, _STOCK_SCREEN_COLUMNS)
             if not ok:
                 return {"error": err}
+            _ORDER_WHITELIST = {
+                "market_cap", "score", "percent_change", "percent_change_1w",
+                "percent_change_1m", "percent_change_3m", "percent_change_6m",
+                "percent_change_1y", "percent_change_3y", "percent_change_5y",
+                "pe_ratio", "roe", "roce", "last_price", "revenue_growth",
+                "earnings_growth", "operating_margins", "dividend_yield",
+                "fii_holding_change", "dii_holding_change", "promoter_holding_change",
+            }
+            order_clause = "score DESC NULLS LAST"
+            if order_by:
+                m = re.fullmatch(
+                    r"\s*([a-zA-Z_]+)(?:\s+(ASC|DESC))?\s*",
+                    order_by,
+                    re.IGNORECASE,
+                )
+                if m and m.group(1).lower() in _ORDER_WHITELIST:
+                    direction = (m.group(2) or "DESC").upper()
+                    order_clause = f"{m.group(1).lower()} {direction} NULLS LAST"
             select_cols = (
                 "SELECT symbol, display_name, sector, last_price, percent_change, "
-                "pe_ratio, roe, roce, debt_to_equity, market_cap, score, "
-                "revenue_growth, operating_margins, dividend_yield "
+                "percent_change_1w, percent_change_1m, percent_change_3m, "
+                "percent_change_6m, percent_change_1y, percent_change_3y, "
+                "percent_change_5y, pe_ratio, roe, roce, debt_to_equity, "
+                "market_cap, score, revenue_growth, earnings_growth, "
+                "operating_margins, dividend_yield, fii_holding_change, "
+                "dii_holding_change, promoter_holding_change "
                 "FROM discover_stock_snapshots "
             )
             rows = await pool.fetch(
                 f"{select_cols}WHERE {query_where} "
-                f"ORDER BY score DESC NULLS LAST "
+                f"ORDER BY {order_clause} "
                 f"LIMIT {limit}",
                 timeout=5,
             )
@@ -4034,7 +4212,7 @@ async def _execute_tool(
                 relaxed_rows, relaxation_trail = await _auto_relax_screen_query(
                     pool=pool,
                     select_sql=select_cols,
-                    order_by_limit=f"ORDER BY score DESC NULLS LAST LIMIT {limit}",
+                    order_by_limit=f"ORDER BY {order_clause} LIMIT {limit}",
                     where=query_where,
                     validator=lambda q: _validate_screen_query(q, _STOCK_SCREEN_COLUMNS),
                 )
@@ -4051,7 +4229,7 @@ async def _execute_tool(
                         fallback_sector = sector_match.group(1)
                         rows = await pool.fetch(
                             f"{select_cols}WHERE sector = $1 "
-                            f"ORDER BY score DESC NULLS LAST LIMIT {limit}",
+                            f"ORDER BY {order_clause} LIMIT {limit}",
                             fallback_sector,
                             timeout=5,
                         )
@@ -4209,8 +4387,13 @@ async def _execute_tool(
                 "aum_cr, score, risk_level "
                 "FROM discover_mutual_fund_snapshots "
             )
+            mf_base_where = (
+                "plan_type = 'direct' AND "
+                "(option_type IS NULL OR LOWER(option_type) = 'growth')"
+            )
+            mf_select = f"{_mf_select}WHERE {mf_base_where} AND "
             rows = await pool.fetch(
-                f"{_mf_select}WHERE {query_where} "
+                f"{mf_select}({query_where}) "
                 f"ORDER BY score DESC NULLS LAST "
                 f"LIMIT {limit}",
                 timeout=5,
@@ -4221,7 +4404,7 @@ async def _execute_tool(
             if len(rows) == 0:
                 relaxed_rows, relaxation_trail = await _auto_relax_screen_query(
                     pool=pool,
-                    select_sql=_mf_select,
+                    select_sql=mf_select,
                     order_by_limit=f"ORDER BY score DESC NULLS LAST LIMIT {limit}",
                     where=query_where,
                 )
@@ -4375,21 +4558,14 @@ async def _execute_tool(
                         )
                     if not rows:
                         return []
-                    lower_terms = [
-                        t.lower() for t in match_terms if t and len(t) >= 3
-                    ]
                     filtered: list[dict] = []
                     for r in rows:
-                        title = (r.get("title") or "").lower()
-                        summary = (r.get("summary") or "").lower()
-                        primary = (r.get("primary_entity") or "").lower()
-                        blob = f"{title} {summary} {primary}"
                         # Require at least one of the entity's distinctive
                         # terms to actually appear in the article. Without
                         # this check vector search can surface "Reliance"
                         # news for a query about "Reliance Industries Ltd"
                         # vs "Reliance Power" etc.
-                        if not lower_terms or any(t in blob for t in lower_terms):
+                        if _article_matches_entity_terms(r, match_terms):
                             filtered.append(r)
                         if len(filtered) >= 2:
                             break
@@ -4649,6 +4825,13 @@ async def _execute_tool(
                 rows, search_mode = await _news_hybrid_search(
                     pool, entity, limit=5, since_interval=pg_interval,
                 )
+                match_terms = _extract_entity_match_terms(entity)
+                if match_terms:
+                    rows = [
+                        row
+                        for row in rows
+                        if _article_matches_entity_terms(row, match_terms)
+                    ]
 
             return {
                 "query": entity or None,
@@ -6663,6 +6846,30 @@ _COLUMN_ALIASES_STOCK = {
     "price": "last_price",
     "change_pct": "percent_change",
     "price_change": "percent_change",
+    "return_1d": "percent_change",
+    "returns_1d": "percent_change",
+    "1d_return": "percent_change",
+    "return_1w": "percent_change_1w",
+    "returns_1w": "percent_change_1w",
+    "1w_return": "percent_change_1w",
+    "return_1m": "percent_change_1m",
+    "returns_1m": "percent_change_1m",
+    "1m_return": "percent_change_1m",
+    "return_3m": "percent_change_3m",
+    "returns_3m": "percent_change_3m",
+    "3m_return": "percent_change_3m",
+    "return_6m": "percent_change_6m",
+    "returns_6m": "percent_change_6m",
+    "6m_return": "percent_change_6m",
+    "return_1y": "percent_change_1y",
+    "returns_1y": "percent_change_1y",
+    "1y_return": "percent_change_1y",
+    "return_3y": "percent_change_3y",
+    "returns_3y": "percent_change_3y",
+    "3y_return": "percent_change_3y",
+    "return_5y": "percent_change_5y",
+    "returns_5y": "percent_change_5y",
+    "5y_return": "percent_change_5y",
 }
 
 _COLUMN_ALIASES_MF = {
@@ -6685,6 +6892,13 @@ _COLUMN_ALIASES_MF = {
     "return_1y": "returns_1y",
     "return_3y": "returns_3y",
     "return_5y": "returns_5y",
+    "1m_return": "returns_1m",
+    "3m_return": "returns_3m",
+    "6m_return": "returns_6m",
+    "10y_return": "returns_10y",
+    "1y_return": "returns_1y",
+    "3y_return": "returns_3y",
+    "5y_return": "returns_5y",
     "expense": "expense_ratio",
 }
 
@@ -8275,6 +8489,48 @@ async def stream_chat_response(
             except json.JSONDecodeError:
                 params = {}
             params = _canonicalize_tool_params(tool_name, params)
+            if (
+                tool_name == "market_drivers"
+                and _query_targets_non_indian_market(user_message)
+            ):
+                result = {
+                    "error": (
+                        "market_drivers covers Indian market internals only. "
+                        "For S&P 500 / Nasdaq / Dow / other global index driver "
+                        "questions, use market_status plus global/news context instead."
+                    ),
+                }
+                _tool_latency_ms = 0
+                _tool_success = False
+                _tool_err = result["error"]
+                _result_size = None
+                try:
+                    await _log_tool_invocation(
+                        session_id=session_id,
+                        message_id=None,
+                        tool_name=tool_name,
+                        params=params,
+                        success=False,
+                        latency_ms=_tool_latency_ms,
+                        result_size=_result_size,
+                        error_message=str(_tool_err)[:500],
+                    )
+                except Exception:
+                    pass
+                logger.info(
+                    "tool_call: ERROR_RESULT name=%s error=%s",
+                    tool_name,
+                    _tool_err,
+                )
+                any_error = True
+                tool_results[tool_name] = result
+                tool_entries.append({
+                    "tool": tool_name,
+                    "params": params,
+                    "result": result,
+                })
+                tools_used.append({"tool": tool_name, "params": params})
+                continue
             # Last-resort: if `stock_compare` still has no symbols after
             # canonicalization, the LLM emitted `[TOOL:stock_compare:{}]`
             # with empty params. Extract candidate tickers from the
@@ -8648,8 +8904,9 @@ async def stream_chat_response(
                 "qualitatively from general market knowledge, with range-"
                 "based figures only. Do not offer another fetch unless "
                 "the user explicitly asks you to retry.\n"
-                "7. Currency rules: commodities (gold/silver/crude/brent) in "
-                "USD ($). Indian stock prices / market cap in ₹. "
+                "7. Currency rules: commodities should LEAD with INR when an "
+                "INR conversion is available, with USD only as a secondary "
+                "reference. Indian stock prices / market cap in ₹. "
                 "Index VALUES (Nifty, Sensex, S&P 500, Nasdaq, Nikkei, FTSE, "
                 "DAX) have NO currency symbol — they are points, not money."
                 f"{tool_context}"
