@@ -3978,6 +3978,19 @@ async def get_mf_by_scheme_code(*, scheme_code: str) -> dict | None:
 
 
 async def get_stock_price_history(*, symbol: str, days: int = 365) -> list[dict]:
+    """Return daily-close history for a stock, plus today's live tick
+    when today is a trading day in progress.
+
+    `discover_stock_price_history` only stores completed daily closes
+    — the EOD discover_stock_price job writes today's row at ~16:00
+    IST. Until then, the chart's rightmost edge would be yesterday
+    (or the last completed day before a holiday) instead of today's
+    in-progress price. To bridge the gap, we synthesise an
+    "as-of-now" bar from discover_stock_snapshots.last_price /
+    source_timestamp and append it iff:
+      - today's row isn't already in the history table (post-EOD)
+      - the snapshot has a non-null last_price
+    """
     pool = await get_pool()
     rows = await pool.fetch(
         """
@@ -3990,7 +4003,33 @@ async def get_stock_price_history(*, symbol: str, days: int = 365) -> list[dict]
         symbol,
         days,
     )
-    return [record_to_dict(r) for r in rows]
+    out = [record_to_dict(r) for r in rows]
+    # Append today's in-progress price from the live snapshot if
+    # today's daily bar isn't already there.
+    today_iso = datetime.now(timezone.utc).date()
+    has_today = any(
+        (r.get("trade_date") == today_iso) for r in out
+    )
+    if not has_today:
+        snap = await pool.fetchrow(
+            f"""
+            SELECT last_price, source_timestamp
+            FROM {STOCK_TABLE}
+            WHERE symbol = $1
+            """,
+            symbol,
+        )
+        if snap is not None and snap.get("last_price") is not None:
+            src_ts = snap.get("source_timestamp")
+            # Only append if the snapshot itself was updated today
+            # (otherwise this would put a stale yesterday-close on
+            # the wrong calendar day).
+            if isinstance(src_ts, datetime) and src_ts.date() == today_iso:
+                out.append({
+                    "trade_date": today_iso,
+                    "close": float(snap["last_price"]),
+                })
+    return out
 
 
 import time as _time
