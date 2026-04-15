@@ -1374,13 +1374,29 @@ def build_market_intraday_rows_for_open(
         # row's source_timestamp is the only honest signal of when
         # the price was actually current.
         gate_time = source_dt if source_dt is not None else now_utc
+        # Post-close grace: providers often publish the closing
+        # print with a source_timestamp slightly AFTER the actual
+        # close (e.g. 15:31 UTC for a 15:30 UTC Frankfurt close,
+        # because that's when their cache refreshed with the close
+        # tick). Without a buffer the gate would reject the
+        # closing print and the visible "close" on the chart would
+        # be the last in-session tick a minute earlier. A 5-minute
+        # buffer captures every realistic provider lag. Stale
+        # repeats during this window are still rejected by the
+        # price-equality dedupe above.
+        gate_time_buffered = gate_time - timedelta(minutes=5)
         include = False
         if instrument_type == "currency":
             include = True
         elif r.get("asset") == "Gift Nifty":
             include = bool(status.get("gift_nifty_open"))
         elif exchange in {NSE, NYSE, LSE, XETRA, EURONEXT, TSE}:
-            include = is_exchange_expected_open(exchange, gate_time, status=status)
+            include = (
+                is_exchange_expected_open(exchange, gate_time, status=status)
+                or is_exchange_expected_open(
+                    exchange, gate_time_buffered, status=status,
+                )
+            )
         if include:
             if source_dt is None:
                 source_dt = datetime.now(timezone.utc)
