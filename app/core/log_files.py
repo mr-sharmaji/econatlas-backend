@@ -147,13 +147,15 @@ def _log_file_paths() -> list[Path]:
 
 
 def _parse_line(raw: str) -> dict[str, Any] | None:
+    """Parse a single log line. Returns None for blank lines or
+    traceback continuation lines (any line that doesn't match the
+    standard log-record regex). Continuation lines are accumulated
+    by the caller into the preceding record's ``exception`` field."""
     line = raw.rstrip("\n")
     if not line:
         return None
     m = _LINE_RE.match(line)
     if not m:
-        # Continuation of a traceback / unparseable line — skip rather than
-        # mis-attribute it. Callers can still grep the raw file if needed.
         return None
     try:
         ts = datetime.strptime(m.group("timestamp"), _DATE_FORMAT)
@@ -176,6 +178,12 @@ def _parse_line(raw: str) -> dict[str, Any] | None:
         "message": m.group("message"),
         "exception": None,
     }
+
+
+# Max buffered continuation lines before we give up accumulating (guards
+# against runaway buffers if a log file is corrupt or has very long
+# tracebacks). 500 lines covers any realistic traceback.
+_MAX_CONTINUATION_LINES = 500
 
 
 def _level_at_or_above(record_level: str, min_level: str) -> bool:
@@ -244,14 +252,38 @@ def tail_log_files(
     for path in paths:
         if len(out) >= safe_limit:
             break
+        # Reverse-order scan: we see continuation lines (tracebacks,
+        # multi-line messages) BEFORE the log-header line they belong
+        # to, because tracebacks are written AFTER their header in
+        # forward order. Buffer continuations until we hit a parseable
+        # header, then attach them as the header's ``exception`` field.
+        continuation_buffer: list[str] = []
         for raw in _iter_lines_reverse(path):
+            line_stripped = raw.rstrip("\n")
+            if not line_stripped:
+                # Blank lines don't belong to any record.
+                continue
             entry = _parse_line(raw)
             if entry is None:
+                # Traceback / continuation line — buffer it for the
+                # next parseable header we encounter (which will be
+                # the line BEFORE this one in forward order).
+                if len(continuation_buffer) < _MAX_CONTINUATION_LINES:
+                    continuation_buffer.append(line_stripped)
                 continue
+            # Parseable header line. Attach any buffered continuations
+            # as this header's exception, in original forward order.
+            if continuation_buffer:
+                entry["exception"] = "\n".join(reversed(continuation_buffer))
+                continuation_buffer.clear()
             if min_level and not _level_at_or_above(entry["level"], min_level):
                 continue
             if contains_norm and contains_norm not in entry["message"].lower():
-                continue
+                # Also check buffered exception text — users grep for
+                # "ValueError" and expect to find the header.
+                exc = entry.get("exception") or ""
+                if contains_norm not in exc.lower():
+                    continue
             if logger_norm and logger_norm not in entry["logger"].lower():
                 continue
             ts = entry["timestamp"]
