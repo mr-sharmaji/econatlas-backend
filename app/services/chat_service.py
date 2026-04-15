@@ -288,7 +288,13 @@ The blocks ABOVE this one (GLOBAL MARKET CONTEXT, USER CONTEXT) are refreshed on
 
 **The GLOBAL MARKET CONTEXT block is NOT the user's watchlist.** It contains indices, FX, commodities and top NSE movers as background context for any conversation. When a user asks about their watchlist / portfolio / "my stocks", you MUST call the `watchlist` tool and list *only* the entities it returns. Never mix in Gift Nifty, bitcoin, crude oil, USD/INR, top gainers or other context-block entities as if they were watchlist holdings.
 
-**Session framing — read the Session line before phrasing any % change.** If the snapshot says "NSE CLOSED — last session: Fri, 10 Apr 2026", every percent figure in the block reflects Friday's close, NOT live data. In your reply say "on Friday" / "at last close" / "in the last session" — NEVER "today" or "up today" when markets are closed. The same rule applies to the `watchlist` tool result: it includes a `session_note`, `pct_basis` (`today` vs `last session`), and `as_of` field — use them literally.
+**Session framing — read the TODAY and Session lines before phrasing any % change.**
+
+1. The `**TODAY:**` line at the very top of the GLOBAL MARKET CONTEXT block is the ONLY source of truth for the current weekday and date. Match it literally. Never guess the weekday from an example in this system prompt, from a previous assistant message in the conversation, or from the last session label.
+2. The `Session:` line tells you whether the numbers in the block are live or from a past close, and names the weekday of that past session explicitly. Quote that weekday literally — do not translate it to "Friday" or any fixed day.
+3. If NSE is OPEN, percents mean "today" (intraday move). If NSE is CLOSED and the last session was TODAY, percents still mean "today" (at today's close). If NSE is CLOSED and the last session was an EARLIER date, percents mean that date's close — say "on {that weekday}" or "at the last close", never "today".
+4. If the user asserts a different day ("today is Wednesday") and it contradicts the TODAY line, politely clarify with the TODAY line — do NOT capitulate to the user's claim.
+5. The `watchlist` tool result also includes `session_note`, `pct_basis` (`today` vs `last session`), and `as_of`. Use those literally for watchlist answers.
 
 ## Your tools
 Emit a tool call inline as: `[TOOL:tool_name:{"param":"value"}]`. Multiple markers per response are allowed. Use tools ONLY when the answer needs data not already in the LIVE MARKET SNAPSHOT block above.
@@ -305,6 +311,7 @@ Available tools:
 - [TOOL:watchlist:{}] — User's saved stocks AND mutual funds with live data. Returns `{stocks, mutual_funds, session_note, pct_basis, as_of, nse_open}`. You MUST list every single entity from BOTH `stocks` and `mutual_funds` arrays — do not truncate, do not say "third holding missing", do not drop MFs when the user said "watchlist". Each entity may include a `news` array with 0-2 recent, RELEVANT articles (strict vector+entity-match filter — if `news` is absent or empty, there is no related news worth mentioning; do NOT invent headlines or reach for unrelated articles). Use `session_note` verbatim as framing when markets are closed and `pct_basis` to decide between "today" and "last session" phrasing.
 - [TOOL:market_status:{}] — All indices (India/US/Europe/Japan) + FX + key commodities + market hours. Only call this if the LIVE MARKET SNAPSHOT above is stale or missing what you need.
 - [TOOL:market_mood:{}] — Current breadth: advances/declines, advance-decline ratio, stocks near 52w highs/lows, average % change, overall mood label (risk_on/mildly_positive/neutral/mildly_negative/risk_off). Use for "how is the market feeling today" queries.
+- [TOOL:market_drivers:{"since":"24h"}] — **Why did the market move today?** Returns the day's tape (direction + avg %), top leading and lagging sectors, AND a ranked list of cited news headlines retrieved via embedding search across `news_articles` (last 24h by default — `since` accepts `6h`, `12h`, `24h`, `48h`, `3d`, `week`). Use this — NOT `news_sentiment` — for every "why is the market up/down today", "what moved the Nifty", "reason behind the rally/selloff" query. MANDATORY rule: every causal claim in your reply must cite a specific headline from the `news_drivers` array (title + source). If `news_drivers` is empty, say so instead of inventing a macro narrative.
 - [TOOL:macro_regime:{"country":"IN"}] — Macro regime snapshot: repo rate, CPI, GDP growth, real policy rate, rate stance (restrictive/accommodative/neutral), inflation state, growth phase. Use when user asks "what's the macro backdrop" or "is RBI tightening".
 - [TOOL:institutional_flows:{"scope":"all","direction":"buying","limit":10}] — Top stocks by recent FII/DII/promoter holding changes. scope=fii|dii|promoter|all. direction=buying|selling. Use for "where are institutions buying" queries.
 - [TOOL:sector_thesis:{"sector":"Information Technology"}] — On-demand sector aggregate: avg PE/ROE/debt/growth + top 5 and weak 5 picks. Use for "what's going on with X sector" big-picture queries.
@@ -379,6 +386,7 @@ Anti-refusal table (these tools exist — use them):
 | "FII buying / selling **in the IT sector**" | `stock_screen({"query":"sector = 'IT' AND fii_holding_change > 0","limit":10,"order":"fii_holding_change DESC"})` — the `institutional_flows` tool returns market-wide top-movers and does NOT accept a sector filter. If the user names a sector, you MUST use stock_screen with `sector = 'X'` + `fii_holding_change` / `dii_holding_change` columns. Same rule for "FII selling in banks", "DII buying in pharma", etc. |
 | "What's the macro backdrop?" | `macro_regime({})` |
 | "How is the market feeling?" | `market_mood({})` |
+| "Why is the market up/down today?" / "What moved the Nifty" / "Reason behind the rally" | `market_drivers({"since":"24h"})` — cite the news headlines it returns, do NOT fall back to generic macro narrative. |
 | "What's the thesis on TCS?" | `narrative({"symbol":"TCS"})` |
 | "What's happening with Nifty IT?" | `nifty_index_constituents({"index_name":"Nifty IT"})` — NOT sector_thesis! The INDEX is 10 heavyweights, not all IT stocks. |
 | "What's going on with the IT sector?" | `sector_thesis({"sector":"IT"})` (note: DB stores short names — IT / Auto / Financials / Healthcare / FMCG / Consumer Discretionary / Industrials / Energy / Materials / Telecom / Real Estate) |
@@ -1827,23 +1835,123 @@ async def preprocess_user_query(
     return out
 
 
+# Telltale fragments that only appear in leaked planner / chain-of-
+# thought text, never in a real user-facing reply. If any of these
+# appear at the very start of the response (before the first blank
+# line / markdown heading / bullet), we treat the leading paragraph as
+# leaked thinking and wrap it in <thinking> tags so the client hides
+# it from the user. Matched case-insensitively.
+_LEAKED_PLANNER_HINTS = (
+    "use session info",
+    "so say",
+    "i will ",
+    "i'll ",
+    "let me ",
+    "plan:",
+    "approach:",
+    "first,",
+    "step 1",
+    "provide indices",
+    "provide summary",
+    "provide a summary",
+    "then suggestions",
+    "call tool",
+    "use tool",
+    "need to call",
+    "should call",
+)
+
+
+def _looks_like_leaked_plan(fragment: str) -> bool:
+    """True if the given leading fragment reads like raw planner text
+    rather than a user-facing reply. Conservative — prefers false
+    negatives over wrapping real content."""
+    if not fragment:
+        return False
+    probe = fragment.strip().lower()
+    if not probe:
+        return False
+    # Real replies usually start with a markdown heading, bullet,
+    # bold marker, or a natural-language sentence — not imperative
+    # planner verbs.
+    if probe.startswith(("**", "#", "- ", "* ", "1.", "> ")):
+        return False
+    # Short leading fragments (<= 300 chars) containing any planner
+    # hint are treated as leaked plans.
+    if len(probe) > 400:
+        return False
+    return any(hint in probe for hint in _LEAKED_PLANNER_HINTS)
+
+
 def _normalize_thinking_markup(text: str | None) -> str:
-    """Convert leaked markdown thinking headings into <thinking> tags."""
+    """Convert leaked markdown thinking headings into <thinking> tags.
+
+    Also detects the "raw planner leak" case — where the model emits
+    its plan as plain prose before the actual reply with no heading
+    or tag at all — and wraps that leading fragment in <thinking>
+    tags so the client can hide it. This was seen in production in
+    session cd76153f where Artha replied
+        "Use session info: NSE CLOSED. So say on Friday. Provide
+         indices. Also mention FX, commodities. Provide summary. Then
+         suggestions.**Market Snapshot (Friday, 15 Apr 2026)** …"
+    """
     if not text:
         return ""
     stripped = text.lstrip()
     if stripped.startswith("<thinking>"):
         return text
+
     match = _MARKDOWN_THINKING_RE.match(text)
-    if not match:
-        return text
-    thinking = (match.group(1) or "").strip()
-    rest = (match.group(2) or "").lstrip()
-    if not thinking:
-        return text
-    if rest:
-        return f"<thinking>\n{thinking}\n</thinking>\n\n{rest}"
-    return f"<thinking>\n{thinking}\n</thinking>"
+    if match:
+        thinking = (match.group(1) or "").strip()
+        rest = (match.group(2) or "").lstrip()
+        if thinking:
+            if rest:
+                return f"<thinking>\n{thinking}\n</thinking>\n\n{rest}"
+            return f"<thinking>\n{thinking}\n</thinking>"
+
+    # Raw planner leak: the first paragraph-like fragment (everything
+    # up to the first double-newline OR the first markdown heading /
+    # bold block / bullet) contains planner telltales. Wrap it.
+    #
+    # Split heuristics, in priority order:
+    #   1. First occurrence of a double-newline.
+    #   2. First markdown bold/heading/bullet on its own in the text
+    #      (e.g. "**Market Snapshot…" or "- Nifty 50 …"). This matters
+    #      because real models often drop the blank line between the
+    #      leaked plan and the bolded answer header.
+    leading = ""
+    tail = ""
+    double_nl = text.find("\n\n")
+    md_marker = None
+    for token in ("\n**", "\n# ", "\n## ", "\n- ", "\n* ", "\n1."):
+        idx = text.find(token)
+        if idx != -1 and (md_marker is None or idx < md_marker):
+            md_marker = idx
+    # Also detect an inline **bold** marker that follows the planner
+    # sentence without any newline (the production leak had
+    # "…Then suggestions.**Market Snapshot").
+    inline_md = None
+    m = re.search(r"[.!?]\s*\*\*", text)
+    if m:
+        inline_md = m.start() + 1  # keep the punctuation on the plan side
+
+    split_candidates = [c for c in (double_nl, md_marker, inline_md) if c is not None and c > 0]
+    if split_candidates:
+        split_at = min(split_candidates)
+        leading = text[:split_at]
+        tail = text[split_at:].lstrip("\n")
+    else:
+        leading = text
+        tail = ""
+
+    if _looks_like_leaked_plan(leading):
+        leading_clean = leading.strip()
+        if tail:
+            return f"<thinking>\n{leading_clean}\n</thinking>\n\n{tail}"
+        return f"<thinking>\n{leading_clean}\n</thinking>"
+
+    return text
 
 
 def _extract_thinking_text(text: str | None) -> str | None:
@@ -5213,6 +5321,154 @@ async def _execute_tool(
                 "mood": mood,
             }
 
+        elif tool_name == "market_drivers":
+            # "Why is the market up/down today?" — hybrid retrieval
+            # across news_articles (embedding-ranked) weighted by the
+            # current day's top movers and leading/lagging sectors, so
+            # Artha has concrete cited headlines instead of hand-wavy
+            # macro narrative.
+            since = (params.get("since") or "24h").strip()
+            _since_map = {
+                "6h": "6 hours", "12h": "12 hours", "24h": "24 hours",
+                "48h": "48 hours", "2d": "2 days", "3d": "3 days",
+                "week": "7 days", "1w": "7 days",
+            }
+            since_interval = _since_map.get(since, since)
+            if not re.match(r"^\d+\s+\w+$", since_interval):
+                since_interval = "24 hours"
+
+            # 1. Today's breadth + top leading/lagging sectors (rough
+            #    attribution — tells Artha which sectors moved the tape
+            #    and should be highlighted in the narrative).
+            breadth = await pool.fetchrow(
+                """
+                SELECT
+                    AVG(percent_change) AS avg_chg,
+                    COUNT(*) FILTER (WHERE percent_change > 0) AS advances,
+                    COUNT(*) FILTER (WHERE percent_change < 0) AS declines
+                FROM discover_stock_snapshots
+                WHERE last_price IS NOT NULL
+                """
+            )
+            sector_moves = await pool.fetch(
+                """
+                SELECT sector, AVG(percent_change) AS avg_chg, COUNT(*) AS n
+                FROM discover_stock_snapshots
+                WHERE percent_change IS NOT NULL
+                  AND sector IS NOT NULL AND sector <> ''
+                GROUP BY sector
+                HAVING COUNT(*) >= 3
+                ORDER BY AVG(percent_change) DESC
+                """
+            )
+            leaders = [
+                {"sector": r["sector"], "avg_pct": round(float(r["avg_chg"] or 0), 2), "n": int(r["n"] or 0)}
+                for r in sector_moves[:5]
+            ]
+            laggards = [
+                {"sector": r["sector"], "avg_pct": round(float(r["avg_chg"] or 0), 2), "n": int(r["n"] or 0)}
+                for r in sector_moves[-5:][::-1]
+            ]
+            avg_chg_val = breadth["avg_chg"] if breadth else None
+            avg_chg_pct = round(float(avg_chg_val), 2) if avg_chg_val is not None else None
+            direction = "up" if (avg_chg_pct or 0) > 0.1 else ("down" if (avg_chg_pct or 0) < -0.1 else "flat")
+
+            # 2. Top index movers from market_prices (to build the query).
+            try:
+                index_rows = await pool.fetch(
+                    """
+                    SELECT DISTINCT ON (asset) asset, price, change_percent, timestamp
+                    FROM market_prices
+                    WHERE instrument_type = 'index'
+                      AND asset IN ('Nifty 50','Sensex','Nifty Bank','Nifty IT','Nifty Auto','Nifty Pharma')
+                    ORDER BY asset, timestamp DESC
+                    """
+                )
+            except Exception:
+                index_rows = []
+            indices_snapshot = [
+                {
+                    "asset": r["asset"],
+                    "price": float(r["price"]) if r["price"] is not None else None,
+                    "change_pct": round(float(r["change_percent"] or 0), 2),
+                }
+                for r in index_rows
+            ]
+
+            # 3. Assemble semantic search queries — one per leading
+            #    sector + a broad "why Indian market moved" query so
+            #    the vector search pulls both sector-specific drivers
+            #    and macro catalysts.
+            queries: list[str] = []
+            tape_label = f"Indian stock market {direction} today"
+            queries.append(
+                f"{tape_label}: Nifty Sensex drivers macro catalyst FII DII flows"
+            )
+            for leader in leaders[:3]:
+                queries.append(
+                    f"{leader['sector']} sector rally {direction} earnings news India"
+                )
+            for laggard in laggards[:2]:
+                queries.append(
+                    f"{laggard['sector']} sector weakness decline news India"
+                )
+
+            # 4. Run hybrid search per query, dedupe by (title, url).
+            seen_keys: set[str] = set()
+            drivers: list[dict] = []
+            for q in queries:
+                try:
+                    articles, mode = await _news_hybrid_search(
+                        pool, q, limit=5, since_interval=since_interval,
+                    )
+                except Exception as exc:
+                    logger.debug("market_drivers: search failed for %r: %s", q, exc)
+                    continue
+                for a in articles:
+                    key = (a.get("url") or a.get("title") or "").strip().lower()
+                    if not key or key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    drivers.append({
+                        "title": a.get("title"),
+                        "summary": a.get("summary"),
+                        "source": a.get("source"),
+                        "url": a.get("url"),
+                        "timestamp": (
+                            a["timestamp"].isoformat()
+                            if hasattr(a.get("timestamp"), "isoformat")
+                            else a.get("timestamp")
+                        ),
+                        "primary_entity": a.get("primary_entity"),
+                        "impact": a.get("impact"),
+                        "matched_query": q,
+                        "search_mode": mode,
+                    })
+                    if len(drivers) >= 12:
+                        break
+                if len(drivers) >= 12:
+                    break
+
+            return {
+                "as_of": datetime.now(timezone.utc).isoformat(),
+                "since": since,
+                "tape": {
+                    "direction": direction,
+                    "avg_percent_change": avg_chg_pct,
+                    "advances": int(breadth["advances"] or 0) if breadth else 0,
+                    "declines": int(breadth["declines"] or 0) if breadth else 0,
+                    "indices": indices_snapshot,
+                },
+                "leading_sectors": leaders,
+                "lagging_sectors": laggards,
+                "news_drivers": drivers,
+                "citation_note": (
+                    "Every causal claim in the reply MUST cite one of "
+                    "the news_drivers items (title + source). Do not "
+                    "invent headlines or generic macro narrative."
+                ),
+            }
+
         elif tool_name == "narrative":
             # Rich narrative for a stock — why_narrative + action_tag reasoning.
             symbol = (params.get("symbol") or "").upper().strip()
@@ -6472,6 +6728,20 @@ async def save_message(
     """Save a message and return its ID."""
     pool = await get_pool()
     msg_id = str(uuid.uuid4())
+
+    # Belt-and-braces sanitation for assistant replies: strip any
+    # leaked planner / chain-of-thought text that slipped past the
+    # streaming parser. If the model emitted raw planning prose
+    # instead of a <thinking> block, wrap it in <thinking> tags so
+    # the client hides it, and hoist the plan text into thinking_text.
+    if role == "assistant" and content:
+        normalized = _normalize_thinking_markup(content)
+        if normalized != content:
+            content = normalized
+            extracted_plan = _extract_thinking_text(normalized)
+            if extracted_plan and not thinking_text:
+                thinking_text = extracted_plan
+
     await pool.execute(
         """
         INSERT INTO chat_messages (
@@ -8819,6 +9089,15 @@ def _render_prefetch_snapshot(
     now_utc = datetime.now(timezone.utc)
     now_ist = now_utc + timedelta(hours=5, minutes=30)
     ts = now_ist.strftime("%d %b %Y, %H:%M IST")
+    # Authoritative "today" string used by the LLM — full weekday name
+    # first (Wednesday/Thursday/…) so the model cannot drift onto the
+    # wrong day-of-week. This is the single source of truth that every
+    # reply must match when saying "today", "yesterday", "on Friday"
+    # etc.
+    today_full = now_ist.strftime("%A, %d %b %Y")
+    today_weekday = now_ist.strftime("%A")
+    today_iso = now_ist.strftime("%Y-%m-%d")
+    ist_hhmm = now_ist.strftime("%H:%M IST")
 
     # Session context — is the NSE open right now? If not, are we
     # looking at last session's close (common on weekends, holidays,
@@ -8836,13 +9115,38 @@ def _render_prefetch_snapshot(
         pct_label = "today"
     else:
         if last_session_date is not None:
-            ls = last_session_date.strftime("%a, %d %b %Y")
-            session_label = f"NSE CLOSED — last session: {ls}"
+            # Full weekday + ISO date so the model cannot confuse
+            # weekday and date (previous bug: model said "Friday" on
+            # Wednesday because the example in the system prompt used
+            # "Fri, 10 Apr 2026").
+            ls = last_session_date.strftime("%A, %d %b %Y")
+            ls_iso = last_session_date.isoformat()
+            if last_session_date == now_ist.date():
+                session_label = (
+                    f"NSE CLOSED (post-close / pre-open). "
+                    f"Last completed session = TODAY ({ls}, {ls_iso}). "
+                    f"Use 'today' or 'at today's close' — NEVER a "
+                    f"different weekday."
+                )
+            else:
+                session_label = (
+                    f"NSE CLOSED. Last completed session = "
+                    f"{ls} ({ls_iso}). Use that weekday literally "
+                    f"(e.g. 'on {last_session_date.strftime('%A')}') — "
+                    f"do NOT say 'today' for prices in this block."
+                )
         else:
-            session_label = "NSE CLOSED"
+            session_label = "NSE CLOSED (last session date unknown)"
         pct_label = "last session"
 
     lines = [
+        # HARD date anchor — prepended before anything else so the model
+        # always sees the correct weekday before it sees any market
+        # data. Do NOT remove or reformat; Artha keys off the "TODAY:"
+        # line when phrasing "today" / "yesterday" / "on Friday".
+        f"**TODAY:** {today_full} ({today_iso}), {ist_hhmm} — "
+        f"weekday is **{today_weekday}**. Any reply that claims a "
+        f"different weekday for 'today' is WRONG.",
         "**GLOBAL MARKET CONTEXT** "
         "(indices / FX / commodities — NOT the user's watchlist) — " + ts,
         f"Session: {session_label}",
