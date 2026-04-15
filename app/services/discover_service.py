@@ -4630,6 +4630,19 @@ async def get_mf_point_to_point_returns(*, scheme_code: str) -> dict | None:
 
     end_date, end_nav = series[-1]
     prev_date, prev_nav = series[-2]
+    first_date, _ = series[0]
+    # Total calendar span of NAV history available for this scheme.
+    # Used as a hard gate: we refuse to quote an N-day return when
+    # the fund hasn't actually existed for N days. Without this guard
+    # a 6-month-old fund gets a "10Y return" anchored at inception,
+    # which is exactly wrong — the anchor satisfies "date >= end-3650d"
+    # because every date on earth satisfies that for a new fund. See
+    # the JioBlackRock Flexi Cap case for the smoking gun.
+    history_span_days = (end_date - first_date).days
+    # Weekends / public holidays mean a 1Y window only has ~245 NAV
+    # points. Allow a 15-day slack so a fund NAV'd on the last trading
+    # day before the window still qualifies.
+    _WINDOW_BUFFER_DAYS = 15
 
     def _pct(start: float | None, end: float) -> float | None:
         if start is None or start <= 0:
@@ -4637,8 +4650,18 @@ async def get_mf_point_to_point_returns(*, scheme_code: str) -> dict | None:
         return round(((end - start) / start) * 100, 2)
 
     def _anchor_nav(n_days: int) -> float | None:
-        """First NAV with date >= end_date - n_days. Linear scan is
-        fine — series has ≤ ~1250 entries and this runs per request."""
+        """First NAV with date >= end_date - n_days, but only when
+        history actually covers the requested window.
+
+        The old implementation returned the earliest NAV whenever the
+        target predated the series, producing a silent inception-to-now
+        anchor for any period ≥ the fund's age — the "10Y CAGR on a
+        6-month-old fund" bug. We now refuse to quote the window
+        unless the series spans at least (n_days − buffer) days.
+        Linear scan is fine — series has ≤ ~1250 entries and this
+        runs per request."""
+        if history_span_days + _WINDOW_BUFFER_DAYS < n_days:
+            return None
         target = end_date - timedelta(days=n_days)
         for d, v in series:
             if d >= target:
@@ -4735,16 +4758,24 @@ async def recompute_mf_returns_all() -> dict:
         # UPDATE only the columns we intend to overwrite. Use
         # CAGR for ≥1Y to preserve peer-percentile scoring
         # semantics; absolute % for sub-1Y.
+        #
+        # Note: we write NULL unconditionally (no COALESCE) when the
+        # helper returns None for a period. That's critical for new
+        # funds — get_mf_point_to_point_returns now returns None for
+        # windows wider than the fund's NAV history, and we need
+        # those NULLs to clobber whatever stale value ETMoney's
+        # upstream blob left in the column. COALESCE would silently
+        # preserve the wrong number.
         await pool.execute(
             f"""
             UPDATE {MF_TABLE} SET
-                returns_1m = COALESCE($2, returns_1m),
-                returns_3m = COALESCE($3, returns_3m),
-                returns_6m = COALESCE($4, returns_6m),
-                returns_1y = COALESCE($5, returns_1y),
-                returns_3y = COALESCE($6, returns_3y),
-                returns_5y = COALESCE($7, returns_5y),
-                returns_10y = COALESCE($8, returns_10y)
+                returns_1m = $2,
+                returns_3m = $3,
+                returns_6m = $4,
+                returns_1y = $5,
+                returns_3y = $6,
+                returns_5y = $7,
+                returns_10y = $8
             WHERE scheme_code = $1
             """,
             scheme_code,
