@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from apscheduler.events import EVENT_JOB_MISSED
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.core.config import get_settings
@@ -229,6 +230,31 @@ async def _run_gap_backfill() -> None:
 
 async def _run_broker_charges() -> None:
     await _enqueue("broker_charges")
+
+
+# ── Heartbeat + misfire telemetry ────────────────────────────────────
+# The heartbeat gauge is updated on a short APScheduler tick so Grafana
+# can alert when the scheduler loop silently dies (e.g. event-loop
+# deadlock after an asyncpg reconnect storm). The misfire listener
+# increments a counter whenever APScheduler reports a missed job
+# (i.e. the runtime ran past its scheduled fire time by more than
+# ``misfire_grace_time``).
+
+async def _run_scheduler_heartbeat() -> None:
+    try:
+        import time as _t
+        from app.core.metrics import SCHEDULER_HEARTBEAT
+        SCHEDULER_HEARTBEAT.set(_t.time())
+    except Exception:
+        logger.debug("scheduler heartbeat update failed", exc_info=True)
+
+
+def _on_job_missed(event) -> None:
+    try:
+        from app.core.metrics import JOB_MISFIRES
+        JOB_MISFIRES.labels(job_name=event.job_id).inc()
+    except Exception:
+        logger.debug("job misfire metric update failed", exc_info=True)
 
 
 # ── Startup collection ───────────────────────────────────────────────
@@ -595,6 +621,21 @@ def start_scheduler() -> None:
         misfire_grace_time=43200,
     )
     logger.info("Scheduler: broker_charges weekly Sun 4:00 AM IST")
+    # Scheduler heartbeat tick — short interval so "last loop alive"
+    # is always fresh in Grafana. 30 s is cheap and bounds the alert
+    # window to ~1 min if the loop dies.
+    _scheduler.add_job(
+        _run_scheduler_heartbeat,
+        "interval",
+        seconds=30,
+        id="scheduler_heartbeat",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=60,
+    )
+    _scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED)
+    logger.info("Scheduler: heartbeat every 30s + misfire listener attached")
     logger.info(
         "Scheduler: brief=%dm discover_stock=%s %02d:%02d IST retry=%s %02d:%02d IST discover_mf=%s %02d:%02d IST ipo=%dm macro=%dm news=%dm tax=%s",
         intervals["brief_minutes"],

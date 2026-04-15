@@ -1,0 +1,162 @@
+---
+# Grafana unified alerting rules for EconAtlas.
+#
+# Thresholds are intentionally conservative so we don't spam the on-call
+# channel on normal variance:
+#   - Market scoring stale > 6h                  (critical)
+#   - DLQ size > 0 for 10 min                    (warning)
+#   - Stock intraday autofill coverage < 70 %    (warning, sustained 10 min)
+#   - Scheduler heartbeat age > 5 min            (critical)
+#   - External API error rate > 25 % / 15 min    (warning)
+#   - Data freshness > 6h on critical tables     (warning)
+#   - Job misfires > 0 in last 15 min            (warning)
+#
+# All rules fire once the `for:` window has elapsed to suppress spikes.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: econatlas-reliability
+    folder: EconAtlas
+    interval: 1m
+    rules:
+      - uid: econatlas-scheduler-heartbeat
+        title: Scheduler loop silent
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: (time() - scheduler_heartbeat_timestamp_seconds) > 300
+              instant: true
+              refId: A
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: APScheduler heartbeat older than 5 minutes
+          description: |
+            The scheduler loop has not ticked in more than 5 minutes.
+            No cron jobs are firing. Check the backend process and
+            event loop for deadlocks.
+
+      - uid: econatlas-dlq-nonzero
+        title: ARQ DLQ non-empty
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: arq_dlq_size > 0
+              instant: true
+              refId: A
+        noDataState: OK
+        execErrState: Alerting
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Dead letter queue non-empty for 10 minutes
+          description: |
+            One or more background jobs have exhausted their retries
+            and landed in the DLQ. Inspect job_dead_letters in the DB.
+
+      - uid: econatlas-autofill-coverage
+        title: Stock intraday autofill coverage < 70%
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: autofill_coverage_ratio{job_name="discover_stock_intraday_autofill"} < 0.7
+              instant: true
+              refId: A
+        noDataState: OK
+        execErrState: Alerting
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Stock intraday autofill is filling less than 70% of target symbols
+          description: |
+            The autofill sweep has not reached 70% coverage for 10 minutes.
+            Check Upstox / Yahoo rate limits and the instrument master cache.
+
+      - uid: econatlas-data-freshness-critical
+        title: Critical table stale > 6h
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: |
+                max by (source) (data_freshness_age_seconds{
+                  source=~"market_scores|discover_stock_snapshots|discover_stock_price_history|discover_mutual_fund_snapshots|discover_mf_nav_history"
+                }) > 21600
+              instant: true
+              refId: A
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.source }} has not been written in over 6 hours"
+          description: |
+            Latest write to {{ $labels.source }} is more than 6 hours old.
+            The upstream fetcher is likely broken.
+
+      - uid: econatlas-ext-api-error-rate
+        title: External API error rate > 25%
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: |
+                (
+                  sum by (provider) (rate(external_api_requests_total{status!="ok"}[15m]))
+                  /
+                  clamp_min(sum by (provider) (rate(external_api_requests_total[15m])), 0.0001)
+                ) > 0.25
+              instant: true
+              refId: A
+        noDataState: OK
+        execErrState: Alerting
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.provider }} error rate above 25% for 15 minutes"
+          description: |
+            More than one in four outbound calls to {{ $labels.provider }}
+            is returning a non-2xx, timeout, or error.
+
+      - uid: econatlas-job-misfires
+        title: Scheduler job misfires
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: sum(increase(job_misfires_total[15m])) > 0
+              instant: true
+              refId: A
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: APScheduler reported a missed job in the last 15 minutes
+          description: |
+            One or more cron jobs ran past their misfire_grace_time and
+            were skipped. Check runner.py listener output and load.

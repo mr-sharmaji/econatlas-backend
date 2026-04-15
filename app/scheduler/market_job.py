@@ -1363,6 +1363,11 @@ def build_market_intraday_rows_for_open(
             price_v = prev_v = None
         if (price_v is not None and prev_v is not None
                 and abs(price_v - prev_v) < 1e-6):
+            try:
+                from app.core.metrics import MARKET_GATE_REJECTIONS
+                MARKET_GATE_REJECTIONS.labels(reason="price_equality").inc()
+            except Exception:
+                pass
             continue
 
         # Anchor the open-check to the row's CLAIMED source time
@@ -1397,6 +1402,17 @@ def build_market_intraday_rows_for_open(
                     exchange, gate_time_buffered, status=status,
                 )
             )
+        if not include and exchange in {NSE, NYSE, LSE, XETRA, EURONEXT, TSE}:
+            # Categorise the rejection for observability. pre_session
+            # = source_dt is before the session window, post_session
+            # = source_dt is after the post-close grace window.
+            try:
+                from app.core.metrics import MARKET_GATE_REJECTIONS
+                session_open_now = is_exchange_expected_open(exchange, now_utc, status=status)
+                reason = "pre_session" if session_open_now else "post_session"
+                MARKET_GATE_REJECTIONS.labels(reason=reason).inc()
+            except Exception:
+                pass
         if include:
             if source_dt is None:
                 source_dt = datetime.now(timezone.utc)

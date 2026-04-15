@@ -71,6 +71,49 @@ _IST = ZoneInfo("Asia/Kolkata")
 
 logger = logging.getLogger(__name__)
 
+
+async def _instrumented_get(
+    client: httpx.AsyncClient,
+    url: str,
+    **kwargs: Any,
+) -> httpx.Response:
+    """Wrap ``client.get`` with Prometheus external-API metrics.
+
+    Every outbound httpx fetch that goes through this helper gets
+    classified by (provider, endpoint) and recorded with latency and
+    status so Grafana can chart upstream health without touching
+    each call site. Never raises from the metrics path — any
+    instrumentation failure is swallowed so a scraper can't be
+    taken down by a metrics bug.
+    """
+    t0 = time.monotonic()
+    try:
+        resp = await client.get(url, **kwargs)
+    except httpx.TimeoutException:
+        try:
+            from app.core.metrics import record_ext_api, classify_ext_api_url
+            p, e = classify_ext_api_url(url)
+            record_ext_api(p, e, None, time.monotonic() - t0, error="timeout")
+        except Exception:
+            pass
+        raise
+    except Exception:
+        try:
+            from app.core.metrics import record_ext_api, classify_ext_api_url
+            p, e = classify_ext_api_url(url)
+            record_ext_api(p, e, None, time.monotonic() - t0, error="error")
+        except Exception:
+            pass
+        raise
+    try:
+        from app.core.metrics import record_ext_api, classify_ext_api_url
+        p, e = classify_ext_api_url(url)
+        record_ext_api(p, e, resp.status_code, time.monotonic() - t0)
+    except Exception:
+        pass
+    return resp
+
+
 # Below this fraction of successful updates we log an ERROR so the
 # ops dashboard / log pipeline picks up the degradation. Normal runs
 # should be ≥ 98 %. Sustained < 80 % = something is broken upstream.
@@ -181,7 +224,8 @@ async def _bootstrap_nse_session(client: httpx.AsyncClient) -> bool:
     httpx.AsyncClient cookie jar. Returns True on success.
     """
     try:
-        await client.get(
+        await _instrumented_get(
+            client,
             _NSE_HOME_URL,
             headers=_BROWSER_HEADERS,
             timeout=_NSE_TIMEOUT_SEC,
@@ -199,7 +243,8 @@ async def _fetch_nse_index(
 ) -> list[dict[str, Any]]:
     """Fetch one NSE index bulk endpoint and return its `data` array."""
     try:
-        resp = await client.get(
+        resp = await _instrumented_get(
+            client,
             _NSE_INDEX_URL,
             params={"index": index_name},
             headers={
@@ -320,7 +365,8 @@ async def _fetch_yahoo_batch(
         return {}
     yahoo_symbols = [f"{s}.NS" for s in symbols]
     try:
-        resp = await client.get(
+        resp = await _instrumented_get(
+            client,
             _yahoo_base_url(),
             params={"symbols": ",".join(yahoo_symbols)},
             headers=_BROWSER_HEADERS,
@@ -799,7 +845,8 @@ async def _fetch_upstox_candles_for_symbol(
         from_date=from_date,
     )
     try:
-        resp = await client.get(
+        resp = await _instrumented_get(
+            client,
             url,
             headers={"Accept": "application/json"},
             timeout=_UPSTOX_PER_CALL_TIMEOUT_SEC,
@@ -856,7 +903,8 @@ async def _fetch_upstox_intraday_for_symbol(
         interval=interval,
     )
     try:
-        resp = await client.get(
+        resp = await _instrumented_get(
+            client,
             url,
             headers={"Accept": "application/json"},
             timeout=_UPSTOX_PER_CALL_TIMEOUT_SEC,
@@ -925,7 +973,8 @@ async def _fetch_yahoo_5m_for_day(
         "?interval=5m&range=2d"
     )
     try:
-        resp = await client.get(
+        resp = await _instrumented_get(
+            client,
             url,
             headers=_BROWSER_HEADERS,
             timeout=_BACKFILL_PER_SYMBOL_TIMEOUT_SEC,
@@ -1534,6 +1583,29 @@ async def run_discover_stock_intraday_autofill_job() -> None:
         elapsed, fetched_symbols, fetched_empty, rows_inserted,
         snapshots_updated, history_upserted,
     )
+
+    # ── Metrics ────────────────────────────────────────────────
+    try:
+        from app.core.metrics import (
+            AUTOFILL_SYMBOLS_OK,
+            AUTOFILL_SYMBOLS_EMPTY,
+            AUTOFILL_ROWS_QUEUED,
+            AUTOFILL_SNAPSHOTS_UPDATED,
+            AUTOFILL_COVERAGE_RATIO,
+            AUTOFILL_LAST_DURATION,
+        )
+        jn = "discover_stock_intraday_autofill"
+        AUTOFILL_SYMBOLS_OK.labels(job_name=jn).set(fetched_symbols)
+        AUTOFILL_SYMBOLS_EMPTY.labels(job_name=jn).set(fetched_empty)
+        AUTOFILL_ROWS_QUEUED.labels(job_name=jn).set(rows_inserted)
+        AUTOFILL_SNAPSHOTS_UPDATED.labels(job_name=jn).set(snapshots_updated)
+        target = len(symbols) or 1
+        AUTOFILL_COVERAGE_RATIO.labels(job_name=jn).set(
+            fetched_symbols / target
+        )
+        AUTOFILL_LAST_DURATION.labels(job_name=jn).set(elapsed)
+    except Exception:
+        logger.debug("intraday_autofill: metrics update failed", exc_info=True)
 
 
 def _is_trading_day_on(day) -> bool:

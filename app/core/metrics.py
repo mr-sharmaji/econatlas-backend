@@ -158,6 +158,191 @@ DATA_FRESHNESS = Gauge(
 DATA_ROWS_TOTAL = Gauge("data_rows_total", "Total rows per data table", ["table"])
 DATA_STALE_STOCKS = Gauge("data_stale_stocks", "Number of stale stock snapshots")
 
+# ── External API health ──────────────────────────────────────────────
+# Every outbound HTTP fetch to an upstream data provider is recorded
+# here. Aggregated by (provider, endpoint) only — endpoint is
+# collapsed to the URL's first two path segments so we don't explode
+# cardinality on per-symbol URLs. Labels:
+#   provider: yahoo | google_finance | upstox | mfapi | coingecko | ...
+#   endpoint: normalized path prefix, e.g. /v8/finance/chart
+#   status:   ok | 4xx | 5xx | timeout | error
+
+EXT_API_REQUESTS = Counter(
+    "external_api_requests_total",
+    "External API requests by provider / endpoint / status",
+    ["provider", "endpoint", "status"],
+)
+EXT_API_DURATION = Histogram(
+    "external_api_duration_seconds",
+    "External API call duration",
+    ["provider", "endpoint"],
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30),
+)
+EXT_API_RATE_LIMITED = Counter(
+    "external_api_rate_limited_total",
+    "External API 429 / 503 rate-limit events",
+    ["provider"],
+)
+
+# ── Stock intraday autofill coverage ─────────────────────────────────
+# Updated at the end of every autofill sweep — one gauge set per run.
+# Labeled by job_name so future autofill sweepers (MF, indices) can
+# share the same metrics.
+
+AUTOFILL_SYMBOLS_OK = Gauge(
+    "autofill_symbols_ok",
+    "Symbols with fresh data in the most recent autofill sweep",
+    ["job_name"],
+)
+AUTOFILL_SYMBOLS_EMPTY = Gauge(
+    "autofill_symbols_empty",
+    "Symbols that returned no bars in the most recent autofill sweep",
+    ["job_name"],
+)
+AUTOFILL_ROWS_QUEUED = Gauge(
+    "autofill_rows_queued",
+    "Rows queued for upsert in the most recent autofill sweep",
+    ["job_name"],
+)
+AUTOFILL_SNAPSHOTS_UPDATED = Gauge(
+    "autofill_snapshots_updated",
+    "Snapshots updated in the most recent autofill sweep",
+    ["job_name"],
+)
+AUTOFILL_COVERAGE_RATIO = Gauge(
+    "autofill_coverage_ratio",
+    "Fraction of target symbols filled in the most recent sweep (0-1)",
+    ["job_name"],
+)
+AUTOFILL_LAST_DURATION = Gauge(
+    "autofill_last_duration_seconds",
+    "Wall-clock duration of the most recent autofill sweep",
+    ["job_name"],
+)
+
+# ── Market gate rejections ───────────────────────────────────────────
+# Counts how many intraday rows were dropped by each defensive gate
+# in build_market_intraday_rows_for_open. Useful for confirming the
+# stale-quote defenses are firing and for spotting regressions.
+
+MARKET_GATE_REJECTIONS = Counter(
+    "market_intraday_gate_rejections_total",
+    "Stale market intraday rows dropped at build time",
+    ["reason"],  # pre_session | post_session | price_equality
+)
+
+# ── Scheduler heartbeat + misfires ──────────────────────────────────
+# The APScheduler loop updates SCHEDULER_HEARTBEAT every N seconds.
+# If this gauge stops advancing, the scheduler is dead — alert.
+# JOB_MISFIRES increments when APScheduler reports a missed job
+# (i.e. the runtime ran past its scheduled fire time by more than
+# misfire_grace_time).
+
+SCHEDULER_HEARTBEAT = Gauge(
+    "scheduler_heartbeat_timestamp_seconds",
+    "Unix timestamp of the most recent APScheduler loop tick",
+)
+JOB_MISFIRES = Counter(
+    "job_misfires_total",
+    "APScheduler misfire events (job missed its scheduled window)",
+    ["job_name"],
+)
+
+# ── Data coverage / freshness (aggregated) ──────────────────────────
+# The existing DATA_FRESHNESS already tracks age-of-latest-row per
+# table. These additions expose coverage as a 0-1 ratio (how many
+# target assets have a row for today) and a count of "stale" assets
+# above a per-table threshold.
+
+DATA_COVERAGE_RATIO = Gauge(
+    "data_coverage_ratio",
+    "Fraction of expected assets with a row for today (0-1)",
+    ["table"],
+)
+DATA_STALE_ASSETS_COUNT = Gauge(
+    "data_stale_assets_count",
+    "Count of assets whose latest row is older than the staleness threshold",
+    ["table"],
+)
+
+
+def record_ext_api(
+    provider: str,
+    endpoint: str,
+    status_code: int | None,
+    duration_seconds: float,
+    *,
+    error: str | None = None,
+) -> None:
+    """Record one external API call. Call from every HTTP call site.
+
+    `status_code` is the HTTP response code when we got one. Pass None
+    when the call errored without a response (timeout, DNS, connection
+    refused) and use `error` to categorise ("timeout" / "error").
+    """
+    if error:
+        status = error
+    elif status_code is None:
+        status = "error"
+    elif status_code < 400:
+        status = "ok"
+    elif status_code < 500:
+        status = f"{status_code // 100}xx"
+    else:
+        status = f"{status_code // 100}xx"
+    try:
+        EXT_API_REQUESTS.labels(
+            provider=provider, endpoint=endpoint, status=status,
+        ).inc()
+        EXT_API_DURATION.labels(
+            provider=provider, endpoint=endpoint,
+        ).observe(max(0.0, duration_seconds))
+        if status_code in (429, 503):
+            EXT_API_RATE_LIMITED.labels(provider=provider).inc()
+    except Exception:
+        # Never let metrics failures crash the scraper
+        pass
+
+
+def classify_ext_api_url(url: str) -> tuple[str, str]:
+    """Return (provider, endpoint) labels for an outbound URL.
+
+    Endpoint is the URL's first ≤2 path segments so per-symbol URLs
+    (e.g. /v8/finance/chart/RELIANCE.NS) collapse to a single label
+    value /v8/finance/chart.
+    """
+    from urllib.parse import urlparse
+    try:
+        u = urlparse(url)
+    except Exception:
+        return ("unknown", "unknown")
+    host = (u.hostname or "").lower()
+    if "upstox.com" in host:
+        provider = "upstox"
+    elif "yahoo.com" in host or "yimg.com" in host:
+        provider = "yahoo"
+    elif "google.com" in host:
+        provider = "google_finance"
+    elif "mfapi.in" in host:
+        provider = "mfapi"
+    elif "coingecko.com" in host:
+        provider = "coingecko"
+    elif "groww.in" in host:
+        provider = "groww"
+    elif "etmoney.com" in host:
+        provider = "etmoney"
+    elif "nseindia.com" in host:
+        provider = "nse"
+    elif "bseindia.com" in host:
+        provider = "bse"
+    else:
+        provider = host.replace("www.", "").split(".")[0] or "unknown"
+    # Collapse the path to the first 2 segments
+    segs = [s for s in (u.path or "/").strip("/").split("/") if s][:2]
+    endpoint = "/" + "/".join(segs) if segs else "/"
+    return (provider, endpoint)
+
+
 # ── Log metrics ───────────────────────────────────────────────────────
 
 LOG_ERRORS_1H = Gauge("log_errors_1h", "Errors in the last hour")
@@ -377,16 +562,23 @@ async def _collect_once():
         for table, col in [
             ("market_prices", "timestamp"),
             ("market_prices_intraday", "timestamp"),
+            ("market_scores", "computed_at"),
             ("discover_stock_snapshots", "source_timestamp"),
+            ("discover_stock_intraday", "ts"),
+            ("discover_stock_price_history", "trade_date"),
             ("discover_mutual_fund_snapshots", "source_timestamp"),
-            ("discover_stock_intraday", "timestamp"),
+            ("discover_mf_nav_history", "nav_date"),
             ("news_articles", "published_at"),
             ("economic_events", "event_time"),
             ("ipo_snapshots", "snapshot_at"),
             ("broker_charges", "scraped_at"),
         ]:
             try:
-                latest = await pool.fetchval(f'SELECT MAX("{col}") FROM {table}')
+                # Cast to timestamptz so date-typed columns (trade_date,
+                # nav_date) don't raise on datetime arithmetic below.
+                latest = await pool.fetchval(
+                    f'SELECT MAX("{col}")::timestamptz FROM {table}'
+                )
                 if latest:
                     age = (datetime.now(timezone.utc) - latest).total_seconds()
                     DATA_FRESHNESS.labels(source=table).set(max(0, age))

@@ -407,6 +407,169 @@
         { "expr": "log_errors_1h", "legendFormat": "Errors", "refId": "A" },
         { "expr": "log_warnings_1h", "legendFormat": "Warnings", "refId": "B" }
       ]
+    },
+
+    { "title": "🌐 External API health", "type": "row", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 89 }, "collapsed": false },
+
+    {
+      "title": "Outbound call rate by provider",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 90 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "sum by (provider) (rate(external_api_requests_total[5m]))", "legendFormat": "{{provider}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Non-2xx rate by provider",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 90 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 15, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "sum by (provider) (rate(external_api_requests_total{status!=\"ok\"}[5m]))", "legendFormat": "{{provider}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Rate-limit events (429 / 503) per hour",
+      "type": "bargauge",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 90 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 25}] } } },
+      "options": { "orientation": "horizontal", "displayMode": "gradient" },
+      "targets": [
+        { "expr": "sum by (provider) (increase(external_api_rate_limited_total[1h]))", "legendFormat": "{{provider}}", "refId": "A", "instant": true }
+      ]
+    },
+    {
+      "title": "p95 external API duration by provider",
+      "type": "timeseries",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 97 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 5, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum by (provider, le) (rate(external_api_duration_seconds_bucket[5m])))", "legendFormat": "{{provider}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Error rate % by (provider, endpoint)",
+      "type": "table",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 97 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "transformations": [
+        { "id": "merge" },
+        { "id": "organize", "options": { "renameByName": { "Value": "err %" } } }
+      ],
+      "targets": [
+        { "expr": "100 * sum by (provider, endpoint) (rate(external_api_requests_total{status!=\"ok\"}[15m])) / clamp_min(sum by (provider, endpoint) (rate(external_api_requests_total[15m])), 0.0001)", "legendFormat": "{{provider}} {{endpoint}}", "refId": "A", "format": "table", "instant": true }
+      ]
+    },
+
+    { "title": "📈 Stock intraday autofill coverage", "type": "row", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 104 }, "collapsed": false },
+
+    {
+      "title": "Autofill coverage ratio",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 105 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 0.7}, {"color": "green", "value": 0.9}] } } },
+      "targets": [
+        { "expr": "autofill_coverage_ratio", "legendFormat": "{{job_name}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Symbols OK vs empty",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 9, "x": 6, "y": 105 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 15, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "autofill_symbols_ok", "legendFormat": "OK — {{job_name}}", "refId": "A" },
+        { "expr": "autofill_symbols_empty", "legendFormat": "Empty — {{job_name}}", "refId": "B" }
+      ]
+    },
+    {
+      "title": "Rows queued + snapshots updated / sweep",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 9, "x": 15, "y": 105 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 10, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "autofill_rows_queued", "legendFormat": "rows queued — {{job_name}}", "refId": "A" },
+        { "expr": "autofill_snapshots_updated", "legendFormat": "snapshots — {{job_name}}", "refId": "B" }
+      ]
+    },
+    {
+      "title": "Last sweep duration",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 111 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 15, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "autofill_last_duration_seconds", "legendFormat": "{{job_name}}", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Market gate rejections by reason",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 111 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 20, "lineWidth": 2, "stacking": { "mode": "normal" } } } },
+      "targets": [
+        { "expr": "sum by (reason) (rate(market_intraday_gate_rejections_total[5m]))", "legendFormat": "{{reason}}", "refId": "A" }
+      ]
+    },
+
+    { "title": "⏱️ Scheduler reliability", "type": "row", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 117 }, "collapsed": false },
+
+    {
+      "title": "Scheduler heartbeat age",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 118 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "s", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 60}, {"color": "red", "value": 300}] } } },
+      "targets": [
+        { "expr": "time() - scheduler_heartbeat_timestamp_seconds", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Misfires (1h) by job",
+      "type": "bargauge",
+      "gridPos": { "h": 5, "w": 9, "x": 6, "y": 118 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}] } } },
+      "options": { "orientation": "horizontal", "displayMode": "gradient" },
+      "targets": [
+        { "expr": "sum by (job_name) (increase(job_misfires_total[1h]))", "legendFormat": "{{job_name}}", "refId": "A", "instant": true }
+      ]
+    },
+    {
+      "title": "DLQ size over time",
+      "type": "timeseries",
+      "gridPos": { "h": 5, "w": 9, "x": 15, "y": 118 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 25, "lineWidth": 2 } } },
+      "targets": [
+        { "expr": "arq_dlq_size", "legendFormat": "DLQ", "refId": "A" }
+      ]
+    },
+    {
+      "title": "Per-job last-success age (heatmap)",
+      "type": "heatmap",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 123 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "options": {
+        "calculate": false,
+        "yAxis": { "unit": "short" },
+        "color": { "mode": "scheme", "scheme": "Turbo", "steps": 64 },
+        "cellGap": 2,
+        "tooltip": { "show": true, "yHistogram": false }
+      },
+      "targets": [
+        { "expr": "time() - job_last_success_timestamp_seconds", "legendFormat": "{{job_name}}", "refId": "A", "format": "time_series" }
+      ]
     }
   ],
   "refresh": "15s",
@@ -416,5 +579,5 @@
   "timezone": "Asia/Kolkata",
   "title": "EconAtlas API",
   "uid": "econatlas-api",
-  "version": 3
+  "version": 4
 }

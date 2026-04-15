@@ -140,11 +140,26 @@ class BaseScraper:
     ) -> Dict[str, Any]:
         last_exc: Exception | None = None
         for attempt in range(retries + 1):
+            t0 = time.monotonic()
             try:
                 response = self.session.get(url, params=params, timeout=timeout)
+                _record_ext_api_safe(
+                    url, response.status_code, time.monotonic() - t0,
+                )
                 response.raise_for_status()
                 return response.json()
+            except requests.Timeout as exc:
+                _record_ext_api_safe(url, None, time.monotonic() - t0, error="timeout")
+                last_exc = exc
+                if attempt < retries:
+                    time.sleep(DEFAULT_BACKOFF * (2 ** attempt))
             except (requests.RequestException, ValueError) as exc:
+                # On HTTPError we already recorded above via status_code;
+                # for connection errors / JSON decode, record as "error".
+                if not isinstance(exc, requests.HTTPError):
+                    _record_ext_api_safe(
+                        url, None, time.monotonic() - t0, error="error",
+                    )
                 last_exc = exc
                 if _is_non_retryable(exc):
                     break
@@ -161,11 +176,24 @@ class BaseScraper:
     ) -> str:
         last_exc: Exception | None = None
         for attempt in range(retries + 1):
+            t0 = time.monotonic()
             try:
                 response = self.session.get(url, params=params, timeout=timeout)
+                _record_ext_api_safe(
+                    url, response.status_code, time.monotonic() - t0,
+                )
                 response.raise_for_status()
                 return response.text
+            except requests.Timeout as exc:
+                _record_ext_api_safe(url, None, time.monotonic() - t0, error="timeout")
+                last_exc = exc
+                if attempt < retries:
+                    time.sleep(DEFAULT_BACKOFF * (2 ** attempt))
             except requests.RequestException as exc:
+                if not isinstance(exc, requests.HTTPError):
+                    _record_ext_api_safe(
+                        url, None, time.monotonic() - t0, error="error",
+                    )
                 last_exc = exc
                 if _is_non_retryable(exc):
                     break
@@ -176,6 +204,25 @@ class BaseScraper:
     @staticmethod
     def utc_now() -> datetime:
         return datetime.now(tz=timezone.utc)
+
+
+def _record_ext_api_safe(
+    url: str,
+    status_code: int | None,
+    duration_seconds: float,
+    *,
+    error: str | None = None,
+) -> None:
+    """Wrap record_ext_api so a metrics import failure never breaks
+    a scrape. Imported lazily to avoid a circular import at module
+    load time (metrics imports from app.core, base.py is imported
+    from every scheduler job)."""
+    try:
+        from app.core.metrics import record_ext_api, classify_ext_api_url
+        provider, endpoint = classify_ext_api_url(url)
+        record_ext_api(provider, endpoint, status_code, duration_seconds, error=error)
+    except Exception:
+        pass
 
 
 def _is_non_retryable(exc: Exception) -> bool:
