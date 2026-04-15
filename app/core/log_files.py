@@ -267,4 +267,8 @@ def tail_log_files(
 
     # Callers expect ascending time order.
     out.reverse()
+    # Assign synthetic per-response ids so clients can sort reliably
+    # even though file-backed entries have no real monotonic cursor.
+    for i, entry in enumerate(out, start=1):
+        entry["id"] = i
     return out
