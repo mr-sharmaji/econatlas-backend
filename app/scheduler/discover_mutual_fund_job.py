@@ -2963,6 +2963,73 @@ class DiscoverMutualFundScraper(BaseScraper):
         )
 
         # ── Fix misclassified index fund sub_categories ──────────────────
+        # Order matters, most specific first. The "Index Funds" generic
+        # bucket used to absorb ~210 schemes that were actually
+        # debt/sectoral/international/smart-beta indices with no useful
+        # classification. We now split those out explicitly so users
+        # can filter them cleanly.
+        #
+        # Precedence (first match wins):
+        # 1. Debt indices (target maturity, SDL, G-Sec, Gilt, CRISIL-IBX,
+        #    PSU Bond, AAA Bond, corp bond index)
+        # 2. Sectoral equity (Bank, IT, Pharma, Auto, FMCG, Metal,
+        #    Energy, Digital, Consumption, Infra, Financial Services)
+        # 3. International (NASDAQ, S&P 500, Hang Seng, FTSE, MSCI,
+        #    Emerging Markets, Global, China, Japan)
+        # 4. Smart Beta / Factor (Low Vol, Quality, Alpha, Momentum,
+        #    Equal Weight, Value factor, Enhanced Value)
+        # 5. Existing broad-market heuristics (Nifty 500/200/50/Next 50,
+        #    Nifty 100, Sensex, Total Market, Mid/Small/Multi Cap
+        #    explicit)
+        _DEBT_INDEX_PATTERNS = (
+            "sdl", "g-sec", "g sec", "gsec", "gilt index",
+            "psu bond", "aaa bond", "crisil ibx", "crisil-ibx",
+            "bond index", "debt index", "tbill", "t-bill",
+        )
+        _SECTORAL_INDEX_PATTERNS = (
+            "nifty bank", "bank index", "nifty it", "niftyit", " it index",
+            "nifty pharma", "pharma index", "healthcare index",
+            "nifty auto", "auto index", "nifty fmcg", "fmcg index",
+            "nifty metal", "metal index", "nifty energy", "energy index",
+            "realty index", "nifty realty",
+            "infra index", "infrastructure index", "nifty infrastructure",
+            "digital index", "india digital",
+            "consumption", "non-cyclical consumer",
+            "psu index", "nifty psu",
+            "financial services", "financials ex bank",
+            "capital market",
+            "manufacturing index", "commodities index",
+            "media index", "select business groups",
+            # Newer thematic / sectoral indices
+            "india defence", "nifty defence",
+            "india tourism", "nifty tourism",
+            "housing index",
+            "internet economy",
+            "sector leaders", "sectors leaders",
+            "midsmall it and telecom",
+        )
+        _INTERNATIONAL_INDEX_PATTERNS = (
+            "nasdaq", "s&p 500", "s&p500", "s & p 500",
+            "hang seng", "hangseng",
+            "ftse", "msci", "emerging markets",
+            " global ", "global equity",
+            "us equity", "u.s. equity", "us market",
+            "china", "japan", "developed markets", "world index",
+            "dow jones",
+        )
+        _SMART_BETA_PATTERNS = (
+            "low volatility", "low vol ", "low-vol",
+            "quality 30", "quality index", "alpha 30", "alpha 50",
+            "alpha low vol",
+            "momentum 30", "momentum index", "nifty momentum",
+            "value 30", "value 50", "enhanced value", "bse quality",
+            "equal weight", "equal-weight",
+            "dividend opportunities", " factor ", "multifactor",
+        )
+
+        def _matches_any(name_lc: str, patterns: tuple[str, ...]) -> bool:
+            return any(p in name_lc for p in patterns)
+
         for row in rows:
             name_lower = (row.get("scheme_name") or "").lower()
             sub = (row.get("sub_category") or "").lower()
@@ -2972,8 +3039,22 @@ class DiscoverMutualFundScraper(BaseScraper):
             if classification != "index" and "index" not in sub:
                 continue
 
-            # Rule-based correction using index name keywords
-            # Order matters: more specific patterns first
+            # Precedence 1-4: new fine-grained index sub-categories.
+            if _matches_any(name_lower, _DEBT_INDEX_PATTERNS):
+                row["sub_category"] = "Debt Index"
+                continue
+            if _matches_any(name_lower, _SECTORAL_INDEX_PATTERNS):
+                row["sub_category"] = "Sectoral Index"
+                continue
+            if _matches_any(name_lower, _INTERNATIONAL_INDEX_PATTERNS):
+                row["sub_category"] = "International Index"
+                continue
+            if _matches_any(name_lower, _SMART_BETA_PATTERNS):
+                row["sub_category"] = "Smart Beta Index"
+                continue
+
+            # Precedence 5: existing broad-market patterns.
+            # Order matters — more specific patterns first.
             if "nifty 500" in name_lower or "bse 500" in name_lower:
                 row["sub_category"] = "Multi Cap Index"
             elif "largemidcap" in name_lower or "large midcap" in name_lower or "large mid cap" in name_lower or "nifty 250" in name_lower:
@@ -2990,8 +3071,33 @@ class DiscoverMutualFundScraper(BaseScraper):
                 row["sub_category"] = "Large Cap Index"
             elif "nifty next 50" in name_lower:
                 row["sub_category"] = "Large Cap Index"
+            elif "nifty 100" in name_lower:
+                row["sub_category"] = "Large Cap Index"
+            # Bare "nifty index" (no number) defaults to Nifty 50 in the
+            # Indian MF universe — SBI Nifty Index Fund is the canonical
+            # example. Kept last so "nifty 500 index"/"nifty 200 index"
+            # etc. are caught by the more specific rules above.
+            elif "nifty index" in name_lower:
+                row["sub_category"] = "Large Cap Index"
             elif "total market" in name_lower:
                 row["sub_category"] = "Multi Cap Index"
+
+        # ── Normalize Hybrid sub-category duplicates ─────────────────
+        # Different scrape sources use short-form ("Arbitrage") vs
+        # long-form ("Arbitrage Fund") for the same SEBI category.
+        # Left alone, the frontend renders duplicate filter chips and
+        # percentile ranks split across artificial peer groups. Pick
+        # one canonical form and rewrite the rest.
+        _HYBRID_CANONICAL = {
+            "arbitrage fund": "Arbitrage",
+            "conservative hybrid fund": "Conservative Hybrid",
+            "aggressive hybrid fund": "Aggressive Hybrid",
+            "dynamic asset allocation or balanced advantage": "Dynamic Asset Allocation",
+        }
+        for row in rows:
+            sub_lower = (row.get("sub_category") or "").strip().lower()
+            if sub_lower in _HYBRID_CANONICAL:
+                row["sub_category"] = _HYBRID_CANONICAL[sub_lower]
 
         # ── Primary Groww enrichment pass ──────────────────────────
         # Pulls TER, holdings, fund managers, benchmark, portfolio

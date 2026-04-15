@@ -364,8 +364,22 @@ async def run_discover_mf_nav_job() -> None:
     )
 
     # ── Phase 2: mfapi.in 7-day history ───────────────────────────
+    # Skip non-Direct-Growth + Income-category schemes at the source so
+    # the mfapi phase doesn't waste ~6000 HTTP calls per run on funds
+    # that will never appear in the UI. All user-facing discover
+    # queries already exclude category='Income' (FMPs / Interval /
+    # Fixed Term) and non-Direct-Growth variants, so refreshing their
+    # NAVs is pure waste. Pipeline shrinks from ~6500 calls to ~1800.
     codes = await pool.fetch(
-        "SELECT DISTINCT scheme_code FROM discover_mutual_fund_snapshots ORDER BY scheme_code"
+        """
+        SELECT DISTINCT scheme_code
+        FROM discover_mutual_fund_snapshots
+        WHERE LOWER(COALESCE(plan_type, 'direct')) = 'direct'
+          AND COALESCE(option_type, '') = 'Growth'
+          AND COALESCE(category, '') != 'Income'
+          AND nav_date >= CURRENT_DATE - INTERVAL '14 days'
+        ORDER BY scheme_code
+        """
     )
     code_list = [row["scheme_code"] for row in codes]
     total = len(code_list)
