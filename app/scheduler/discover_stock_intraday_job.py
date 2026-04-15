@@ -1282,9 +1282,40 @@ async def run_discover_stock_intraday_autofill_job() -> None:
     except Exception:
         logger.debug("intraday_autofill: yesterday-coverage probe failed", exc_info=True)
 
+    # Pre-fetch previous-day close per symbol from
+    # discover_stock_price_history. Used to compute percent_change
+    # for the snapshot UPDATE below — without this the card shows a
+    # stale point/percent change left over from the last successful
+    # live-job tick (which for BALUFORGE-class names might be days
+    # old). The query pulls the most recent close < today per symbol
+    # in a single pass.
+    prev_closes: dict[str, float] = {}
+    try:
+        pc_rows = await pool.fetch(
+            """
+            SELECT DISTINCT ON (symbol) symbol, close::float AS close
+            FROM discover_stock_price_history
+            WHERE trade_date < $1
+              AND symbol = ANY($2::text[])
+            ORDER BY symbol, trade_date DESC
+            """,
+            today_ist,
+            symbols,
+        )
+        for r in pc_rows:
+            if r["close"] is not None:
+                prev_closes[r["symbol"]] = float(r["close"])
+    except Exception:
+        logger.warning(
+            "intraday_autofill: previous-close prefetch failed — "
+            "percent_change will be left unchanged",
+            exc_info=True,
+        )
+
     fetched_symbols = 0
     fetched_empty = 0
     rows_inserted = 0
+    snapshots_updated = 0
 
     async with httpx.AsyncClient(
         timeout=_UPSTOX_PER_CALL_TIMEOUT_SEC,
@@ -1299,6 +1330,9 @@ async def run_discover_stock_intraday_autofill_job() -> None:
 
         sem = asyncio.Semaphore(_UPSTOX_CONCURRENCY)
         all_rows: list[tuple[str, datetime, float, int | None]] = []
+        # Per-symbol latest tick for snapshot UPDATE. Keyed by symbol
+        # so each fetch result overwrites any earlier (stale) bar.
+        latest_tick: dict[str, tuple[datetime, float, int | None]] = {}
         rows_lock = asyncio.Lock()
         counters = {"ok": 0, "empty": 0}
         counters_lock = asyncio.Lock()
@@ -1327,9 +1361,13 @@ async def run_discover_stock_intraday_autofill_job() -> None:
                 return
             async with counters_lock:
                 counters["ok"] += 1
+            # Pick the newest bar — latest wall-clock timestamp wins
+            # regardless of whether it came from 30m or 1m feeds.
+            newest = max(combined, key=lambda r: r[0])
             async with rows_lock:
                 for ts_utc, price, vol in combined:
                     all_rows.append((symbol, ts_utc, price, vol))
+                latest_tick[symbol] = newest
 
         await asyncio.gather(
             *[_sweep_one(s) for s in symbols],
@@ -1374,9 +1412,9 @@ async def run_discover_stock_intraday_autofill_job() -> None:
                 len(all_rows),
             )
 
-    # Bulk upsert. ON CONFLICT DO NOTHING so we never overwrite a live
-    # tick with a historical value (the live NSE bulk is more recent
-    # and more authoritative than Upstox's 30-min close).
+    # Bulk upsert ticks. ON CONFLICT DO NOTHING so we never overwrite
+    # an existing tick (the live NSE bulk feed, if it already wrote
+    # this minute, is more authoritative than Upstox's 30-min close).
     if all_rows:
         try:
             async with pool.acquire() as conn:
@@ -1394,11 +1432,57 @@ async def run_discover_stock_intraday_autofill_job() -> None:
         except Exception:
             logger.exception("intraday_autofill: bulk INSERT failed")
 
+    # Bulk-UPDATE discover_stock_snapshots so the card/list shows the
+    # live price and real percent_change for autofilled symbols. The
+    # app reads last_price/percent_change from this row, NOT from the
+    # ticks table — without this block, BALUFORGE-class stocks show
+    # a stale last close from the previous daily rescore even though
+    # the ticks table is fresh.
+    #
+    # Guard: only update when our new tick is newer than the existing
+    # source_timestamp. This is what keeps NSE bulk data (which is
+    # usually more recent and more granular) from being clobbered by
+    # our 30-min Upstox close — if the live job just ran 30 seconds
+    # ago with a 09:45:12 source_timestamp, our 09:30:00 bar won't
+    # overwrite it.
+    update_rows: list[tuple] = []
+    for symbol, (ts_utc, price, vol) in latest_tick.items():
+        prev = prev_closes.get(symbol)
+        if prev is None or prev <= 0:
+            pct = None
+            pt_chg = None
+        else:
+            pct = round(((price - prev) / prev) * 100, 4)
+            pt_chg = round(price - prev, 4)
+        update_rows.append((symbol, price, pt_chg, pct, vol, ts_utc))
+
+    if update_rows:
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.executemany(
+                        """
+                        UPDATE discover_stock_snapshots
+                        SET last_price = $2,
+                            point_change = COALESCE($3, point_change),
+                            percent_change = COALESCE($4, percent_change),
+                            volume = COALESCE($5, volume),
+                            source_timestamp = $6,
+                            ingested_at = NOW()
+                        WHERE symbol = $1
+                          AND (source_timestamp IS NULL OR source_timestamp < $6)
+                        """,
+                        update_rows,
+                    )
+            snapshots_updated = len(update_rows)
+        except Exception:
+            logger.exception("intraday_autofill: snapshot UPDATE failed")
+
     elapsed = time.monotonic() - t0
     logger.warning(
         "intraday_autofill: DONE in %.1fs — symbols_ok=%d empty=%d "
-        "rows_queued=%d (dedup on conflict)",
-        elapsed, fetched_symbols, fetched_empty, rows_inserted,
+        "rows_queued=%d snapshots_updated=%d",
+        elapsed, fetched_symbols, fetched_empty, rows_inserted, snapshots_updated,
     )
 
 
