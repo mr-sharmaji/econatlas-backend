@@ -24,7 +24,10 @@ logger = logging.getLogger(__name__)
 # Path prefix → TTL in seconds
 # More frequently updated data gets shorter TTLs
 _CACHE_TTLS: dict[str, int] = {
-    "/screener/home": 300,              # 5 min — aggregated sections
+    "/screener/home": 60,               # 1 min — autofill updates snapshot
+                                        # prices every ~10 min, and users
+                                        # auto-refresh every 30s; longer
+                                        # caches shadow fresh percent_change.
     "/screener/stocks": 120,            # 2 min — list/search
     "/screener/mutual-funds": 120,      # 2 min — list/search
     "/market/": 60,                     # 1 min — live prices

@@ -3539,7 +3539,14 @@ async def unified_search(*, query: str, limit: int = 10) -> dict:
 
 _home_cache: dict | None = None
 _home_cache_until: float = 0.0
-_HOME_CACHE_TTL_SECONDS: int = 30 * 60  # 30 minutes
+_HOME_CACHE_TTL_SECONDS: int = 60  # 1 minute. Was 30 min, but the
+# stock intraday autofill updates snapshot prices every ~10 min and
+# users on the watchlist/discover home expect ≤ a minute of staleness
+# (the app auto-refreshes every 30s). A long cache here just shadowed
+# fresh percent_change values and showed users last-trading-day's 1D
+# change instead of today's. The full home query is cheap enough to
+# run once per minute (~14 indexed section queries on a ~2300-row
+# table).
 
 
 async def get_discover_home_data() -> dict:
