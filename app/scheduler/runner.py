@@ -180,6 +180,10 @@ async def _run_discover_stock_price() -> None:
     await _enqueue("discover_stock_price")
 
 
+async def _run_discover_stock_intraday_autofill() -> None:
+    await _enqueue("discover_stock_intraday_autofill")
+
+
 async def _run_discover_stock_intraday() -> None:
     """Intraday live-price refresh (market-hours only).
 
@@ -268,6 +272,10 @@ async def _startup_collection() -> None:
             "discover_stock",
             "discover_mutual_funds",
             "discover_mf_nav",
+            # Self-healing stock intraday sweeper — kicks off on deploy
+            # so outages/scheduler-misses get repaired within ~3 min
+            # of app start, even if the next cron tick is 10 min away.
+            "discover_stock_intraday_autofill",
         ])
     else:
         logger.info("Skipping discover jobs at startup (discover_cron_enabled=false)")
@@ -420,6 +428,31 @@ def start_scheduler() -> None:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=600,
+        )
+        # Self-healing autofill: every 10 minutes during the Indian
+        # session, staggered 4 min past each 10-min mark so it doesn't
+        # collide with the live cron's :00/:30 slots. Fills gaps left
+        # by outages, SME stocks missing from NSE bulk, and the
+        # inherent 09:15-09:30 opening window (since the live cron
+        # first fires at 09:30). See
+        # discover_stock_intraday_job.run_discover_stock_intraday_autofill_job
+        # for the algorithm.
+        _scheduler.add_job(
+            _run_discover_stock_intraday_autofill,
+            "cron",
+            day_of_week=intervals["discover_stock_daily_days"],
+            hour="9-15",
+            minute="4,14,24,34,44,54",
+            timezone="Asia/Kolkata",
+            id="discover_stock_intraday_autofill",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=600,
+        )
+        logger.info(
+            "Scheduler: discover_stock_intraday_autofill every 10m during "
+            "09:15-15:45 IST (staggered at :04/:14/:24/:34/:44/:54)"
         )
         # Daily MF NAV history update (runs 30 min after MF snapshot job)
         _scheduler.add_job(

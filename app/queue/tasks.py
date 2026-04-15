@@ -215,6 +215,21 @@ async def task_discover_stock_intraday_backfill(ctx: dict) -> None:
     )
 
 
+async def task_discover_stock_intraday_autofill(ctx: dict) -> None:
+    """Self-healing gap sweeper for discover_stock_intraday. Runs
+    every 10 minutes during the Indian trading session and fills
+    in whatever the live 30-min cron missed."""
+    from app.scheduler.discover_stock_intraday_job import (
+        run_discover_stock_intraday_autofill_job,
+    )
+
+    await _run_with_retry(
+        ctx,
+        "discover_stock_intraday_autofill",
+        run_discover_stock_intraday_autofill_job,
+    )
+
+
 async def task_discover_mf_nav(ctx: dict) -> None:
     from app.scheduler.discover_mf_nav_job import run_discover_mf_nav_job
 

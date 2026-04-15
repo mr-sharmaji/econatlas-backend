@@ -692,9 +692,19 @@ _BACKFILL_TOTAL_TIMEOUT_SEC = 2400  # 40 min hard ceiling
 _UPSTOX_INSTRUMENTS_CSV_URL = (
     "https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz"
 )
-_UPSTOX_HISTORICAL_URL = (
-    "https://api.upstox.com/v2/historical-candle/{key}/30minute/{to_date}/{from_date}"
+_UPSTOX_HISTORICAL_URL_TMPL = (
+    "https://api.upstox.com/v2/historical-candle/{key}/{interval}/{to_date}/{from_date}"
 )
+# Intraday endpoint — returns TODAY'S in-progress candles, which the
+# historical endpoint doesn't always include (Upstox's historical-
+# candle returns bars that are fully closed on the server side, so
+# low-liquidity or SME stocks may not appear until EOD). Use this
+# for same-day data; use the historical endpoint for earlier days.
+_UPSTOX_INTRADAY_URL_TMPL = (
+    "https://api.upstox.com/v2/historical-candle/intraday/{key}/{interval}"
+)
+# Back-compat alias used by run_discover_stock_intraday_backfill.
+_UPSTOX_HISTORICAL_URL = _UPSTOX_HISTORICAL_URL_TMPL.replace("{interval}", "30minute")
 _UPSTOX_PER_CALL_TIMEOUT_SEC = 10
 # Upstox v2 historical-candle soft limits are ~25 req/sec / ~250
 # req/min per IP. The previous 6-worker × 0.1s config yielded an
@@ -764,20 +774,27 @@ async def _load_upstox_instrument_map(
     return mapping
 
 
-async def _fetch_upstox_30m_for_symbol(
+async def _fetch_upstox_candles_for_symbol(
     client: httpx.AsyncClient,
     instrument_key: str,
     from_date: str,
     to_date: str,
+    interval: str = "30minute",
 ) -> list[tuple[datetime, float, int | None]]:
-    """Fetch Upstox 30-min candles for a symbol over a date range.
+    """Fetch Upstox historical candles for a symbol over a date range.
+
+    `interval` is any valid Upstox v2 value: `1minute`, `30minute`,
+    `day`, `week`, `month`. The autofill job uses `1minute` for the
+    09:15-09:30 opening edge and `30minute` for the rest of the
+    session.
 
     Returns [(ts_utc, close, volume), ...]. Empty on any error.
     """
     import urllib.parse as _up
     encoded_key = _up.quote(instrument_key, safe="")
-    url = _UPSTOX_HISTORICAL_URL.format(
+    url = _UPSTOX_HISTORICAL_URL_TMPL.format(
         key=encoded_key,
+        interval=interval,
         to_date=to_date,
         from_date=from_date,
     )
@@ -813,6 +830,62 @@ async def _fetch_upstox_30m_for_symbol(
             continue
         try:
             # ISO 8601 like "2026-04-10T15:15:00+05:30"
+            ts_utc = datetime.fromisoformat(ts_str).astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        out.append((ts_utc, close, volume))
+    return out
+
+
+async def _fetch_upstox_intraday_for_symbol(
+    client: httpx.AsyncClient,
+    instrument_key: str,
+    interval: str = "30minute",
+) -> list[tuple[datetime, float, int | None]]:
+    """Fetch Upstox intraday candles for TODAY.
+
+    Same shape as `_fetch_upstox_candles_for_symbol` but hits the
+    `/historical-candle/intraday/` endpoint which serves current-day
+    in-progress bars. Use this for today; use the historical
+    endpoint for any earlier day.
+    """
+    import urllib.parse as _up
+    encoded_key = _up.quote(instrument_key, safe="")
+    url = _UPSTOX_INTRADAY_URL_TMPL.format(
+        key=encoded_key,
+        interval=interval,
+    )
+    try:
+        resp = await client.get(
+            url,
+            headers={"Accept": "application/json"},
+            timeout=_UPSTOX_PER_CALL_TIMEOUT_SEC,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:
+        logger.debug(
+            "upstox: intraday fetch failed for %s: %s",
+            instrument_key, exc,
+        )
+        return []
+    if not isinstance(payload, dict) or payload.get("status") != "success":
+        return []
+    candles = (
+        (payload.get("data") or {}).get("candles") or []
+    )
+    out: list[tuple[datetime, float, int | None]] = []
+    for row in candles:
+        if not isinstance(row, list) or len(row) < 6:
+            continue
+        try:
+            ts_str = row[0]
+            close = float(row[4])
+            volume_raw = row[5]
+            volume = int(volume_raw) if volume_raw is not None else None
+        except (TypeError, ValueError, IndexError):
+            continue
+        try:
             ts_utc = datetime.fromisoformat(ts_str).astimezone(timezone.utc)
         except (TypeError, ValueError):
             continue
@@ -981,8 +1054,8 @@ async def run_discover_stock_intraday_backfill() -> None:
                     missing_upstox.append(symbol)
                 return
             async with upstox_sem:
-                points = await _fetch_upstox_30m_for_symbol(
-                    client, key, from_date, to_date,
+                points = await _fetch_upstox_candles_for_symbol(
+                    client, key, from_date, to_date, interval="30minute",
                 )
                 await asyncio.sleep(_UPSTOX_INTER_CALL_DELAY_SEC)
             if points:
@@ -1072,3 +1145,268 @@ async def run_discover_stock_intraday_backfill() -> None:
         "rows_queued=%d (dedup on conflict)",
         time.monotonic() - t0, fetched_ok, fetched_empty, inserted,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Auto-backfill (self-healing sweeper)
+#
+# Runs every 10 minutes during the Indian trading session and repairs
+# any gaps in discover_stock_intraday left by:
+#   * Outages (server/scheduler down)
+#   * Symbols not in NSE bulk indices (SME, illiquids, BALUFORGE-class)
+#   * Yahoo fallback rate-limit failures
+#   * The inherent 09:15-09:30 opening gap — the live 30-min cron
+#     first fires at 09:30 IST so the opening 15 minutes of every
+#     session are otherwise unrecorded.
+#
+# Data source: Upstox `/v2/historical-candle/intraday/` for today's
+# in-progress bars. Upstox is permissive from datacenter IPs (unlike
+# Yahoo's v8 chart endpoint which 429s us) and its instrument master
+# covers ~2254 of our ~2297 NSE tickers.
+#
+# Registered as both an ops job (`discover_stock_intraday_autofill`)
+# and on the scheduler cron (every 10 min at :4, :14, :24, :34, :44,
+# :54 past the hour IST — staggered 4 min past the 10-min marks to
+# avoid colliding with any rounded-minute cadence, and well outside
+# the live job's :00/:30 firing slots). Also added to
+# _startup_collection so fresh deploys immediately repair state.
+# ─────────────────────────────────────────────────────────────────────
+
+# Run window buffers a couple minutes past market open/close so the
+# first and last autofill sweeps still pick up the edge bars.
+_AUTOFILL_SESSION_START_IST = (9, 15)
+_AUTOFILL_SESSION_END_IST = (15, 45)
+
+
+def _autofill_in_session() -> bool:
+    h, m = _ist_hour_minute()
+    now = h * 60 + m
+    start = _AUTOFILL_SESSION_START_IST[0] * 60 + _AUTOFILL_SESSION_START_IST[1]
+    end = _AUTOFILL_SESSION_END_IST[0] * 60 + _AUTOFILL_SESSION_END_IST[1]
+    return start <= now <= end
+
+
+async def run_discover_stock_intraday_autofill_job() -> None:
+    """Self-healing sweeper. Fills gaps in discover_stock_intraday.
+
+    Algorithm per tick:
+      1. Gate on Indian trading day + market window (09:15-15:45 IST).
+      2. Load the Upstox instrument master (cached 24h).
+      3. For every IN symbol, call Upstox intraday 30-min to get
+         today's in-progress bars and bulk-insert with ON CONFLICT
+         DO NOTHING. This repairs:
+           - Symbols missing from NSE bulk (BALUFORGE-class)
+           - Mid-session scheduler outages (bars land in the DB as
+             soon as the server is back up)
+           - Incomplete data from the live 30-min cron
+      4. On the FIRST tick after 09:15 IST each day, additionally
+         fetch Upstox intraday 1-min candles for every symbol to
+         fill the 09:15-09:30 opening edge which the 30-min bars
+         don't cover with minute-level detail.
+      5. Yesterday-catchup: if yesterday was a trading day and the
+         DB has fewer than 80% of symbols covered for yesterday,
+         run the historical-candle 30-min backfill for yesterday
+         only. Cheap no-op on holidays (Upstox returns nothing).
+
+    Rate budget:
+      * _UPSTOX_CONCURRENCY=3 workers × 0.18s pacing ≈ 16 req/s.
+      * ~2300 symbols × 1 req/symbol ≈ 145s per sweep.
+      * ON CONFLICT DO NOTHING means most inserts are no-ops when
+        the live cron already captured the data, so actual DB work
+        is small.
+    """
+    if not _is_trading_day_today():
+        logger.debug("intraday_autofill: skipping — not a trading day")
+        return
+    if not _autofill_in_session():
+        h, m = _ist_hour_minute()
+        logger.debug(
+            "intraday_autofill: skipping — outside session window "
+            "(now=%02d:%02d IST)", h, m,
+        )
+        return
+    if _in_pipeline_exclusion_window():
+        logger.debug(
+            "intraday_autofill: skipping — inside 15:55-16:45 IST pipeline window"
+        )
+        return
+
+    t0 = time.monotonic()
+    pool = await get_pool()
+
+    rows = await pool.fetch(
+        "SELECT symbol FROM discover_stock_snapshots "
+        "WHERE market = 'IN' "
+        "ORDER BY market_cap DESC NULLS LAST"
+    )
+    symbols: list[str] = [r["symbol"] for r in rows if r["symbol"]]
+    if not symbols:
+        logger.warning("intraday_autofill: no IN symbols to sweep")
+        return
+    logger.warning(
+        "intraday_autofill: STARTED — %d symbols", len(symbols),
+    )
+
+    # Determine if this is the first autofill tick after market open.
+    # Cron minute offsets (:4,:14,:24,:34,:44,:54) mean the first
+    # post-open fire lands at 09:24 IST.
+    today_ist = datetime.now(_IST).date()
+    h, m = _ist_hour_minute()
+    is_opening_sweep = (h == 9 and m <= 30)
+
+    # Yesterday-catchup gate: read coverage from DB before touching
+    # Upstox. If yesterday had a decent live pass we skip the extra
+    # network work entirely.
+    from datetime import timedelta
+    yesterday_ist = today_ist - timedelta(days=1)
+    try_yesterday_catchup = False
+    try:
+        yrow = await pool.fetchrow(
+            "SELECT COUNT(DISTINCT symbol) AS sym_count "
+            "FROM discover_stock_intraday "
+            "WHERE ts::date = $1",
+            yesterday_ist,
+        )
+        yesterday_coverage = (yrow["sym_count"] or 0) if yrow else 0
+        # Threshold: 80% of IN universe. Only run catchup if both:
+        #   - coverage is low (< 80%)
+        #   - yesterday was actually a trading day (not a holiday)
+        target = int(0.80 * len(symbols))
+        if yesterday_coverage < target and _is_trading_day_on(yesterday_ist):
+            try_yesterday_catchup = True
+            logger.warning(
+                "intraday_autofill: yesterday coverage %d/%d (<80%%) — "
+                "will attempt historical catchup",
+                yesterday_coverage, len(symbols),
+            )
+    except Exception:
+        logger.debug("intraday_autofill: yesterday-coverage probe failed", exc_info=True)
+
+    fetched_symbols = 0
+    fetched_empty = 0
+    rows_inserted = 0
+
+    async with httpx.AsyncClient(
+        timeout=_UPSTOX_PER_CALL_TIMEOUT_SEC,
+        follow_redirects=True,
+    ) as client:
+        instr_map = await _load_upstox_instrument_map(client)
+        if not instr_map:
+            logger.error(
+                "intraday_autofill: Upstox instrument master empty — aborting"
+            )
+            return
+
+        sem = asyncio.Semaphore(_UPSTOX_CONCURRENCY)
+        all_rows: list[tuple[str, datetime, float, int | None]] = []
+        rows_lock = asyncio.Lock()
+        counters = {"ok": 0, "empty": 0}
+        counters_lock = asyncio.Lock()
+
+        async def _sweep_one(symbol: str) -> None:
+            key = instr_map.get(symbol)
+            if key is None:
+                return
+            async with sem:
+                # Today's 30-min bars via intraday endpoint.
+                pts_30m = await _fetch_upstox_intraday_for_symbol(
+                    client, key, interval="30minute",
+                )
+                # Opening 1-min bars: only on the first post-open tick.
+                pts_1m: list[tuple[datetime, float, int | None]] = []
+                if is_opening_sweep:
+                    pts_1m = await _fetch_upstox_intraday_for_symbol(
+                        client, key, interval="1minute",
+                    )
+                await asyncio.sleep(_UPSTOX_INTER_CALL_DELAY_SEC)
+
+            combined = pts_30m + pts_1m
+            if not combined:
+                async with counters_lock:
+                    counters["empty"] += 1
+                return
+            async with counters_lock:
+                counters["ok"] += 1
+            async with rows_lock:
+                for ts_utc, price, vol in combined:
+                    all_rows.append((symbol, ts_utc, price, vol))
+
+        await asyncio.gather(
+            *[_sweep_one(s) for s in symbols],
+            return_exceptions=True,
+        )
+        fetched_symbols = counters["ok"]
+        fetched_empty = counters["empty"]
+        logger.warning(
+            "intraday_autofill: today sweep done — ok=%d empty=%d rows_queued=%d "
+            "(opening_sweep=%s)",
+            fetched_symbols, fetched_empty, len(all_rows), is_opening_sweep,
+        )
+
+        # Yesterday-catchup pass — uses the historical-candle endpoint
+        # (not intraday) because yesterday is already closed. Same
+        # semaphore so it doesn't blow the Upstox rate budget.
+        if try_yesterday_catchup:
+            yfrom = yesterday_ist.isoformat()
+            yto = yesterday_ist.isoformat()
+
+            async def _sweep_yesterday(symbol: str) -> None:
+                key = instr_map.get(symbol)
+                if key is None:
+                    return
+                async with sem:
+                    pts = await _fetch_upstox_candles_for_symbol(
+                        client, key, yfrom, yto, interval="30minute",
+                    )
+                    await asyncio.sleep(_UPSTOX_INTER_CALL_DELAY_SEC)
+                if not pts:
+                    return
+                async with rows_lock:
+                    for ts_utc, price, vol in pts:
+                        all_rows.append((symbol, ts_utc, price, vol))
+
+            await asyncio.gather(
+                *[_sweep_yesterday(s) for s in symbols],
+                return_exceptions=True,
+            )
+            logger.warning(
+                "intraday_autofill: yesterday catchup done — rows_queued=%d",
+                len(all_rows),
+            )
+
+    # Bulk upsert. ON CONFLICT DO NOTHING so we never overwrite a live
+    # tick with a historical value (the live NSE bulk is more recent
+    # and more authoritative than Upstox's 30-min close).
+    if all_rows:
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.executemany(
+                        """
+                        INSERT INTO discover_stock_intraday
+                            (symbol, ts, price, volume, percent_change)
+                        VALUES ($1, $2, $3, $4, NULL)
+                        ON CONFLICT (symbol, ts) DO NOTHING
+                        """,
+                        all_rows,
+                    )
+            rows_inserted = len(all_rows)
+        except Exception:
+            logger.exception("intraday_autofill: bulk INSERT failed")
+
+    elapsed = time.monotonic() - t0
+    logger.warning(
+        "intraday_autofill: DONE in %.1fs — symbols_ok=%d empty=%d "
+        "rows_queued=%d (dedup on conflict)",
+        elapsed, fetched_symbols, fetched_empty, rows_inserted,
+    )
+
+
+def _is_trading_day_on(day) -> bool:
+    """True if the given date is an Indian trading day."""
+    from datetime import datetime as _dt, time as _t, timezone as _tz
+    try:
+        dt_noon = _dt.combine(day, _t(12, 0), tzinfo=_tz.utc)
+        return is_trading_day_markets(dt_noon)
+    except Exception:
+        return False

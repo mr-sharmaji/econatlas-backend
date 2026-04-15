@@ -27,6 +27,7 @@ _VALID_JOBS = {
     "recompute_mf_returns",
     "discover_stock_intraday",
     "discover_stock_intraday_backfill",
+    "discover_stock_intraday_autofill",
     "rescore_stock", "rescore_mf",
     "reconcile_stock_snapshots",
     "ipo", "tax", "market_score", "fertilizer",
@@ -712,6 +713,10 @@ _DIRECT_RUN_JOBS: dict[str, tuple[str, str]] = {
     "discover_stock_intraday_backfill": (
         "app.scheduler.discover_stock_intraday_job",
         "run_discover_stock_intraday_backfill",
+    ),
+    "discover_stock_intraday_autofill": (
+        "app.scheduler.discover_stock_intraday_job",
+        "run_discover_stock_intraday_autofill_job",
     ),
     # ── Artha semantic layer backfills ──
     # These are run directly because they warm the fastembed model and
