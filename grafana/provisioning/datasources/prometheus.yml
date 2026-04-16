@@ -6,3 +6,16 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     editable: true
+
+  - name: PostgreSQL
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: econatlas
+    user: econatlas
+    secureJsonData:
+      password: econatlas
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+    editable: true
