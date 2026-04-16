@@ -99,6 +99,8 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
     else:
         logger.debug("arq task: retry attempt %d, skipping JOBS_STARTED increment", job_try)
 
+    from app.core.metrics import JOB_RUNNING
+    JOB_RUNNING.inc()
     started_at = _time.monotonic()
     try:
         logger.debug("arq task: invoking %s coroutine", job_name)
@@ -230,6 +232,7 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
             job_name,
         )
     finally:
+        JOB_RUNNING.dec()
         if release_lock:
             logger.debug("arq task finally: releasing job_lock:%s", job_id)
             await _release_job_lock(job_id)
