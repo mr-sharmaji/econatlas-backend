@@ -978,7 +978,7 @@
       },
       "targets": [
         {
-          "expr": "100 - (data_stale_stocks / clamp_min(data_rows_total{table=\"discover_stock_snapshots\"}, 1)) * 100",
+          "expr": "clamp_max(100 * (1 - data_stale_stocks / clamp_min(data_rows_total{table=\"discover_stock_snapshots\"}, 1)), 100)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -1077,8 +1077,8 @@
       },
       "targets": [
         {
-          "expr": "job_duration_seconds{job_name=\"notification_check\"}",
-          "legendFormat": "notification_check",
+          "expr": "job_duration_seconds_sum{job_name=\"notification_check\"} / clamp_min(job_duration_seconds_count{job_name=\"notification_check\"}, 1)",
+          "legendFormat": "avg duration",
           "refId": "A"
         }
       ],
@@ -1384,7 +1384,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(artha_requests_total[5m])) * 60",
+          "expr": "sum(rate(artha_requests_total[5m])) * 60 OR vector(0)",
           "legendFormat": "requests/min",
           "refId": "A"
         }
@@ -1415,7 +1415,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(artha_llm_duration_seconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(artha_llm_duration_seconds_bucket[5m])) by (le)) OR vector(0)",
           "legendFormat": "p95",
           "refId": "A"
         }
@@ -1446,7 +1446,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(artha_tool_calls_total[5m])) by (tool) * 60",
+          "expr": "sum(rate(artha_tool_calls_total[5m])) by (tool) * 60 OR vector(0)",
           "legendFormat": "{{tool}}",
           "refId": "A"
         }
@@ -1477,12 +1477,12 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(notification_sent_total{status=\"ok\"}[1h])) * 3600",
+          "expr": "sum(rate(notification_sent_total{status=\"ok\"}[1h])) * 3600 OR vector(0)",
           "legendFormat": "sent",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(notification_sent_total{status=\"failed\"}[1h])) * 3600",
+          "expr": "sum(rate(notification_sent_total{status=\"failed\"}[1h])) * 3600 OR vector(0)",
           "legendFormat": "failed",
           "refId": "B"
         }
@@ -1513,7 +1513,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(watchlist_ops_total[1h])) by (op) * 3600",
+          "expr": "sum(rate(watchlist_ops_total[1h])) by (op) * 3600 OR vector(0)",
           "legendFormat": "{{op}}",
           "refId": "A"
         }
