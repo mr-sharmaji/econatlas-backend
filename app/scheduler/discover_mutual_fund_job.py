@@ -2082,10 +2082,16 @@ class DiscoverMutualFundScraper(BaseScraper):
                     f.result()
                 except Exception:
                     pass
-        logger.warning(
-            "parallel_map(%s) done — %d items, %d errors",
-            host, len(items), errors,
-        )
+        if errors > 0:
+            logger.warning(
+                "parallel_map(%s) done — %d items, %d errors",
+                host, len(items), errors,
+            )
+        else:
+            logger.debug(
+                "parallel_map(%s) done — %d items, 0 errors",
+                host, len(items),
+            )
         return results
 
     _GROWW_SITEMAP_URL = "https://groww.in/mf-sitemap.xml"
