@@ -334,9 +334,63 @@ async def _startup_collection() -> None:
         ])
     else:
         logger.info("Skipping discover jobs at startup (discover_cron_enabled=false)")
-    for name in startup_jobs:
+    # Stagger startup enqueues to prevent the "thundering herd" that
+    # was causing server downtime on every deploy. When all 18 jobs
+    # fire at once, the 10-connection DB pool saturates (db_pool_free=0),
+    # system load spikes to 8+, 300+ TCP connections accumulate in
+    # TIME_WAIT, and the Cloudflare tunnel times out → user-visible
+    # downtime lasting 5-15 minutes per restart.
+    #
+    # Split into tiers:
+    #   Tier 1 (immediate): lightweight / fast jobs (market, commodity,
+    #           crypto, brief, ipo, macro, tax, market_score, fertilizer)
+    #   Tier 2 (30s delay): medium jobs (news, imf_forecast, econ_calendar,
+    #           discover_mf_nav, discover_stock_intraday_autofill)
+    #   Tier 3 (90s delay): heavy/long-running scraping jobs
+    #           (discover_stock, discover_mutual_funds,
+    #           stock_future_prospects_*)
+    #
+    # Total startup window: ~2 min instead of instant. Each tier waits
+    # for the previous tier's fast jobs to finish and release their
+    # DB connections before the next tier's heavy jobs start.
+    _HEAVY_JOBS = {
+        "news", "imf_forecast", "econ_calendar",
+        "discover_mf_nav", "discover_stock_intraday_autofill",
+    }
+    _EXTRA_HEAVY_JOBS = {
+        "discover_stock", "discover_mutual_funds",
+        "stock_future_prospects_recent", "stock_future_prospects_embed",
+    }
+    tier1 = [j for j in startup_jobs if j not in _HEAVY_JOBS and j not in _EXTRA_HEAVY_JOBS]
+    tier2 = [j for j in startup_jobs if j in _HEAVY_JOBS]
+    tier3 = [j for j in startup_jobs if j in _EXTRA_HEAVY_JOBS]
+
+    for name in tier1:
         await _enqueue(name, job_id=f"startup_{name}")
-    logger.info("Startup data collection enqueued (%d jobs).", len(startup_jobs))
+    logger.info(
+        "Startup tier 1 enqueued: %d lightweight jobs (%s)",
+        len(tier1), ", ".join(tier1),
+    )
+
+    if tier2:
+        await asyncio.sleep(30)
+        for name in tier2:
+            await _enqueue(name, job_id=f"startup_{name}")
+        logger.info(
+            "Startup tier 2 enqueued (30s delay): %d medium jobs (%s)",
+            len(tier2), ", ".join(tier2),
+        )
+
+    if tier3:
+        await asyncio.sleep(60)
+        for name in tier3:
+            await _enqueue(name, job_id=f"startup_{name}")
+        logger.info(
+            "Startup tier 3 enqueued (90s delay): %d heavy jobs (%s)",
+            len(tier3), ", ".join(tier3),
+        )
+
+    logger.info("Startup data collection enqueued (%d jobs total).", len(startup_jobs))
 
 
 # ── Scheduler lifecycle ──────────────────────────────────────────────

@@ -87,10 +87,15 @@ async def init_pool() -> asyncpg.Pool:
     """Create the connection pool and run schema if present. Called during app lifespan."""
     global _pool
     settings = get_settings()
+    # max_size raised from 10 → 20 after the startup-burst incidents
+    # where all 18 startup jobs + interval ticks + API requests
+    # saturated the pool (db_pool_free=0) and blocked every incoming
+    # request for minutes. 20 is comfortable for an 8GB box with
+    # PG 16's default max_connections=100.
     _pool = await asyncpg.create_pool(
         settings.database_url,
-        min_size=1,
-        max_size=10,
+        min_size=2,
+        max_size=20,
         command_timeout=60,
     )
     logger.info("Database pool created")
