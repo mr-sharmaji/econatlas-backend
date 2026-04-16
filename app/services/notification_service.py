@@ -565,9 +565,15 @@ async def notify_fii_dii_data(
     dii_net: float,
     *,
     dedup_key: str | None = None,
+    trailing: dict | None = None,
 ) -> bool:
     """Send notification with FII/DII activity update."""
-    title = "\U0001f4ca FII/DII Activity Update"
+    fii_sign = "+" if fii_net >= 0 else ""
+    dii_sign = "+" if dii_net >= 0 else ""
+    title = (
+        f"\U0001f4ca FII {fii_sign}{_format_inr(fii_net)} Cr"
+        f" | DII {dii_sign}{_format_inr(dii_net)} Cr"
+    )
 
     net = fii_net + dii_net
     abs_fii = abs(fii_net)
@@ -635,15 +641,17 @@ async def notify_fii_dii_data(
     try:
         from app.services.ai_service import generate_notification_narrative
 
+        market_data: dict = {
+            "fii_net_cr": fii_net,
+            "dii_net_cr": dii_net,
+            "net_cr": fii_net + dii_net,
+            "fii_buying": fii_net >= 0,
+            "dii_buying": dii_net >= 0,
+        }
+        if trailing:
+            market_data["trailing"] = trailing
         ai_body = await generate_notification_narrative(
-            "fii_dii",
-            {
-                "fii_net_cr": fii_net,
-                "dii_net_cr": dii_net,
-                "net_cr": fii_net + dii_net,
-                "fii_buying": fii_net >= 0,
-                "dii_buying": dii_net >= 0,
-            },
+            "fii_dii", market_data,
         )
         if ai_body:
             body = ai_body
@@ -680,6 +688,7 @@ async def notify_pre_market_summary(
     asia_change: dict | None = None,
     *,
     dedup_key: str | None = None,
+    nifty_trailing: dict | None = None,
 ) -> bool:
     """Send pre-market summary at ~9:00 AM IST with Gift Nifty + global cues.
 
@@ -733,6 +742,7 @@ async def notify_pre_market_summary(
                 "us_change": us_change,
                 "asia_change": asia_change,
                 "outlook": outlook,
+                **({"nifty_trailing": nifty_trailing} if nifty_trailing else {}),
             },
         )
         if ai_body:

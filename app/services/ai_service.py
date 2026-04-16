@@ -523,7 +523,8 @@ _NOTIFICATION_COMMON_RULES = """
 - No disclaimers, no "NFA", no "do your own research", no "consult an advisor"
 - No generic phrases like "investors should watch", "markets remain volatile"
 - Use Indian currency conventions: ₹ for Indian assets, $ for US/global
-- Percentages: 1 decimal place with explicit sign (+1.2%, -0.3%)"""
+- Percentages: 1 decimal place with explicit sign (+1.2%, -0.3%)
+- When trailing history or streaks are provided, weave them into the narrative naturally (e.g. "3rd consecutive green day", "FIIs buying for 2nd straight session", "worst week in a month") — but only if the streak/trend is notable (≥2 days)"""
 
 
 _NOTIFICATION_PROMPTS: dict[str, str] = {
@@ -662,6 +663,46 @@ def _fmt_inr_cr(value: Any) -> str:
     return f"{sign}₹{formatted} Cr"
 
 
+def _fmt_trailing(trailing_data: dict, asset_label: str) -> str:
+    """Format trailing context dict into a concise line for the LLM."""
+    t = trailing_data.get("trailing", [])
+    streak = trailing_data.get("streak", 0)
+    week_pct = trailing_data.get("week_pct", 0)
+    if not t:
+        return ""
+    pcts = ", ".join(f"{p:+.1f}%" for _, p in t)
+    streak_dir = "green" if streak > 0 else "red"
+    streak_abs = abs(streak)
+    parts = [f"{asset_label} last {len(t)} sessions: {pcts}."]
+    if streak_abs >= 2:
+        parts.append(f"Streak: {streak_abs} consecutive {streak_dir} days.")
+    parts.append(f"Week total: {week_pct:+.1f}%.")
+    return " ".join(parts)
+
+
+def _fmt_fii_dii_trailing(trailing_data: dict) -> str:
+    """Format FII/DII trailing context."""
+    fii_t = trailing_data.get("fii_trailing", [])
+    dii_t = trailing_data.get("dii_trailing", [])
+    fii_streak = trailing_data.get("fii_streak", 0)
+    dii_streak = trailing_data.get("dii_streak", 0)
+    fii_week = trailing_data.get("fii_week_total", 0)
+    dii_week = trailing_data.get("dii_week_total", 0)
+    if not fii_t:
+        return ""
+    fii_vals = ", ".join(f"{v:+,.0f}" for _, v in fii_t)
+    dii_vals = ", ".join(f"{v:+,.0f}" for _, v in dii_t)
+    parts = [f"Last {len(fii_t)} days (newest first): FII {fii_vals} Cr | DII {dii_vals} Cr."]
+    fii_dir = "buying" if fii_streak > 0 else "selling"
+    dii_dir = "buying" if dii_streak > 0 else "selling"
+    if abs(fii_streak) >= 2:
+        parts.append(f"FII streak: {fii_dir} {abs(fii_streak)} consecutive days.")
+    if abs(dii_streak) >= 2:
+        parts.append(f"DII streak: {dii_dir} {abs(dii_streak)} consecutive days.")
+    parts.append(f"Week total: FII {fii_week:+,.0f} Cr, DII {dii_week:+,.0f} Cr.")
+    return " ".join(parts)
+
+
 def _build_india_close_context(d: dict) -> str:
     parts = [f"Nifty 50 closed {_fmt_pct(d.get('nifty_change_pct'))}"]
     midcap = d.get("midcap_change_pct")
@@ -694,6 +735,9 @@ def _build_india_close_context(d: dict) -> str:
     w52 = d.get("week52_context")
     if w52:
         lines.append(f"Nifty {w52}.")
+    trailing = d.get("nifty_trailing")
+    if trailing:
+        lines.append(_fmt_trailing(trailing, "Nifty"))
 
     return " ".join(lines)
 
@@ -715,6 +759,9 @@ def _build_india_open_context(d: dict) -> str:
     gold = d.get("gold_pct")
     if gold is not None:
         lines.append(f"Gold {_fmt_pct(gold)}.")
+    trailing = d.get("nifty_trailing")
+    if trailing:
+        lines.append(_fmt_trailing(trailing, "Nifty (prev sessions)"))
     return " ".join(lines)
 
 
@@ -736,6 +783,9 @@ def _build_us_close_context(d: dict) -> str:
     gift_pct = d.get("gift_nifty_change_pct")
     if gift_pct is not None:
         lines.append(f"Gift Nifty at {d.get('gift_nifty_price', 0):,.0f} ({_fmt_pct(gift_pct)} from Nifty close) — implies NSE opening signal.")
+    trailing = d.get("sp500_trailing")
+    if trailing:
+        lines.append(_fmt_trailing(trailing, "S&P 500"))
     return " ".join(lines)
 
 
@@ -776,6 +826,9 @@ def _build_europe_close_context(d: dict) -> str:
     ctx = d.get("relative_context")
     if ctx:
         lines.append(f"Context: {ctx}.")
+    trailing = d.get("ftse_trailing")
+    if trailing:
+        lines.append(_fmt_trailing(trailing, "FTSE"))
     return " ".join(lines)
 
 
@@ -815,6 +868,9 @@ def _build_japan_close_context(d: dict) -> str:
     ctx = d.get("relative_context")
     if ctx:
         lines.append(f"Context: {ctx}.")
+    trailing = d.get("nikkei_trailing")
+    if trailing:
+        lines.append(_fmt_trailing(trailing, "Nikkei"))
     return " ".join(lines)
 
 
@@ -854,6 +910,9 @@ def _build_pre_market_context(d: dict) -> str:
     if isinstance(asia, dict) and asia:
         asia_parts = [f"{name} {_fmt_pct(pct)}" for name, pct in asia.items()]
         lines.append(f"Asia live: {', '.join(asia_parts)}.")
+    trailing = d.get("nifty_trailing")
+    if trailing:
+        lines.append(_fmt_trailing(trailing, "Nifty (prev sessions)"))
     return " ".join(lines)
 
 
@@ -872,11 +931,15 @@ def _build_fii_dii_context(d: dict) -> str:
     fii_verb = "bought" if fii >= 0 else "sold"
     dii_verb = "bought" if dii >= 0 else "sold"
     net_label = "inflow" if net >= 0 else "outflow"
-    return (
+    lines = [
         f"FII net cash: FIIs {fii_verb} {_fmt_inr_cr(fii)}. "
         f"DII net cash: DIIs {dii_verb} {_fmt_inr_cr(dii)}. "
         f"Combined net {net_label}: {_fmt_inr_cr(net)}."
-    )
+    ]
+    trailing = d.get("trailing")
+    if trailing:
+        lines.append(_fmt_fii_dii_trailing(trailing))
+    return " ".join(lines)
 
 
 def _build_commodity_spike_context(d: dict) -> str:
