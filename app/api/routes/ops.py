@@ -702,7 +702,14 @@ async def ops_logs(
 
     if use_files:
         try:
-            file_rows = tail_log_files(
+            # Run in executor so the file scan doesn't block the event
+            # loop. With DEBUG-level logging the file grows fast and a
+            # reverse scan can take seconds — long enough to stall
+            # health checks, Prometheus scrapes, and user requests.
+            import asyncio as _asyncio
+            import functools as _ft
+            _tail_fn = _ft.partial(
+                tail_log_files,
                 limit=limit,
                 min_level=min_level,
                 contains=contains,
@@ -710,6 +717,8 @@ async def ops_logs(
                 since=since,
                 until=until,
             )
+            loop = _asyncio.get_event_loop()
+            file_rows = await loop.run_in_executor(None, _tail_fn)
             entries = [LogEntryResponse(**r) for r in file_rows]
             # File logs have no monotonic id — `latest_id` is not
             # meaningful here, so return 0. Clients that need
