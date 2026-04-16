@@ -697,8 +697,12 @@ async def ops_logs(
     """
     _authorize(x_ops_token)
 
+    # Default to the in-memory ring buffer (instant) rather than
+    # the file tail (slow — has to reverse-scan a potentially huge
+    # DEBUG-level log file). File source is opt-in via source=file
+    # for when callers need history beyond the ring buffer window.
     requested = (source or "").lower()
-    use_files = log_files_enabled() and requested != "memory"
+    use_files = log_files_enabled() and requested == "file"
 
     if use_files:
         try:
