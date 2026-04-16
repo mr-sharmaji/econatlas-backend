@@ -116,7 +116,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (provider) (increase(external_api_rate_limited_total[1h]))",
+          "expr": "(sum by (provider) (increase(external_api_rate_limited_total[1h]))) OR vector(0)",
           "legendFormat": "{{provider}}",
           "refId": "A",
           "instant": true

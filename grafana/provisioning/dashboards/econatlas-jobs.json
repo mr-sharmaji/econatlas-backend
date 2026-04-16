@@ -142,7 +142,7 @@
       },
       "targets": [
         {
-          "expr": "100 * sum by (job_name) (rate(job_errors_total[15m])) / clamp_min(sum by (job_name) (rate(jobs_started_total[15m])), 0.0001)",
+          "expr": "(100 * sum by (job_name) (rate(job_errors_total[15m])) / clamp_min(sum by (job_name) (rate(jobs_started_total[15m])), 0.0001)) OR vector(0)",
           "legendFormat": "{{job_name}}",
           "refId": "A"
         }
@@ -373,7 +373,7 @@
       },
       "targets": [
         {
-          "expr": "autofill_coverage_ratio",
+          "expr": "(autofill_coverage_ratio) OR vector(0)",
           "legendFormat": "{{job_name}}",
           "refId": "A"
         }
@@ -402,12 +402,12 @@
       },
       "targets": [
         {
-          "expr": "autofill_symbols_ok",
+          "expr": "(autofill_symbols_ok) OR vector(0)",
           "legendFormat": "OK \u2014 {{job_name}}",
           "refId": "A"
         },
         {
-          "expr": "autofill_symbols_empty",
+          "expr": "(autofill_symbols_empty) OR vector(0)",
           "legendFormat": "Empty \u2014 {{job_name}}",
           "refId": "B"
         }
@@ -436,12 +436,12 @@
       },
       "targets": [
         {
-          "expr": "autofill_rows_queued",
+          "expr": "(autofill_rows_queued) OR vector(0)",
           "legendFormat": "rows queued \u2014 {{job_name}}",
           "refId": "A"
         },
         {
-          "expr": "autofill_snapshots_updated",
+          "expr": "(autofill_snapshots_updated) OR vector(0)",
           "legendFormat": "snapshots \u2014 {{job_name}}",
           "refId": "B"
         }
@@ -471,7 +471,7 @@
       },
       "targets": [
         {
-          "expr": "autofill_last_duration_seconds",
+          "expr": "(autofill_last_duration_seconds) OR vector(0)",
           "legendFormat": "{{job_name}}",
           "refId": "A"
         }
@@ -504,7 +504,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (reason) (rate(market_intraday_gate_rejections_total[5m]))",
+          "expr": "(sum by (reason) (rate(market_intraday_gate_rejections_total[5m]))) OR vector(0)",
           "legendFormat": "{{reason}}",
           "refId": "A"
         }
@@ -602,7 +602,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (job_name) (increase(job_misfires_total[1h]))",
+          "expr": "(sum by (job_name) (increase(job_misfires_total[1h]))) OR vector(0)",
           "legendFormat": "{{job_name}}",
           "refId": "A",
           "instant": true
@@ -857,7 +857,7 @@
           "refId": "A"
         },
         {
-          "expr": "increase(job_errors_total[1h])",
+          "expr": "(increase(job_errors_total[1h])) OR vector(0)",
           "legendFormat": "errors {{job_name}}",
           "refId": "B"
         }

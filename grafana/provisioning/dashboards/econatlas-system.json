@@ -342,7 +342,10 @@
         "x": 0,
         "y": 5
       },
-      "collapsed": false
+      "collapsed": false,
+      "options": {
+        "noValue": "N/A (needs windows_exporter)"
+      }
     },
     {
       "title": "Windows CPU %",
@@ -384,7 +387,10 @@
           "expr": "(1 - avg(rate(windows_cpu_time_total{mode=\"idle\"}[1m]))) * 100",
           "refId": "A"
         }
-      ]
+      ],
+      "options": {
+        "noValue": "N/A (needs windows_exporter)"
+      }
     },
     {
       "title": "Windows Memory %",
@@ -426,7 +432,10 @@
           "expr": "(1 - windows_memory_available_bytes / windows_memory_physical_total_bytes) * 100",
           "refId": "A"
         }
-      ]
+      ],
+      "options": {
+        "noValue": "N/A (needs windows_exporter)"
+      }
     },
     {
       "title": "Windows Memory used / total",
@@ -458,7 +467,10 @@
           "legendFormat": "Total",
           "refId": "B"
         }
-      ]
+      ],
+      "options": {
+        "noValue": "N/A (needs windows_exporter)"
+      }
     },
     {
       "title": "Windows Disk % per volume",
@@ -497,7 +509,8 @@
       },
       "options": {
         "orientation": "horizontal",
-        "displayMode": "lcd"
+        "displayMode": "lcd",
+        "noValue": "N/A (needs windows_exporter)"
       },
       "targets": [
         {
@@ -548,7 +561,10 @@
           "legendFormat": "Kernel",
           "refId": "C"
         }
-      ]
+      ],
+      "options": {
+        "noValue": "N/A (needs windows_exporter)"
+      }
     },
     {
       "title": "Windows Network throughput",
@@ -583,7 +599,10 @@
           "legendFormat": "TX",
           "refId": "B"
         }
-      ]
+      ],
+      "options": {
+        "noValue": "N/A (needs windows_exporter)"
+      }
     },
     {
       "title": "\ud83d\uddc4\ufe0f PostgreSQL",
