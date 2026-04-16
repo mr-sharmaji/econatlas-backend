@@ -5563,18 +5563,21 @@ _INCREMENTAL_BATCH_SIZE = 50
 
 
 async def _backfill_stock_closing_auction(pool) -> int:
-    """For IN stocks whose snapshot closing price differs from the
-    last discover_stock_intraday tick, insert a closing auction tick
-    so the 1D chart ends at the actual close.
+    """Ensure every IN stock's 1D chart ends at the NSE close (15:30
+    IST = 10:00 UTC).
 
-    Uses discover_stock_snapshots as the primary source (covers all
-    ~2200+ IN stocks), with source_timestamp as the real exchange
-    quote timestamp from Yahoo.
+    For stocks with a Yahoo auction timestamp > last intraday tick,
+    use that timestamp and price. For all others (the majority —
+    ~1700+ small-caps whose snapshot source_timestamp equals the
+    intraday job's last tick), insert a tick at the canonical NSE
+    close time (10:00:00 UTC) with the snapshot's last_price.
 
-    Also deletes any stale post-auction intraday ticks (e.g. the
-    10:00:03 tick from the live scraper's 15:30 IST run that
-    captured the pre-auction price).
+    Also deletes any stale post-auction intraday ticks.
     """
+    today_utc = datetime.now(timezone.utc).date()
+    nse_close_ts = datetime(today_utc.year, today_utc.month, today_utc.day,
+                            10, 0, 0, tzinfo=timezone.utc)
+
     rows = await pool.fetch(
         """
         SELECT d.symbol,
@@ -5592,8 +5595,9 @@ async def _backfill_stock_closing_auction(pool) -> int:
           AND d.source_timestamp IS NOT NULL
           AND (d.source_timestamp AT TIME ZONE 'UTC')::date
               = (NOW() AT TIME ZONE 'UTC')::date
-          AND d.source_timestamp > i.ts
-        """
+          AND i.ts < $1
+        """,
+        nse_close_ts,
     )
     if not rows:
         return 0
@@ -5601,9 +5605,12 @@ async def _backfill_stock_closing_auction(pool) -> int:
     # Symbols that need stale post-auction ticks cleaned up
     cleanup_symbols = []
     for r in rows:
-        auction_ts = r["auction_ts"]
-        if auction_ts.tzinfo is None:
-            auction_ts = auction_ts.replace(tzinfo=timezone.utc)
+        snap_ts = r["auction_ts"]
+        if snap_ts.tzinfo is None:
+            snap_ts = snap_ts.replace(tzinfo=timezone.utc)
+        # Use Yahoo's actual timestamp if it's at/after NSE close,
+        # otherwise use the canonical NSE close time (10:00 UTC).
+        auction_ts = snap_ts if snap_ts >= nse_close_ts else nse_close_ts
         intra_inserts.append((
             r["symbol"],
             auction_ts,
