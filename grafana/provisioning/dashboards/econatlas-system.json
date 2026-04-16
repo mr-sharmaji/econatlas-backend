@@ -295,13 +295,52 @@
       ]
     },
     {
+      "title": "Warnings / hr",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 21,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "targets": [
+        {
+          "expr": "log_warnings_1h",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
       "title": "\ud83e\ude9f Windows host (real CPU / RAM / disk via windows_exporter)",
       "type": "row",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 4
+        "y": 5
       },
       "collapsed": false
     },
@@ -312,7 +351,7 @@
         "h": 5,
         "w": 5,
         "x": 0,
-        "y": 5
+        "y": 6
       },
       "datasource": {
         "type": "prometheus",
@@ -354,7 +393,7 @@
         "h": 5,
         "w": 5,
         "x": 5,
-        "y": 5
+        "y": 6
       },
       "datasource": {
         "type": "prometheus",
@@ -396,7 +435,7 @@
         "h": 5,
         "w": 5,
         "x": 10,
-        "y": 5
+        "y": 6
       },
       "datasource": {
         "type": "prometheus",
@@ -428,7 +467,7 @@
         "h": 5,
         "w": 9,
         "x": 15,
-        "y": 5
+        "y": 6
       },
       "datasource": {
         "type": "prometheus",
@@ -476,7 +515,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 10
+        "y": 11
       },
       "datasource": {
         "type": "prometheus",
@@ -518,7 +557,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 10
+        "y": 11
       },
       "datasource": {
         "type": "prometheus",
@@ -553,7 +592,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 17
+        "y": 18
       },
       "collapsed": false
     },
@@ -562,9 +601,9 @@
       "type": "timeseries",
       "gridPos": {
         "h": 7,
-        "w": 6,
+        "w": 8,
         "x": 0,
-        "y": 18
+        "y": 19
       },
       "datasource": {
         "type": "prometheus",
@@ -597,9 +636,9 @@
       "type": "timeseries",
       "gridPos": {
         "h": 7,
-        "w": 6,
-        "x": 6,
-        "y": 18
+        "w": 8,
+        "x": 8,
+        "y": 19
       },
       "datasource": {
         "type": "prometheus",
@@ -636,9 +675,9 @@
       "type": "timeseries",
       "gridPos": {
         "h": 7,
-        "w": 6,
-        "x": 12,
-        "y": 18
+        "w": 8,
+        "x": 16,
+        "y": 19
       },
       "datasource": {
         "type": "prometheus",
@@ -670,7 +709,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 25
+        "y": 26
       },
       "datasource": {
         "type": "prometheus",
@@ -702,7 +741,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 25
+        "y": 26
       },
       "datasource": {
         "type": "prometheus",
@@ -749,7 +788,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 33
+        "y": 34
       },
       "collapsed": false
     },
@@ -758,9 +797,9 @@
       "type": "timeseries",
       "gridPos": {
         "h": 7,
-        "w": 6,
+        "w": 8,
         "x": 0,
-        "y": 34
+        "y": 35
       },
       "datasource": {
         "type": "prometheus",
@@ -788,9 +827,9 @@
       "type": "timeseries",
       "gridPos": {
         "h": 7,
-        "w": 6,
-        "x": 6,
-        "y": 34
+        "w": 8,
+        "x": 8,
+        "y": 35
       },
       "datasource": {
         "type": "prometheus",
@@ -817,9 +856,9 @@
       "type": "timeseries",
       "gridPos": {
         "h": 7,
-        "w": 6,
-        "x": 12,
-        "y": 34
+        "w": 8,
+        "x": 16,
+        "y": 35
       },
       "datasource": {
         "type": "prometheus",
@@ -849,7 +888,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 41
+        "y": 42
       },
       "panels": [],
       "collapsed": false
@@ -861,7 +900,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 42
+        "y": 43
       },
       "datasource": {
         "type": "prometheus",
@@ -892,7 +931,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 42
+        "y": 43
       },
       "datasource": {
         "type": "prometheus",
@@ -938,7 +977,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 48
+        "y": 49
       },
       "datasource": {
         "type": "prometheus",
@@ -979,7 +1018,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 48
+        "y": 49
       },
       "datasource": {
         "type": "prometheus",
@@ -1015,7 +1054,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 54
+        "y": 55
       },
       "datasource": {
         "type": "prometheus",
@@ -1051,7 +1090,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 54
+        "y": 55
       },
       "datasource": {
         "type": "prometheus",
@@ -1087,7 +1126,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 60
+        "y": 61
       },
       "panels": [],
       "collapsed": false
@@ -1099,7 +1138,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 61
+        "y": 62
       },
       "datasource": {
         "type": "prometheus",
@@ -1138,7 +1177,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 61
+        "y": 62
       },
       "datasource": {
         "type": "prometheus",
@@ -1177,7 +1216,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 61
+        "y": 62
       },
       "datasource": {
         "type": "prometheus",
@@ -1216,7 +1255,7 @@
         "h": 4,
         "w": 4,
         "x": 12,
-        "y": 61
+        "y": 62
       },
       "datasource": {
         "type": "prometheus",
@@ -1255,7 +1294,7 @@
         "h": 4,
         "w": 4,
         "x": 16,
-        "y": 61
+        "y": 62
       },
       "datasource": {
         "type": "prometheus",
@@ -1303,7 +1342,7 @@
         "h": 4,
         "w": 4,
         "x": 20,
-        "y": 61
+        "y": 62
       },
       "datasource": {
         "type": "prometheus",
@@ -1351,7 +1390,7 @@
         "h": 5,
         "w": 12,
         "x": 0,
-        "y": 65
+        "y": 66
       },
       "datasource": {
         "type": "prometheus",
@@ -1382,7 +1421,7 @@
         "h": 5,
         "w": 12,
         "x": 12,
-        "y": 65
+        "y": 66
       },
       "datasource": {
         "type": "prometheus",

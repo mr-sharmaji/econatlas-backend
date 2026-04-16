@@ -728,6 +728,45 @@
       "options": {}
     },
     {
+      "title": "MF NAV Latest Date Age",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 45
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "targets": [
+        {
+          "expr": "max(data_freshness_age_seconds{source=~\".*mf_nav.*\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "s",
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
       "title": "Job duration trend",
       "type": "timeseries",
       "gridPos": {
@@ -933,6 +972,45 @@
       "options": {}
     },
     {
+      "title": "Intraday Ticks (today)",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 56
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "targets": [
+        {
+          "expr": "db_table_rows{table=\"discover_stock_intraday\"}",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "short",
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
       "type": "row",
       "title": "\ud83e\udd16 Artha + \ud83d\udd14 Notifications + \ud83d\udccb Watchlist",
       "gridPos": {
@@ -976,13 +1054,49 @@
       "options": {}
     },
     {
+      "title": "Log errors & warnings / hr",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 61
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "targets": [
+        {
+          "expr": "log_errors_1h",
+          "legendFormat": "errors",
+          "refId": "A"
+        },
+        {
+          "expr": "log_warnings_1h",
+          "legendFormat": "warnings",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
       "type": "row",
       "title": "\ud83d\udccb job_run_log (DB)",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 66
+        "y": 67
       },
       "panels": [],
       "collapsed": false
@@ -994,7 +1108,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 67
+        "y": 68
       },
       "panels": [],
       "collapsed": false
@@ -1006,7 +1120,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 68
+        "y": 69
       },
       "datasource": {
         "type": "prometheus",
@@ -1045,7 +1159,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 68
+        "y": 69
       },
       "datasource": {
         "type": "prometheus",
@@ -1084,7 +1198,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 68
+        "y": 69
       },
       "datasource": {
         "type": "prometheus",
@@ -1123,7 +1237,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 68
+        "y": 69
       },
       "datasource": {
         "type": "prometheus",
@@ -1162,7 +1276,7 @@
         "h": 5,
         "w": 12,
         "x": 0,
-        "y": 72
+        "y": 73
       },
       "datasource": {
         "type": "prometheus",
@@ -1198,7 +1312,7 @@
         "h": 5,
         "w": 12,
         "x": 12,
-        "y": 72
+        "y": 73
       },
       "datasource": {
         "type": "prometheus",
@@ -1234,7 +1348,7 @@
         "h": 5,
         "w": 8,
         "x": 0,
-        "y": 77
+        "y": 78
       },
       "datasource": {
         "type": "prometheus",
@@ -1265,7 +1379,7 @@
         "h": 5,
         "w": 8,
         "x": 8,
-        "y": 77
+        "y": 78
       },
       "datasource": {
         "type": "prometheus",
@@ -1296,7 +1410,7 @@
         "h": 5,
         "w": 8,
         "x": 16,
-        "y": 77
+        "y": 78
       },
       "datasource": {
         "type": "prometheus",
@@ -1327,7 +1441,7 @@
         "h": 5,
         "w": 12,
         "x": 0,
-        "y": 82
+        "y": 83
       },
       "datasource": {
         "type": "prometheus",
@@ -1363,7 +1477,7 @@
         "h": 5,
         "w": 6,
         "x": 12,
-        "y": 82
+        "y": 83
       },
       "datasource": {
         "type": "prometheus",
@@ -1394,7 +1508,7 @@
         "h": 5,
         "w": 6,
         "x": 18,
-        "y": 82
+        "y": 83
       },
       "datasource": {
         "type": "prometheus",
