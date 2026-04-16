@@ -691,6 +691,17 @@ async def _collect_once():
     except Exception:
         pass
 
+    # ── Watchlist active devices ──
+    try:
+        from app.core.database import get_pool
+        pool = await get_pool()
+        device_count = await pool.fetchval(
+            "SELECT COUNT(DISTINCT device_id) FROM device_watchlists"
+        )
+        WATCHLIST_DEVICES.set(device_count or 0)
+    except Exception:
+        pass
+
     # ── Logs ──
     try:
         from app.core.log_stream import get_log_entries

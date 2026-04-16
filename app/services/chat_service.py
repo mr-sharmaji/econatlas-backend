@@ -8293,6 +8293,13 @@ async def stream_chat_response(
     - {"event": "done", "data": {"message_id": "...", "session_id": "..."}}
     - {"event": "error", "data": {"message": "...", "retry": bool}}
     """
+    # ── Prometheus instrumentation ──
+    try:
+        from app.core.metrics import ARTHA_REQUESTS
+        ARTHA_REQUESTS.labels(endpoint="/chat").inc()
+    except Exception:
+        pass
+
     stream_start = time.monotonic()
     device_tag = (device_id or "")[:16]
     original_user_message = user_message

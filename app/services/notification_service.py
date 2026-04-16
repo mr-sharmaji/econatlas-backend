@@ -163,6 +163,11 @@ async def send_topic_notification(
         # response is the FCM message_id string, e.g.
         # 'projects/econatlas-70ca0/messages/1968655432726649650'
         logger.info("FCM sent to topic=%s: %s", topic, response)
+        try:
+            from app.core.metrics import NOTIFICATION_SENT
+            NOTIFICATION_SENT.labels(type=notification_type or "unknown", status="ok").inc()
+        except Exception:
+            pass
 
         # --- Log successful send for dedup + diagnostics ---
         if dedup_key:

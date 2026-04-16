@@ -61,6 +61,11 @@ async def get_or_seed_watchlist(device_id: str) -> list[str]:
 
 
 async def put_watchlist(device_id: str, assets: list[str]) -> list[str]:
+    try:
+        from app.core.metrics import WATCHLIST_OPS
+        WATCHLIST_OPS.labels(op="put").inc()
+    except Exception:
+        pass
     normalized = _normalize_assets(assets)
     unknown = _validate_assets_exist(normalized)
     if unknown:
