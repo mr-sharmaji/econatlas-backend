@@ -5563,58 +5563,70 @@ _INCREMENTAL_BATCH_SIZE = 50
 
 
 async def _backfill_stock_closing_auction(pool) -> int:
-    """For IN stocks whose Yahoo closing price (stock_snapshots)
-    differs from the last discover_stock_intraday tick, insert
-    a closing auction tick so the 1D chart ends at the actual close.
+    """For IN stocks whose snapshot closing price differs from the
+    last discover_stock_intraday tick, insert a closing auction tick
+    so the 1D chart ends at the actual close.
 
-    Uses stock_snapshots.source_timestamp (the real exchange quote
-    timestamp from Yahoo) rather than a computed timestamp.
+    Uses discover_stock_snapshots as the primary source (covers all
+    ~2200+ IN stocks), with source_timestamp as the real exchange
+    quote timestamp from Yahoo.
 
-    Also updates discover_stock_snapshots.last_price to match the
-    auction price so the app shows the correct close.
+    Also deletes any stale post-auction intraday ticks (e.g. the
+    10:00:03 tick from the live scraper's 15:30 IST run that
+    captured the pre-auction price).
     """
-    # stock_snapshots uses SYMBOL.NS, discover_stock_intraday uses SYMBOL
     rows = await pool.fetch(
         """
-        SELECT ss.symbol AS yahoo_symbol,
-               REPLACE(ss.symbol, '.NS', '') AS intra_symbol,
-               ss.last_price AS auction_price,
-               ss.source_timestamp AS auction_ts,
+        SELECT d.symbol,
+               d.last_price AS auction_price,
+               d.source_timestamp AS auction_ts,
                i.price AS intra_price, i.ts AS intra_ts
-        FROM stock_snapshots ss
+        FROM discover_stock_snapshots d
         JOIN (
             SELECT DISTINCT ON (symbol) symbol, price, ts
             FROM discover_stock_intraday
             ORDER BY symbol, ts DESC
-        ) i ON i.symbol = REPLACE(ss.symbol, '.NS', '')
-        WHERE ss.market = 'IN'
-          AND ss.last_price IS NOT NULL
-          AND ss.source_timestamp IS NOT NULL
-          AND ABS(ss.last_price - i.price) > 0.01
+        ) i ON i.symbol = d.symbol
+        WHERE d.market = 'IN'
+          AND d.last_price IS NOT NULL
+          AND d.source_timestamp IS NOT NULL
+          AND ABS(d.last_price - i.price) > 0.01
         """
     )
     if not rows:
         return 0
     intra_inserts = []
-    snapshot_updates = []
+    # Symbols that need stale post-auction ticks cleaned up
+    cleanup_symbols = []
     for r in rows:
         auction_ts = r["auction_ts"]
         if auction_ts.tzinfo is None:
             auction_ts = auction_ts.replace(tzinfo=timezone.utc)
         intra_inserts.append((
-            r["intra_symbol"],
+            r["symbol"],
             auction_ts,
             float(r["auction_price"]),
             None,  # volume
             None,  # percent_change
         ))
-        snapshot_updates.append((
-            r["intra_symbol"],
-            float(r["auction_price"]),
-            auction_ts,
-        ))
+        # If the last intraday tick is AFTER the auction timestamp,
+        # it's a stale post-close tick that needs cleanup
+        intra_ts = r["intra_ts"]
+        if intra_ts.tzinfo is None:
+            intra_ts = intra_ts.replace(tzinfo=timezone.utc)
+        if intra_ts > auction_ts:
+            cleanup_symbols.append((r["symbol"], auction_ts))
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Delete stale post-auction ticks first
+            if cleanup_symbols:
+                await conn.executemany(
+                    """
+                    DELETE FROM discover_stock_intraday
+                    WHERE symbol = $1 AND ts > $2
+                    """,
+                    cleanup_symbols,
+                )
             await conn.executemany(
                 """
                 INSERT INTO discover_stock_intraday
@@ -5623,16 +5635,6 @@ async def _backfill_stock_closing_auction(pool) -> int:
                 ON CONFLICT (symbol, ts) DO NOTHING
                 """,
                 intra_inserts,
-            )
-            await conn.executemany(
-                """
-                UPDATE discover_stock_snapshots
-                SET last_price = $2,
-                    source_timestamp = $3,
-                    ingested_at = NOW()
-                WHERE symbol = $1
-                """,
-                snapshot_updates,
             )
     return len(intra_inserts)
 
