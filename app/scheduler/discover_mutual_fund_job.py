@@ -2528,17 +2528,26 @@ class DiscoverMutualFundScraper(BaseScraper):
         except Exception as e:
             logger.warning("Failed to load Nifty 50 benchmark: %s", e)
 
-        # Parallel pre-fetch: hit mfapi.in with 8 workers × 0.1s
-        # pacing ≈ 80 req/sec aggregate. mfapi.in is a documented
-        # public API designed for backfill use and handles this
-        # comfortably. Cache responses into a dict keyed by code so
-        # the existing sequential body below can operate over them
-        # without any IO. Drops the mfapi phase from ~19 min
-        # sequential (0.5s/call) to ~30 seconds.
+        # Parallel pre-fetch: hit mfapi.in with bounded concurrency.
+        # Original settings (8 workers, 0.1s delay) were ~80 req/s
+        # aggregate and starved the event loop — APScheduler missed
+        # 19 ticks in a 4-min window (16:47-16:50 UTC on 2026-04-16)
+        # and DB connections dropped from idle timeout. Reduced to
+        # 4 workers × 0.3s delay ≈ 3 req/s aggregate. Wall-clock
+        # grows from ~30s → ~12 min but the system stays responsive
+        # throughout. CLOSE_WAIT TCP leak fixed by forcing Connection:
+        # close on every request (previously requests library kept
+        # connections alive, filling the TCP table with half-closed
+        # sockets — 28 CLOSE_WAIT observed in the stall incident).
+        _MFAPI_WORKERS = 4
+        _MFAPI_DELAY = 0.3
+
         def _fetch_mfapi(code: str) -> dict | None:
             try:
                 resp = requests.get(
-                    f"https://api.mfapi.in/mf/{code}", timeout=10,
+                    f"https://api.mfapi.in/mf/{code}",
+                    timeout=10,
+                    headers={"Connection": "close"},
                 )
                 if resp.status_code in (429, 503):
                     return ("__RATE_LIMITED__",)
@@ -2548,14 +2557,14 @@ class DiscoverMutualFundScraper(BaseScraper):
             except Exception:
                 return None
 
-        logger.warning(
-            "mfapi.in: parallel pre-fetch of %d funds (8 workers)",
-            len(to_enrich),
+        logger.info(
+            "mfapi.in: parallel pre-fetch of %d funds (%d workers, %.1fs delay)",
+            len(to_enrich), _MFAPI_WORKERS, _MFAPI_DELAY,
         )
         fetched_data = self._parallel_map(
             host="api.mfapi.in",
-            workers=8,
-            per_call_delay=0.1,
+            workers=_MFAPI_WORKERS,
+            per_call_delay=_MFAPI_DELAY,
             items=to_enrich,
             fetch_fn=_fetch_mfapi,
         )
