@@ -8,7 +8,7 @@ datasources:
     editable: true
 
   - name: PostgreSQL
-    type: postgres
+    type: grafana-postgresql-datasource
     access: proxy
     url: postgres:5432
     database: econatlas
@@ -16,6 +16,7 @@ datasources:
     secureJsonData:
       password: econatlas
     jsonData:
+      database: econatlas
       sslmode: disable
       postgresVersion: 1600
     editable: true
