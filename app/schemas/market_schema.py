@@ -15,6 +15,7 @@ class MarketPriceResponse(BaseModel):
     unit: str | None = None
     change_percent: float | None = None
     previous_close: float | None = None
+    last_tick_price: float | None = None
     last_tick_timestamp: datetime | None = None
     ingested_at: datetime | None = None
     is_stale: bool | None = None

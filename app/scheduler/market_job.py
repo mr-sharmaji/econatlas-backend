@@ -1361,6 +1361,70 @@ def _daily_row_changed(new_row: dict, latest: dict | None) -> bool:
     )
 
 
+async def _build_closing_auction_intraday_rows(daily_rows: list[dict]) -> list[dict]:
+    """For each daily row whose price differs from the last intraday
+    tick, build an intraday row with the closing auction price.
+
+    The source_timestamp is set to 1 second after the last intraday
+    tick so it sorts correctly and the upsert key (asset,
+    instrument_type, source_timestamp, provider) doesn't collide.
+    """
+    from app.core.database import get_pool
+    pool = await get_pool()
+    auction_rows: list[dict] = []
+    for r in daily_rows:
+        asset = r.get("asset")
+        inst = r.get("instrument_type") or "index"
+        daily_price = r.get("price")
+        if daily_price is None or inst in ("currency", "commodity", "crypto"):
+            continue
+        # Only backfill for closed exchanges — during live hours the
+        # intraday table is authoritative and may briefly lag the
+        # daily upsert within the same scraper cycle.
+        exchange = ASSET_EXCHANGE.get(asset, NYSE)
+        if is_exchange_expected_open(exchange, datetime.now(timezone.utc)):
+            continue
+        last_tick = await pool.fetchrow(
+            """
+            SELECT price, COALESCE(source_timestamp, "timestamp") AS ts
+            FROM market_prices_intraday
+            WHERE asset = $1 AND instrument_type = $2
+            ORDER BY COALESCE(source_timestamp, "timestamp") DESC
+            LIMIT 1
+            """,
+            asset,
+            inst,
+        )
+        if not last_tick:
+            continue
+        last_price = float(last_tick["price"])
+        dp = float(daily_price)
+        if abs(dp - last_price) < 0.01:
+            continue
+        tick_ts = last_tick["ts"]
+        if tick_ts.tzinfo is None:
+            tick_ts = tick_ts.replace(tzinfo=timezone.utc)
+        auction_ts = (tick_ts + timedelta(seconds=1)).isoformat()
+        auction_rows.append({
+            "asset": asset,
+            "instrument_type": inst,
+            "price": dp,
+            "timestamp": auction_ts,
+            "source_timestamp": auction_ts,
+            "provider": "closing_auction",
+            "provider_priority": 1,
+            "quality": "primary",
+            "is_fallback": False,
+            "is_predictive": False,
+            "session_source": "daily_upsert",
+        })
+        logger.debug(
+            "Closing auction tick: %s %s %.2f -> %.2f at %s",
+            asset, inst, last_price, dp, auction_ts,
+        )
+    return auction_rows
+
+
 def build_market_intraday_rows_for_open(
     market_rows: list[dict],
     status: dict,
@@ -1543,6 +1607,18 @@ async def run_market_job() -> None:
             logger.info("Market job: no daily or intraday rows written")
         else:
             logger.info("Market job complete: %d rows upserted (daily)", updated)
+
+        # ── Closing auction backfill ────────────────────────────────
+        # The session gate rejects post-close ticks, so the closing
+        # auction price only lands in the daily row. For each daily
+        # row that was just upserted, if its price diverges from the
+        # last intraday tick, write a closing tick to intraday so the
+        # 1D chart and latest-price API reflect the actual close.
+        if rows:
+            auction_rows = await _build_closing_auction_intraday_rows(rows)
+            if auction_rows:
+                n_auction = await market_service.insert_intraday_batch(auction_rows)
+                logger.info("Market job: %d closing auction ticks backfilled", n_auction)
 
         # Backfill Gift Nifty historical ticks from the HTML table. A
         # single successful scrape carries the full day of minute-level

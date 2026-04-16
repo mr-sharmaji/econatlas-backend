@@ -563,6 +563,11 @@ async def get_latest_prices(
         if inst not in _ROLLING_24H_TYPES:
             intraday_day = await get_intraday(asset=asset, instrument_type=inst)
             points = intraday_day.get("prices") or []
+            # Remember the daily row's price — it includes the closing
+            # auction and is the last value written by the scraper.
+            daily_price = d.get("price")
+            daily_change = d.get("change_percent")
+            daily_prev = d.get("previous_close")
             if points:
                 last_price = points[-1].get("price")
                 try:
@@ -591,6 +596,20 @@ async def get_latest_prices(
                 if last_tick_ts is not None:
                     d["last_tick_timestamp"] = _to_iso(last_tick_ts)
                     d["timestamp"] = last_tick_ts.isoformat()
+
+                # If the daily row's price diverges from the last
+                # intraday tick, the scraper wrote a newer value
+                # (e.g. closing auction). Use it as the last updated price.
+                try:
+                    dp = float(daily_price) if daily_price is not None else None
+                    lp = float(d["price"])
+                    if dp is not None and abs(dp - lp) > 0.01:
+                        d["last_tick_price"] = lp
+                        d["price"] = dp
+                        d["change_percent"] = daily_change
+                        d["previous_close"] = daily_prev
+                except (TypeError, ValueError):
+                    pass
             phase, is_stale = _compute_phase(asset, inst, _normalize_dt(d.get("last_tick_timestamp")), now_utc, status=status)
             d["market_phase"] = phase
             d["is_stale"] = is_stale
@@ -865,6 +884,33 @@ async def get_intraday(
         coverage,
         expected,
     )
+    # For session-based assets, if the daily row's closing price
+    # diverges from the last intraday tick (closing auction settles
+    # at a different price), append it so the chart ends at the
+    # actual close.
+    if prices and instrument_type not in _ROLLING_24H_TYPES:
+        daily_row = await pool.fetchrow(
+            f"""
+            SELECT price, timestamp FROM {TABLE}
+            WHERE asset = $1 AND instrument_type = $2
+            ORDER BY timestamp DESC LIMIT 1
+            """,
+            asset,
+            instrument_type,
+        )
+        if daily_row:
+            dp = float(daily_row["price"])
+            last_intra = prices[-1]["price"]
+            if abs(dp - last_intra) > 0.01:
+                last_ts = _normalize_dt(prices[-1]["timestamp"])
+                # Use 1 second after last tick as the auction timestamp
+                auction_ts = last_ts + timedelta(seconds=1) if last_ts else day_end
+                prices.append({
+                    "timestamp": auction_ts.isoformat() if hasattr(auction_ts, "isoformat") else str(auction_ts),
+                    "price": dp,
+                })
+                coverage = len(prices)
+
     return {
         "prices": prices,
         "window_start": _to_iso(day_start),

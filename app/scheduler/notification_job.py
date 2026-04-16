@@ -285,6 +285,7 @@ async def _fetch_india_close_data() -> dict | None:
                   AND instrument_type = 'index'
                   AND (source_timestamp AT TIME ZONE 'UTC')::date
                       = (NOW() AT TIME ZONE 'UTC')::date
+                  AND provider NOT IN ('closing_auction', 'yahoo_1m')
                 ORDER BY source_timestamp DESC
                 LIMIT 1
                 """
