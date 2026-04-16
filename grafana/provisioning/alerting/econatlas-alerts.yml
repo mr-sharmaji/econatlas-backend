@@ -139,6 +139,30 @@ groups:
             More than one in four outbound calls to {{ $labels.provider }}
             is returning a non-2xx, timeout, or error.
 
+      - uid: econatlas-db-pool-exhaustion
+        title: 🔴 DB pool exhausted
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 120, to: 0 }
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: db_pool_free == 0
+              instant: true
+              refId: A
+        noDataState: OK
+        execErrState: Alerting
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: All database pool connections are in use
+          description: |
+            db_pool_free has been 0 for 30+ seconds. Every incoming
+            request blocks waiting for a connection. This typically
+            means too many heavy jobs are running concurrently —
+            check /ops/jobs/running and system_load_avg_1m.
+
       - uid: econatlas-job-misfires
         title: Scheduler job misfires
         condition: A
