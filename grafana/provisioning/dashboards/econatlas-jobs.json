@@ -17,13 +17,53 @@
       "collapsed": false
     },
     {
+      "title": "Job Run Log (live from DB)",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "PCC52D03280B7034C"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "rawQuery": true,
+          "rawSql": "SELECT job_name, to_char(last_success_at AT TIME ZONE 'Asia/Kolkata', 'DD Mon HH24:MI') AS last_success_ist, ROUND(last_duration_s::numeric, 1) AS duration_s, success_count, consecutive_failures, COALESCE(LEFT(last_error, 80), '') AS last_error, last_trigger FROM job_run_log ORDER BY last_success_at DESC NULLS LAST",
+          "format": "table",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "PCC52D03280B7034C"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
       "title": "Job throughput (started/s)",
       "type": "timeseries",
       "gridPos": {
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 1
+        "y": 9
       },
       "datasource": {
         "type": "prometheus",
@@ -53,7 +93,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 1
+        "y": 9
       },
       "datasource": {
         "type": "prometheus",
@@ -83,7 +123,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 1
+        "y": 9
       },
       "datasource": {
         "type": "prometheus",
@@ -115,7 +155,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 16
       },
       "datasource": {
         "type": "prometheus",
@@ -162,7 +202,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 8
+        "y": 16
       },
       "datasource": {
         "type": "prometheus",
@@ -201,7 +241,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 16
+        "y": 24
       },
       "collapsed": false
     },
@@ -212,7 +252,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 17
+        "y": 25
       },
       "datasource": {
         "type": "prometheus",
@@ -259,7 +299,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 17
+        "y": 25
       },
       "datasource": {
         "type": "prometheus",
@@ -291,7 +331,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 25
+        "y": 33
       },
       "collapsed": false
     },
@@ -302,7 +342,7 @@
         "h": 6,
         "w": 6,
         "x": 0,
-        "y": 26
+        "y": 34
       },
       "datasource": {
         "type": "prometheus",
@@ -346,7 +386,7 @@
         "h": 6,
         "w": 9,
         "x": 6,
-        "y": 26
+        "y": 34
       },
       "datasource": {
         "type": "prometheus",
@@ -380,7 +420,7 @@
         "h": 6,
         "w": 9,
         "x": 15,
-        "y": 26
+        "y": 34
       },
       "datasource": {
         "type": "prometheus",
@@ -414,7 +454,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 32
+        "y": 40
       },
       "datasource": {
         "type": "prometheus",
@@ -444,7 +484,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 40
       },
       "datasource": {
         "type": "prometheus",
@@ -477,7 +517,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 38
+        "y": 46
       },
       "collapsed": false
     },
@@ -488,7 +528,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 39
+        "y": 47
       },
       "datasource": {
         "type": "prometheus",
@@ -529,7 +569,7 @@
         "h": 5,
         "w": 9,
         "x": 6,
-        "y": 39
+        "y": 47
       },
       "datasource": {
         "type": "prometheus",
@@ -576,7 +616,7 @@
         "h": 5,
         "w": 9,
         "x": 15,
-        "y": 39
+        "y": 47
       },
       "datasource": {
         "type": "prometheus",
@@ -605,7 +645,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 52
       },
       "panels": [],
       "collapsed": false
@@ -617,7 +657,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 45
+        "y": 53
       },
       "datasource": {
         "type": "prometheus",
@@ -656,7 +696,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 45
+        "y": 53
       },
       "datasource": {
         "type": "prometheus",
@@ -695,7 +735,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 45
+        "y": 53
       },
       "datasource": {
         "type": "prometheus",
@@ -734,7 +774,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 45
+        "y": 53
       },
       "datasource": {
         "type": "prometheus",
@@ -773,7 +813,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 49
+        "y": 57
       },
       "datasource": {
         "type": "prometheus",
@@ -804,7 +844,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 49
+        "y": 57
       },
       "datasource": {
         "type": "prometheus",
@@ -840,7 +880,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 55
+        "y": 63
       },
       "panels": [],
       "collapsed": false
@@ -852,7 +892,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 56
+        "y": 64
       },
       "datasource": {
         "type": "prometheus",
@@ -891,7 +931,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 56
+        "y": 64
       },
       "datasource": {
         "type": "prometheus",
@@ -930,7 +970,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 56
+        "y": 64
       },
       "datasource": {
         "type": "prometheus",
@@ -978,7 +1018,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 56
+        "y": 64
       },
       "datasource": {
         "type": "prometheus",
@@ -1017,7 +1057,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 60
+        "y": 68
       },
       "panels": [],
       "collapsed": false
@@ -1029,7 +1069,7 @@
         "h": 5,
         "w": 12,
         "x": 0,
-        "y": 61
+        "y": 69
       },
       "datasource": {
         "type": "prometheus",
@@ -1060,7 +1100,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 61
+        "y": 69
       },
       "datasource": {
         "type": "prometheus",
@@ -1090,52 +1130,13 @@
       "options": {}
     },
     {
-      "title": "Job Run Log (live from DB)",
-      "type": "table",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 67
-      },
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "PCC52D03280B7034C"
-      },
-      "targets": [
-        {
-          "rawSql": "SELECT\n  job_name AS \"Job\",\n  CASE WHEN last_success_at IS NOT NULL\n    THEN to_char(last_success_at AT TIME ZONE 'Asia/Kolkata', 'DD Mon HH24:MI')\n    ELSE '\u2014' END AS \"Last Success (IST)\",\n  CASE WHEN last_success_at IS NOT NULL\n    THEN EXTRACT(EPOCH FROM (NOW() - last_success_at))::int || 's'\n    ELSE '\u2014' END AS \"Age\",\n  ROUND(last_duration_s::numeric, 1) || 's' AS \"Duration\",\n  success_count AS \"OK\",\n  consecutive_failures AS \"Fails\",\n  COALESCE(LEFT(last_error, 80), '') AS \"Error\",\n  last_trigger AS \"Trigger\"\nFROM job_run_log\nORDER BY last_success_at DESC NULLS LAST",
-          "refId": "A",
-          "format": "table",
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "PCC52D03280B7034C"
-          }
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "footer": {
-          "show": false
-        }
-      }
-    },
-    {
       "type": "row",
       "title": "\ud83d\udcca Live Status",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 68
+        "y": 75
       },
       "panels": [],
       "collapsed": false
@@ -1147,7 +1148,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 69
+        "y": 76
       },
       "datasource": {
         "type": "prometheus",
@@ -1186,7 +1187,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 69
+        "y": 76
       },
       "datasource": {
         "type": "prometheus",
@@ -1225,7 +1226,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 69
+        "y": 76
       },
       "datasource": {
         "type": "prometheus",
@@ -1264,7 +1265,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 69
+        "y": 76
       },
       "datasource": {
         "type": "prometheus",
@@ -1303,7 +1304,7 @@
         "h": 5,
         "w": 12,
         "x": 0,
-        "y": 73
+        "y": 80
       },
       "datasource": {
         "type": "prometheus",
@@ -1339,7 +1340,7 @@
         "h": 5,
         "w": 12,
         "x": 12,
-        "y": 73
+        "y": 80
       },
       "datasource": {
         "type": "prometheus",
@@ -1375,7 +1376,7 @@
         "h": 5,
         "w": 8,
         "x": 0,
-        "y": 78
+        "y": 85
       },
       "datasource": {
         "type": "prometheus",
@@ -1406,7 +1407,7 @@
         "h": 5,
         "w": 8,
         "x": 8,
-        "y": 78
+        "y": 85
       },
       "datasource": {
         "type": "prometheus",
@@ -1437,7 +1438,7 @@
         "h": 5,
         "w": 8,
         "x": 16,
-        "y": 78
+        "y": 85
       },
       "datasource": {
         "type": "prometheus",
@@ -1468,7 +1469,7 @@
         "h": 5,
         "w": 12,
         "x": 0,
-        "y": 83
+        "y": 90
       },
       "datasource": {
         "type": "prometheus",
@@ -1504,7 +1505,7 @@
         "h": 5,
         "w": 6,
         "x": 12,
-        "y": 83
+        "y": 90
       },
       "datasource": {
         "type": "prometheus",
@@ -1535,7 +1536,7 @@
         "h": 5,
         "w": 6,
         "x": 18,
-        "y": 83
+        "y": 90
       },
       "datasource": {
         "type": "prometheus",
