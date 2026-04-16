@@ -5562,6 +5562,81 @@ _UPSERT_BATCH_SIZE = 200
 _INCREMENTAL_BATCH_SIZE = 50
 
 
+async def _backfill_stock_closing_auction(pool) -> int:
+    """For IN stocks whose Yahoo closing price (stock_snapshots)
+    differs from the last discover_stock_intraday tick, insert
+    a closing auction tick so the 1D chart ends at the actual close.
+
+    Uses stock_snapshots.source_timestamp (the real exchange quote
+    timestamp from Yahoo) rather than a computed timestamp.
+
+    Also updates discover_stock_snapshots.last_price to match the
+    auction price so the app shows the correct close.
+    """
+    # stock_snapshots uses SYMBOL.NS, discover_stock_intraday uses SYMBOL
+    rows = await pool.fetch(
+        """
+        SELECT ss.symbol AS yahoo_symbol,
+               REPLACE(ss.symbol, '.NS', '') AS intra_symbol,
+               ss.last_price AS auction_price,
+               ss.source_timestamp AS auction_ts,
+               i.price AS intra_price, i.ts AS intra_ts
+        FROM stock_snapshots ss
+        JOIN (
+            SELECT DISTINCT ON (symbol) symbol, price, ts
+            FROM discover_stock_intraday
+            ORDER BY symbol, ts DESC
+        ) i ON i.symbol = REPLACE(ss.symbol, '.NS', '')
+        WHERE ss.market = 'IN'
+          AND ss.last_price IS NOT NULL
+          AND ss.source_timestamp IS NOT NULL
+          AND ABS(ss.last_price - i.price) > 0.01
+        """
+    )
+    if not rows:
+        return 0
+    intra_inserts = []
+    snapshot_updates = []
+    for r in rows:
+        auction_ts = r["auction_ts"]
+        if auction_ts.tzinfo is None:
+            auction_ts = auction_ts.replace(tzinfo=timezone.utc)
+        intra_inserts.append((
+            r["intra_symbol"],
+            auction_ts,
+            float(r["auction_price"]),
+            None,  # volume
+            None,  # percent_change
+        ))
+        snapshot_updates.append((
+            r["intra_symbol"],
+            float(r["auction_price"]),
+            auction_ts,
+        ))
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.executemany(
+                """
+                INSERT INTO discover_stock_intraday
+                    (symbol, ts, price, volume, percent_change)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (symbol, ts) DO NOTHING
+                """,
+                intra_inserts,
+            )
+            await conn.executemany(
+                """
+                UPDATE discover_stock_snapshots
+                SET last_price = $2,
+                    source_timestamp = $3,
+                    ingested_at = NOW()
+                WHERE symbol = $1
+                """,
+                snapshot_updates,
+            )
+    return len(intra_inserts)
+
+
 async def run_discover_stock_job() -> None:
     try:
         job_t0 = time_mod.time()
@@ -5778,6 +5853,16 @@ async def run_discover_stock_job() -> None:
                 "Discover stock: upserted batch %d–%d (%d rows, %d total so far)",
                 batch_start, batch_start + len(batch) - 1, count, total_upserted,
             )
+
+        # 5. Closing auction backfill — if the snapshot's last_price
+        # diverges from the last discover_stock_intraday tick, write a
+        # closing auction tick so the 1D chart ends at the actual close.
+        try:
+            auction_count = await _backfill_stock_closing_auction(pool)
+            if auction_count:
+                logger.info("Discover stock: %d closing auction ticks backfilled", auction_count)
+        except Exception:
+            logger.debug("Discover stock: closing auction backfill failed", exc_info=True)
 
         total_elapsed = time_mod.time() - job_t0
         logger.info(
