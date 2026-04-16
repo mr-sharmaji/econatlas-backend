@@ -277,6 +277,10 @@ def create_app() -> FastAPI:
                 media_type=resp.headers.get("content-type"),
             )
         except Exception as exc:
+            logger.warning(
+                "Grafana proxy error: %s %s → %s: %s",
+                request.method, url, type(exc).__name__, exc,
+            )
             return Response(
                 content=f"Grafana unavailable: {exc}",
                 status_code=502,
