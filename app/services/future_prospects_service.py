@@ -25,7 +25,7 @@ from app.core.database import ensure_vector_registered, get_pool, record_to_dict
 
 logger = logging.getLogger(__name__)
 
-FUTURE_PROSPECTS_RUNTIME_MARKER = "fp-snapshot-only-2026-04-16b"
+FUTURE_PROSPECTS_RUNTIME_MARKER = "fp-snapshot-only"
 FUTURE_PROSPECTS_RUNTIME_MODE = "snapshot_only_recent_embed_only"
 
 _FORWARD_SIGNAL_RE = re.compile(

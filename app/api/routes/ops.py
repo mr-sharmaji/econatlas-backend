@@ -18,7 +18,7 @@ from app.services import market_intel_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ops", tags=["ops"])
-OPS_RUNTIME_MARKER = "ops-runtime-fingerprint-2026-04-16b"
+OPS_RUNTIME_MARKER = "ops-runtime-fingerprint"
 
 # ── Direct-run tracking for long-running jobs ────────────────────────
 _running_direct_jobs: dict[str, asyncio.Task] = {}
