@@ -58,8 +58,17 @@ services:
       LOG_LEVEL: DEBUG
       FIREBASE_CREDENTIALS_JSON: /app/firebase-key.json
       GRAFANA_SERVICE_TOKEN: "${GRAFANA_SERVICE_TOKEN:-}"
+      # HuggingFace Hub token for authenticated model downloads —
+      # removes the "unauthenticated requests" warning and gives
+      # higher rate limits + faster downloads for embedding models.
+      HF_TOKEN: "${HF_TOKEN:-}"
     volumes:
       - ./firebase-key.json:/app/firebase-key.json:ro
+      # Persist rotating log files across container rebuilds so the
+      # 7-day retention window actually works. Without this mount,
+      # every `docker compose up --build` wipes logs/app.log and all
+      # rotated siblings, making /ops/logs useless after deploys.
+      - ./logs:/app/logs
     depends_on:
       postgres:
         condition: service_healthy

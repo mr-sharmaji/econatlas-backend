@@ -224,20 +224,22 @@ def _extract_old_slabs_and_basic_exemption(taxcalc_text: str) -> tuple[list[dict
     #   80+: ₹5 lakh
     # Match each amount in the context of the old-regime section.
     # The ClearTax page lists them in separate subsections.
+    # ClearTax 2026: currency prefix ("Rs." / "₹") is now optional.
+    _RS_OPT = r"(?:Rs\.?\s*|₹\s*)?"
     below60_match = re.search(
-        r"(?:Up to|Upto)\s+(?:Rs\.?|₹)\s*(2\.5)\s*lakh\s+(?:NIL|Nil|nil|0)",
+        rf"(?:Up\s+to|Upto)\s+{_RS_OPT}(2\.5)\s*lakh\s+(?:NIL|Nil|nil|0)",
         taxcalc_text,
         re.IGNORECASE,
     )
     senior_match = re.search(
-        r"(?:senior\s+citizen|60.{0,10}?80).{0,500}?"
-        r"(?:Up to|Upto)\s+(?:Rs\.?|₹)\s*(3)\s*lakh\s+(?:NIL|Nil|nil|0)",
+        rf"(?:senior\s+citizen|60.{{0,10}}?80).{{0,500}}?"
+        rf"(?:Up\s+to|Upto)\s+{_RS_OPT}(3)\s*lakh\s+(?:NIL|Nil|nil|0)",
         taxcalc_text,
         re.IGNORECASE | re.DOTALL,
     )
     super_match = re.search(
-        r"(?:above 80|more than 80|super.senior|80\+).{0,500}?"
-        r"(?:Up to|Upto)\s+(?:Rs\.?|₹)\s*(5)\s*lakh\s+(?:NIL|Nil|nil|0)",
+        rf"(?:above 80|more than 80|super.senior|80\+).{{0,500}}?"
+        rf"(?:Up\s+to|Upto)\s+{_RS_OPT}(5)\s*lakh\s+(?:NIL|Nil|nil|0)",
         taxcalc_text,
         re.IGNORECASE | re.DOTALL,
     )
@@ -249,20 +251,26 @@ def _extract_old_slabs_and_basic_exemption(taxcalc_text: str) -> tuple[list[dict
         )
         raise ValueError("Unable to parse old-regime basic exemption table.")
 
+    # ClearTax removed "Rs." prefix from their slab table in 2026.
+    # Previous format: "Up to Rs. 2.5 lakh NIL Rs. 2.5 lakh - Rs. 5 lakh 5%"
+    # Current format:  "Up to 2.5 lakh Nil 2.5 lakh - 5 lakh 5%"
+    # Made "Rs.\s*" optional via (?:Rs\.?\s*)? so both formats work.
+    _RS = r"(?:Rs\.?\s*|₹\s*)?"   # optional Rs. / ₹ prefix
     old_mid1 = re.search(
-        r"Up to Rs\.\s*2\.5\s*lakh\s+NIL\s+Rs\.\s*2\.5\s*lakh\s*-\s*Rs\.\s*5\s*lakh\s+([0-9.]+)%",
+        rf"Up\s+to\s+{_RS}2\.5\s*lakh\s+(?:NIL|Nil|nil|0)\s+"
+        rf"{_RS}2\.5\s*lakh\s*-\s*{_RS}5\s*lakh\s+([0-9.]+)%",
         taxcalc_text,
         re.IGNORECASE | re.DOTALL,
     )
     old_mid2 = re.search(
-        r"Rs\.\s*2\.5\s*lakh\s*-\s*Rs\.\s*5\s*lakh\s+[0-9.]+%\s+"
-        r"Rs\.\s*5\s*lakh\s*-\s*Rs\.\s*10\s*lakh\s+([0-9.]+)%",
+        rf"{_RS}2\.5\s*lakh\s*-\s*{_RS}5\s*lakh\s+[0-9.]+%\s+"
+        rf"{_RS}5\s*lakh\s*-\s*{_RS}10\s*lakh\s+([0-9.]+)%",
         taxcalc_text,
         re.IGNORECASE | re.DOTALL,
     )
     old_top = re.search(
-        r"Rs\.\s*5\s*lakh\s*-\s*Rs\.\s*10\s*lakh\s+[0-9.]+%\s+"
-        r"Above Rs\.\s*10\s*lakh\s+([0-9.]+)%",
+        rf"{_RS}5\s*lakh\s*-\s*{_RS}10\s*lakh\s+[0-9.]+%\s+"
+        rf"Above\s+{_RS}10\s*lakh\s+([0-9.]+)%",
         taxcalc_text,
         re.IGNORECASE | re.DOTALL,
     )

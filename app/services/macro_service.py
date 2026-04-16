@@ -874,7 +874,10 @@ async def upsert_calendar_events(events: list[dict]) -> int:
                 """,
                 e["event_name"],
                 e["institution"],
-                e["event_date"],
+                # Scrapers produce event_date as a "YYYY-MM-DD" string,
+                # but asyncpg needs a datetime.date for DATE columns
+                # (it calls .toordinal() on the value internally).
+                date.fromisoformat(str(e["event_date"])) if isinstance(e["event_date"], str) else e["event_date"],
                 e["country"],
                 e["event_type"],
                 e.get("description"),
