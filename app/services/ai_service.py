@@ -769,6 +769,17 @@ def _build_us_close_context(d: dict) -> str:
     ctx = d.get("relative_context")
     if ctx:
         lines.append(f"Context: {ctx}.")
+    vix = d.get("cboe_vix")
+    vix_pct = d.get("cboe_vix_pct")
+    if vix is not None:
+        vix_note = f"VIX at {vix:.1f}"
+        if vix_pct is not None:
+            vix_note += f" ({_fmt_pct(vix_pct)})"
+        if vix > 25:
+            vix_note += " — high fear"
+        elif vix < 15:
+            vix_note += " — complacency"
+        lines.append(f"{vix_note}.")
     gift_pct = d.get("gift_nifty_change_pct")
     if gift_pct is not None:
         lines.append(f"Gift Nifty at {d.get('gift_nifty_price', 0):,.0f} ({_fmt_pct(gift_pct)} from Nifty close) — implies NSE opening signal.")

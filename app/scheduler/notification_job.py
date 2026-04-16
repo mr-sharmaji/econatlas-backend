@@ -546,6 +546,19 @@ async def _fetch_us_close_data() -> dict | None:
         if trailing:
             data["sp500_trailing"] = trailing
 
+        # CBOE VIX
+        vix_row = await pool.fetchrow(
+            """
+            SELECT price, change_percent FROM market_prices
+            WHERE asset = 'CBOE VIX' AND price IS NOT NULL
+            ORDER BY timestamp DESC LIMIT 1
+            """
+        )
+        if vix_row:
+            data["cboe_vix"] = float(vix_row["price"])
+            if vix_row["change_percent"] is not None:
+                data["cboe_vix_pct"] = float(vix_row["change_percent"])
+
         return data
     except Exception:
         logger.exception("Failed to fetch US close data")
