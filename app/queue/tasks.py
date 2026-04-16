@@ -123,6 +123,33 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
         now = _time.time()
         JOB_LAST_RUN_TIMESTAMP.labels(job_name=job_name).set(now)
         JOB_LAST_SUCCESS_TIMESTAMP.labels(job_name=job_name).set(now)
+        # Persist to job_run_log so the startup safety net can skip
+        # jobs that already ran recently. Also builds a lightweight
+        # operational history (success/failure counts, last error,
+        # consecutive failures) queryable via /ops/sql.
+        try:
+            from app.core.database import get_pool
+            _pool = await get_pool()
+            _trigger = "startup" if (job_id or "").startswith("startup_") else "cron"
+            await _pool.execute(
+                """
+                INSERT INTO job_run_log
+                    (job_name, last_success_at, last_duration_s, success_count,
+                     consecutive_failures, last_trigger, updated_at)
+                VALUES ($1, NOW(), $2, 1, 0, $3, NOW())
+                ON CONFLICT (job_name) DO UPDATE SET
+                    last_success_at = NOW(),
+                    last_duration_s = $2,
+                    success_count = job_run_log.success_count + 1,
+                    consecutive_failures = 0,
+                    last_error = NULL,
+                    last_trigger = $3,
+                    updated_at = NOW()
+                """,
+                job_name, duration, _trigger,
+            )
+        except Exception:
+            logger.debug("job_run_log upsert failed for %s (non-fatal)", job_name)
         logger.debug(
             "arq task success: name=%s duration=%.2fs — recorded JOB_DURATION, "
             "JOB_LAST_RUN_TIMESTAMP, JOB_LAST_SUCCESS_TIMESTAMP",
@@ -174,6 +201,29 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
         JOB_ERRORS.labels(job_name=job_name).inc()
         JOB_DURATION.labels(job_name=job_name).observe(_time.monotonic() - started_at)
         JOB_LAST_RUN_TIMESTAMP.labels(job_name=job_name).set(_time.time())
+        # Record failure in job_run_log
+        try:
+            from app.core.database import get_pool
+            _pool = await get_pool()
+            _trigger = "startup" if (job_id or "").startswith("startup_") else "cron"
+            await _pool.execute(
+                """
+                INSERT INTO job_run_log
+                    (job_name, last_failure_at, last_error, failure_count,
+                     consecutive_failures, last_trigger, updated_at)
+                VALUES ($1, NOW(), $2, 1, 1, $3, NOW())
+                ON CONFLICT (job_name) DO UPDATE SET
+                    last_failure_at = NOW(),
+                    last_error = $2,
+                    failure_count = job_run_log.failure_count + 1,
+                    consecutive_failures = job_run_log.consecutive_failures + 1,
+                    last_trigger = $3,
+                    updated_at = NOW()
+                """,
+                job_name, str(exc)[:500], _trigger,
+            )
+        except Exception:
+            logger.debug("job_run_log failure upsert for %s (non-fatal)", job_name)
         logger.debug(
             "arq task permanent failure: name=%s — recorded JOB_ERRORS, "
             "wrote to DLQ",

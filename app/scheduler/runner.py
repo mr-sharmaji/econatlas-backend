@@ -334,25 +334,79 @@ async def _startup_collection() -> None:
         ])
     else:
         logger.info("Skipping discover jobs at startup (discover_cron_enabled=false)")
-    # Stagger startup enqueues to prevent the "thundering herd" that
-    # was causing server downtime on every deploy. When all 18 jobs
-    # fire at once, the 10-connection DB pool saturates (db_pool_free=0),
-    # system load spikes to 8+, 300+ TCP connections accumulate in
-    # TIME_WAIT, and the Cloudflare tunnel times out → user-visible
-    # downtime lasting 5-15 minutes per restart.
-    #
-    # Split into tiers:
-    #   Tier 1 (immediate): lightweight / fast jobs (market, commodity,
-    #           crypto, brief, ipo, macro, tax, market_score, fertilizer)
-    #   Tier 2 (30s delay): medium jobs (news, imf_forecast, econ_calendar,
-    #           discover_mf_nav, discover_stock_intraday_autofill)
-    #   Tier 3 (90s delay): heavy/long-running scraping jobs
-    #           (discover_stock, discover_mutual_funds,
-    #           stock_future_prospects_*)
-    #
-    # Total startup window: ~2 min instead of instant. Each tier waits
-    # for the previous tier's fast jobs to finish and release their
-    # DB connections before the next tier's heavy jobs start.
+    # ── Smart startup: skip jobs that already ran recently ──────────
+    # Query job_run_log to see when each job last succeeded. If it's
+    # within its staleness window, skip it — no point re-running a
+    # 20-min discover_stock that finished 30 minutes ago.
+    from datetime import datetime, timedelta, timezone as _tz
+
+    _MAX_STALENESS = {
+        # Lightweight — always re-run, they're <2s each
+        "market": timedelta(minutes=10),
+        "commodity": timedelta(minutes=10),
+        "crypto": timedelta(minutes=10),
+        "brief": timedelta(minutes=30),
+        "ipo": timedelta(minutes=30),
+        # Medium
+        "macro": timedelta(hours=3),
+        "news": timedelta(hours=3),
+        "market_score": timedelta(hours=3),
+        # Heavy / daily
+        "tax": timedelta(hours=12),
+        "fertilizer": timedelta(hours=12),
+        "imf_forecast": timedelta(hours=12),
+        "econ_calendar": timedelta(hours=12),
+        "discover_stock": timedelta(hours=12),
+        "discover_mutual_funds": timedelta(hours=12),
+        "discover_mf_nav": timedelta(hours=12),
+        "discover_stock_intraday_autofill": timedelta(hours=1),
+        "stock_future_prospects_recent": timedelta(hours=12),
+        "stock_future_prospects_embed": timedelta(hours=12),
+    }
+    _DEFAULT_STALENESS = timedelta(hours=6)
+
+    now = datetime.now(tz=_tz.utc)
+    skipped: list[str] = []
+    to_enqueue: list[str] = []
+
+    try:
+        from app.core.database import get_pool
+        pool = await get_pool()
+        rows = await pool.fetch("SELECT job_name, last_success_at FROM job_run_log")
+        last_success = {
+            r["job_name"]: r["last_success_at"]
+            for r in rows if r["last_success_at"] is not None
+        }
+    except Exception:
+        logger.warning("Startup: job_run_log query failed — running all jobs as fallback")
+        last_success = {}
+
+    for name in startup_jobs:
+        max_stale = _MAX_STALENESS.get(name, _DEFAULT_STALENESS)
+        last = last_success.get(name)
+        if last is not None:
+            # Ensure timezone-aware comparison
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=_tz.utc)
+            age = now - last
+            if age < max_stale:
+                skipped.append(name)
+                logger.info(
+                    "Startup: skipping %s — last success %s ago (threshold %s)",
+                    name, age, max_stale,
+                )
+                continue
+        to_enqueue.append(name)
+
+    if skipped:
+        logger.info(
+            "Startup: skipped %d jobs (already fresh): %s",
+            len(skipped), ", ".join(skipped),
+        )
+
+    # ── Stagger remaining jobs into tiers ─────────────────────────
+    # Same thundering-herd prevention as before, but now only for
+    # jobs that actually need to run.
     _HEAVY_JOBS = {
         "news", "imf_forecast", "econ_calendar",
         "discover_mf_nav", "discover_stock_intraday_autofill",
@@ -361,16 +415,17 @@ async def _startup_collection() -> None:
         "discover_stock", "discover_mutual_funds",
         "stock_future_prospects_recent", "stock_future_prospects_embed",
     }
-    tier1 = [j for j in startup_jobs if j not in _HEAVY_JOBS and j not in _EXTRA_HEAVY_JOBS]
-    tier2 = [j for j in startup_jobs if j in _HEAVY_JOBS]
-    tier3 = [j for j in startup_jobs if j in _EXTRA_HEAVY_JOBS]
+    tier1 = [j for j in to_enqueue if j not in _HEAVY_JOBS and j not in _EXTRA_HEAVY_JOBS]
+    tier2 = [j for j in to_enqueue if j in _HEAVY_JOBS]
+    tier3 = [j for j in to_enqueue if j in _EXTRA_HEAVY_JOBS]
 
     for name in tier1:
         await _enqueue(name, job_id=f"startup_{name}")
-    logger.info(
-        "Startup tier 1 enqueued: %d lightweight jobs (%s)",
-        len(tier1), ", ".join(tier1),
-    )
+    if tier1:
+        logger.info(
+            "Startup tier 1 enqueued: %d lightweight jobs (%s)",
+            len(tier1), ", ".join(tier1),
+        )
 
     if tier2:
         await asyncio.sleep(30)
@@ -390,7 +445,10 @@ async def _startup_collection() -> None:
             len(tier3), ", ".join(tier3),
         )
 
-    logger.info("Startup data collection enqueued (%d jobs total).", len(startup_jobs))
+    logger.info(
+        "Startup data collection complete: %d enqueued, %d skipped (already fresh).",
+        len(to_enqueue), len(skipped),
+    )
 
 
 # ── Scheduler lifecycle ──────────────────────────────────────────────

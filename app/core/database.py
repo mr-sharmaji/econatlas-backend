@@ -891,6 +891,25 @@ async def init_pool() -> asyncpg.Pool:
         await conn.execute(
             "ALTER TABLE ipo_snapshots ADD COLUMN IF NOT EXISTS ipo_type TEXT"
         )
+        # --- job_run_log: tracks last successful run per scheduled job ---
+        # Used by the startup safety net to skip jobs that already ran
+        # recently, avoiding redundant 20-min scraping jobs on every deploy.
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS job_run_log (
+                job_name TEXT PRIMARY KEY,
+                last_success_at TIMESTAMPTZ,
+                last_failure_at TIMESTAMPTZ,
+                last_duration_s DOUBLE PRECISION,
+                last_error TEXT,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                last_trigger TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
         logger.info("Idempotent indexes ensured")
     return _pool
 
