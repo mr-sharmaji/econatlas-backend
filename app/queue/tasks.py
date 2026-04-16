@@ -15,6 +15,8 @@ from app.queue.settings import JOB_RETRY_POLICIES
 
 logger = logging.getLogger(__name__)
 
+QUEUE_RETRY_LOG_MARKER = "queue-repr-exc-2026-04-16b"
+
 
 async def _release_job_lock(job_id: str | None) -> None:
     """Release the Redis ``job_lock:{job_id}`` key set by the scheduler.

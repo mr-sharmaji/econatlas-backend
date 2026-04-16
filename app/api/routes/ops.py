@@ -18,6 +18,7 @@ from app.services import market_intel_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ops", tags=["ops"])
+OPS_RUNTIME_MARKER = "ops-runtime-fingerprint-2026-04-16b"
 
 # ── Direct-run tracking for long-running jobs ────────────────────────
 _running_direct_jobs: dict[str, asyncio.Task] = {}
@@ -303,6 +304,16 @@ async def ops_server_health(
         "timestamp": now.isoformat(),
         "uptime_seconds": round(_time.time() - _BOOT_TIME),
     }
+    try:
+        from app.core.runtime_info import get_runtime_info
+
+        result["runtime"] = get_runtime_info()
+        result["runtime"]["ops_runtime_marker"] = OPS_RUNTIME_MARKER
+    except Exception as exc:
+        result["runtime"] = {
+            "error": str(exc),
+            "ops_runtime_marker": OPS_RUNTIME_MARKER,
+        }
 
     # ── System metrics ──
     try:

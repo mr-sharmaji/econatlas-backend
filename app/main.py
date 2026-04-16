@@ -109,6 +109,12 @@ async def _warm_artha_cache() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    try:
+        from app.core.runtime_info import get_runtime_info
+
+        logger.info("Runtime fingerprint at startup: %s", get_runtime_info())
+    except Exception:
+        logger.warning("startup: runtime fingerprint unavailable", exc_info=True)
     await init_pool()           # 1. PostgreSQL pool
     # 2. Self-heal any arq state left behind by a prior SIGKILL. Safe at
     #    startup because the worker we're about to start owns nothing

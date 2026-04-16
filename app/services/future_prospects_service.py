@@ -25,6 +25,9 @@ from app.core.database import ensure_vector_registered, get_pool, record_to_dict
 
 logger = logging.getLogger(__name__)
 
+FUTURE_PROSPECTS_RUNTIME_MARKER = "fp-snapshot-only-2026-04-16b"
+FUTURE_PROSPECTS_RUNTIME_MODE = "snapshot_only_recent_embed_only"
+
 _FORWARD_SIGNAL_RE = re.compile(
     r"\b("
     r"guidance|outlook|forecast|expected|expects|expecting|"
@@ -499,8 +502,10 @@ async def run_stock_future_prospects_ingestion(
     """Ingest future-looking stock evidence from structured backend sources."""
     pool = await get_pool()
     logger.info(
-        "stock_future_prospects: START recent_only=%s",
+        "stock_future_prospects: START recent_only=%s mode=%s marker=%s",
         recent_only,
+        FUTURE_PROSPECTS_RUNTIME_MODE,
+        FUTURE_PROSPECTS_RUNTIME_MARKER,
     )
 
     # Keep the full refresh focused on persisting evidence quickly; let the
