@@ -503,16 +503,20 @@ async def run_stock_future_prospects_ingestion(
         recent_only,
     )
 
+    # Keep the full refresh focused on persisting evidence quickly; let the
+    # dedicated embed job backfill vectors in bulk. Inline embeddings are
+    # only worth the latency on small recent-only refreshes.
     embed_texts = None
     inline_embed_enabled = False
-    try:
-        from app.services.embedding_service import embed_texts as _embed_texts, warmup
+    if recent_only:
+        try:
+            from app.services.embedding_service import embed_texts as _embed_texts, warmup
 
-        inline_embed_enabled = await warmup()
-        if inline_embed_enabled:
-            embed_texts = _embed_texts
-    except Exception:
-        logger.warning("stock_future_prospects: embedding warmup failed", exc_info=True)
+            inline_embed_enabled = await warmup()
+            if inline_embed_enabled:
+                embed_texts = _embed_texts
+        except Exception:
+            logger.warning("stock_future_prospects: embedding warmup failed", exc_info=True)
 
     total_docs = 0
     total_passages = 0
@@ -549,7 +553,7 @@ async def run_stock_future_prospects_ingestion(
                     "failed_embeddings": 0,
                 }
 
-        for snapshot in snapshot_rows:
+        for idx, snapshot in enumerate(snapshot_rows, start=1):
             symbol = str(snapshot.get("symbol") or "").upper().strip()
             if not symbol:
                 continue
@@ -592,6 +596,16 @@ async def run_stock_future_prospects_ingestion(
             total_passages += len(passages)
             embedded_passages += ok
             failed_embeddings += fail
+            if idx % 250 == 0:
+                logger.info(
+                    "stock_future_prospects: progress=%d/%d docs=%d passages=%d embedded=%d deferred=%d",
+                    idx,
+                    len(snapshot_rows),
+                    total_docs,
+                    total_passages,
+                    embedded_passages,
+                    failed_embeddings,
+                )
 
     summary = {
         "status": "ok",

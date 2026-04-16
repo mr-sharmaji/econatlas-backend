@@ -792,6 +792,13 @@ _DIRECT_RUN_JOBS: dict[str, tuple[str, str]] = {
         "app.scheduler.educational_concepts_seed_job",
         "run_educational_concepts_seed_job",
     ),
+    # Full future-prospects refresh can legitimately run for a while and is
+    # easier to debug when the ops trigger runs it directly instead of
+    # enqueueing through ARQ.
+    "stock_future_prospects": (
+        "app.scheduler.stock_future_prospects_job",
+        "run_stock_future_prospects_job",
+    ),
 }
 
 

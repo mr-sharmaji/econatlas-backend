@@ -136,11 +136,12 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
         if max_retries > 0 and job_try <= max_retries:
             delay = delay_base * (2 ** (job_try - 1))
             logger.warning(
-                "%s failed (attempt %d/%d), retrying in %ds: %s",
+                "%s failed (attempt %d/%d), retrying in %ds: %s: %r",
                 job_name,
                 job_try,
                 max_retries + 1,
                 delay,
+                type(exc).__name__,
                 exc,
             )
             # Keep the lock held so the scheduler doesn't double-enqueue
@@ -154,9 +155,10 @@ async def _run_with_retry(ctx: dict, job_name: str, coro_factory) -> None:  # no
             raise Retry(defer=delay) from exc
 
         logger.error(
-            "%s exhausted retries (%d attempts), sending to DLQ: %s",
+            "%s exhausted retries (%d attempts), sending to DLQ: %s: %r",
             job_name,
             job_try,
+            type(exc).__name__,
             exc,
         )
         await write_dead_letter(
