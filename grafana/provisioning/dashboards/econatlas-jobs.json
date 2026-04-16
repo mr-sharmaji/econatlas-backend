@@ -142,7 +142,7 @@
       },
       "targets": [
         {
-          "expr": "(100 * sum by (job_name) (rate(job_errors_total[15m])) / clamp_min(sum by (job_name) (rate(jobs_started_total[15m])), 0.0001)) OR vector(0)",
+          "expr": "(100 * sum by (job_name) (rate(job_errors_total[15m])) / clamp_min(sum by (job_name) (rate(jobs_started_total[15m])), 0.001)) or on() vector(0)",
           "legendFormat": "{{job_name}}",
           "refId": "A"
         }
@@ -373,7 +373,7 @@
       },
       "targets": [
         {
-          "expr": "(autofill_coverage_ratio) OR vector(0)",
+          "expr": "autofill_coverage_ratio or on() vector(0)",
           "legendFormat": "{{job_name}}",
           "refId": "A"
         }
@@ -402,13 +402,13 @@
       },
       "targets": [
         {
-          "expr": "(autofill_symbols_ok) OR vector(0)",
-          "legendFormat": "OK \u2014 {{job_name}}",
+          "expr": "autofill_symbols_ok or on() vector(0)",
+          "legendFormat": "ok",
           "refId": "A"
         },
         {
-          "expr": "(autofill_symbols_empty) OR vector(0)",
-          "legendFormat": "Empty \u2014 {{job_name}}",
+          "expr": "autofill_symbols_empty or on() vector(0)",
+          "legendFormat": "empty",
           "refId": "B"
         }
       ]
@@ -436,13 +436,13 @@
       },
       "targets": [
         {
-          "expr": "(autofill_rows_queued) OR vector(0)",
-          "legendFormat": "rows queued \u2014 {{job_name}}",
+          "expr": "autofill_rows_queued or on() vector(0)",
+          "legendFormat": "queued",
           "refId": "A"
         },
         {
-          "expr": "(autofill_snapshots_updated) OR vector(0)",
-          "legendFormat": "snapshots \u2014 {{job_name}}",
+          "expr": "autofill_snapshots_updated or on() vector(0)",
+          "legendFormat": "updated",
           "refId": "B"
         }
       ]
@@ -471,7 +471,7 @@
       },
       "targets": [
         {
-          "expr": "(autofill_last_duration_seconds) OR vector(0)",
+          "expr": "autofill_last_duration_seconds or on() vector(0)",
           "legendFormat": "{{job_name}}",
           "refId": "A"
         }
@@ -504,7 +504,7 @@
       },
       "targets": [
         {
-          "expr": "(sum by (reason) (rate(market_intraday_gate_rejections_total[5m]))) OR vector(0)",
+          "expr": "sum by (reason) (rate(market_intraday_gate_rejections_total[5m])) or on() vector(0)",
           "legendFormat": "{{reason}}",
           "refId": "A"
         }
@@ -602,7 +602,7 @@
       },
       "targets": [
         {
-          "expr": "(sum by (job_name) (increase(job_misfires_total[1h]))) OR vector(0)",
+          "expr": "sum by (job_name) (increase(job_misfires_total[1h])) or on() vector(0)",
           "legendFormat": "{{job_name}}",
           "refId": "A",
           "instant": true
@@ -821,7 +821,7 @@
       },
       "targets": [
         {
-          "expr": "job_duration_seconds{job_name=~\"discover_mutual_funds|discover_mf_nav|discover_stock|news|macro\"}",
+          "expr": "job_duration_seconds_sum / clamp_min(job_duration_seconds_count, 1)",
           "legendFormat": "{{job_name}}",
           "refId": "A"
         }
@@ -978,7 +978,7 @@
       },
       "targets": [
         {
-          "expr": "clamp_max(100 * (1 - data_stale_stocks / clamp_min(data_rows_total{table=\"discover_stock_snapshots\"}, 1)), 100)",
+          "expr": "(1 - (data_stale_stocks / clamp_min(data_rows_total{table=\"discover_stock_snapshots\"}, 1))) * 100 or on() vector(0)",
           "legendFormat": "",
           "refId": "A"
         }
