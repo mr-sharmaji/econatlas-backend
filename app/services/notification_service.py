@@ -689,6 +689,8 @@ async def notify_pre_market_summary(
     *,
     dedup_key: str | None = None,
     nifty_trailing: dict | None = None,
+    india_vix: float | None = None,
+    india_vix_pct: float | None = None,
 ) -> bool:
     """Send pre-market summary at ~9:00 AM IST with Gift Nifty + global cues.
 
@@ -743,6 +745,7 @@ async def notify_pre_market_summary(
                 "asia_change": asia_change,
                 "outlook": outlook,
                 **({"nifty_trailing": nifty_trailing} if nifty_trailing else {}),
+                **({"india_vix": india_vix, "india_vix_pct": india_vix_pct} if india_vix is not None else {}),
             },
         )
         if ai_body:

@@ -715,11 +715,6 @@ def _build_india_close_context(d: dict) -> str:
 
     lines = [line1]
 
-    adv = d.get("advancers")
-    dec = d.get("decliners")
-    if adv is not None and dec is not None and (adv + dec) > 0:
-        lines.append(f"Breadth: {adv:,} advancers vs {dec:,} decliners.")
-
     top_sec = d.get("top_sector")
     top_pct = d.get("top_sector_pct")
     bot_sec = d.get("bottom_sector")
@@ -732,9 +727,6 @@ def _build_india_close_context(d: dict) -> str:
     ctx = d.get("relative_context")
     if ctx:
         lines.append(f"Context: {ctx}.")
-    w52 = d.get("week52_context")
-    if w52:
-        lines.append(f"Nifty {w52}.")
     trailing = d.get("nifty_trailing")
     if trailing:
         lines.append(_fmt_trailing(trailing, "Nifty"))
@@ -777,9 +769,6 @@ def _build_us_close_context(d: dict) -> str:
     ctx = d.get("relative_context")
     if ctx:
         lines.append(f"Context: {ctx}.")
-    w52 = d.get("week52_context")
-    if w52:
-        lines.append(f"S&P {w52}.")
     gift_pct = d.get("gift_nifty_change_pct")
     if gift_pct is not None:
         lines.append(f"Gift Nifty at {d.get('gift_nifty_price', 0):,.0f} ({_fmt_pct(gift_pct)} from Nifty close) — implies NSE opening signal.")
@@ -910,6 +899,17 @@ def _build_pre_market_context(d: dict) -> str:
     if isinstance(asia, dict) and asia:
         asia_parts = [f"{name} {_fmt_pct(pct)}" for name, pct in asia.items()]
         lines.append(f"Asia live: {', '.join(asia_parts)}.")
+    vix = d.get("india_vix")
+    vix_pct = d.get("india_vix_pct")
+    if vix is not None:
+        vix_note = f"India VIX at {vix:.1f}"
+        if vix_pct is not None:
+            vix_note += f" ({_fmt_pct(vix_pct)})"
+        if vix > 20:
+            vix_note += " — elevated fear"
+        elif vix < 13:
+            vix_note += " — low volatility"
+        lines.append(f"{vix_note}.")
     trailing = d.get("nifty_trailing")
     if trailing:
         lines.append(_fmt_trailing(trailing, "Nifty (prev sessions)"))

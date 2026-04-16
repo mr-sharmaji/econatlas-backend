@@ -131,8 +131,14 @@ async def _fetch_trailing_changes(pool, asset: str, days: int = 5) -> dict | Non
                 streak += 1 if streak > 0 else -1
             else:
                 break
-        # Week total: sum all changes in trailing
-        week_pct = round(sum(pct for _, pct in trailing), 2)
+        # Calendar week total (Mon-Fri of current week only)
+        from datetime import date as _date
+        today = _date.today()
+        monday = today - timedelta(days=today.weekday())
+        week_pct = round(sum(
+            pct for d_str, pct in trailing
+            if _date.fromisoformat(d_str) >= monday
+        ), 2)
         return {"trailing": trailing, "streak": streak, "week_pct": week_pct}
     except Exception:
         logger.debug("Trailing changes lookup failed for %s", asset, exc_info=True)
@@ -180,13 +186,19 @@ async def _fetch_fii_dii_trailing(pool, days: int = 5) -> dict | None:
                     break
             return s
 
+        from datetime import date as _date
+        today = _date.today()
+        monday = today - timedelta(days=today.weekday())
+        fii_week = round(sum(v for d, v in fii[:days] if _date.fromisoformat(d) >= monday), 0)
+        dii_week = round(sum(v for d, v in dii[:days] if _date.fromisoformat(d) >= monday), 0)
+
         return {
             "fii_trailing": fii[:days],
             "dii_trailing": dii[:days],
             "fii_streak": _streak(fii),
             "dii_streak": _streak(dii),
-            "fii_week_total": round(sum(v for _, v in fii[:days]), 0),
-            "dii_week_total": round(sum(v for _, v in dii[:days]), 0),
+            "fii_week_total": fii_week,
+            "dii_week_total": dii_week,
         }
     except Exception:
         logger.debug("FII/DII trailing lookup failed", exc_info=True)
@@ -452,7 +464,7 @@ async def _fetch_india_close_data() -> dict | None:
             data["bottom_sector_pct"] = sectors[-1][1]
 
         # Trailing context for richer AI narrative
-        trailing = await _fetch_trailing_changes(pool, "Nifty 50", days=5)
+        trailing = await _fetch_trailing_changes(pool, "Nifty 50", days=10)
         if trailing:
             data["nifty_trailing"] = trailing
 
@@ -530,7 +542,7 @@ async def _fetch_us_close_data() -> dict | None:
                 data["gift_nifty_price"] = gift_price
                 data["gift_nifty_change_pct"] = (gift_price - nifty_close) / nifty_close * 100
 
-        trailing = await _fetch_trailing_changes(pool, "S&P500", days=5)
+        trailing = await _fetch_trailing_changes(pool, "S&P500", days=10)
         if trailing:
             data["sp500_trailing"] = trailing
 
@@ -600,7 +612,7 @@ async def _fetch_europe_close_data() -> dict | None:
         if brent_row:
             data["brent_change_pct"] = float(brent_row["change_percent"])
 
-        trailing = await _fetch_trailing_changes(pool, "FTSE 100", days=3)
+        trailing = await _fetch_trailing_changes(pool, "FTSE 100", days=10)
         if trailing:
             data["ftse_trailing"] = trailing
 
@@ -663,7 +675,7 @@ async def _fetch_japan_close_data() -> dict | None:
             data["jpy_inr_price"] = float(jpy_row["price"])
             data["jpy_inr_change_pct"] = float(jpy_row["change_percent"])
 
-        trailing = await _fetch_trailing_changes(pool, "Nikkei 225", days=3)
+        trailing = await _fetch_trailing_changes(pool, "Nikkei 225", days=10)
         if trailing:
             data["nikkei_trailing"] = trailing
 
@@ -754,7 +766,7 @@ async def _fetch_india_open_data() -> dict | None:
             elif a == "gold":
                 data["gold_pct"] = pct
 
-        trailing = await _fetch_trailing_changes(pool, "Nifty 50", days=5)
+        trailing = await _fetch_trailing_changes(pool, "Nifty 50", days=10)
         if trailing:
             data["nifty_trailing"] = trailing
 
@@ -1292,7 +1304,7 @@ async def _check_fii_dii(now: datetime) -> tuple[float | None, float | None]:
 
         if latest_date != _fii_dii_state.get("last_date"):
             logger.info("FII/DII alert: fii=%.0f, dii=%.0f, date=%s", fii_net, dii_net, latest_date)
-            trailing = await _fetch_fii_dii_trailing(pool, days=5)
+            trailing = await _fetch_fii_dii_trailing(pool, days=10)
             await notification_service.notify_fii_dii_data(
                 fii_net, dii_net, dedup_key=dedup_key,
                 trailing=trailing,
@@ -1403,6 +1415,21 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
             else:
                 asia_change[_display] = pct
 
+        # India VIX for fear gauge
+        vix_row = await pool.fetchrow(
+            """
+            SELECT price, change_percent FROM market_prices
+            WHERE asset = 'India VIX' AND price IS NOT NULL
+            ORDER BY timestamp DESC LIMIT 1
+            """
+        )
+        india_vix = None
+        india_vix_pct = None
+        if vix_row:
+            india_vix = float(vix_row["price"])
+            if vix_row["change_percent"] is not None:
+                india_vix_pct = float(vix_row["change_percent"])
+
         logger.info(
             "Pre-market summary: gift_nifty=%.0f (%.1f%%), us=%s, asia=%s",
             gift_price, gift_change_pct, us_change, asia_change,
@@ -1411,7 +1438,7 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
         today_str = today.strftime("%Y-%m-%d")
         dedup_key = f"{today_str}_pre_market"
 
-        nifty_trailing = await _fetch_trailing_changes(pool, "Nifty 50", days=5)
+        nifty_trailing = await _fetch_trailing_changes(pool, "Nifty 50", days=10)
 
         await notification_service.notify_pre_market_summary(
             gift_nifty_price=gift_price,
@@ -1420,6 +1447,8 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
             asia_change=asia_change or None,
             dedup_key=dedup_key,
             nifty_trailing=nifty_trailing,
+            india_vix=india_vix,
+            india_vix_pct=india_vix_pct,
         )
 
         _pre_market_state["last_date"] = today
