@@ -498,11 +498,11 @@ async def run_discover_stock_intraday_job() -> None:
         )
         return
 
-    # The explicit 15:45 close cron is allowed through the live-market
-    # gate so we capture the closing print before the 16:00 rescore.
-    h, m = _ist_hour_minute()
-    is_close_tick = (h == 15 and m == 45)
-    if not is_close_tick and not _in_live_market_window():
+    # No longer need the 15:45 close cron — the closing auction price
+    # is backfilled from stock_snapshots (Yahoo) by discover_stock_job
+    # after it upserts, with the real exchange source_timestamp.
+    if not _in_live_market_window():
+        h, m = _ist_hour_minute()
         logger.info(
             "discover_stock_intraday: skipping — outside live market "
             "window (09:15-15:30 IST). Now=%02d:%02d IST", h, m,
@@ -641,8 +641,9 @@ async def run_discover_stock_intraday_job() -> None:
             errors = len(update_rows)
             updated = 0
 
-    # Prune runs once per trading day at the close tick.
-    if is_close_tick:
+    # Prune runs once per trading day near market close.
+    h, m = _ist_hour_minute()
+    if h == 15 and m >= 25:
         try:
             await pool.execute(
                 "DELETE FROM discover_stock_intraday "
