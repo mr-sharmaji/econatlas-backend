@@ -1,25 +1,26 @@
 apiVersion: 1
 datasources:
-- name: Prometheus
-  type: prometheus
-  access: proxy
-  url: http://prometheus:9090
-  isDefault: true
-  editable: true
-- name: PostgreSQL
-  type: postgres
-  access: proxy
-  url: postgres:5432
-  database: econatlas
-  user: econatlas
-  secureJsonData:
-    password: econatlas
-  jsonData:
-    sslmode: disable
-    maxOpenConns: 2
-    maxIdleConns: 1
-    connMaxLifetime: 600
-    postgresVersion: 1600
-    timescaledb: false
-  editable: true
-  uid: econatlas-postgres
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+
+  - name: PostgreSQL
+    uid: econatlas-postgres
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: econatlas
+    user: econatlas
+    secureJsonData:
+      password: econatlas
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 2
+      maxIdleConns: 1
+      connMaxLifetime: 600
+      postgresVersion: 1600
+      timescaledb: false
+    editable: true
