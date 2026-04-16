@@ -105,38 +105,6 @@
       ]
     },
     {
-      "title": "304 cache hit ratio",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 16,
-        "y": 18
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1,
-          "custom": {
-            "fillOpacity": 15,
-            "lineWidth": 2
-          }
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum(rate(http_requests_total{status=\"304\"}[5m])) / sum(rate(http_requests_total{status=~\"200|304\"}[5m]))",
-          "legendFormat": "304 / (200+304)",
-          "refId": "A"
-        }
-      ]
-    },
-    {
       "title": "Top 10 slowest endpoints (p95)",
       "type": "bargauge",
       "gridPos": {
@@ -304,47 +272,6 @@
             "mode": "palette-classic"
           },
           "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {}
-    },
-    {
-      "title": "Latency p50 / p95 / p99 (all endpoints)",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 0,
-        "y": 33
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
-      },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
-          "legendFormat": "p50",
-          "refId": "A"
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
-          "legendFormat": "p95",
-          "refId": "B"
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
-          "legendFormat": "p99",
-          "refId": "C"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "s"
         },
         "overrides": []
       },

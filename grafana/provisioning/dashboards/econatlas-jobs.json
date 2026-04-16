@@ -599,49 +599,6 @@
       ]
     },
     {
-      "title": "Per-job last-success age (heatmap)",
-      "type": "heatmap",
-      "gridPos": {
-        "h": 9,
-        "w": 24,
-        "x": 0,
-        "y": 123
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s"
-        }
-      },
-      "options": {
-        "calculate": false,
-        "yAxis": {
-          "unit": "short"
-        },
-        "color": {
-          "mode": "scheme",
-          "scheme": "Turbo",
-          "steps": 64
-        },
-        "cellGap": 2,
-        "tooltip": {
-          "show": true,
-          "yHistogram": false
-        }
-      },
-      "targets": [
-        {
-          "expr": "time() - job_last_success_timestamp_seconds",
-          "legendFormat": "{{job_name}}",
-          "refId": "A",
-          "format": "time_series"
-        }
-      ]
-    },
-    {
       "type": "row",
       "title": "\ud83c\udfe6 MF Pipeline Health",
       "gridPos": {
@@ -652,45 +609,6 @@
       },
       "panels": [],
       "collapsed": false
-    },
-    {
-      "title": "MF NAV freshness (days)",
-      "type": "stat",
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 0,
-        "y": 81
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
-      },
-      "targets": [
-        {
-          "expr": "(time() - max(data_freshness_age_seconds{source=~\".*mf_nav.*\"}))/86400",
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "unit": "d",
-          "thresholds": {
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {}
     },
     {
       "title": "MF Snapshots",
@@ -1097,42 +1015,6 @@
       "options": {}
     },
     {
-      "title": "Log errors & warnings / hour",
-      "type": "timeseries",
-      "gridPos": {
-        "h": 5,
-        "w": 12,
-        "x": 12,
-        "y": 97
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
-      },
-      "targets": [
-        {
-          "expr": "log_errors_1h",
-          "legendFormat": "errors",
-          "refId": "A"
-        },
-        {
-          "expr": "log_warnings_1h",
-          "legendFormat": "warnings",
-          "refId": "B"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "options": {}
-    },
-    {
       "type": "row",
       "title": "\ud83d\udccb job_run_log (DB)",
       "gridPos": {
@@ -1143,65 +1025,6 @@
       },
       "panels": [],
       "collapsed": false
-    },
-    {
-      "title": "Job Run Status (last success age)",
-      "type": "bargauge",
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 103
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
-      },
-      "targets": [
-        {
-          "expr": "time() - job_last_success_timestamp_seconds",
-          "legendFormat": "{{job_name}}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "unit": "s",
-          "thresholds": {
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 3600
-              },
-              {
-                "color": "orange",
-                "value": 43200
-              },
-              {
-                "color": "red",
-                "value": 86400
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        }
-      }
     }
   ],
   "refresh": "15s",
