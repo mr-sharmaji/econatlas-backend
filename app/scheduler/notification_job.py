@@ -650,19 +650,32 @@ async def _fetch_japan_open_data() -> dict | None:
         # Opening move = (first intraday tick today - previous_close) /
         # previous_close. See the long comment in _fetch_us_open_data for
         # the full rationale — same shape, same reason.
-        prev_close_rows = await pool.fetch(
-            """
-            SELECT asset, previous_close FROM market_prices
-            WHERE asset IN ('Nikkei 225', 'TOPIX')
-              AND instrument_type = 'index'
-              AND previous_close IS NOT NULL
-              AND (timestamp AT TIME ZONE 'UTC')::date
-                  = (NOW() AT TIME ZONE 'UTC')::date
-            """,
-        )
-        prev_close_by_asset: dict[str, float] = {
-            r["asset"]: float(r["previous_close"]) for r in prev_close_rows
-        }
+        # Previous close for Nikkei/TOPIX.  Prefer today's daily row
+        # (previous_close = yesterday's close).  But TSE opens at 00:00
+        # UTC and the daily row may not exist yet — fall back to the
+        # latest row's price (= yesterday's close) just like the Nifty
+        # fix for pre-market notifications.
+        today_utc = datetime.now(timezone.utc).date()
+        prev_close_by_asset: dict[str, float] = {}
+        for idx_asset in ("Nikkei 225", "TOPIX"):
+            row = await pool.fetchrow(
+                """
+                SELECT previous_close, price, timestamp::date AS d
+                FROM market_prices
+                WHERE asset = $1 AND instrument_type = 'index'
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                idx_asset,
+            )
+            if not row:
+                continue
+            if row["d"] == today_utc:
+                val = row["previous_close"] or row["price"]
+            else:
+                val = row["price"]
+            if val and float(val) != 0:
+                prev_close_by_asset[idx_asset] = float(val)
 
         opening_rows = await pool.fetch(
             """
@@ -744,22 +757,30 @@ async def _fetch_europe_open_data() -> dict | None:
         from app.core.database import get_pool
         pool = await get_pool()
 
-        # Opening move = (first intraday tick today - previous_close) /
-        # previous_close. See the long comment in _fetch_us_open_data for
-        # the full rationale — same shape, same reason.
-        prev_close_rows = await pool.fetch(
-            """
-            SELECT asset, previous_close FROM market_prices
-            WHERE asset IN ('FTSE 100', 'DAX', 'CAC 40')
-              AND instrument_type = 'index'
-              AND previous_close IS NOT NULL
-              AND (timestamp AT TIME ZONE 'UTC')::date
-                  = (NOW() AT TIME ZONE 'UTC')::date
-            """,
-        )
-        prev_close_by_asset: dict[str, float] = {
-            r["asset"]: float(r["previous_close"]) for r in prev_close_rows
-        }
+        # Previous close for FTSE/DAX/CAC.  Same resilient pattern as
+        # Japan: if today's daily row exists use previous_close, else
+        # fall back to yesterday's row's price.
+        today_utc = datetime.now(timezone.utc).date()
+        prev_close_by_asset: dict[str, float] = {}
+        for idx_asset in ("FTSE 100", "DAX", "CAC 40"):
+            row = await pool.fetchrow(
+                """
+                SELECT previous_close, price, timestamp::date AS d
+                FROM market_prices
+                WHERE asset = $1 AND instrument_type = 'index'
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                idx_asset,
+            )
+            if not row:
+                continue
+            if row["d"] == today_utc:
+                val = row["previous_close"] or row["price"]
+            else:
+                val = row["price"]
+            if val and float(val) != 0:
+                prev_close_by_asset[idx_asset] = float(val)
 
         opening_rows = await pool.fetch(
             """
@@ -789,6 +810,10 @@ async def _fetch_europe_open_data() -> dict | None:
                 data["cac_pct"] = pct
 
         if "ftse_pct" not in data and "dax_pct" not in data:
+            return None
+        # Wait for at least two of the three indices so the header
+        # isn't incomplete (intraday ticks can land seconds apart).
+        if sum(k in data for k in ("ftse_pct", "dax_pct", "cac_pct")) < 2:
             return None
 
         # Asia cues: Nikkei + Nifty 50 — gated. At Europe open (~08:00 UTC),
@@ -995,6 +1020,13 @@ async def _check_gift_nifty(status: dict, now: datetime) -> None:
     _gift_nifty_state["was_open"] = gift_open
 
     if not gift_open:
+        return
+
+    # Suppress during NSE market hours — Gift Nifty alerts are only
+    # meaningful as pre/post-market signals, not while NSE is live.
+    now_ist = now.astimezone(_IST)
+    ist_minutes = now_ist.hour * 60 + now_ist.minute
+    if 540 <= ist_minutes <= 1020:  # 9:00 AM – 5:00 PM IST
         return
 
     try:
