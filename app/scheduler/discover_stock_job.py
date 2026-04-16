@@ -5590,6 +5590,8 @@ async def _backfill_stock_closing_auction(pool) -> int:
         WHERE d.market = 'IN'
           AND d.last_price IS NOT NULL
           AND d.source_timestamp IS NOT NULL
+          AND (d.source_timestamp AT TIME ZONE 'UTC')::date
+              = (NOW() AT TIME ZONE 'UTC')::date
           AND ABS(d.last_price - i.price) > 0.01
         """
     )
