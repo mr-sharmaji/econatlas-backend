@@ -64,7 +64,8 @@ SYSTEM_SWAP_USED = Gauge("system_swap_used_bytes", "Swap used")
 
 # ── Database pool metrics ─────────────────────────────────────────────
 
-DB_POOL_SIZE = Gauge("db_pool_size", "Current database connection pool size")
+DB_POOL_SIZE = Gauge("db_pool_size", "Current database connection pool size (allocated, not max)")
+DB_POOL_MAX = Gauge("db_pool_max_size", "Maximum database connection pool size (configured limit)")
 DB_POOL_FREE = Gauge("db_pool_free", "Free connections in pool")
 DB_POOL_USED = Gauge("db_pool_used", "Used connections in pool")
 DB_LATENCY = Gauge("db_latency_seconds", "Database query latency")
@@ -263,6 +264,51 @@ DATA_STALE_ASSETS_COUNT = Gauge(
     "data_stale_assets_count",
     "Count of assets whose latest row is older than the staleness threshold",
     ["table"],
+)
+
+
+# ── Artha (chat) metrics ─────────────────────────────────────────────
+ARTHA_REQUESTS = Counter(
+    "artha_requests_total",
+    "Total Artha chat requests",
+    ["endpoint"],  # /chat, /suggestions, etc.
+)
+ARTHA_LLM_DURATION = Histogram(
+    "artha_llm_duration_seconds",
+    "Artha LLM call duration",
+    ["model"],
+    buckets=(0.5, 1, 2, 5, 10, 20, 30, 60),
+)
+ARTHA_TOOL_CALLS = Counter(
+    "artha_tool_calls_total",
+    "Artha tool invocations by tool name",
+    ["tool"],
+)
+ARTHA_CACHE_HITS = Counter(
+    "artha_cache_hits_total",
+    "Artha prefetch cache hits",
+)
+ARTHA_CACHE_MISSES = Counter(
+    "artha_cache_misses_total",
+    "Artha prefetch cache misses",
+)
+
+# ── Notification metrics ────────────────────────────────────────────
+NOTIFICATION_SENT = Counter(
+    "notification_sent_total",
+    "Push notifications sent",
+    ["type", "status"],  # type=market_open|ipo|price_alert, status=ok|failed
+)
+
+# ── Watchlist metrics ───────────────────────────────────────────────
+WATCHLIST_OPS = Counter(
+    "watchlist_ops_total",
+    "Watchlist add/remove operations",
+    ["op"],  # add | remove
+)
+WATCHLIST_DEVICES = Gauge(
+    "watchlist_active_devices",
+    "Number of distinct devices with watchlists",
 )
 
 
@@ -497,6 +543,7 @@ async def _collect_once():
         pool = await get_pool()
 
         DB_POOL_SIZE.set(pool.get_size())
+        DB_POOL_MAX.set(pool.get_max_size())
         DB_POOL_FREE.set(pool.get_idle_size())
         DB_POOL_USED.set(pool.get_size() - pool.get_idle_size())
 

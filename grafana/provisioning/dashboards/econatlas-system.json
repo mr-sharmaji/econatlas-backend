@@ -900,19 +900,24 @@
       },
       "targets": [
         {
-          "expr": "db_pool_used",
-          "legendFormat": "used",
+          "expr": "db_pool_max_size",
+          "legendFormat": "max (configured)",
           "refId": "A"
+        },
+        {
+          "expr": "db_pool_size",
+          "legendFormat": "allocated",
+          "refId": "B"
+        },
+        {
+          "expr": "db_pool_used",
+          "legendFormat": "in use",
+          "refId": "C"
         },
         {
           "expr": "db_pool_free",
           "legendFormat": "free",
-          "refId": "B"
-        },
-        {
-          "expr": "db_pool_size",
-          "legendFormat": "total",
-          "refId": "C"
+          "refId": "D"
         }
       ],
       "fieldConfig": {
