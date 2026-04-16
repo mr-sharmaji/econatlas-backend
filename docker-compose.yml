@@ -64,11 +64,6 @@ services:
       HF_TOKEN: "${HF_TOKEN:-}"
     volumes:
       - ./firebase-key.json:/app/firebase-key.json:ro
-      # Persist rotating log files across container rebuilds so the
-      # 7-day retention window actually works. Without this mount,
-      # every `docker compose up --build` wipes logs/app.log and all
-      # rotated siblings, making /ops/logs useless after deploys.
-      - ./logs:/app/logs
     depends_on:
       postgres:
         condition: service_healthy

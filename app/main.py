@@ -8,7 +8,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.database import close_pool, init_pool
-from app.core.log_files import setup_rotating_file_logs, teardown_rotating_file_logs
 from app.core.log_store import setup_log_persistence, stop_log_persistence
 from app.core.log_stream import setup_log_stream
 from app.queue.redis_pool import close_redis_pool
@@ -164,7 +163,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
     await close_pool()          # 5. Close PostgreSQL pool
-    teardown_rotating_file_logs()
 
 
 def create_app() -> FastAPI:
@@ -173,14 +171,6 @@ def create_app() -> FastAPI:
     logging.getLogger(__name__).info("Logging configured at %s", logging.getLevelName(log_level))
     if settings.ops_logs_enabled:
         setup_log_stream(settings.ops_log_buffer_size, min_level=log_level)
-        # Rotating file sink with 7-day on-disk retention. Runs before
-        # the DB pool exists so startup logs land on disk too.
-        setup_rotating_file_logs(
-            log_dir=settings.ops_log_dir,
-            filename=settings.ops_log_filename,
-            retention_days=settings.ops_log_retention_days,
-            level=log_level,
-        )
 
     application = FastAPI(
         title=settings.app_name,

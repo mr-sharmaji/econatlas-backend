@@ -6,10 +6,6 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Header, HTTPException, Path, Query
 
 from app.core.config import get_settings
-from app.core.log_files import (
-    is_enabled as log_files_enabled,
-    tail_log_files,
-)
 from app.core.log_store import (
     is_enabled as log_store_enabled,
     query_log_entries as query_db_log_entries,
@@ -692,24 +688,21 @@ async def ops_logs(
 ) -> LogListResponse:
     """Tail application logs for debugging scheduler/feed issues.
 
-    Three sources, tried in order:
+    Two sources:
 
     1. **db** (default) — ``ops_logs`` Postgres table with 7-day
        retention. Indexed, fast, supports ``since``/``until`` timestamp
-       filters. Survives restarts. Best for most queries.
+       filters. Survives restarts.
     2. **memory** — in-memory ring buffer. Instant, volatile, returns
        ``after_id`` cursor for incremental tailing. Use for live
        polling.
-    3. **file** — reverse-scan of ``logs/app.log`` + rotated siblings.
-       Slowest (O(file_size)), but contains raw tracebacks and works
-       even if DB is down. Use sparingly with narrow filters.
     """
     _authorize(x_ops_token)
 
     requested = (source or "").lower()
 
     # ── DB source (default) ───────────────────────────────────────
-    if requested in ("", "db") and log_store_enabled():
+    if requested != "memory" and log_store_enabled():
         try:
             rows, latest_id = await query_db_log_entries(
                 limit=limit,
@@ -724,27 +717,6 @@ async def ops_logs(
             return LogListResponse(entries=entries, count=len(entries), latest_id=latest_id)
         except Exception as exc:
             logger.warning("ops_logs: DB query failed, falling back to memory: %s", exc)
-
-    # ── File source (opt-in) ──────────────────────────────────────
-    if requested == "file" and log_files_enabled():
-        try:
-            import asyncio as _asyncio
-            import functools as _ft
-            _tail_fn = _ft.partial(
-                tail_log_files,
-                limit=limit,
-                min_level=min_level,
-                contains=contains,
-                logger_name=logger_name,
-                since=since,
-                until=until,
-            )
-            loop = _asyncio.get_event_loop()
-            file_rows = await loop.run_in_executor(None, _tail_fn)
-            entries = [LogEntryResponse(**r) for r in file_rows]
-            return LogListResponse(entries=entries, count=len(entries), latest_id=0)
-        except Exception as exc:
-            logger.warning("ops_logs: file tail failed, falling back to memory: %s", exc)
 
     # ── Memory fallback ───────────────────────────────────────────
     rows, latest_id = get_log_entries(
