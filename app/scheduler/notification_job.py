@@ -1615,7 +1615,6 @@ async def _check_missed_open_notifications(
 
         dedup_key = f"{today_str}_market_open_{market}"
 
-        logger.info("Missed open for %s — sending fallback notification", market)
         open_data = None
         fetcher = open_data_fetchers.get(market)
         if fetcher:
@@ -1623,6 +1622,23 @@ async def _check_missed_open_notifications(
                 open_data = await fetcher()
             except Exception:
                 logger.warning("Fallback open data fetch failed for %s", market, exc_info=True)
+
+        if open_data is None:
+            # Data hasn't landed yet. If we're in the last 5 minutes
+            # of the window, send the simple fallback so the user at
+            # least knows the market opened. Otherwise retry next tick.
+            ist_mins = now_ist.hour * 60 + now_ist.minute
+            window_end_mins = latest * 60
+            if ist_mins >= window_end_mins - 5:
+                logger.info("Missed open for %s — window ending, sending simple fallback", market)
+            else:
+                logger.debug(
+                    "Missed open for %s — data not available yet, will retry",
+                    market,
+                )
+                continue
+        else:
+            logger.info("Missed open for %s — sending rich notification", market)
 
         await notification_service.notify_market_open(
             market, market_data=open_data, dedup_key=dedup_key,
