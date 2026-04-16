@@ -1090,16 +1090,43 @@
       "options": {}
     },
     {
-      "type": "row",
-      "title": "\ud83d\udccb job_run_log (DB)",
+      "title": "Job Run Log (live from DB)",
+      "type": "table",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 67
       },
-      "panels": [],
-      "collapsed": false
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "PCC52D03280B7034C"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT\n  job_name AS \"Job\",\n  CASE WHEN last_success_at IS NOT NULL\n    THEN to_char(last_success_at AT TIME ZONE 'Asia/Kolkata', 'DD Mon HH24:MI')\n    ELSE '\u2014' END AS \"Last Success (IST)\",\n  CASE WHEN last_success_at IS NOT NULL\n    THEN EXTRACT(EPOCH FROM (NOW() - last_success_at))::int || 's'\n    ELSE '\u2014' END AS \"Age\",\n  ROUND(last_duration_s::numeric, 1) || 's' AS \"Duration\",\n  success_count AS \"OK\",\n  consecutive_failures AS \"Fails\",\n  COALESCE(LEFT(last_error, 80), '') AS \"Error\",\n  last_trigger AS \"Trigger\"\nFROM job_run_log\nORDER BY last_success_at DESC NULLS LAST",
+          "refId": "A",
+          "format": "table",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "PCC52D03280B7034C"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      }
     },
     {
       "type": "row",
