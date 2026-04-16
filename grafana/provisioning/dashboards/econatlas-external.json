@@ -12,7 +12,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 89
+        "y": 0
       },
       "collapsed": false
     },
@@ -23,7 +23,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 90
+        "y": 1
       },
       "datasource": {
         "type": "prometheus",
@@ -53,7 +53,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 90
+        "y": 1
       },
       "datasource": {
         "type": "prometheus",
@@ -83,7 +83,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 90
+        "y": 1
       },
       "datasource": {
         "type": "prometheus",
@@ -130,7 +130,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 97
+        "y": 8
       },
       "datasource": {
         "type": "prometheus",
@@ -160,7 +160,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 97
+        "y": 8
       },
       "datasource": {
         "type": "prometheus",
@@ -196,7 +196,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 40
+        "y": 15
       },
       "panels": [],
       "collapsed": false
@@ -208,7 +208,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 41
+        "y": 16
       },
       "datasource": {
         "type": "prometheus",
@@ -239,7 +239,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 41
+        "y": 16
       },
       "datasource": {
         "type": "prometheus",
@@ -270,7 +270,7 @@
         "h": 5,
         "w": 8,
         "x": 0,
-        "y": 47
+        "y": 22
       },
       "datasource": {
         "type": "prometheus",
@@ -301,7 +301,7 @@
         "h": 5,
         "w": 8,
         "x": 8,
-        "y": 47
+        "y": 22
       },
       "datasource": {
         "type": "prometheus",
@@ -332,7 +332,7 @@
         "h": 5,
         "w": 8,
         "x": 16,
-        "y": 47
+        "y": 22
       },
       "datasource": {
         "type": "prometheus",
@@ -363,7 +363,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 52
+        "y": 27
       },
       "datasource": {
         "type": "prometheus",
