@@ -31,7 +31,12 @@ groups:
               expr: (time() - scheduler_heartbeat_timestamp_seconds) > 300
               instant: true
               refId: A
-        noDataState: Alerting
+        # KeepLastState avoids false critical pages when Prometheus
+        # briefly can't scrape /metrics during a deploy (seen
+        # 2026-04-17: NoData-state pages fired even though scheduler
+        # and DB were healthy). A real scheduler stall still flips the
+        # expression to true and fires correctly.
+        noDataState: KeepLastState
         execErrState: Alerting
         for: 1m
         labels:

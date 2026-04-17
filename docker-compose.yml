@@ -15,6 +15,10 @@ services:
     image: pgvector/pgvector:pg16
     container_name: econatlas-postgres
     restart: always
+    # Give PG time to checkpoint on SIGTERM before docker escalates to
+    # SIGKILL. A killed PG forces WAL recovery on next boot, which
+    # rejects connections for several seconds.
+    stop_grace_period: 60s
     environment:
       POSTGRES_USER: econatlas
       POSTGRES_PASSWORD: econatlas
@@ -48,6 +52,10 @@ services:
     build: .
     container_name: econatlas-backend
     restart: always
+    # Allow in-flight requests + arq jobs to drain on SIGTERM instead
+    # of being SIGKILL'd (the prior SIGKILL-path required
+    # app.queue.stale_cleanup to self-heal per-job locks on boot).
+    stop_grace_period: 30s
     ports:
       - "127.0.0.1:8000:8000"
     env_file:
