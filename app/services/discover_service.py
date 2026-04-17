@@ -4599,6 +4599,98 @@ async def get_bulk_stock_volatility_data() -> dict[str, dict]:
     return result
 
 
+async def refresh_stock_period_returns_live() -> int:
+    """Recompute ``percent_change_1y / 3y / 5y`` for every Indian stock
+    snapshot against its current ``last_price``.
+
+    Why this exists: ``percent_change_1y`` is an annualised return whose
+    denominator (the close from ~365 days ago) advances every trading
+    day as the window rolls forward. Our daily discover_stock pipeline
+    recomputes it once per day, but between runs the numerator (today's
+    price) keeps moving with every 10-min intraday tick — so the
+    displayed return drifts 2-3 percentage points against reality by
+    mid-session even on a healthy day, and worse when a rescore is
+    skipped. Running this SQL at the tail of each intraday sweep keeps
+    the three multi-period returns numerically consistent with
+    ``last_price`` at sub-minute resolution.
+
+    Single SQL roundtrip. Anchor = first close in the N-day window
+    (matching get_bulk_stock_volatility_data / the daily pipeline
+    exactly — same cnt thresholds, same ROUND(_, 2)). Returns the
+    number of snapshot rows updated.
+    """
+    pool = await get_pool()
+    # Pull ALL anchors in one pass. A single scan over
+    # discover_stock_price_history filtered to the last 5 years is
+    # ~150k rows and runs in <1s with the (symbol, trade_date) index.
+    # We compute three separate window counts so each period can
+    # independently gate on its own minimum sample size — matching
+    # the HAVING clauses in get_bulk_stock_volatility_data.
+    result = await pool.execute(
+        """
+        WITH flagged AS (
+            SELECT symbol, close, trade_date,
+                   trade_date >= CURRENT_DATE - INTERVAL '365 days'  AS in_1y,
+                   trade_date >= CURRENT_DATE - INTERVAL '1095 days' AS in_3y,
+                   trade_date >= CURRENT_DATE - INTERVAL '1825 days' AS in_5y
+            FROM discover_stock_price_history
+            WHERE trade_date >= CURRENT_DATE - INTERVAL '1825 days'
+        ),
+        ranked AS (
+            SELECT symbol, close, trade_date, in_1y, in_3y, in_5y,
+                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date ASC)
+                       FILTER (WHERE in_1y) AS rn_1y,
+                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date ASC)
+                       FILTER (WHERE in_3y) AS rn_3y,
+                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date ASC)
+                       FILTER (WHERE in_5y) AS rn_5y
+            FROM flagged
+        ),
+        anchors AS (
+            SELECT symbol,
+                   MAX(close) FILTER (WHERE rn_1y = 1) AS first_close_1y,
+                   MAX(close) FILTER (WHERE rn_3y = 1) AS first_close_3y,
+                   MAX(close) FILTER (WHERE rn_5y = 1) AS first_close_5y,
+                   COUNT(*) FILTER (WHERE in_1y) AS cnt_1y,
+                   COUNT(*) FILTER (WHERE in_3y) AS cnt_3y,
+                   COUNT(*) FILTER (WHERE in_5y) AS cnt_5y
+            FROM ranked
+            GROUP BY symbol
+        )
+        UPDATE discover_stock_snapshots s
+        SET
+            percent_change_1y = CASE
+                WHEN a.first_close_1y > 0 AND a.cnt_1y >= 20
+                THEN ROUND((((s.last_price - a.first_close_1y) / a.first_close_1y) * 100)::numeric, 2)
+                ELSE s.percent_change_1y
+            END,
+            percent_change_3y = CASE
+                WHEN a.first_close_3y > 0 AND a.cnt_3y >= 60
+                THEN ROUND((((s.last_price - a.first_close_3y) / a.first_close_3y) * 100)::numeric, 2)
+                ELSE s.percent_change_3y
+            END,
+            percent_change_5y = CASE
+                WHEN a.first_close_5y > 0 AND a.cnt_5y >= 120
+                THEN ROUND((((s.last_price - a.first_close_5y) / a.first_close_5y) * 100)::numeric, 2)
+                ELSE s.percent_change_5y
+            END
+        FROM anchors a
+        WHERE s.symbol = a.symbol
+          AND s.market = 'IN'
+          AND s.last_price IS NOT NULL
+          AND s.last_price > 0
+        """,
+        timeout=60,
+    )
+    # asyncpg returns "UPDATE <n>" — parse it for logging / ops reporting.
+    try:
+        n = int(str(result).split()[-1])
+    except (ValueError, IndexError):
+        n = 0
+    logger.info("refresh_stock_period_returns_live: %d snapshot rows refreshed", n)
+    return n
+
+
 async def get_mf_nav_history(*, scheme_code: str, days: int = 365) -> list[dict]:
     """Return NAV history anchored to the fund's own latest NAV date,
     not server-local CURRENT_DATE.

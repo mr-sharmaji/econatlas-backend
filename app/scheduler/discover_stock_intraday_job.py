@@ -672,6 +672,17 @@ async def run_discover_stock_intraday_job(
             errors = len(update_rows)
             updated = 0
 
+    # Recompute percent_change_1y / 3y / 5y against the freshly updated
+    # last_price values. Without this, the multi-period returns only
+    # advance at discover_stock cadence (once per day) and drift from
+    # the live price all session — the CARYSIL +32.36 vs +46.75 gap.
+    if updated:
+        try:
+            from app.services.discover_service import refresh_stock_period_returns_live
+            await refresh_stock_period_returns_live()
+        except Exception:
+            logger.exception("intraday: live period-returns refresh failed")
+
     # Prune runs once per trading day near market close.
     h, m = _ist_hour_minute()
     if h == 15 and m >= 25:
@@ -1566,6 +1577,16 @@ async def run_discover_stock_intraday_autofill_job() -> None:
             snapshots_updated = len(update_rows)
         except Exception:
             logger.exception("intraday_autofill: snapshot UPDATE failed")
+
+        # Recompute period returns against the refreshed last_price so
+        # percent_change_1y / 3y / 5y stay in sync with the tick we
+        # just wrote. Shared helper with the live intraday path.
+        if snapshots_updated:
+            try:
+                from app.services.discover_service import refresh_stock_period_returns_live
+                await refresh_stock_period_returns_live()
+            except Exception:
+                logger.exception("intraday_autofill: live period-returns refresh failed")
 
     # UPSERT today's row into discover_stock_price_history so the
     # daily-history table always has an "as-of-now" close for today,
