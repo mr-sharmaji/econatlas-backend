@@ -73,6 +73,15 @@ Only widen (INFO, 24h) if error logs show nothing relevant. Never pull unbounded
 4. Open only the specific files graphify pointed to. Confirm the hypothesis before editing.
 5. Check Grafana only when metrics (latency, throughput) are the question.
 
+## DB schema changes — IMPORTANT
+Whenever you edit anything that changes the DB schema (files in `sql/`, any `CREATE TABLE` / `ALTER TABLE` / `DROP TABLE` / `ADD COLUMN` / migration), you **must** also:
+
+1. After the migration is applied to the DB, run `scripts/regen_db_schema.sh` to refresh `docs/db_schema.md`.
+2. Commit the updated `docs/db_schema.md` in the **same commit** as the schema change.
+3. If the migration hasn't been applied yet, note in the commit message that `db_schema.md` will be regenerated post-deploy.
+
+This keeps the schema snapshot that every session loads in sync with reality. Stale `db_schema.md` silently poisons queries.
+
 ## Planning gate (cuts rework)
 For any change touching >1 file or >50 lines: state the approach as 3–5 bullets and wait for "go" before editing. Saves the "wrong logic, redo" loop.
 
