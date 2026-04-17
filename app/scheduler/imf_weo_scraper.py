@@ -12,6 +12,7 @@ from typing import Dict, List
 
 import requests
 
+from app.scheduler.base import get_browser_headers
 from app.scheduler.job_executors import get_job_executor
 from app.services import macro_service
 
@@ -48,7 +49,7 @@ def _fetch_imf_forecasts_sync() -> List[Dict]:
         url = f"{_IMF_API}/{imf_code}/{countries}?periods={periods}"
 
         try:
-            resp = requests.get(url, timeout=30)
+            resp = requests.get(url, timeout=30, headers=get_browser_headers())
             if resp.status_code != 200:
                 logger.warning("IMF API returned %d for %s", resp.status_code, imf_code)
                 continue

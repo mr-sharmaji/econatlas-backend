@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from app.scheduler.base import get_browser_headers
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ _GOOGLE_INDIA_SYMBOLS: tuple[tuple[str, str], ...] = (
 )
 _INDIA_DEFAULT_WINDOW = (dtime(9, 15), dtime(15, 30))
 _http = requests.Session()
+_http.headers.update(get_browser_headers())
 
 
 def _get_nse():

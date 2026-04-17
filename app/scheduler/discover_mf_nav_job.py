@@ -47,6 +47,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from app.core.database import get_pool
+from app.scheduler.base import get_browser_headers
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ def _fetch_amfi_navall_sync() -> list[tuple[int, "datetime.date", float]]:
     logger.debug("amfi: fetching NAVAll.txt url=%s", AMFI_NAVALL_URL)
     t0 = time.monotonic()
     try:
-        resp = requests.get(AMFI_NAVALL_URL, timeout=30, allow_redirects=True)
+        resp = requests.get(AMFI_NAVALL_URL, timeout=30, allow_redirects=True, headers=get_browser_headers())
         resp.raise_for_status()
     except requests.exceptions.RequestException as exc:
         logger.warning("amfi: NAVAll.txt fetch failed: %r", exc)
@@ -273,7 +274,7 @@ def _fetch_mf_nav(
     )
     for attempt in range(MAX_RETRIES):
         try:
-            resp = requests.get(url, timeout=15)
+            resp = requests.get(url, timeout=15, headers=get_browser_headers())
         except requests.exceptions.RequestException as exc:
             wait = 2 ** attempt
             logger.debug(

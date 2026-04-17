@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
 import requests
+from app.scheduler.base import get_browser_headers
 
 from app.core.database import parse_ts
 from app.core.config import get_settings
@@ -572,6 +573,7 @@ def _fetch_indexmundi_prices() -> List[Dict]:
     items: List[Dict] = []
     now_iso = datetime.now(timezone.utc).isoformat()
     session = requests.Session()
+    session.headers.update(get_browser_headers())
     session.headers.update({"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"})
 
     for slug, (asset, unit) in IM_COMMODITIES.items():

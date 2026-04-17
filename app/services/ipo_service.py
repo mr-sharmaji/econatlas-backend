@@ -8,6 +8,7 @@ from html import unescape
 
 import requests
 
+from app.scheduler.base import get_browser_headers
 from app.core.config import get_settings
 from app.scheduler.job_executors import get_job_executor
 from app.core.database import get_pool, parse_ts, record_to_dict
@@ -213,7 +214,7 @@ def _fetch_detail_price_band(row: dict) -> str | None:
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html,*/*;q=0.8"}
     for url in _detail_urls_for_row(row):
         try:
-            response = requests.get(url, headers=headers, timeout=12)
+            response = requests.get(url, headers={**get_browser_headers(), **headers}, timeout=12)
             response.raise_for_status()
             detail_band = _extract_price_band_from_detail_html(response.text)
             if detail_band:
@@ -387,7 +388,7 @@ def _fetch_rows_for_status(source_code: str, status: str, today_ist: date) -> li
         f"{_LIVE_BASE_URL}/{_LIVE_REPORT_ID}/1/"
         f"{today_ist.month}/{today_ist.year}/{_financial_year(today_ist)}/0/{source_code}"
     )
-    response = requests.get(url, params={"search": ""}, timeout=15)
+    response = requests.get(url, params={"search": ""}, timeout=15, headers=get_browser_headers())
     response.raise_for_status()
     payload = response.json()
     if int(payload.get("msg", 0)) != 1:

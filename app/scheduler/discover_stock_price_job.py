@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 import requests
 
+from app.scheduler.base import get_browser_headers
 from app.core.database import get_pool
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ def _fetch_yahoo(
     url = YAHOO_CHART_URL.format(symbol=symbol, range=yf_range)
     for attempt in range(MAX_RETRIES):
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=15)
+            resp = requests.get(url, headers=get_browser_headers(), timeout=15)
         except requests.exceptions.RequestException:
             stats["timeouts"] += 1
             time.sleep(2 ** attempt + random.uniform(0, 1))

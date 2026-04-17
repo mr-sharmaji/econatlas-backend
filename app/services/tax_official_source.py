@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.scheduler.base import get_browser_headers
+
 import asyncio
 import html
 import json

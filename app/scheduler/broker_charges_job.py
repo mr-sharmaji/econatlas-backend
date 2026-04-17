@@ -20,6 +20,7 @@ from typing import Any
 
 import requests
 from bs4 import BeautifulSoup
+from app.scheduler.base import get_browser_headers
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,7 @@ _BROKER_URLS = {
 def _fetch_html(url: str) -> str | None:
     """Fetch a URL and return its HTML, or None on failure."""
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
+        resp = requests.get(url, headers=get_browser_headers(), timeout=_TIMEOUT)
         resp.raise_for_status()
         return resp.text
     except Exception as exc:

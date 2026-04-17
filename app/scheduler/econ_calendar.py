@@ -5,6 +5,8 @@ official schedule pages.
 """
 from __future__ import annotations
 
+from app.scheduler.base import get_browser_headers
+
 import asyncio
 import logging
 import re
@@ -41,8 +43,7 @@ def _scrape_fed_fomc() -> List[Dict]:
     try:
         resp = requests.get(
             "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
-            headers=_HEADERS, timeout=20,
-        )
+            headers=get_browser_headers(), timeout=20)
         if resp.status_code != 200:
             logger.warning("Fed calendar HTTP %d", resp.status_code)
             return events
@@ -174,8 +175,7 @@ def _scrape_rbi_mpc() -> List[Dict]:
     try:
         resp = requests.get(
             "https://www.rbi.org.in/scripts/annualpolicy.aspx",
-            headers=_HEADERS, timeout=20,
-        )
+            headers=get_browser_headers(), timeout=20)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
             for a in soup.find_all("a", href=True):
@@ -185,7 +185,7 @@ def _scrape_rbi_mpc() -> List[Dict]:
                     if not href.startswith("http"):
                         href = f"https://www.rbi.org.in{href}"
                     try:
-                        r2 = requests.get(href, headers=_HEADERS, timeout=15)
+                        r2 = requests.get(href, headers=get_browser_headers(), timeout=15)
                         if r2.status_code == 200:
                             _extract_mpc_dates(r2.text, "rbi.org.in")
                     except Exception:
@@ -197,8 +197,7 @@ def _scrape_rbi_mpc() -> List[Dict]:
     try:
         resp = requests.get(
             "https://www.5paisa.com/blog/rbi-mpc-meeting-schedule",
-            headers=_HEADERS, timeout=20,
-        )
+            headers=get_browser_headers(), timeout=20)
         if resp.status_code == 200:
             _extract_mpc_dates(resp.text, "5paisa.com")
     except Exception:
@@ -209,8 +208,7 @@ def _scrape_rbi_mpc() -> List[Dict]:
         current_year = date.today().year
         resp = requests.get(
             f"https://www.google.com/search?q=RBI+MPC+meeting+schedule+dates+{current_year}+{current_year+1}",
-            headers=_HEADERS, timeout=15,
-        )
+            headers=get_browser_headers(), timeout=15)
         if resp.status_code == 200:
             # Extract date patterns directly from Google snippets
             _extract_mpc_dates(resp.text, "google_search")
@@ -230,8 +228,7 @@ def _scrape_te_calendar_for(
     try:
         resp = requests.get(
             f"https://tradingeconomics.com/{path}",
-            headers=_HEADERS, timeout=20,
-        )
+            headers=get_browser_headers(), timeout=20)
         if resp.status_code != 200:
             return events
 

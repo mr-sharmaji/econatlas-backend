@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 from bs4 import BeautifulSoup
+from app.scheduler.base import get_browser_headers
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,7 @@ class TradingEconomicsScraper:
     def _get_session(self) -> requests.Session:
         if self._session is None:
             self._session = requests.Session()
+            self._session.headers.update(get_browser_headers())
             self._session.headers.update(_HEADERS)
             # Establish cookies by visiting homepage
             try:
