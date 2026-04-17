@@ -1193,11 +1193,18 @@ async def _check_gift_nifty(status: dict, now: datetime) -> None:
     if not gift_open:
         return
 
-    # Suppress during NSE market hours — Gift Nifty alerts are only
-    # meaningful as pre/post-market signals, not while NSE is live.
+    # Gift Nifty alerts only in explicit pre/post market windows:
+    #   - Pre-market: before 8:30 AM IST (Asia pre-NSE-open session)
+    #   - Post-market: 7:00 PM IST onwards (after US pre-market opens
+    #     at 7 PM IST — this is when meaningful next-day NSE signals
+    #     emerge)
+    # Anything between 8:30 AM and 7:00 PM IST is suppressed — either
+    # NSE is live (9:15 AM - 3:30 PM), in pre-open auction, or in the
+    # post-close settlement window where Gift Nifty signal is noisy.
     now_ist = now.astimezone(_IST)
     ist_minutes = now_ist.hour * 60 + now_ist.minute
-    if 540 <= ist_minutes <= 1020:  # 9:00 AM – 5:00 PM IST
+    # 8:30 AM = 510, 7:00 PM = 1140
+    if 510 <= ist_minutes < 1140:
         return
 
     try:
@@ -1608,13 +1615,51 @@ async def _check_commodity_spikes(now: datetime) -> None:
             if alerted.get(asset) == band:
                 continue
 
-            # Cooldown: 2 hours between alerts per asset
+            # Cooldown: 2 hours between alerts per asset.
+            # Check BOTH in-memory state AND notification_log — the
+            # in-memory state resets on service restart, which is
+            # how today's 9.9% and 8.9% crude oil alerts fired 6 min
+            # apart (different bands but same selloff). notification_log
+            # survives restarts, so we query it to see when the last
+            # spike notification for this asset was sent.
+            notif_type = f"commodity_spike_{asset}"
+            db_last_sent_row = await pool.fetchrow(
+                """
+                SELECT sent_at FROM notification_log
+                WHERE notification_type = $1
+                ORDER BY sent_at DESC LIMIT 1
+                """,
+                notif_type,
+            )
+            db_last_sent = db_last_sent_row["sent_at"] if db_last_sent_row else None
+            if db_last_sent is not None:
+                if db_last_sent.tzinfo is None:
+                    db_last_sent = db_last_sent.replace(tzinfo=timezone.utc)
+                if (now - db_last_sent).total_seconds() < 7200:
+                    logger.info(
+                        "Commodity spike suppressed for %s: last %s notification "
+                        "fired %.0fs ago (< 2h cooldown)",
+                        asset, notif_type, (now - db_last_sent).total_seconds(),
+                    )
+                    continue
             asset_last = last_sent.get(asset)
             if asset_last is not None and (now - asset_last).total_seconds() < 7200:
                 continue
 
-            # Max 2 alerts per asset per day
-            if daily_counts.get(asset, 0) >= 2:
+            # Max 2 alerts per asset per day — also verify against
+            # notification_log so this limit survives restarts.
+            today_utc_start = datetime(
+                now.year, now.month, now.day, 0, 0, 0, tzinfo=timezone.utc,
+            )
+            db_today_count_row = await pool.fetchrow(
+                """
+                SELECT COUNT(*) AS n FROM notification_log
+                WHERE notification_type = $1 AND sent_at >= $2
+                """,
+                notif_type, today_utc_start,
+            )
+            db_today_count = int(db_today_count_row["n"]) if db_today_count_row else 0
+            if db_today_count >= 2 or daily_counts.get(asset, 0) >= 2:
                 continue
 
             display_name = asset.replace("_", " ").title()

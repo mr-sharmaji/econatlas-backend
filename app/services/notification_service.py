@@ -573,8 +573,11 @@ async def notify_fii_dii_data(
     trailing: dict | None = None,
 ) -> bool:
     """Send notification with FII/DII activity update."""
-    fii_sign = "+" if fii_net >= 0 else ""
-    dii_sign = "+" if dii_net >= 0 else ""
+    # _format_inr returns absolute value — explicit sign required
+    # for negative values (user saw "DII 4,721 Cr" instead of
+    # "DII -4,721 Cr" when DIIs were net sellers).
+    fii_sign = "+" if fii_net >= 0 else "-"
+    dii_sign = "+" if dii_net >= 0 else "-"
     title = (
         f"\U0001f4ca FII {fii_sign}{_format_inr(fii_net)} Cr"
         f" | DII {dii_sign}{_format_inr(dii_net)} Cr"
