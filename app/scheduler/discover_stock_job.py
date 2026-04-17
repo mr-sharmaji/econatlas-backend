@@ -25,6 +25,30 @@ from app.services import discover_service
 
 logger = logging.getLogger(__name__)
 
+
+def _coerce_jsonb_dict(value: object) -> dict:
+    """Return `value` as a dict, tolerating the asyncpg JSONB-as-str case.
+
+    The Postgres pool here has no JSONB type codec registered (see
+    app.services.discover_service._to_jsonb for the matching write-side
+    workaround), so every JSONB column read via `SELECT *` comes back
+    as a raw JSON text string. Scoring code that does `.get()` on such
+    a column would crash with AttributeError on the rescore_stock path
+    (this is how `growth_ranges.get(...)` blew up in `_score_growth_v2`).
+    This helper normalises both shapes — dict, JSON-encoded str, or
+    anything else — to a plain dict.
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 NSE_HOME_URL = "https://www.nseindia.com"
 NSE_QUOTE_URL = "https://www.nseindia.com/api/quote-equity"
 NSE_EQUITY_MASTER_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
@@ -2312,10 +2336,12 @@ class DiscoverStockScraper(BaseScraper):
         """Growth score with 10Y/5Y/3Y blending and sector-specific weights."""
         parts: dict[str, float] = {}
 
-        # ── Extract growth_ranges for 10Y Screener data ──
-        gr = row.get("growth_ranges") or {}
-        gr_sales = gr.get("compounded_sales_growth", {})
-        gr_profit = gr.get("compounded_profit_growth", {})
+        # Extract growth_ranges (10Y Screener data) — _coerce_jsonb_dict
+        # handles the asyncpg-returns-JSONB-as-str case that crashes the
+        # rescore path. See helper docstring for why.
+        gr = _coerce_jsonb_dict(row.get("growth_ranges"))
+        gr_sales = _coerce_jsonb_dict(gr.get("compounded_sales_growth"))
+        gr_profit = _coerce_jsonb_dict(gr.get("compounded_profit_growth"))
 
         # Revenue CAGR: blend 3Y, 5Y, and 10Y
         csg_3y = row.get("compounded_sales_growth_3y")
@@ -2681,10 +2707,10 @@ class DiscoverStockScraper(BaseScraper):
     def _classify_lynch(self, row: dict, sector: str) -> str:
         """Peter Lynch stock classification with multi-period verification."""
         mcap = row.get("market_cap") or 0
-        gr = row.get("growth_ranges") or {}
-        gr_sales = gr.get("compounded_sales_growth", {})
-        gr_profit = gr.get("compounded_profit_growth", {})
-        gr_roe = gr.get("return_on_equity", {})
+        gr = _coerce_jsonb_dict(row.get("growth_ranges"))
+        gr_sales = _coerce_jsonb_dict(gr.get("compounded_sales_growth"))
+        gr_profit = _coerce_jsonb_dict(gr.get("compounded_profit_growth"))
+        gr_roe = _coerce_jsonb_dict(gr.get("return_on_equity"))
 
         rev_cagr = row.get("_hist_5y_revenue_cagr")
         if rev_cagr is None:
@@ -3772,10 +3798,10 @@ class DiscoverStockScraper(BaseScraper):
         fcf = row.get("free_cash_flow")
         total_cash = row.get("total_cash")
         total_debt = row.get("total_debt")
-        gr = row.get("growth_ranges") or {}
-        gr_sales = gr.get("compounded_sales_growth", {})
-        gr_profit = gr.get("compounded_profit_growth", {})
-        gr_roe = gr.get("return_on_equity", {})
+        gr = _coerce_jsonb_dict(row.get("growth_ranges"))
+        gr_sales = _coerce_jsonb_dict(gr.get("compounded_sales_growth"))
+        gr_profit = _coerce_jsonb_dict(gr.get("compounded_profit_growth"))
+        gr_roe = _coerce_jsonb_dict(gr.get("return_on_equity"))
         rec_mean = row.get("analyst_recommendation_mean")
         analyst_count = row.get("analyst_count")
         target = row.get("analyst_target_mean")
@@ -4011,8 +4037,8 @@ class DiscoverStockScraper(BaseScraper):
         roce = row.get("roce")
         rev_cagr_5y = row.get("_hist_5y_revenue_cagr")
         prof_cagr_5y = row.get("_hist_5y_profit_cagr")
-        _gr = row.get("growth_ranges") or {}
-        _gr_profit_n = _gr.get("compounded_profit_growth", {})
+        _gr = _coerce_jsonb_dict(row.get("growth_ranges"))
+        _gr_profit_n = _coerce_jsonb_dict(_gr.get("compounded_profit_growth"))
         _prof_cagr_10y = _gr_profit_n.get("10y")
         opm_std = row.get("_hist_opm_std_5y")
         opm_chg = row.get("opm_change")
