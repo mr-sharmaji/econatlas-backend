@@ -463,6 +463,12 @@ class DiscoverStockScraper(BaseScraper):
         super().__init__()
         self._screener_cache = {}
         self._yahoo_cache = {}
+        # Dedicated session for screener.in with browser headers.
+        # Separate from self.session (bot UA for Yahoo/NSE/Google)
+        # so header swaps are thread-safe during parallel pre-fetch.
+        from app.scheduler.base import get_browser_headers
+        self._screener_session = requests.Session()
+        self._screener_session.headers.update(get_browser_headers())
         self.settings = get_settings()
         self._nse_ready = False
         self._nse_disabled_until: datetime | None = None
@@ -1563,18 +1569,19 @@ class DiscoverStockScraper(BaseScraper):
             f"{base}/company/{nse_symbol}/consolidated/",
             f"{base}/company/{nse_symbol}/",
         ]
-        # Screener.in blocks the bot UA — swap to browser headers for
-        # these requests only. The BaseScraper session uses the bot UA
-        # by default because Yahoo works better with it. Swap back
-        # after the request via finally block.
-        from app.scheduler.base import get_browser_headers
-        _original_headers = dict(self.session.headers)
-        self.session.headers.update(get_browser_headers())
-        try:
-          for url in candidates:
+        for url in candidates:
             for attempt in range(self._screener_max_retries):
                 try:
-                    html = self._get_text(url, timeout=self._screener_timeout)
+                    # Use dedicated screener session (browser UA) instead
+                    # of self.session (bot UA for Yahoo). Thread-safe
+                    # because each session is independent.
+                    from app.scheduler.base import _record_ext_api_safe
+                    import time as _t
+                    _t0 = _t.monotonic()
+                    resp = self._screener_session.get(url, timeout=self._screener_timeout)
+                    _record_ext_api_safe(url, resp.status_code, _t.monotonic() - _t0)
+                    resp.raise_for_status()
+                    html = resp.text
                     text = unescape(re.sub(r"<[^>]+>", " ", html))
                     text = re.sub(r"\s+", " ", text)
 
@@ -1764,7 +1771,9 @@ class DiscoverStockScraper(BaseScraper):
                             and len(candidates) > 1):
                         standalone_url = candidates[1]  # /company/SYMBOL/
                         try:
-                            sa_html = self._get_text(standalone_url, timeout=self._screener_timeout)
+                            _sa_resp = self._screener_session.get(standalone_url, timeout=self._screener_timeout)
+                            _sa_resp.raise_for_status()
+                            sa_html = _sa_resp.text
                             for tbl_id, tbl_key in (
                                 ("profit-loss", "pl_annual"),
                                 ("balance-sheet", "bs_annual"),
@@ -1897,16 +1906,12 @@ class DiscoverStockScraper(BaseScraper):
                         nse_symbol, url, exc_info=True,
                     )
                     break
-          return {
-              "pe_ratio": None, "roe": None, "roce": None,
-              "debt_to_equity": None, "price_to_book": None,
-              "eps": None, "market_cap": None, "high_52w": None,
-              "low_52w": None, "dividend_yield": None,
-          }, "unavailable"
-        finally:
-            # Restore original (bot) UA so Yahoo calls aren't affected
-            self.session.headers.clear()
-            self.session.headers.update(_original_headers)
+        return {
+            "pe_ratio": None, "roe": None, "roce": None,
+            "debt_to_equity": None, "price_to_book": None,
+            "eps": None, "market_cap": None, "high_52w": None,
+            "low_52w": None, "dividend_yield": None,
+        }, "unavailable"
 
     @staticmethod
     def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
