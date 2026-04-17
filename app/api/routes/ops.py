@@ -38,6 +38,7 @@ _VALID_JOBS = {
     "ipo", "tax", "market_score", "fertilizer",
     "notification_check", "ipo_notification",
     "gap_backfill",
+    "intraday_gap_backfill",
     "market_intraday_backfill",
     "news_embed",
     # Artha semantic layer backfills

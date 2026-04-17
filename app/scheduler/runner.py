@@ -259,6 +259,10 @@ async def _run_gap_backfill() -> None:
     await _enqueue("gap_backfill")
 
 
+async def _run_intraday_gap_backfill() -> None:
+    await _enqueue("intraday_gap_backfill")
+
+
 async def _run_stock_future_prospects() -> None:
     await _enqueue("stock_future_prospects")
 
@@ -502,6 +506,19 @@ def start_scheduler() -> None:
         logger.info("Scheduler: crypto every %dm", intervals["crypto_minutes"])
 
     _scheduler.add_job(_run_brief, "interval", minutes=intervals["brief_minutes"], id="brief", replace_existing=True)
+
+    # Intraday gap-fill: every 30 min, 24/7. Picks up any minute-bars
+    # the live scrapers missed due to transient Yahoo failures, job
+    # executor stalls, or network issues. Upsert is idempotent so
+    # runs during healthy periods are cheap (just DB no-ops).
+    _scheduler.add_job(
+        _run_intraday_gap_backfill,
+        "interval",
+        minutes=30,
+        id="intraday_gap_backfill",
+        replace_existing=True,
+    )
+    logger.info("Scheduler: intraday_gap_backfill every 30m")
     if intervals["discover_cron_enabled"]:
         _scheduler.add_job(
             _run_discover_stock,

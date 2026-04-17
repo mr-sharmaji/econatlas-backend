@@ -352,3 +352,139 @@ async def run_gap_backfill_job() -> None:
         total_inserted,
         len(assets),
     )
+
+
+# ────────────────────────────────────────────────────────────────────
+# Intraday gap backfill
+# ────────────────────────────────────────────────────────────────────
+
+def _fetch_yahoo_1m_bars(
+    scraper: BaseScraper,
+    symbol: str,
+    range_period: str = "2d",
+) -> tuple[list[tuple[datetime, float]], str]:
+    """Fetch 1-minute OHLC bars from Yahoo's v8 chart endpoint.
+
+    Returns (list of (UTC datetime, close_price), currency). Empty
+    list on failure. 2-day range covers any realistic outage window
+    while keeping the payload small (~2880 bars max).
+    """
+    try:
+        payload = scraper._get_json(
+            YAHOO_CHART_URL.format(symbol=symbol),
+            params={"interval": "1m", "range": range_period},
+            retries=2,
+        )
+    except Exception:
+        logger.debug("yahoo 1m fetch failed for %s", symbol, exc_info=True)
+        return ([], "USD")
+    result = payload.get("chart", {}).get("result", [])
+    if not result:
+        return ([], "USD")
+    res = result[0]
+    meta = res.get("meta", {})
+    currency = str(meta.get("currency", "USD") or "USD")
+    timestamps = res.get("timestamp") or []
+    quote = (res.get("indicators", {}).get("quote", []) or [{}])[0]
+    closes = quote.get("close") or []
+    out: list[tuple[datetime, float]] = []
+    for i, ts in enumerate(timestamps):
+        if i >= len(closes):
+            break
+        c = closes[i]
+        if c is None:
+            continue
+        try:
+            dt = datetime.fromtimestamp(int(ts), tz=UTC)
+            out.append((dt, float(c)))
+        except (TypeError, ValueError):
+            continue
+    return (out, currency)
+
+
+async def run_intraday_gap_backfill_job() -> None:
+    """Fill gaps in market_prices_intraday from Yahoo's 1m chart.
+
+    Runs periodically (every 30 min). For each Yahoo-backed asset
+    in ASSET_CATALOG (indices, currencies, commodities, crypto),
+    fetches the last 2 days of 1-minute bars and upserts into
+    market_prices_intraday. The unique key (asset, instrument_type,
+    source_timestamp, provider) ensures idempotency — repeat runs
+    cost only DB work.
+
+    Rationale: the live scrapers (market_job, commodity_job, etc.)
+    run every 30s but can miss ticks during transient Yahoo outages,
+    executor stalls, or network blips. This job fills those gaps
+    from the same Yahoo source the live scrapers use — so no
+    cross-source contamination (the same problem we just killed
+    with Google Finance fallback).
+
+    Provider tag 'yahoo_1m' distinguishes gap-filled rows from live
+    scraper rows, which is useful for ops diagnostics.
+    """
+    from app.scheduler.commodity_job import SYMBOLS as COMMODITY_SYMBOLS
+    from app.scheduler.market_job import (
+        INDEX_SYMBOLS,
+        FX_SYMBOLS,
+        UNSUPPORTED_YAHOO_FX_SYMBOLS,
+    )
+    from app.services import market_service as svc
+
+    # Build (symbol → (asset, instrument_type)) for all Yahoo-backed
+    # assets we can gap-fill. Unit is only used for commodities and
+    # not stored in the intraday table, so we ignore it here.
+    yahoo_assets: dict[str, tuple[str, str]] = {}
+    for sym, asset in INDEX_SYMBOLS.items():
+        yahoo_assets[sym] = (asset, "index")
+    for sym, asset in FX_SYMBOLS.items():
+        if sym in UNSUPPORTED_YAHOO_FX_SYMBOLS:
+            continue
+        yahoo_assets[sym] = (asset, "currency")
+    for sym, (asset, _unit) in COMMODITY_SYMBOLS.items():
+        yahoo_assets[sym] = (asset, "commodity")
+
+    logger.info(
+        "Intraday gap backfill: starting for %d Yahoo-backed assets",
+        len(yahoo_assets),
+    )
+
+    scraper = GapBackfiller()
+    rows_to_insert: list[dict] = []
+    usx_divisor = 100.0
+
+    for sym, (asset, instrument_type) in yahoo_assets.items():
+        try:
+            bars, _currency = _fetch_yahoo_1m_bars(scraper, sym)
+        except Exception:
+            logger.debug("intraday gap backfill fetch failed for %s", sym, exc_info=True)
+            continue
+        if not bars:
+            continue
+        # Yahoo quotes some grains/softs in US cents (USX) — convert
+        divisor = usx_divisor if sym in _USX_SYMBOLS else 1.0
+        for dt, close in bars:
+            ts_rounded = svc._round_to_minute(dt).isoformat()
+            rows_to_insert.append({
+                "asset": asset,
+                "instrument_type": instrument_type,
+                "price": close / divisor,
+                "timestamp": ts_rounded,
+                "source_timestamp": ts_rounded,
+                "provider": "yahoo_1m",
+                "provider_priority": 1,
+                "confidence_level": 0.95,
+                "is_fallback": False,
+                "quality": "primary",
+            })
+        # Modest pacing to stay under Yahoo's rate ceiling
+        time.sleep(0.2)
+
+    if not rows_to_insert:
+        logger.info("Intraday gap backfill: no rows built")
+        return
+    inserted = await svc.insert_intraday_batch(rows_to_insert)
+    logger.info(
+        "Intraday gap backfill complete: %d bars fetched across %d assets, "
+        "%d upserted (new or updated)",
+        len(rows_to_insert), len(yahoo_assets), inserted,
+    )

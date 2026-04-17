@@ -48,6 +48,8 @@ JOB_RETRY_POLICIES: dict[str, tuple[int, int]] = {
     "ipo_notification": (2, 30),
     # Gap backfill — runs once at startup, retry matters
     "gap_backfill": (2, 60),
+    # Intraday gap backfill — every 30 min, cheap retry
+    "intraday_gap_backfill": (1, 30),
     # News embedding backfill — CPU-bound, self-idempotent
     "news_embed": (1, 30),
     "stock_future_prospects": (1, 60),
@@ -93,6 +95,7 @@ def get_arq_functions() -> list:
         task_discover_stock_price,
         task_econ_calendar,
         task_gap_backfill,
+        task_intraday_gap_backfill,
         task_imf_forecast,
         task_ipo,
         task_ipo_notification,
@@ -147,6 +150,9 @@ def get_arq_functions() -> list:
         func(task_notification_check, name="notification_check"),
         func(task_ipo_notification, name="ipo_notification"),
         func(task_gap_backfill, name="gap_backfill", timeout=600),
+        # Intraday gap backfill — 40+ Yahoo calls at 0.2s pacing ≈ 8s,
+        # plus parsing and DB upsert. 10-min ceiling is generous.
+        func(task_intraday_gap_backfill, name="intraday_gap_backfill", timeout=600),
         # CPU-bound embedding — allow up to 30 min for a full backfill pass
         func(task_news_embed, name="news_embed", timeout=1800),
         func(task_stock_future_prospects, name="stock_future_prospects", timeout=3600),
