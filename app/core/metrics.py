@@ -608,16 +608,16 @@ async def _collect_once():
         # and alert when a scraper silently stops writing.
         for table, col in [
             ("market_prices", "timestamp"),
-            ("market_prices_intraday", "timestamp"),
+            ("market_prices_intraday", "ingested_at"),
             ("market_scores", "computed_at"),
-            ("discover_stock_snapshots", "source_timestamp"),
+            ("discover_stock_snapshots", "ingested_at"),
             ("discover_stock_intraday", "ts"),
             ("discover_stock_price_history", "ingested_at"),
             ("discover_mutual_fund_snapshots", "ingested_at"),
             ("discover_mf_nav_history", "ingested_at"),
             ("news_articles", "published_at"),
             ("economic_events", "event_time"),
-            ("ipo_snapshots", "snapshot_at"),
+            ("ipo_snapshots", "ingested_at"),
             ("broker_charges", "scraped_at"),
         ]:
             try:
