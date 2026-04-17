@@ -821,7 +821,7 @@
       },
       "targets": [
         {
-          "expr": "job_duration_seconds_sum / clamp_min(job_duration_seconds_count, 1)",
+          "expr": "topk(10, job_duration_seconds_sum / clamp_min(job_duration_seconds_count, 1))",
           "legendFormat": "{{job_name}}",
           "refId": "A"
         }
