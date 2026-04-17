@@ -3190,14 +3190,6 @@ def _fetch_discover_mf_rows_sync() -> list[dict]:
 async def run_discover_mutual_fund_job() -> None:
     logger.debug("run_discover_mutual_fund_job: entry")
     _t_job = time.monotonic() if hasattr(time, "monotonic") else 0.0
-    # Hard outer cap on the sync scrape. A healthy run takes ~24 min;
-    # 30 min gives a buffer while still bounding the worst case so the
-    # MF job can never hold its arq slot indefinitely. On 2026-04-17 a
-    # full run chewed 24 min across three consecutive deploys, cascading
-    # into APScheduler misfires on the 30-second market/commodity/crypto
-    # jobs. If this timer fires, the scrape thread keeps running but
-    # the arq slot is released and the next cron tick can retry.
-    MF_JOB_HARD_TIMEOUT_SEC = 1800.0
     try:
         loop = asyncio.get_event_loop()
         logger.debug(
@@ -3208,17 +3200,7 @@ async def run_discover_mutual_fund_job() -> None:
             get_job_executor("discover-mf"),
             _fetch_discover_mf_rows_sync,
         )
-        try:
-            rows = await asyncio.wait_for(
-                fetch_fut, timeout=MF_JOB_HARD_TIMEOUT_SEC,
-            )
-        except asyncio.TimeoutError:
-            logger.error(
-                "Discover MF: hard timeout after %.0fs — abandoning "
-                "sync thread; next cron tick or startup catch-up will retry",
-                MF_JOB_HARD_TIMEOUT_SEC,
-            )
-            return
+        rows = await fetch_fut
         logger.debug(
             "run_discover_mutual_fund_job: fetch returned %d rows, upserting",
             len(rows) if rows else 0,

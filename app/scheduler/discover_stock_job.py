@@ -5701,18 +5701,28 @@ async def run_discover_stock_job() -> None:
     try:
         job_t0 = time_mod.time()
 
-        # 0. Idempotent resume — if a prior run of this job was killed
-        # mid-flight (deploy, OOM, manual restart), partial rows are
-        # already in the snapshot table with fresh `ingested_at`. Read
-        # those symbols now and skip them in the fetch loop so we pick
-        # up exactly where we left off instead of redoing work. Resume
-        # window is 6 hours: anything older is treated as stale and
-        # re-fetched.
         from app.core.database import get_pool as _get_pool_for_resume
         already_fresh: set[str] = set()
         priority_map: dict[str, float] = {}
         try:
             _resume_pool = await _get_pool_for_resume()
+
+            # Mark this pass as started. Paired with a `__last_complete`
+            # upsert at the end of the job. Resume-mode engages only
+            # when last_start > last_complete AND within 30 min — i.e.
+            # a true mid-slot crash-retry. A completed pass (cron OR
+            # startup catch-up) moves last_complete forward, so the
+            # next scheduled run won't see its universe as "fresh".
+            await _resume_pool.execute(
+                """
+                INSERT INTO job_run_log
+                    (job_name, last_success_at, updated_at)
+                VALUES ('discover_stock__last_start', NOW(), NOW())
+                ON CONFLICT (job_name) DO UPDATE SET
+                    last_success_at = NOW(), updated_at = NOW()
+                """
+            )
+
             _resume_rows = await _resume_pool.fetch(
                 "SELECT symbol, market_cap FROM discover_stock_snapshots "
                 "WHERE market = 'IN'"
@@ -5726,30 +5736,51 @@ async def run_discover_stock_job() -> None:
                         priority_map[sym] = float(r["market_cap"])
                     except (TypeError, ValueError):
                         pass
-            # Now the resume set — only rows whose FULL daily pipeline
-            # (scoring + multi-period returns) actually ran within the
-            # last 6 h. We deliberately check `scored_at`, not
-            # `ingested_at`, because the intraday price-refresh job
-            # (every 10 min during market hours) bumps `ingested_at`
-            # on every symbol it touches. Using `ingested_at` made
-            # every intraday-touched symbol look "fresh" to the resume
-            # check and silently skipped the daily rescore — so
-            # percent_change_1y / 3y / 5y drifted for days against the
-            # rolling 365-day anchor. CARYSIL showing +32.36% while
-            # the real 1Y return was +46.75% was the user-visible
-            # symptom that surfaced this bug.
-            _fresh_rows = await _resume_pool.fetch(
-                "SELECT symbol FROM discover_stock_snapshots "
-                "WHERE market = 'IN' "
-                "AND scored_at > NOW() - INTERVAL '6 hours'"
+
+            _is_resume_row = await _resume_pool.fetchrow(
+                """
+                SELECT
+                    (SELECT last_success_at FROM job_run_log
+                     WHERE job_name='discover_stock__last_start')    AS last_start,
+                    (SELECT last_success_at FROM job_run_log
+                     WHERE job_name='discover_stock__last_complete') AS last_complete
+                """
             )
-            already_fresh = {r["symbol"] for r in _fresh_rows if r.get("symbol")}
-            if already_fresh:
-                logger.info(
-                    "Discover stock: resume — %d symbols already scored in "
-                    "last 6h, will skip",
-                    len(already_fresh),
+            _last_start = _is_resume_row["last_start"] if _is_resume_row else None
+            _last_complete = _is_resume_row["last_complete"] if _is_resume_row else None
+            _is_crash_retry = False
+            if _last_start is not None:
+                from datetime import timedelta as _td
+                _td30 = _td(minutes=30)
+                _now_db = await _resume_pool.fetchval("SELECT NOW()")
+                _is_crash_retry = (
+                    (_last_complete is None or _last_start > _last_complete)
+                    and (_now_db - _last_start) <= _td30
                 )
+
+            if _is_crash_retry:
+                # `scored_at` not `ingested_at` — intraday refreshes bump
+                # ingested_at every 10 min and would mask every symbol as
+                # fresh, silently skipping the daily rescore.
+                _fresh_rows = await _resume_pool.fetch(
+                    "SELECT symbol FROM discover_stock_snapshots "
+                    "WHERE market = 'IN' "
+                    "AND scored_at > NOW() - INTERVAL '30 minutes'"
+                )
+                already_fresh = {r["symbol"] for r in _fresh_rows if r.get("symbol")}
+                if already_fresh:
+                    logger.info(
+                        "Discover stock: crash-retry detected — %d symbols "
+                        "already scored in last 30m, will skip",
+                        len(already_fresh),
+                    )
+            else:
+                logger.info(
+                    "Discover stock: full pass (not a crash-retry) — "
+                    "last_start=%s last_complete=%s",
+                    _last_start, _last_complete,
+                )
+
             if priority_map:
                 logger.info(
                     "Discover stock: loaded priority_map with %d entries "
@@ -5944,6 +5975,20 @@ async def run_discover_stock_job() -> None:
             time_mod.time() - score_t0,  # includes upsert time too but close enough
             time_mod.time() - upsert_t0,
         )
+
+        try:
+            _complete_pool = await _get_pool_for_resume()
+            await _complete_pool.execute(
+                """
+                INSERT INTO job_run_log
+                    (job_name, last_success_at, updated_at)
+                VALUES ('discover_stock__last_complete', NOW(), NOW())
+                ON CONFLICT (job_name) DO UPDATE SET
+                    last_success_at = NOW(), updated_at = NOW()
+                """
+            )
+        except Exception:
+            logger.debug("discover_stock__last_complete marker upsert failed", exc_info=True)
     except requests.RequestException:
         logger.exception("Discover stock job failed due to network exception")
     except Exception:
