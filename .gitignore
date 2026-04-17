@@ -11,3 +11,4 @@ build/
 .DS_Store
 logs/
 firebase-key.json
+graphify-out/
