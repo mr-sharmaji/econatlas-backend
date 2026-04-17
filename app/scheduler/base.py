@@ -71,9 +71,17 @@ class BaseScraper:
     _rate_backoff_until: dict[str, float] = {}
     _rate_backoff_lock = threading.Lock()
 
+    # Default session UA — intentionally minimal. Yahoo Finance's
+    # anti-bot system is MORE aggressive toward browser-like requests
+    # from datacenter IPs than toward honest bot UAs. The old bot UA
+    # worked fine for months; switching to browser headers caused
+    # 429 storms. Only screener.in needs browser headers — those go
+    # through get_browser_headers() in the screener-specific code paths.
+    _DEFAULT_UA = "Mozilla/5.0 (compatible; EconAtlasScraper/1.0; +https://econatlas.local)"
+
     def __init__(self) -> None:
         self.session = requests.Session()
-        self.session.headers.update(get_browser_headers())
+        self.session.headers.update({"User-Agent": self._DEFAULT_UA})
 
     @classmethod
     def _check_rate_backoff(cls, host: str) -> None:

@@ -1563,7 +1563,15 @@ class DiscoverStockScraper(BaseScraper):
             f"{base}/company/{nse_symbol}/consolidated/",
             f"{base}/company/{nse_symbol}/",
         ]
-        for url in candidates:
+        # Screener.in blocks the bot UA — swap to browser headers for
+        # these requests only. The BaseScraper session uses the bot UA
+        # by default because Yahoo works better with it. Swap back
+        # after the request via finally block.
+        from app.scheduler.base import get_browser_headers
+        _original_headers = dict(self.session.headers)
+        self.session.headers.update(get_browser_headers())
+        try:
+          for url in candidates:
             for attempt in range(self._screener_max_retries):
                 try:
                     html = self._get_text(url, timeout=self._screener_timeout)
@@ -1889,12 +1897,16 @@ class DiscoverStockScraper(BaseScraper):
                         nse_symbol, url, exc_info=True,
                     )
                     break
-        return {
-            "pe_ratio": None, "roe": None, "roce": None,
-            "debt_to_equity": None, "price_to_book": None,
-            "eps": None, "market_cap": None, "high_52w": None,
-            "low_52w": None, "dividend_yield": None,
-        }, "unavailable"
+          return {
+              "pe_ratio": None, "roe": None, "roce": None,
+              "debt_to_equity": None, "price_to_book": None,
+              "eps": None, "market_cap": None, "high_52w": None,
+              "low_52w": None, "dividend_yield": None,
+          }, "unavailable"
+        finally:
+            # Restore original (bot) UA so Yahoo calls aren't affected
+            self.session.headers.clear()
+            self.session.headers.update(_original_headers)
 
     @staticmethod
     def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
