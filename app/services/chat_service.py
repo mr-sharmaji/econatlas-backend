@@ -8297,8 +8297,8 @@ async def stream_chat_response(
     try:
         from app.core.metrics import ARTHA_REQUESTS
         ARTHA_REQUESTS.labels(endpoint="/chat").inc()
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug("artha metrics increment failed: %s", _e)
 
     stream_start = time.monotonic()
     device_tag = (device_id or "")[:16]

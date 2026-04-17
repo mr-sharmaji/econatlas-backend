@@ -166,8 +166,8 @@ async def send_topic_notification(
         try:
             from app.core.metrics import NOTIFICATION_SENT
             NOTIFICATION_SENT.labels(type=notification_type or "unknown", status="ok").inc()
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug("notification metrics increment failed: %s", _e)
 
         # --- Log successful send for dedup + diagnostics ---
         if dedup_key:

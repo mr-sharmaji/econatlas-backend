@@ -312,6 +312,20 @@ WATCHLIST_DEVICES = Gauge(
 )
 
 
+# ── Pre-initialize labeled counters so /metrics emits them at 0 ──────
+# prometheus_client only emits a labeled metric after its first .inc().
+# Without this, Grafana shows "No data" until the first real event
+# even when OR vector(0) is in the PromQL (because the metric name
+# itself doesn't exist in the registry until first use).
+ARTHA_REQUESTS.labels(endpoint="/chat")
+ARTHA_REQUESTS.labels(endpoint="/suggestions")
+NOTIFICATION_SENT.labels(type="market_open", status="ok")
+NOTIFICATION_SENT.labels(type="market_open", status="failed")
+NOTIFICATION_SENT.labels(type="unknown", status="ok")
+WATCHLIST_OPS.labels(op="put")
+WATCHLIST_OPS.labels(op="remove")
+
+
 def record_ext_api(
     provider: str,
     endpoint: str,
