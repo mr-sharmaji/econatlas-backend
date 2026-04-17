@@ -872,6 +872,21 @@ async def init_pool() -> asyncpg.Pool:
             "CREATE INDEX IF NOT EXISTS idx_fixed_income_type "
             "ON fixed_income_rates (instrument_type, rate_pct DESC)"
         )
+        # --- discover_stock_snapshots: scored_at for daily-pipeline freshness ---
+        # `ingested_at` is bumped by the intraday price refresh every 10 min,
+        # so it can't be used to tell whether the full daily scoring pipeline
+        # (which recomputes percent_change_1y / 3y / 5y against a rolling 365-day
+        # anchor) actually ran today. Without a dedicated timestamp the resume-
+        # mode check in discover_stock_job ended up skipping every symbol touched
+        # by the intraday job, which stalled percent_change_1y at whatever value
+        # the last full daily run wrote — that's how CARYSIL ended up showing
+        # +32.36% on a day when the real 1Y return was +46.75%.
+        #
+        # scored_at is set only by the daily UPSERT in discover_service.upsert_*.
+        # Intraday updates leave it untouched.
+        await conn.execute(
+            "ALTER TABLE discover_stock_snapshots ADD COLUMN IF NOT EXISTS scored_at TIMESTAMPTZ"
+        )
         # --- discover_stock_snapshots: max-drawdown columns for risk metrics ---
         # Populated at snapshot time from price history. Lets
         # factor_decomposition / portfolio_risk tools compute aggregate

@@ -2338,6 +2338,11 @@ async def upsert_discover_stock_snapshots(rows: list[dict]) -> int:
                     source_status = EXCLUDED.source_status,
                     source_timestamp = EXCLUDED.source_timestamp,
                     ingested_at = NOW(),
+                    -- scored_at only advances when the full daily pipeline
+                    -- (incl. percent_change_1y / 3y / 5y) processed this row,
+                    -- so the resume-mode freshness check can tell it apart
+                    -- from the 10-min intraday ingested_at bumps.
+                    scored_at = NOW(),
                     primary_source = EXCLUDED.primary_source,
                     secondary_source = EXCLUDED.secondary_source,
                     high_52w = EXCLUDED.high_52w,

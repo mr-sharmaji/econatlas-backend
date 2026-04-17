@@ -5700,16 +5700,27 @@ async def run_discover_stock_job() -> None:
                         priority_map[sym] = float(r["market_cap"])
                     except (TypeError, ValueError):
                         pass
-            # Now the resume set — only rows updated in the last 6h
+            # Now the resume set — only rows whose FULL daily pipeline
+            # (scoring + multi-period returns) actually ran within the
+            # last 6 h. We deliberately check `scored_at`, not
+            # `ingested_at`, because the intraday price-refresh job
+            # (every 10 min during market hours) bumps `ingested_at`
+            # on every symbol it touches. Using `ingested_at` made
+            # every intraday-touched symbol look "fresh" to the resume
+            # check and silently skipped the daily rescore — so
+            # percent_change_1y / 3y / 5y drifted for days against the
+            # rolling 365-day anchor. CARYSIL showing +32.36% while
+            # the real 1Y return was +46.75% was the user-visible
+            # symptom that surfaced this bug.
             _fresh_rows = await _resume_pool.fetch(
                 "SELECT symbol FROM discover_stock_snapshots "
                 "WHERE market = 'IN' "
-                "AND ingested_at > NOW() - INTERVAL '6 hours'"
+                "AND scored_at > NOW() - INTERVAL '6 hours'"
             )
             already_fresh = {r["symbol"] for r in _fresh_rows if r.get("symbol")}
             if already_fresh:
                 logger.info(
-                    "Discover stock: resume — %d symbols already fresh in "
+                    "Discover stock: resume — %d symbols already scored in "
                     "last 6h, will skip",
                     len(already_fresh),
                 )
