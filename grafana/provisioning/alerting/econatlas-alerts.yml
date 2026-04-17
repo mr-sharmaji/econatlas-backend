@@ -87,8 +87,13 @@ groups:
             The autofill sweep has not reached 70% coverage for 10 minutes.
             Check Upstox / Yahoo rate limits and the instrument master cache.
 
-      - uid: econatlas-data-freshness-critical
-        title: Critical table stale > 6h
+      # ── Data freshness alerts — per-cadence thresholds ──────────
+      # Each table gets a threshold matched to its schedule + a buffer.
+      # Threshold = normal_gap × 1.5 so we don't alert during normal
+      # overnight/weekend gaps but DO alert if a scheduled run misses.
+
+      - uid: econatlas-freshness-hourly
+        title: Hourly table stale > 3h
         condition: A
         data:
           - refId: A
@@ -97,20 +102,97 @@ groups:
             model:
               expr: |
                 max by (source) (data_freshness_age_seconds{
-                  source=~"market_scores|discover_stock_snapshots|discover_stock_price_history|discover_mutual_fund_snapshots|discover_mf_nav_history"
-                }) > 21600
+                  source="market_scores"
+                }) > 10800
               instant: true
               refId: A
-        noDataState: Alerting
+        noDataState: OK
         execErrState: Alerting
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "{{ $labels.source }} has not been written in over 6 hours"
+          summary: "{{ $labels.source }} stale > 3 hours (hourly job)"
           description: |
-            Latest write to {{ $labels.source }} is more than 6 hours old.
-            The upstream fetcher is likely broken.
+            {{ $labels.source }} hasn't been written in over 3 hours.
+            The hourly market_score job may have failed.
+
+      - uid: econatlas-freshness-daily-stock
+        title: Daily stock tables stale > 26h
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: |
+                max by (source) (data_freshness_age_seconds{
+                  source=~"discover_stock_snapshots|discover_stock_price_history"
+                }) > 93600
+              instant: true
+              refId: A
+        noDataState: OK
+        execErrState: Alerting
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.source }} stale > 26 hours (daily 16:00-16:30 IST)"
+          description: |
+            {{ $labels.source }} hasn't been written in over 26 hours.
+            The daily discover_stock or discover_stock_price job
+            likely failed or was skipped.
+
+      - uid: econatlas-freshness-daily-mf
+        title: Daily MF tables stale > 26h
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: |
+                max by (source) (data_freshness_age_seconds{
+                  source=~"discover_mutual_fund_snapshots|discover_mf_nav_history"
+                }) > 93600
+              instant: true
+              refId: A
+        noDataState: OK
+        execErrState: Alerting
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.source }} stale > 26 hours (daily 22:00-22:30 IST)"
+          description: |
+            {{ $labels.source }} hasn't been written in over 26 hours.
+            The daily discover_mutual_funds or discover_mf_nav job
+            likely failed or was skipped.
+
+      - uid: econatlas-freshness-weekly
+        title: Weekly table stale > 8 days
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: |
+                max by (source) (data_freshness_age_seconds{
+                  source="broker_charges"
+                }) > 691200
+              instant: true
+              refId: A
+        noDataState: OK
+        execErrState: Alerting
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "broker_charges stale > 8 days (weekly Sunday job)"
+          description: |
+            broker_charges hasn't been refreshed in over 8 days.
+            The weekly broker_charges scraper likely failed.
 
       - uid: econatlas-ext-api-error-rate
         title: External API error rate > 25%
