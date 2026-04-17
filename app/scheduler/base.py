@@ -59,16 +59,28 @@ _USER_AGENTS = [
 import random as _random
 
 
-def get_browser_headers() -> dict[str, str]:
+# Desktop-only subset for APIs (Yahoo, FRED, CoinGecko) that reject
+# or rate-limit mobile User-Agents. Indexes 0-15 in _USER_AGENTS are
+# desktop Chrome/Firefox/Edge/Safari.
+_DESKTOP_USER_AGENTS = [ua for ua in _USER_AGENTS if "Mobile" not in ua and "Android" not in ua and "iPhone" not in ua and "iPad" not in ua]
+
+
+def get_browser_headers(*, mobile_ok: bool = False) -> dict[str, str]:
     """Return a dict of browser-like HTTP headers with a random User-Agent.
 
     Use this for any raw requests.get() call outside of BaseScraper
     (e.g. in discover_mf_nav_job, econ_calendar, imf_weo_scraper, etc.)
     so all external API calls look like a real browser and don't get
     IP-banned.
+
+    Args:
+        mobile_ok: If True, include mobile UAs in the rotation pool.
+            Default False — uses desktop-only UAs because Yahoo Finance
+            and FRED reject mobile UAs with 429.
     """
+    pool = _USER_AGENTS if mobile_ok else _DESKTOP_USER_AGENTS
     return {
-        "User-Agent": _random.choice(_USER_AGENTS),
+        "User-Agent": _random.choice(pool),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
