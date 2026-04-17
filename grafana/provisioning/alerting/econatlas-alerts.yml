@@ -122,6 +122,10 @@ groups:
             {{ $labels.source }} hasn't been written in over 3 hours.
             The hourly market_score job may have failed.
 
+      # Daily stock cron: Mon-Fri 16:00 IST = 10:30 UTC.
+      # Evaluated only Mon-Fri UTC after 11:00 UTC (16:30 IST, i.e. 30
+      # min after the scheduled run) so weekend gaps and pre-cron
+      # morning windows don't page.
       - uid: econatlas-freshness-daily-stock
         title: Daily stock tables stale > 26h
         condition: A
@@ -131,9 +135,13 @@ groups:
             datasourceUid: PBFA97CFB590B2093
             model:
               expr: |
-                max by (source) (data_freshness_age_seconds{
-                  source=~"discover_stock_snapshots|discover_stock_price_history"
-                }) > 93600
+                (
+                  max by (source) (data_freshness_age_seconds{
+                    source=~"discover_stock_snapshots|discover_stock_price_history"
+                  }) > 93600
+                )
+                and on() (day_of_week() > 0 and day_of_week() < 6)
+                and on() ((hour() * 60 + minute()) >= 660)
               instant: true
               refId: A
         noDataState: OK
@@ -148,6 +156,8 @@ groups:
             The daily discover_stock or discover_stock_price job
             likely failed or was skipped.
 
+      # Daily MF cron: Mon-Fri 22:00 IST = 16:30 UTC.
+      # Evaluated only Mon-Fri UTC after 17:00 UTC (22:30 IST).
       - uid: econatlas-freshness-daily-mf
         title: Daily MF tables stale > 26h
         condition: A
@@ -157,9 +167,13 @@ groups:
             datasourceUid: PBFA97CFB590B2093
             model:
               expr: |
-                max by (source) (data_freshness_age_seconds{
-                  source=~"discover_mutual_fund_snapshots|discover_mf_nav_history"
-                }) > 93600
+                (
+                  max by (source) (data_freshness_age_seconds{
+                    source=~"discover_mutual_fund_snapshots|discover_mf_nav_history"
+                  }) > 93600
+                )
+                and on() (day_of_week() > 0 and day_of_week() < 6)
+                and on() (hour() >= 17)
               instant: true
               refId: A
         noDataState: OK
