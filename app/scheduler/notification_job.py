@@ -703,7 +703,18 @@ async def _fetch_japan_close_data() -> dict | None:
 # ---------------------------------------------------------------------------
 
 async def _fetch_india_open_data() -> dict | None:
-    """Fetch data for India market open: Gift Nifty + overnight US/Asia."""
+    """Fetch data for India market open: Gift Nifty + overnight US/Asia.
+
+    Returns None before 9:15 IST so the open notification doesn't fire
+    during NSE's pre-open session (9:00-9:15 IST). NSE's API reports
+    isMarketOpen=True during pre-open which would otherwise trip the
+    transition detection 15 min early. The flush loop polls every
+    30s and will fire as soon as 9:15 passes.
+    """
+    now_ist = datetime.now(timezone.utc).astimezone(_IST)
+    ist_minutes = now_ist.hour * 60 + now_ist.minute
+    if ist_minutes < 555:  # 9:15 IST = 9*60+15
+        return None
     try:
         from app.core.database import get_pool
         pool = await get_pool()
@@ -1332,13 +1343,18 @@ async def _check_fii_dii(now: datetime) -> tuple[float | None, float | None]:
 
 
 async def _check_pre_market_summary(status: dict, now: datetime) -> None:
-    """Send pre-market summary between 8:58-9:05 AM IST on trading days."""
+    """Send pre-market summary between 8:55-8:58 AM IST on trading days.
+
+    Strictly before 8:59 IST so it never overlaps NSE's pre-open
+    session (which starts at 9:00 IST) or the continuous trading
+    session (9:15 IST).
+    """
     now_ist = now.astimezone(_IST)
     today = now_ist.date()
 
-    # Only fire between 8:58 and 9:05 IST
+    # Only fire between 8:55 and 8:58 IST (strictly before 8:59)
     total_minutes = now_ist.hour * 60 + now_ist.minute
-    if total_minutes < 538 or total_minutes > 545:  # 8:58 to 9:05
+    if total_minutes < 535 or total_minutes > 538:  # 8:55 to 8:58
         return
 
     # Already sent today
