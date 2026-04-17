@@ -746,22 +746,34 @@ async def _fetch_india_open_data() -> dict | None:
         if nifty_close == 0:
             return None
 
-        # Gift Nifty latest
-        gift_row = await pool.fetchrow(
-            """
-            SELECT price FROM market_prices_intraday
-            WHERE asset = 'Gift Nifty'
-            ORDER BY timestamp DESC
-            LIMIT 1
-            """
+        # First Nifty 50 intraday tick at/after 9:15 IST (03:45 UTC) —
+        # the actual continuous-session opening price, not the pre-open
+        # auction or the latest drifting tick.
+        today_ist_date = now_ist.date()
+        open_boundary = datetime(
+            today_ist_date.year, today_ist_date.month, today_ist_date.day,
+            3, 45, 0, tzinfo=timezone.utc,
         )
-        if not gift_row:
+        opening_row = await pool.fetchrow(
+            """
+            SELECT price, COALESCE(source_timestamp, "timestamp") AS ts
+            FROM market_prices_intraday
+            WHERE asset = 'Nifty 50'
+              AND instrument_type = 'index'
+              AND COALESCE(source_timestamp, "timestamp") >= $1
+            ORDER BY COALESCE(source_timestamp, "timestamp") ASC
+            LIMIT 1
+            """,
+            open_boundary,
+        )
+        if not opening_row:
+            # First 9:15+ tick hasn't landed yet — retry next poll
             return None
 
-        gift_price = float(gift_row["price"])
+        opening_price = float(opening_row["price"])
         data: dict = {
-            "gift_nifty_price": gift_price,
-            "gift_nifty_change_pct": (gift_price - nifty_close) / nifty_close * 100,
+            "gift_nifty_price": opening_price,  # keep key name for builder compatibility
+            "gift_nifty_change_pct": (opening_price - nifty_close) / nifty_close * 100,
         }
 
         # Overnight US/Asia + Gold
