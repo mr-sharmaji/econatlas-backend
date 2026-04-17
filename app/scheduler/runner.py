@@ -376,15 +376,15 @@ async def _startup_collection() -> None:
         "fertilizer": timedelta(hours=12),
         "imf_forecast": timedelta(hours=12),
         "econ_calendar": timedelta(hours=12),
-        # 26h so a deploy during normal business hours doesn't trigger
-        # a full heavy catch-up for a job that ran on schedule the
-        # previous night. A true miss (skipped daily window) still
-        # catches up — last-success will be > 26h old by the next day.
-        # Prior value 12h caused 3 deploys on 2026-04-17 (15:52 IST)
-        # to each re-queue a 24-min discover_mutual_funds sweep.
-        "discover_stock": timedelta(hours=26),
-        "discover_mutual_funds": timedelta(hours=26),
-        "discover_mf_nav": timedelta(hours=26),
+        # 74h tolerates the Fri-22:00 → Mon-22:00 weekend gap (72h)
+        # for these mon-fri daily jobs, plus 2h slack. A genuinely
+        # missed run still triggers catch-up: Monday-miss is detected
+        # on Tuesday (last-success > 96h). Prior values (12h → 26h)
+        # would re-queue on weekend/Monday-morning deploys even though
+        # the job ran on schedule the previous Friday night.
+        "discover_stock": timedelta(hours=74),
+        "discover_mutual_funds": timedelta(hours=74),
+        "discover_mf_nav": timedelta(hours=74),
         "discover_stock_intraday_autofill": timedelta(hours=1),
         "stock_future_prospects_recent": timedelta(hours=12),
         "stock_future_prospects_embed": timedelta(hours=12),
