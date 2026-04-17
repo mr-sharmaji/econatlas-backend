@@ -4,6 +4,8 @@
 
 Query live via `POST https://api.velqon.xyz/ops/sql` with body `{"query":"..."}`.
 
+Regenerate after migrations: `scripts/regen_db_schema.sh`
+
 ## artha_educational_concepts
 **PK:** id
 
