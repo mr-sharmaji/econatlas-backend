@@ -286,6 +286,75 @@ def create_app() -> FastAPI:
                 status_code=502,
             )
 
+    # Grafana Live uses a WebSocket at /grafana/api/live/ws. The HTTP
+    # proxy above can't handle WS upgrades, so Starlette rejects the
+    # handshake with 403. Bridge the WS here.
+    import asyncio as _asyncio
+    import websockets as _websockets
+    from starlette.websockets import WebSocket as _WebSocket, WebSocketDisconnect as _WSDisconnect
+
+    @application.websocket("/grafana/{path:path}")
+    async def grafana_ws_proxy(websocket: _WebSocket, path: str):
+        await websocket.accept(
+            subprotocol=websocket.headers.get("sec-websocket-protocol"),
+        )
+        upstream_url = f"ws://grafana:3000/{path}"
+        if websocket.url.query:
+            upstream_url = f"{upstream_url}?{websocket.url.query}"
+        extra_headers = []
+        if _grafana_token:
+            extra_headers.append(("Authorization", f"Bearer {_grafana_token}"))
+        origin = "http://grafana:3000"
+        try:
+            async with _websockets.connect(
+                upstream_url,
+                additional_headers=extra_headers,
+                origin=origin,
+                max_size=None,
+            ) as upstream:
+                async def client_to_upstream():
+                    try:
+                        while True:
+                            msg = await websocket.receive()
+                            if msg["type"] == "websocket.disconnect":
+                                break
+                            if "text" in msg and msg["text"] is not None:
+                                await upstream.send(msg["text"])
+                            elif "bytes" in msg and msg["bytes"] is not None:
+                                await upstream.send(msg["bytes"])
+                    except _WSDisconnect:
+                        pass
+
+                async def upstream_to_client():
+                    try:
+                        async for data in upstream:
+                            if isinstance(data, bytes):
+                                await websocket.send_bytes(data)
+                            else:
+                                await websocket.send_text(data)
+                    except _websockets.ConnectionClosed:
+                        pass
+
+                done, pending = await _asyncio.wait(
+                    [
+                        _asyncio.create_task(client_to_upstream()),
+                        _asyncio.create_task(upstream_to_client()),
+                    ],
+                    return_when=_asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+        except Exception as exc:
+            logger.warning(
+                "Grafana WS proxy error: %s → %s: %s",
+                upstream_url, type(exc).__name__, exc,
+            )
+        finally:
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
     return application
 
 
