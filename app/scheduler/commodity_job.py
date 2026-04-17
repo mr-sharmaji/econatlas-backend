@@ -75,31 +75,53 @@ def _active_front_month_symbol(root: str, exchange: str) -> dict:
     return {"code": code, "token": token}
 
 
+def _front_month_candidates(root: str, exchange: str, count: int = 3) -> list[dict]:
+    """Generate N candidate front-month contracts starting from the
+    current month. Each commodity's futures roll at different times,
+    so we probe multiple contracts and pick the one whose price
+    matches Yahoo's front-month price within tolerance.
+
+    Returns list of {"code", "token"} dicts, e.g.
+    [CLJ26:NYMEX, CLK26:NYMEX, CLM26:NYMEX].
+    """
+    now = datetime.now(timezone.utc)
+    candidates: list[dict] = []
+    for offset in range(count):
+        m = now.month + offset
+        y = now.year + (m - 1) // 12
+        m = ((m - 1) % 12) + 1
+        month_code = _FUTURES_MONTH_CODES[m - 1]
+        year_short = str(y)[-2:]
+        candidates.append({
+            "code": f"{root}{month_code}{year_short}:{exchange}",
+            "token": f'"{root}{month_code}{year_short}","{exchange}"',
+        })
+    return candidates
+
+
 def _get_google_fallbacks() -> dict:
     """Build Google Finance fallback symbols.
 
-    Most commodities use W00 (nearest delivery) which auto-rolls
-    correctly. Crude oil is the exception — Google's CLW00 lags
-    during monthly rolls and gets stuck on the expired contract
-    (e.g. showing $91.69 for expired April while the active May
-    contract is $97.64). Use the dynamic front-month symbol
-    (CLK26, CLM26, etc.) for crude oil instead.
+    For crude oil and natural gas, we store a LIST of candidate
+    front-month contracts (current month, +1, +2). Yahoo's generic
+    CL=F / NG=F symbols roll at different times for each commodity
+    — empirically CL=F rolled to June by April 17 but NG=F was
+    still on May. The fallback fetcher probes these candidates and
+    picks the one whose price matches the most recent Yahoo price
+    within tolerance.
+
+    Precious metals and copper use the W00 continuous symbol —
+    empirically these match Yahoo to within <1% year-round.
     """
-    now = datetime.now(timezone.utc)
-    next_month = now.month % 12 + 1
-    next_year = now.year + (1 if next_month == 1 else 0)
-    month_code = _FUTURES_MONTH_CODES[next_month - 1]
-    year_short = str(next_year)[-2:]
-    cl_code = f"CL{month_code}{year_short}:NYMEX"
-    cl_token = f'"CL{month_code}{year_short}","NYMEX"'
     return {
         "GC=F": {"code": "GCW00:COMEX", "token": '"GCW00","COMEX"'},
         "SI=F": {"code": "SIW00:COMEX", "token": '"SIW00","COMEX"'},
         "PL=F": {"code": "PLW00:NYMEX", "token": '"PLW00","NYMEX"'},
         "PA=F": {"code": "PAW00:NYMEX", "token": '"PAW00","NYMEX"'},
-        "CL=F": {"code": cl_code, "token": cl_token},
-        "NG=F": {"code": "NGW00:NYMEX", "token": '"NGW00","NYMEX"'},
         "HG=F": {"code": "HGW00:COMEX", "token": '"HGW00","COMEX"'},
+        # Energy — dynamic front-month: probe current, +1, +2 months
+        "CL=F": {"candidates": _front_month_candidates("CL", "NYMEX", 3)},
+        "NG=F": {"candidates": _front_month_candidates("NG", "NYMEX", 3)},
     }
 
 
@@ -234,10 +256,25 @@ class CommodityScraper(BaseScraper, QuoteProvider):
         except (TypeError, ValueError, OSError):
             return None
 
-    def _fetch_google_fallbacks(self, yahoo_rows: List[Dict]) -> List[Dict]:
+    def _get_reference_price(self, asset: str) -> float | None:
+        """Return Yahoo primary price for an asset from this run,
+        used to match the correct Google front-month contract."""
+        return getattr(self, "_ref_prices", {}).get(asset)
+
+    def _fetch_google_fallbacks(self, yahoo_rows: List[Dict], db_ref_prices: dict[str, float] | None = None) -> List[Dict]:
         now = datetime.now(timezone.utc)
         live_max_age_seconds = max(60, int(get_settings().effective_rolling_live_max_age_seconds()))
         by_asset = {str(r.get("asset") or ""): r for r in yahoo_rows}
+        # Build reference prices: prefer this run's Yahoo data,
+        # fall back to DB's most recent Yahoo price when Yahoo is
+        # completely down (which is when fallback matters most).
+        ref_prices: dict[str, float] = dict(db_ref_prices or {})
+        for r in yahoo_rows:
+            a = str(r.get("asset") or "")
+            p = r.get("price")
+            if a and isinstance(p, (int, float)) and p > 0:
+                ref_prices[a] = float(p)
+        self._ref_prices = ref_prices
         out: list[dict] = []
 
         for symbol, (asset, unit) in SYMBOLS.items():
@@ -256,10 +293,63 @@ class CommodityScraper(BaseScraper, QuoteProvider):
             if cfg is None:
                 continue
             try:
-                html_text = self._get_text(GOOGLE_FINANCE_QUOTE_URL.format(code=cfg["code"]))
-                parsed = self._parse_google_quote(html_text, cfg["token"])
-                if not parsed:
+                # Build probe list: single code for metals, multiple
+                # candidates for energy (CL/NG) to handle roll timing.
+                has_candidates = "candidates" in cfg
+                candidates = cfg.get("candidates") or [
+                    {"code": cfg["code"], "token": cfg["token"]}
+                ]
+                # Reference price: most recent primary (Yahoo) row
+                # for this asset. Used to pick the matching Google
+                # contract when multiple candidates exist.
+                ref_price = self._get_reference_price(asset)
+
+                # Energy contracts (CL/NG) REQUIRE a reference to
+                # pick the right month. Without one, skip rather
+                # than risk the wrong contract's price.
+                if has_candidates and (ref_price is None or ref_price <= 0):
+                    logger.info(
+                        "Commodity fallback skipped: asset=%s has "
+                        "multiple candidates but no reference price "
+                        "(Yahoo fully down) — can't pick contract safely",
+                        asset,
+                    )
                     continue
+
+                best: tuple | None = None  # (parsed, candidate)
+                for cand in candidates:
+                    try:
+                        html_text = self._get_text(GOOGLE_FINANCE_QUOTE_URL.format(code=cand["code"]))
+                        parsed_cand = self._parse_google_quote(html_text, cand["token"])
+                    except Exception:
+                        continue
+                    if not parsed_cand:
+                        continue
+                    cand_price = float(parsed_cand[0])
+                    if ref_price is not None and ref_price > 0:
+                        # Pick candidate with smallest % deviation from Yahoo ref
+                        dev = abs(cand_price - ref_price) / ref_price
+                        if best is None or dev < best[2]:
+                            best = (parsed_cand, cand, dev)
+                    elif best is None:
+                        # No reference — accept first valid candidate
+                        best = (parsed_cand, cand, 0.0)
+
+                if best is None:
+                    continue
+
+                parsed, chosen_cand, chosen_dev = best
+                # If deviation > 2%, the contract doesn't match Yahoo —
+                # Google data would create chart spikes. Skip.
+                if ref_price is not None and chosen_dev > 0.02:
+                    logger.info(
+                        "Commodity fallback rejected: asset=%s "
+                        "best_candidate=%s dev=%.1f%% > 2%% — skipping "
+                        "to avoid cross-contract chart spike",
+                        asset, chosen_cand["code"], chosen_dev * 100,
+                    )
+                    continue
+
                 price, prev, pct, ts = parsed
                 if ts > (now + timedelta(seconds=COMMODITY_FALLBACK_MAX_CLOCK_SKEW_SECONDS)):
                     logger.debug("Commodity fallback skipped (future timestamp): asset=%s ts=%s", asset, ts.isoformat())
