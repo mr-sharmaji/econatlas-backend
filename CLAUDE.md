@@ -85,6 +85,9 @@ This keeps the schema snapshot that every session loads in sync with reality. St
 ## Planning gate (cuts rework)
 Before any edit, state the approach as 3–5 bullets and wait for "go" before editing. Applies to every change, no matter how small. Saves the "wrong logic, redo" loop.
 
+## Comment discipline
+Keep comments minimal. Default to none. Only add one when the *why* is non-obvious — a hidden constraint, subtle invariant, or workaround for a known bug. Never comment what the code does (good names suffice). Never reference the current task, fix, or PR.
+
 ## graphify
 
 This project has a graphify knowledge graph at graphify-out/.
