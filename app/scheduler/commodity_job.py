@@ -574,7 +574,6 @@ def _fetch_indexmundi_prices() -> List[Dict]:
     now_iso = datetime.now(timezone.utc).isoformat()
     session = requests.Session()
     session.headers.update(get_browser_headers())
-    session.headers.update({"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"})
 
     for slug, (asset, unit) in IM_COMMODITIES.items():
         try:

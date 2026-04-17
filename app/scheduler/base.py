@@ -72,7 +72,6 @@ def get_browser_headers() -> dict[str, str]:
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "close",
     }
 
 
@@ -84,14 +83,7 @@ class BaseScraper:
 
     def __init__(self) -> None:
         self.session = requests.Session()
-        ua = _random.choice(_USER_AGENTS)
-        self.session.headers.update({
-            "User-Agent": ua,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-        })
+        self.session.headers.update(get_browser_headers())
 
     @classmethod
     def _check_rate_backoff(cls, host: str) -> None:
