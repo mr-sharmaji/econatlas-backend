@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from apscheduler.events import EVENT_JOB_MISSED
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -69,7 +70,9 @@ def _get_intervals() -> dict:
 # is silently skipped.
 
 
-async def _enqueue(job_name: str, *, job_id: str | None = None) -> None:
+async def _enqueue(
+    job_name: str, *, job_id: str | None = None, **job_kwargs: Any,
+) -> None:
     """Enqueue a named job into ARQ.  Uses job_name as default dedup key.
 
     Before enqueueing, checks a Redis lock key to prevent pileup when the
@@ -91,7 +94,7 @@ async def _enqueue(job_name: str, *, job_id: str | None = None) -> None:
         if not acquired:
             logger.debug("Scheduler tick: skipping %s — already running/queued", effective_id)
             return
-        await pool.enqueue_job(job_name, _job_id=effective_id)
+        await pool.enqueue_job(job_name, _job_id=effective_id, **job_kwargs)
         logger.debug("Scheduler tick: enqueued %s", job_name)
     except Exception:
         # On any error, release the lock so the next tick can try again.
@@ -198,6 +201,19 @@ async def _run_discover_stock_price() -> None:
 
 async def _run_discover_stock_intraday_autofill() -> None:
     await _enqueue("discover_stock_intraday_autofill")
+
+
+async def _run_discover_stock_intraday_fallback() -> None:
+    """Fallback sweep: only touches symbols the 10-min autofill missed.
+
+    Enqueued every 30 minutes, staggered 5 min after autofill so stale
+    symbols (updated_at > 20 min) are well-defined.
+    """
+    await _enqueue(
+        "discover_stock_intraday",
+        job_id="discover_stock_intraday_fallback",
+        only_stale_minutes=20,
+    )
 
 
 async def _run_discover_stock_intraday() -> None:
@@ -559,21 +575,22 @@ def start_scheduler() -> None:
             coalesce=True,
             misfire_grace_time=3600,
         )
-        # ── Intraday live-price refresh (Mon-Fri market hours) ──
-        # Every 30 min between 09:00 and 15:45 IST. The job itself has
-        # a 15:55-16:45 IST exclusion window so it can never race the
-        # heavy daily pipeline that runs at 16:00 / 16:20 / 16:30 IST.
-        # Lightweight: ONLY updates last_price / percent_change /
-        # volume on discover_stock_snapshots — never touches scores,
-        # fundamentals, or red flags.
+        # ── Intraday live-price fallback (Mon-Fri market hours) ──
+        # Autofill (below) is the primary, running every 10 min and
+        # covering the full universe via NSE bulk + Yahoo + Upstox.
+        # This fallback only runs every 30 min at :05/:35 (5 min after
+        # each autofill completes) and ONLY touches symbols whose
+        # updated_at is NULL or older than 20 min — i.e. the stragglers
+        # autofill missed. Staleness cutoff is 2 autofill cycles so we
+        # don't race a slow-running autofill.
         _scheduler.add_job(
-            _run_discover_stock_intraday,
+            _run_discover_stock_intraday_fallback,
             "cron",
             day_of_week=intervals["discover_stock_daily_days"],
             hour="9-15",
-            minute="0,30",
+            minute="5,35",
             timezone="Asia/Kolkata",
-            id="discover_stock_intraday",
+            id="discover_stock_intraday_fallback",
             replace_existing=True,
             max_instances=1,
             coalesce=True,
@@ -609,7 +626,7 @@ def start_scheduler() -> None:
             "cron",
             day_of_week=intervals["discover_stock_daily_days"],
             hour="9-15",
-            minute="4,14,24,34,44,54",
+            minute="0,10,20,30,40,50",
             timezone="Asia/Kolkata",
             id="discover_stock_intraday_autofill",
             replace_existing=True,
@@ -618,8 +635,9 @@ def start_scheduler() -> None:
             misfire_grace_time=600,
         )
         logger.info(
-            "Scheduler: discover_stock_intraday_autofill every 10m during "
-            "09:15-15:45 IST (staggered at :04/:14/:24/:34/:44/:54)"
+            "Scheduler: discover_stock_intraday_autofill (PRIMARY) every "
+            "10m during 09:00-15:50 IST at :00/:10/:20/:30/:40/:50; "
+            "fallback at :05/:35 for stale symbols (>20m)"
         )
         # Daily MF NAV history update (runs 30 min after MF snapshot job)
         _scheduler.add_job(

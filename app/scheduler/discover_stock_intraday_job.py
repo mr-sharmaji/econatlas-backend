@@ -478,7 +478,9 @@ async def _fetch_yahoo_fallback(
 # Main entrypoint
 # ─────────────────────────────────────────────────────────────────────
 
-async def run_discover_stock_intraday_job() -> None:
+async def run_discover_stock_intraday_job(
+    only_stale_minutes: int | None = None,
+) -> None:
     """Refresh live-price columns for the full Indian universe.
 
     Stage 0: Trading-day / market-hours gates.
@@ -486,6 +488,10 @@ async def run_discover_stock_intraday_job() -> None:
     Stage 2: Yahoo v7 batch fallback for whatever NSE missed.
     Stage 3: UPDATE snapshots + INSERT intraday ticks + prune old ticks.
     Stage 4: Low-update-ratio ERROR log for ops observability.
+
+    If ``only_stale_minutes`` is set, the job runs in fallback mode and
+    only touches symbols whose ``ingested_at`` is NULL or older than that
+    many minutes — i.e. only symbols the autofill primary missed.
     """
     if not _is_trading_day_today():
         logger.info("discover_stock_intraday: skipping — not a trading day")
@@ -512,21 +518,46 @@ async def run_discover_stock_intraday_job() -> None:
     t0 = time.monotonic()
     pool = await get_pool()
 
-    rows = await pool.fetch(
-        "SELECT symbol FROM discover_stock_snapshots "
-        "WHERE market = 'IN' "
-        "ORDER BY market_cap DESC NULLS LAST",
-    )
+    if only_stale_minutes is not None and only_stale_minutes > 0:
+        rows = await pool.fetch(
+            "SELECT symbol FROM discover_stock_snapshots "
+            "WHERE market = 'IN' "
+            "  AND (ingested_at IS NULL "
+            "       OR ingested_at < now() - make_interval(mins => $1)) "
+            "ORDER BY market_cap DESC NULLS LAST",
+            only_stale_minutes,
+        )
+    else:
+        rows = await pool.fetch(
+            "SELECT symbol FROM discover_stock_snapshots "
+            "WHERE market = 'IN' "
+            "ORDER BY market_cap DESC NULLS LAST",
+        )
     if not rows:
-        logger.info("discover_stock_intraday: no symbols to refresh")
+        if only_stale_minutes is not None:
+            logger.info(
+                "discover_stock_intraday: fallback mode (>%dm stale) — "
+                "no stale symbols, autofill is keeping up",
+                only_stale_minutes,
+            )
+        else:
+            logger.info("discover_stock_intraday: no symbols to refresh")
         return
 
     symbols: list[str] = [r["symbol"] for r in rows if r["symbol"]]
-    logger.info(
-        "discover_stock_intraday: refreshing %d symbols "
-        "(NSE bulk primary, Yahoo batch fallback)",
-        len(symbols),
-    )
+    if only_stale_minutes is not None:
+        logger.info(
+            "discover_stock_intraday: FALLBACK MODE — refreshing %d "
+            "stale symbols (ingested_at > %dm old) "
+            "(NSE bulk primary, Yahoo batch fallback)",
+            len(symbols), only_stale_minutes,
+        )
+    else:
+        logger.info(
+            "discover_stock_intraday: refreshing %d symbols "
+            "(NSE bulk primary, Yahoo batch fallback)",
+            len(symbols),
+        )
 
     updated = 0
     skipped = 0

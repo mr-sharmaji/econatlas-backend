@@ -300,20 +300,28 @@ async def task_discover_stock_price(ctx: dict) -> None:
     await _run_with_retry(ctx, "discover_stock_price", run_discover_stock_price_job)
 
 
-async def task_discover_stock_intraday(ctx: dict) -> None:
-    """Lightweight 30-min intraday price refresh (market hours only).
+async def task_discover_stock_intraday(
+    ctx: dict, only_stale_minutes: int | None = None,
+) -> None:
+    """Intraday price refresh — runs in fallback mode when
+    ``only_stale_minutes`` is passed (only touches symbols autofill
+    missed), else full-sweep (used by the 15:45 close-capture tick).
 
     Writes ONLY last_price / percent_change / volume to
     discover_stock_snapshots.  Auto-skips between 15:55 and 16:45 IST
     so it never races the heavy daily discover_stock → rescore pipeline
     that runs at 16:00 / 16:20 / 16:30 IST.
     """
+    from functools import partial
+
     from app.scheduler.discover_stock_intraday_job import (
         run_discover_stock_intraday_job,
     )
 
     await _run_with_retry(
-        ctx, "discover_stock_intraday", run_discover_stock_intraday_job,
+        ctx,
+        "discover_stock_intraday",
+        partial(run_discover_stock_intraday_job, only_stale_minutes=only_stale_minutes),
     )
 
 
