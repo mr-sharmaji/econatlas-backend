@@ -980,7 +980,9 @@
         {
           "expr": "clamp_min((1 - (data_stale_stocks / clamp_min(data_rows_total{table=\"discover_stock_snapshots\"}, 1))) * 100, 0)",
           "legendFormat": "",
-          "refId": "A"
+          "refId": "A",
+          "instant": true,
+          "range": false
         }
       ],
       "fieldConfig": {
@@ -1006,12 +1008,19 @@
               }
             ]
           },
-          "min": 0
+          "min": 0,
+          "noValue": "0"
         },
         "overrides": []
       },
       "options": {
-        "noValue": "0"
+        "noValue": "0",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "values": false
+        }
       }
     },
     {
