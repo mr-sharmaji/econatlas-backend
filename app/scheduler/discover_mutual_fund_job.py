@@ -2111,18 +2111,33 @@ class DiscoverMutualFundScraper(BaseScraper):
             logger.warning("groww: sitemap fetch failed", exc_info=True)
             return []
         logger.debug("groww: sitemap fetched len=%d bytes", len(xml))
-        slugs = re.findall(
+        all_slugs = re.findall(
             r"<loc>https://groww\.in/mutual-funds/([a-z0-9-]+)</loc>",
             xml,
         )
-        logger.info("groww: sitemap returned %d slugs", len(slugs))
-        if len(slugs) < 1000:
+        # Keep only individual scheme-page slugs (end with -growth or
+        # -direct). The sitemap also contains AMC landing pages
+        # (e.g. "ppfas-mutual-funds", "zerodha-mutual-funds") and
+        # category pages (*-funds_1, *-amc, *-invalid) that Groww
+        # genuinely 404s against the scheme-page route — scraping them
+        # produced ~226 predictable http_404 failures per sweep and
+        # ~180s of wasted fetch time, which contributed to the event-
+        # loop stutter + APScheduler misfires on 2026-04-17.
+        scheme_slugs = [s for s in all_slugs if s.endswith(("-growth", "-direct"))]
+        filtered_out = len(all_slugs) - len(scheme_slugs)
+        logger.info(
+            "groww: sitemap returned %d slugs (%d scheme pages, "
+            "%d non-scheme slugs filtered)",
+            len(all_slugs), len(scheme_slugs), filtered_out,
+        )
+        slugs = scheme_slugs
+        if len(all_slugs) < 1000:
             logger.warning(
                 "groww: sitemap slug count unexpectedly low (%d, expected ~1900). "
                 "Upstream sitemap format may have changed — regex "
                 "'<loc>https://groww.in/mutual-funds/([a-z0-9-]+)</loc>' "
                 "matched fewer entries than normal.",
-                len(slugs),
+                len(all_slugs),
             )
         return slugs
 
@@ -3175,16 +3190,35 @@ def _fetch_discover_mf_rows_sync() -> list[dict]:
 async def run_discover_mutual_fund_job() -> None:
     logger.debug("run_discover_mutual_fund_job: entry")
     _t_job = time.monotonic() if hasattr(time, "monotonic") else 0.0
+    # Hard outer cap on the sync scrape. A healthy run takes ~24 min;
+    # 30 min gives a buffer while still bounding the worst case so the
+    # MF job can never hold its arq slot indefinitely. On 2026-04-17 a
+    # full run chewed 24 min across three consecutive deploys, cascading
+    # into APScheduler misfires on the 30-second market/commodity/crypto
+    # jobs. If this timer fires, the scrape thread keeps running but
+    # the arq slot is released and the next cron tick can retry.
+    MF_JOB_HARD_TIMEOUT_SEC = 1800.0
     try:
         loop = asyncio.get_event_loop()
         logger.debug(
             "run_discover_mutual_fund_job: dispatching _fetch_discover_mf_rows_sync "
             "to discover-mf executor"
         )
-        rows = await loop.run_in_executor(
+        fetch_fut = loop.run_in_executor(
             get_job_executor("discover-mf"),
             _fetch_discover_mf_rows_sync,
         )
+        try:
+            rows = await asyncio.wait_for(
+                fetch_fut, timeout=MF_JOB_HARD_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Discover MF: hard timeout after %.0fs — abandoning "
+                "sync thread; next cron tick or startup catch-up will retry",
+                MF_JOB_HARD_TIMEOUT_SEC,
+            )
+            return
         logger.debug(
             "run_discover_mutual_fund_job: fetch returned %d rows, upserting",
             len(rows) if rows else 0,
