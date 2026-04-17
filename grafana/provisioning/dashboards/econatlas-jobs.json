@@ -978,7 +978,7 @@
       },
       "targets": [
         {
-          "expr": "(1 - (data_stale_stocks / clamp_min(data_rows_total{table=\"discover_stock_snapshots\"}, 1))) * 100 or on() vector(0)",
+          "expr": "clamp_min((1 - (data_stale_stocks / clamp_min(data_rows_total{table=\"discover_stock_snapshots\"}, 1))) * 100, 0)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -993,23 +993,26 @@
           "thresholds": {
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               },
               {
                 "color": "yellow",
-                "value": 60
+                "value": 50
               },
               {
-                "color": "red",
+                "color": "green",
                 "value": 80
               }
             ]
-          }
+          },
+          "min": 0
         },
         "overrides": []
       },
-      "options": {}
+      "options": {
+        "noValue": "0"
+      }
     },
     {
       "title": "Intraday Ticks (today)",
