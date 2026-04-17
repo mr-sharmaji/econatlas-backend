@@ -185,7 +185,15 @@ class MacroScraper(BaseScraper):
             selected[key] = normalized
 
     def _fetch_fred_csv(self, series_id: str) -> List[Tuple[str, str]]:
-        text = self._get_text(FRED_CSV_URL, params={"id": series_id})
+        # Use a dedicated session for FRED with minimal headers.
+        # FRED worked fine with the old bot UA and breaks with browser
+        # headers (random UAs + Accept/Accept-Language). Rather than
+        # debug the exact header that upsets FRED's CDN, just bypass
+        # BaseScraper's session for this specific endpoint.
+        import requests as _req
+        resp = _req.get(FRED_CSV_URL, params={"id": series_id}, timeout=30)
+        resp.raise_for_status()
+        text = resp.text
         reader = csv.DictReader(io.StringIO(text))
         rows = []
         for row in reader:

@@ -896,7 +896,12 @@ class MarketScraper(BaseScraper, QuoteProvider):
         items: list[QuoteTick] = []
         for name, series_id in BOND_SERIES:
             try:
-                text = self._get_text(FRED_CSV_URL, params={"id": series_id})
+                # Bypass BaseScraper session for FRED — browser headers
+                # break FRED's CDN. Use bare requests with no extra headers.
+                import requests as _req
+                _resp = _req.get(FRED_CSV_URL, params={"id": series_id}, timeout=30)
+                _resp.raise_for_status()
+                text = _resp.text
                 reader = csv.DictReader(io.StringIO(text))
                 latest = None
                 latest_date = None
