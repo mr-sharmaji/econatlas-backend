@@ -60,9 +60,8 @@ def get_browser_headers() -> dict[str, str]:
     """
     return {
         "User-Agent": _random.choice(_USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
     }
 
 
