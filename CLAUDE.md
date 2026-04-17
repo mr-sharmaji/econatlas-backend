@@ -83,7 +83,7 @@ Whenever you edit anything that changes the DB schema (files in `sql/`, any `CRE
 This keeps the schema snapshot that every session loads in sync with reality. Stale `db_schema.md` silently poisons queries.
 
 ## Planning gate (cuts rework)
-For any change touching >1 file or >50 lines: state the approach as 3–5 bullets and wait for "go" before editing. Saves the "wrong logic, redo" loop.
+Before any edit, state the approach as 3–5 bullets and wait for "go" before editing. Applies to every change, no matter how small. Saves the "wrong logic, redo" loop.
 
 ## graphify
 
