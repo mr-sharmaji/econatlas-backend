@@ -5366,10 +5366,16 @@ class DiscoverStockScraper(BaseScraper):
             # first and falls through to HTTP only on cache miss.
             fund_list = sorted(fundamentals_symbols)
             if fund_list:
+                # Reduced from 3 workers × 0.5s (6 req/s) to 2 × 1.5s
+                # (1.3 req/s) after screener.in IP-banned the server for
+                # aggressive scraping. Combined with the browser-like
+                # User-Agent in BaseScraper, this should avoid re-bans.
+                _SCR_WORKERS = 2
+                _SCR_DELAY = 1.5
                 logger.info(
                     "Parallel screener.in pre-fetch: %d symbols, "
-                    "3 workers, 0.5s delay",
-                    len(fund_list),
+                    "%d workers, %.1fs delay",
+                    len(fund_list), _SCR_WORKERS, _SCR_DELAY,
                 )
                 logger.debug(
                     "screener pre-fetch symbols: first=%s last=%s sample=%s",
@@ -5378,8 +5384,8 @@ class DiscoverStockScraper(BaseScraper):
                 _t_scr = time_mod.time()
                 results = self._parallel_map(
                     host="www.screener.in",
-                    workers=3,
-                    per_call_delay=0.5,
+                    workers=_SCR_WORKERS,
+                    per_call_delay=_SCR_DELAY,
                     items=fund_list,
                     fetch_fn=lambda sym: self._fetch_screener_fundamentals(sym),
                 )

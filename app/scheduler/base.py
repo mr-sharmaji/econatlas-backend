@@ -14,7 +14,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = 15.0
 DEFAULT_RETRIES = 3
 DEFAULT_BACKOFF = 1.5
-USER_AGENT = "Mozilla/5.0 (compatible; EconAtlasScraper/1.0; +https://econatlas.local)"
+
+# Rotate through real browser User-Agents so upstream sites
+# (screener.in, etmoney, Groww) don't block us as a bot. The
+# old "EconAtlasScraper/1.0" UA was explicitly bot-identifying
+# and got our server IP banned by screener.in.
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+]
+
+import random as _random
 
 
 class BaseScraper:
@@ -25,7 +38,14 @@ class BaseScraper:
 
     def __init__(self) -> None:
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": USER_AGENT})
+        ua = _random.choice(_USER_AGENTS)
+        self.session.headers.update({
+            "User-Agent": ua,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+        })
 
     @classmethod
     def _check_rate_backoff(cls, host: str) -> None:
@@ -113,7 +133,10 @@ class BaseScraper:
                         )
             finally:
                 if per_call_delay > 0:
-                    time.sleep(per_call_delay)
+                    # Add ±30% random jitter so requests don't arrive at
+                    # perfectly even intervals (bot fingerprint).
+                    jitter = per_call_delay * _random.uniform(0.7, 1.3)
+                    time.sleep(jitter)
 
         with ThreadPoolExecutor(
             max_workers=workers,
