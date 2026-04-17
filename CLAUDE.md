@@ -40,6 +40,42 @@ Python 3.10+, FastAPI, asyncpg (Postgres), Redis, Firebase, Docker, Prometheus +
 - Secrets: `.env` + `firebase-key.json` (both gitignored).
 - Never edit `graphify-out/` — it's a generated artifact.
 
+## Debug & Ops Runbook
+Production API: `https://api.velqon.xyz` (open, no auth currently).
+
+**DB (read `docs/db_schema.md` first — 37 tables, 504 columns snapshot):**
+```bash
+curl -sS -X POST https://api.velqon.xyz/ops/sql \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"SELECT ... LIMIT 50"}'
+```
+Always add `LIMIT`. Filter by `created_at > now() - interval '1 hour'` for recent state.
+
+**Logs — default filter to errors + a window + limit:**
+```bash
+curl -sS 'https://api.velqon.xyz/ops/logs?level=error&since=1h&limit=200'
+```
+Only widen (INFO, 24h) if error logs show nothing relevant. Never pull unbounded.
+
+**Jobs:** `GET /ops/jobs`, `GET /ops/jobs/running`, `POST /ops/jobs/trigger/{name}`, `POST /ops/jobs/abort/{name}`.
+
+**Grafana dashboards** (`https://api.velqon.xyz/grafana/d/<uid>`):
+- `econatlas-v2` — overall monitor
+- `econatlas-api-perf` — API latency + error rate
+- `econatlas-external` — external API health
+- `econatlas-jobs` — job + pipeline status
+- `econatlas-system` — host, DB, Redis
+
+**Debug order (follow this to avoid wandering):**
+1. `graphify query "<what is broken>"` — locate relevant subgraph, don't Read/Grep yet.
+2. `/ops/logs?level=error&since=1h` — is it already logged?
+3. `/ops/sql` against the relevant table (check `docs/db_schema.md` first).
+4. Open only the specific files graphify pointed to. Confirm the hypothesis before editing.
+5. Check Grafana only when metrics (latency, throughput) are the question.
+
+## Planning gate (cuts rework)
+For any change touching >1 file or >50 lines: state the approach as 3–5 bullets and wait for "go" before editing. Saves the "wrong logic, redo" loop.
+
 ## graphify
 
 This project has a graphify knowledge graph at graphify-out/.
