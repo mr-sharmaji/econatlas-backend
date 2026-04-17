@@ -237,9 +237,12 @@ groups:
               expr: db_pool_free == 0
               instant: true
               refId: A
-        noDataState: OK
+        # KeepLastState so a brief Prometheus scrape gap during deploys
+        # doesn't flip this critical rule into NoData-firing state.
+        # A real pool-exhaustion still fires (expression evaluates true).
+        noDataState: KeepLastState
         execErrState: Alerting
-        for: 30s
+        for: 2m
         labels:
           severity: critical
         annotations:
@@ -258,16 +261,21 @@ groups:
             relativeTimeRange: { from: 900, to: 0 }
             datasourceUid: PBFA97CFB590B2093
             model:
-              expr: sum(increase(job_misfires_total[15m])) > 0
+              expr: sum(increase(job_misfires_total[15m])) > 10
               instant: true
               refId: A
         noDataState: OK
         execErrState: Alerting
-        for: 5m
+        # Threshold 10 + 10m sustain — a deploy or a heavy-job sync
+        # sweep can legitimately produce 3-8 misfires in its wake
+        # (30-second market/commodity/crypto ticks drift by a few
+        # seconds while the event loop recovers), and those shouldn't
+        # page. A real deadlock produces dozens within a 15m window.
+        for: 10m
         labels:
           severity: warning
         annotations:
-          summary: APScheduler reported a missed job in the last 15 minutes
+          summary: APScheduler reported >10 missed jobs in the last 15 minutes
           description: |
             One or more cron jobs ran past their misfire_grace_time and
             were skipped. Check runner.py listener output and load.
