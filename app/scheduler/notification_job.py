@@ -1355,7 +1355,7 @@ async def _check_fii_dii(now: datetime) -> tuple[float | None, float | None]:
 
 
 async def _check_pre_market_summary(status: dict, now: datetime) -> None:
-    """Send pre-market summary at 8:59 AM IST on trading days.
+    """Send pre-market summary between 8:55-8:58 AM IST on trading days.
 
     Fires strictly before NSE's pre-open session (9:00 IST) so the
     notification never overlaps with the open auction.
@@ -1363,9 +1363,9 @@ async def _check_pre_market_summary(status: dict, now: datetime) -> None:
     now_ist = now.astimezone(_IST)
     today = now_ist.date()
 
-    # Only fire between 8:58 and 8:59 IST (strictly before 9:00)
+    # Only fire between 8:55 and 8:58 IST (strictly before 9:00)
     total_minutes = now_ist.hour * 60 + now_ist.minute
-    if total_minutes < 538 or total_minutes > 539:  # 8:58 to 8:59
+    if total_minutes < 535 or total_minutes > 538:  # 8:55 to 8:58
         return
 
     # Already sent today
