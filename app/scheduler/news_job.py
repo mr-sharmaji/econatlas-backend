@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -21,6 +22,17 @@ logger = logging.getLogger(__name__)
 
 MAX_ARTICLES_PER_RUN = 300
 NEWS_COOLDOWN_MINUTES = 90
+
+# Wall-clock budget for the whole news-scrape sync thread. Any source
+# still in flight when the deadline hits is skipped so the job never
+# chews the full 300s arq timeout and starves other jobs sharing the
+# worker (seen 2026-04-17T09:42 UTC: news job timed out and caused a
+# ~5 min event-loop stutter + APScheduler misfires).
+NEWS_SYNC_BUDGET_SEC = 90.0
+# Outer async cap so an unkillable sync thread can't hold the arq
+# slot past this. Should be > NEWS_SYNC_BUDGET_SEC so the thread gets
+# a chance to exit cleanly before we give up waiting.
+NEWS_JOB_HARD_TIMEOUT_SEC = 120.0
 
 
 @dataclass(frozen=True)
@@ -197,11 +209,21 @@ class NewsScraper(BaseScraper):
                 pass
         return articles
 
-    def _enrich(self, raw: Sequence[NewsArticle]) -> List[NewsArticle]:
+    def _enrich(
+        self,
+        raw: Sequence[NewsArticle],
+        deadline: float | None = None,
+    ) -> List[NewsArticle]:
         seen_hashes: Set[str] = set()
         seen_fps: Set[str] = set()
         result = []
         for article in raw:
+            if deadline is not None and time.monotonic() >= deadline:
+                logger.warning(
+                    "News scrape: enrich deadline reached after %d/%d articles",
+                    len(result), len(raw),
+                )
+                break
             if not any(article.language.startswith(c) for c in ["en"]):
                 continue
             h = hashlib.sha256(f"{article.url}|{article.title.strip().lower()}".encode()).hexdigest()
@@ -227,9 +249,14 @@ class NewsScraper(BaseScraper):
                 break
         return result
 
-    def fetch_all(self) -> List[NewsArticle]:
+    def fetch_all(self, deadline: float | None = None) -> List[NewsArticle]:
         discovered = []
         for source in _source_registry():
+            if deadline is not None and time.monotonic() >= deadline:
+                logger.warning(
+                    "News scrape: discovery deadline reached, skipping remaining sources",
+                )
+                break
             items = []
             try:
                 items = self._discover_feeds(source)
@@ -241,7 +268,7 @@ class NewsScraper(BaseScraper):
                 except Exception:
                     pass
             discovered.extend(items)
-        return self._enrich(discovered)
+        return self._enrich(discovered, deadline=deadline)
 
     def to_records(self, articles: Sequence[NewsArticle]) -> List[Dict]:
         records = []
@@ -300,9 +327,9 @@ def _detect_impact(text: str) -> str:
 _scraper = NewsScraper()
 
 
-def _fetch_news_data_sync() -> tuple:
+def _fetch_news_data_sync(deadline: float | None = None) -> tuple:
     """Sync fetch and transform; run in thread executor so main loop is not blocked. Returns (records, events)."""
-    articles = _scraper.fetch_all()
+    articles = _scraper.fetch_all(deadline=deadline)
     records = _scraper.to_records(articles)
     events = _scraper.generate_events(articles)
     return (records, events)
@@ -311,10 +338,27 @@ def _fetch_news_data_sync() -> tuple:
 async def run_news_job() -> None:
     try:
         loop = asyncio.get_event_loop()
-        records, events = await loop.run_in_executor(
+        deadline = time.monotonic() + NEWS_SYNC_BUDGET_SEC
+        fetch_fut = loop.run_in_executor(
             get_job_executor("news"),
             _fetch_news_data_sync,
+            deadline,
         )
+        try:
+            records, events = await asyncio.wait_for(
+                fetch_fut, timeout=NEWS_JOB_HARD_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            # Sync thread ignored its deadline or is stuck in a C-level
+            # network call. Abandon it (arq slot is freed; thread will
+            # finish in the background and be garbage-collected) and
+            # let the next cron tick run a fresh scrape.
+            logger.error(
+                "News job: hard timeout after %.0fs — abandoning sync "
+                "thread; next cron tick will retry",
+                NEWS_JOB_HARD_TIMEOUT_SEC,
+            )
+            return
         accepted = 0
         for rec in records:
             try:
