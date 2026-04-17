@@ -524,7 +524,9 @@ _NOTIFICATION_COMMON_RULES = """
 - No generic phrases like "investors should watch", "markets remain volatile"
 - Use Indian currency conventions: ₹ for Indian assets, $ for US/global
 - Percentages: 1 decimal place with explicit sign (+1.2%, -0.3%)
-- When trailing history or streaks are provided, weave them into the narrative naturally (e.g. "3rd consecutive green day", "FIIs buying for 2nd straight session", "worst week in a month") — but only if the streak/trend is notable (≥2 days)"""
+- When trailing history or streaks are provided, weave them into the narrative naturally (e.g. "3rd consecutive green day", "FIIs buying for 2nd straight session", "worst week in a month") — but only if the streak/trend is notable (≥2 days)
+- Only claim "best day in X", "largest drop in Y", or similar superlatives if the trailing data EXPLICITLY supports it — never fabricate superlatives
+- Apply trailing context ONLY to the asset it belongs to. Do not attribute one asset's streak/history to a different asset in the same notification"""
 
 
 _NOTIFICATION_PROMPTS: dict[str, str] = {
@@ -724,9 +726,6 @@ def _build_india_close_context(d: dict) -> str:
     if bot_sec and bot_pct is not None:
         lines.append(f"Weakest sector: {bot_sec} {_fmt_pct(bot_pct)}.")
 
-    ctx = d.get("relative_context")
-    if ctx:
-        lines.append(f"Context: {ctx}.")
     trailing = d.get("nifty_trailing")
     if trailing:
         lines.append(_fmt_trailing(trailing, "Nifty"))
@@ -766,9 +765,6 @@ def _build_us_close_context(d: dict) -> str:
     if dow is not None:
         parts.append(f"Dow {_fmt_pct(dow)}")
     lines = [", ".join(parts) + "."]
-    ctx = d.get("relative_context")
-    if ctx:
-        lines.append(f"Context: {ctx}.")
     vix = d.get("cboe_vix")
     vix_pct = d.get("cboe_vix_pct")
     if vix is not None:
@@ -823,9 +819,6 @@ def _build_europe_close_context(d: dict) -> str:
     brent = d.get("brent_change_pct")
     if brent is not None:
         lines.append(f"Brent crude {_fmt_pct(brent)}.")
-    ctx = d.get("relative_context")
-    if ctx:
-        lines.append(f"Context: {ctx}.")
     trailing = d.get("ftse_trailing")
     if trailing:
         lines.append(_fmt_trailing(trailing, "FTSE"))
@@ -865,9 +858,6 @@ def _build_japan_close_context(d: dict) -> str:
     if jpy is not None and jpy_pct is not None:
         yen_dir = "strengthened" if jpy_pct > 0.1 else ("weakened" if jpy_pct < -0.1 else "flat")
         lines.append(f"JPY/INR at {jpy:.4f} ({_fmt_pct(jpy_pct)}) — yen {yen_dir}.")
-    ctx = d.get("relative_context")
-    if ctx:
-        lines.append(f"Context: {ctx}.")
     trailing = d.get("nikkei_trailing")
     if trailing:
         lines.append(_fmt_trailing(trailing, "Nikkei"))

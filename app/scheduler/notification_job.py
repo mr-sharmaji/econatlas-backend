@@ -1557,6 +1557,25 @@ async def _check_commodity_spikes(now: datetime) -> None:
             if abs(change_pct) < 3.0:
                 continue
 
+            # Sanity gate: Yahoo's change_percent field occasionally
+            # reports stale/inconsistent values (e.g. +3.3% while
+            # price vs previous_close is actually flat/down). Validate
+            # change_pct reconciles with (price - previous_close)/previous_close
+            # within 0.5% before firing to prevent false-positive
+            # "Crude Oil surges 3%" notifications.
+            prev_close_raw = row.get("previous_close")
+            if prev_close_raw is not None and float(prev_close_raw) > 0:
+                prev_close = float(prev_close_raw)
+                computed_pct = (price - prev_close) / prev_close * 100
+                if abs(computed_pct - change_pct) > 0.5:
+                    logger.info(
+                        "Commodity spike rejected for %s: "
+                        "source change_pct=%.2f%% but (price=%s vs prev=%s) "
+                        "computes %.2f%% — mismatch > 0.5%% (stale data)",
+                        asset, change_pct, price, prev_close, computed_pct,
+                    )
+                    continue
+
             # 3% bands to avoid spamming
             band = int(change_pct / 3) * 3
             if alerted.get(asset) == band:
@@ -1573,8 +1592,11 @@ async def _check_commodity_spikes(now: datetime) -> None:
 
             display_name = asset.replace("_", " ").title()
 
-            today_str = today.strftime("%Y-%m-%d")
-            dedup_key = f"{today_str}_commodity_spike_{asset}_{band}"
+            # Use UTC date for dedup_key so a spike that straddles
+            # IST midnight (crude oil trades 24x7 on NYMEX) doesn't
+            # re-fire as a "new day" alert at 00:01 IST.
+            utc_today_str = now.astimezone(timezone.utc).strftime("%Y-%m-%d")
+            dedup_key = f"{utc_today_str}_commodity_spike_{asset}_{band}"
 
             # Compute INR price if USD/INR available
             inr_price: float | None = None
