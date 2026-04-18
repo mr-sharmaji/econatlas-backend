@@ -1711,17 +1711,17 @@ class DiscoverStockScraper(BaseScraper):
                         # Operating margin: prefer TTM, else latest annual
                         if _has_ttm and _pl_opm and len(_pl_opm) > _n_yr and _pl_opm[-1] is not None:
                             fundamentals["operating_margins"] = round(_pl_opm[-1] / 100, 5)
-                        elif _has_ttm and len(_pl_sales) > _n_yr and len(_pl_op) > _n_yr and _pl_sales[-1]:
+                        elif _has_ttm and len(_pl_sales) > _n_yr and len(_pl_op) > _n_yr and _pl_sales[-1] and _pl_op[-1] is not None:
                             fundamentals["operating_margins"] = round(_pl_op[-1] / _pl_sales[-1], 5)
-                        elif _pl_opm and _n_yr > 0 and len(_pl_opm) >= _n_yr:
+                        elif _pl_opm and _n_yr > 0 and len(_pl_opm) >= _n_yr and _pl_opm[_n_yr - 1] is not None:
                             fundamentals["operating_margins"] = round(_pl_opm[_n_yr - 1] / 100, 5)
-                        elif _n_yr > 0 and len(_pl_sales) >= _n_yr and len(_pl_op) >= _n_yr and _pl_sales[_n_yr - 1]:
+                        elif _n_yr > 0 and len(_pl_sales) >= _n_yr and len(_pl_op) >= _n_yr and _pl_sales[_n_yr - 1] and _pl_op[_n_yr - 1] is not None:
                             fundamentals["operating_margins"] = round(_pl_op[_n_yr - 1] / _pl_sales[_n_yr - 1], 5)
 
                         # Profit margin: prefer TTM, else latest annual
-                        if _has_ttm and len(_pl_sales) > _n_yr and len(_pl_np) > _n_yr and _pl_sales[-1]:
+                        if _has_ttm and len(_pl_sales) > _n_yr and len(_pl_np) > _n_yr and _pl_sales[-1] and _pl_np[-1] is not None:
                             fundamentals["profit_margins"] = round(_pl_np[-1] / _pl_sales[-1], 5)
-                        elif _n_yr > 0 and len(_pl_sales) >= _n_yr and len(_pl_np) >= _n_yr and _pl_sales[_n_yr - 1]:
+                        elif _n_yr > 0 and len(_pl_sales) >= _n_yr and len(_pl_np) >= _n_yr and _pl_sales[_n_yr - 1] and _pl_np[_n_yr - 1] is not None:
                             fundamentals["profit_margins"] = round(_pl_np[_n_yr - 1] / _pl_sales[_n_yr - 1], 5)
 
                         # Revenue & earnings growth YoY
