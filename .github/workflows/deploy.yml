@@ -1,4 +1,4 @@
-name: Deploy with Docker Compose
+name: Deploy to Windows Server
 
 on:
   push:
@@ -14,8 +14,6 @@ jobs:
 
     env:
       DEPLOY_DIR: C:\PersonalProjects\econatlas-backend
-      DOCKER_BUILDKIT: 1
-      COMPOSE_DOCKER_CLI_BUILD: 1
 
     steps:
       - name: Checkout code
@@ -27,30 +25,17 @@ jobs:
           if (-not (Test-Path $env:DEPLOY_DIR)) {
             New-Item -ItemType Directory -Path $env:DEPLOY_DIR -Force | Out-Null
           }
-          robocopy . $env:DEPLOY_DIR /MIR `
-            /XD .git .github __pycache__ _work logs .venv `
-            /XF .env .DS_Store
-          if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code $LASTEXITCODE" }
-          $global:LASTEXITCODE = 0
+          robocopy . $env:DEPLOY_DIR /MIR /XD .git .github _work /XF .env .DS_Store
+          if ($LASTEXITCODE -le 7) { $global:LASTEXITCODE = 0 }
+          else { throw "robocopy failed with exit code $LASTEXITCODE" }
 
-      - name: Write Firebase credentials
-        if: env.FIREBASE_CREDENTIALS_JSON != ''
-        env:
-          FIREBASE_CREDENTIALS_JSON: ${{ secrets.FIREBASE_CREDENTIALS_JSON }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          [System.IO.File]::WriteAllText("$env:DEPLOY_DIR\firebase-key.json", $env:FIREBASE_CREDENTIALS_JSON, [System.Text.UTF8Encoding]::new($false))
-          Write-Host "Firebase credentials written to deploy directory"
-
-      - name: Deploy with Docker Compose
-        # Only rebuild and recreate the app container. --no-deps keeps
-        # postgres/redis untouched, which avoids the "database system is
-        # not yet accepting connections" WAL-recovery window and the
-        # "self-heal after prior SIGKILL" stale-cleanup path we hit on
-        # 2026-04-17T09:49 UTC (PG restart dropped 48 ops_logs inserts
-        # and caused APScheduler misfires).
+      - name: Rebuild and restart app container
         run: |
           $ErrorActionPreference = "Stop"
           Set-Location $env:DEPLOY_DIR
-          docker compose up -d --no-deps --build app
-          docker compose ps
+          docker compose build app
+          docker compose up -d --force-recreate app
+          Start-Sleep -Seconds 8
+          $health = (Invoke-WebRequest -Uri http://127.0.0.1:8000/ops/health -UseBasicParsing -TimeoutSec 10).StatusCode
+          if ($health -ne 200) { throw "Backend did not return 200 OK after redeploy" }
+          Write-Host "Deploy OK — /ops/health returned $health"
