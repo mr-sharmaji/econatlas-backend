@@ -38,4 +38,4 @@ jobs:
           Start-Sleep -Seconds 8
           $health = (Invoke-WebRequest -Uri http://127.0.0.1:8000/ops/health -UseBasicParsing -TimeoutSec 10).StatusCode
           if ($health -ne 200) { throw "Backend did not return 200 OK after redeploy" }
-          Write-Host "Deploy OK — /ops/health returned $health"
+          Write-Host "Deploy OK - /ops/health returned $health"
