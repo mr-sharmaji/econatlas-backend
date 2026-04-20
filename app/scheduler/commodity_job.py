@@ -26,18 +26,13 @@ YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 FX_USD_BASE_URL = "https://open.er-api.com/v6/latest/USD"
 TWELVE_DATA_QUOTE_URL = "https://api.twelvedata.com/quote"
 
-# Yahoo asset name → Twelve Data symbol. Same front-month/spot contract
-# as Yahoo's =F tickers so provider-mixing won't cause contract drift.
-# Scoped to commodities Yahoo can't reliably serve: cotton has been permanently
-# stuck at Friday close, rice/oats are sparsely updated. TD's free tier is
-# 8 req/min + 800/day; the full 19-symbol basket costs ~9k credits/day which
-# blows the limit — we only call TD for these three and cache for 10 min.
-_TWELVE_DATA_SYMBOL_MAP = {
-    "cotton": "CT1",
-    "rice":   "RR1",
-    "oats":   "O_1",
-}
-_TWELVE_DATA_CACHE_TTL_SEC = 600  # 10 min
+# Yahoo asset name → Twelve Data symbol. Empty by default: TD's free tier
+# blocks commodity futures (CT1/O_1/RR1 return 403/404 "not available with
+# your plan"). Populate this map and set TWELVE_DATA_API_KEY only on a
+# paid TD plan (Grow+ covers front-month futures). Leaving this empty
+# short-circuits _fetch_twelve_data() so no wasted API calls fire.
+_TWELVE_DATA_SYMBOL_MAP: Dict[str, str] = {}
+_TWELVE_DATA_CACHE_TTL_SEC = 600
 _twelve_data_cache: List[Dict] = []
 _twelve_data_cache_ts: float = 0.0
 
@@ -280,6 +275,8 @@ class CommodityScraper(BaseScraper, QuoteProvider):
 
     def _fetch_twelve_data(self) -> List[Dict]:
         global _twelve_data_cache, _twelve_data_cache_ts
+        if not _TWELVE_DATA_SYMBOL_MAP:
+            return []
         api_key = os.environ.get("TWELVE_DATA_API_KEY", "").strip()
         if not api_key:
             return []
