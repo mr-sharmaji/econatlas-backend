@@ -28,28 +28,18 @@ TWELVE_DATA_QUOTE_URL = "https://api.twelvedata.com/quote"
 
 # Yahoo asset name → Twelve Data symbol. Same front-month/spot contract
 # as Yahoo's =F tickers so provider-mixing won't cause contract drift.
-# HO=F (heating oil) isn't in TD's commodity catalogue — stays Yahoo-only.
+# Scoped to commodities Yahoo can't reliably serve: cotton has been permanently
+# stuck at Friday close, rice/oats are sparsely updated. TD's free tier is
+# 8 req/min + 800/day; the full 19-symbol basket costs ~9k credits/day which
+# blows the limit — we only call TD for these three and cache for 10 min.
 _TWELVE_DATA_SYMBOL_MAP = {
-    "gold":        "XAU/USD",
-    "silver":      "XAG/USD",
-    "platinum":    "XPT/USD",
-    "palladium":   "XPD/USD",
-    "crude oil":   "WTI/USD",
-    "brent crude": "XBR/USD",
-    "natural gas": "NG/USD",
-    "copper":      "HG1",
-    "wheat":       "W_1",
-    "corn":        "C_1",
-    "soybeans":    "S_1",
-    "rice":        "RR1",
-    "oats":        "O_1",
-    "cotton":      "CT1",
-    "sugar":       "SB1",
-    "coffee":      "KC1",
-    "cocoa":       "CC1",
-    "aluminum":    "LMAHDS03",
-    "gasoline":    "XB1",
+    "cotton": "CT1",
+    "rice":   "RR1",
+    "oats":   "O_1",
 }
+_TWELVE_DATA_CACHE_TTL_SEC = 600  # 10 min
+_twelve_data_cache: List[Dict] = []
+_twelve_data_cache_ts: float = 0.0
 
 
 def _yahoo_chart_url(symbol: str) -> str:
@@ -289,9 +279,13 @@ class CommodityScraper(BaseScraper, QuoteProvider):
         return out
 
     def _fetch_twelve_data(self) -> List[Dict]:
+        global _twelve_data_cache, _twelve_data_cache_ts
         api_key = os.environ.get("TWELVE_DATA_API_KEY", "").strip()
         if not api_key:
             return []
+        now = time.monotonic()
+        if _twelve_data_cache and now - _twelve_data_cache_ts < _TWELVE_DATA_CACHE_TTL_SEC:
+            return list(_twelve_data_cache)
         symbols = ",".join(sorted(set(_TWELVE_DATA_SYMBOL_MAP.values())))
         try:
             resp = requests.get(
@@ -349,7 +343,15 @@ class CommodityScraper(BaseScraper, QuoteProvider):
                 "is_fallback": True,
                 "quality": "fallback",
             })
-        logger.debug("TwelveData commodity fetch: %d/%d symbols", len(items), len(_TWELVE_DATA_SYMBOL_MAP))
+        if not items:
+            logger.warning(
+                "TwelveData parsed 0/%d commodity rows; response sample: %s",
+                len(_TWELVE_DATA_SYMBOL_MAP), str(payload)[:600],
+            )
+        else:
+            logger.info("TwelveData commodity fetch: %d/%d symbols (cached 10m)", len(items), len(_TWELVE_DATA_SYMBOL_MAP))
+        _twelve_data_cache = list(items)
+        _twelve_data_cache_ts = now
         return items
 
     def fetch_quotes(self) -> List[Dict]:
