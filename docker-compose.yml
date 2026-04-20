@@ -70,6 +70,7 @@ services:
       # removes the "unauthenticated requests" warning and gives
       # higher rate limits + faster downloads for embedding models.
       HF_TOKEN: "${HF_TOKEN:-}"
+      INTRADAY_YAHOO_PROXY_URL: "${INTRADAY_YAHOO_PROXY_URL:-}"
     volumes:
       - ./firebase-key.json:/app/firebase-key.json:ro
     depends_on:
