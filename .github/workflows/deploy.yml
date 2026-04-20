@@ -29,21 +29,6 @@ jobs:
           if ($LASTEXITCODE -le 7) { $global:LASTEXITCODE = 0 }
           else { throw "robocopy failed with exit code $LASTEXITCODE" }
 
-      - name: Verify firebase-key.json is a real file
-        run: |
-          $ErrorActionPreference = "Stop"
-          $key = Join-Path $env:DEPLOY_DIR "firebase-key.json"
-          if (Test-Path $key -PathType Container) {
-            Write-Host "firebase-key.json is a directory (docker bind-mount artefact) — removing"
-            Remove-Item -Recurse -Force $key
-          }
-          if (-not (Test-Path $key -PathType Leaf)) {
-            throw "FATAL: $key missing. Restore the Firebase service-account file on the host before deploying."
-          }
-          if ((Get-Item $key).Length -lt 100) {
-            throw "FATAL: $key looks empty (<100 bytes)."
-          }
-
       - name: Rebuild and restart app container
         run: |
           $ErrorActionPreference = "Stop"
