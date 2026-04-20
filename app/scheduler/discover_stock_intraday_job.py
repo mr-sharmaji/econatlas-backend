@@ -525,6 +525,62 @@ async def _fetch_yahoo_fallback(
     return out
 
 
+async def _fetch_upstox_fallback(
+    client: httpx.AsyncClient,
+    symbols: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Per-symbol Upstox intraday fetch for the NSE-bulk residue.
+
+    Yahoo v7 rate-limits datacenter IPs to 429 indefinitely; Upstox's
+    historical-candle/intraday endpoint serves today's bars for any
+    instrument in the NSE instrument master (~9k symbols) and is
+    stable at ~3 concurrent / ~6 req/sec. Returns the same dict shape
+    as ``_fetch_yahoo_batch`` so the caller doesn't care which source
+    filled it; pct/point change is left None (computed downstream).
+    """
+    if not symbols:
+        return {}
+
+    instr_map = await _load_upstox_instrument_map(client)
+    if not instr_map:
+        logger.warning("intraday: Upstox instrument master empty — fallback returns empty")
+        return {}
+
+    sem = asyncio.Semaphore(_UPSTOX_CONCURRENCY)
+    out: dict[str, dict[str, Any]] = {}
+
+    async def _worker(symbol: str) -> None:
+        key = instr_map.get(symbol)
+        if key is None:
+            return
+        async with sem:
+            points = await _fetch_upstox_intraday_for_symbol(
+                client, key, interval="30minute",
+            )
+            await asyncio.sleep(_UPSTOX_INTER_CALL_DELAY_SEC)
+        if not points:
+            return
+        # Upstox returns candles newest-first; pick the max-ts bar defensively.
+        ts_utc, close, volume = max(points, key=lambda p: p[0])
+        out[symbol] = {
+            "last_price": close,
+            "point_change": None,
+            "percent_change": None,
+            "volume": volume,
+            "traded_value": round(close * volume, 2) if volume is not None else None,
+            "day_high": None,
+            "day_low": None,
+            "source": "upstox_intraday",
+            "quote_ts": ts_utc,
+        }
+
+    await asyncio.gather(
+        *(_worker(s) for s in symbols),
+        return_exceptions=True,
+    )
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Main entrypoint
 # ─────────────────────────────────────────────────────────────────────
@@ -600,13 +656,13 @@ async def run_discover_stock_intraday_job(
         logger.info(
             "discover_stock_intraday: FALLBACK MODE — refreshing %d "
             "stale symbols (ingested_at > %dm old) "
-            "(NSE bulk primary, Yahoo batch fallback)",
+            "(NSE bulk primary, Upstox intraday fallback)",
             len(symbols), only_stale_minutes,
         )
     else:
         logger.info(
             "discover_stock_intraday: refreshing %d symbols "
-            "(NSE bulk primary, Yahoo batch fallback)",
+            "(NSE bulk primary, Upstox intraday fallback)",
             len(symbols),
         )
 
@@ -614,7 +670,7 @@ async def run_discover_stock_intraday_job(
     skipped = 0
     errors = 0
     nse_count = 0
-    yahoo_count = 0
+    upstox_count = 0
 
     async with httpx.AsyncClient(
         timeout=_NSE_TIMEOUT_SEC,
@@ -628,14 +684,14 @@ async def run_discover_stock_intraday_job(
         )
 
         missing = [s for s in symbols if s not in nse_quotes]
-        yahoo_quotes: dict[str, dict[str, Any]] = {}
+        upstox_quotes: dict[str, dict[str, Any]] = {}
         if missing and time.monotonic() - t0 < _INTRADAY_TOTAL_TIMEOUT_SEC:
             logger.info(
-                "intraday: %d symbols missing from NSE, falling back to Yahoo",
+                "intraday: %d symbols missing from NSE, falling back to Upstox",
                 len(missing),
             )
-            yahoo_quotes = await _fetch_yahoo_fallback(client, missing)
-            yahoo_count = len(yahoo_quotes)
+            upstox_quotes = await _fetch_upstox_fallback(client, missing)
+            upstox_count = len(upstox_quotes)
 
     # Bulk-write via executemany inside one transaction — the naive
     # per-symbol loop did ~4000 sequential round-trips (~60s). Batched
@@ -646,7 +702,7 @@ async def run_discover_stock_intraday_job(
     update_rows: list[tuple] = []
     insert_rows: list[tuple] = []
     for symbol in symbols:
-        q = nse_quotes.get(symbol) or yahoo_quotes.get(symbol)
+        q = nse_quotes.get(symbol) or upstox_quotes.get(symbol)
         if not q or q.get("last_price") is None:
             skipped += 1
             continue
@@ -674,8 +730,8 @@ async def run_discover_stock_intraday_job(
 
     logger.info(
         "intraday: prepared %d update_rows, %d insert_rows, %d skipped "
-        "(nse=%d, yahoo=%d)",
-        len(update_rows), len(insert_rows), skipped, nse_count, yahoo_count,
+        "(nse=%d, upstox=%d)",
+        len(update_rows), len(insert_rows), skipped, nse_count, upstox_count,
     )
 
     if update_rows:
@@ -755,15 +811,15 @@ async def run_discover_stock_intraday_job(
     )
     log_fn(
         "discover_stock_intraday: done in %.1fs — "
-        "updated=%d/%d (%.0f%%) nse=%d yahoo=%d skipped=%d errors=%d",
+        "updated=%d/%d (%.0f%%) nse=%d upstox=%d skipped=%d errors=%d",
         elapsed, updated, total, ratio * 100,
-        nse_count, yahoo_count, skipped, errors,
+        nse_count, upstox_count, skipped, errors,
     )
     if ratio < _LOW_UPDATE_RATIO_THRESHOLD and total >= 100:
         logger.error(
             "discover_stock_intraday: LOW UPDATE RATIO — only %.0f%% of "
             "symbols updated this tick. Check NSE cookie session and "
-            "Yahoo reachability.",
+            "Upstox reachability.",
             ratio * 100,
         )
 
