@@ -837,7 +837,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
             "LKR/INR", "NPR/INR", "QAR/INR", "KWD/INR", "BHD/INR",
             "OMR/INR", "ILS/INR", "NOK/INR", "DKK/INR", "PLN/INR",
             "TRY/INR", "SAR/INR", "MXN/INR", "SEK/INR", "TWD/INR",
-            "KRW/INR", "THB/INR",
+            "KRW/INR", "THB/INR", "JPY/INR",
         })
         for _symbol, pair in FX_SYMBOLS.items():
             if pair in _GOOGLE_FX_BROKEN:
