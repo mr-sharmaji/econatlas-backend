@@ -7,6 +7,7 @@ import io
 import logging
 import os
 import re
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Tuple
 
@@ -46,6 +47,92 @@ def _yahoo_chart_url(symbol: str) -> str:
     if proxy:
         return proxy.rstrip("/") + f"/v8/finance/chart/{symbol}"
     return YAHOO_CHART_URL.format(symbol=symbol)
+
+
+# Yahoo's /v8/chart serves today's 1m bars only from query-time forward.
+# Morning bars (index open → ~09:30 UTC on a fresh proxy IP) are returned
+# as null closes, so the backfill writes zero. Upstox's historical-candle
+# /intraday endpoint serves every 1m bar for the current NSE/BSE session,
+# so we pull index data from there and layer it on top of the Yahoo rows.
+_UPSTOX_INSTRUMENTS_CSV_URL = (
+    "https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz"
+)
+_UPSTOX_INTRADAY_URL_TMPL = (
+    "https://api.upstox.com/v2/historical-candle/intraday/{key}/1minute"
+)
+_upstox_index_cache: dict[str, str] = {}
+_upstox_index_cache_ts: float = 0.0
+
+# Our display name → upstox `name` column. Used when upstox spells a
+# known index differently ("BSE SENSEX" vs "Sensex", "NIFTY SMLCAP 250"
+# vs "Nifty Smallcap 250"). Every entry here must resolve in the CSV.
+_UPSTOX_INDEX_NAME_ALIASES = {
+    "Sensex": "BSE SENSEX",
+    "Nifty Smallcap 250": "NIFTY SMLCAP 250",
+}
+
+
+def _load_upstox_index_map() -> dict[str, str]:
+    global _upstox_index_cache, _upstox_index_cache_ts
+    now = time.monotonic()
+    if _upstox_index_cache and now - _upstox_index_cache_ts < 24 * 3600:
+        return _upstox_index_cache
+    try:
+        import csv as _csv
+        import gzip as _gzip
+        import io as _io
+        resp = requests.get(_UPSTOX_INSTRUMENTS_CSV_URL, timeout=30)
+        resp.raise_for_status()
+        raw = _gzip.decompress(resp.content).decode("utf-8", errors="replace")
+        rdr = _csv.reader(_io.StringIO(raw))
+        next(rdr)  # header
+        mapping: dict[str, str] = {}
+        for row in rdr:
+            if not row or not row[0].startswith(("NSE_INDEX", "BSE_INDEX")):
+                continue
+            key = row[0]
+            name = (row[3] if len(row) > 3 else "").strip()
+            if name:
+                mapping.setdefault(name.casefold(), key)
+        if mapping:
+            _upstox_index_cache = mapping
+            _upstox_index_cache_ts = now
+            logger.info("market: upstox index map loaded, %d indices", len(mapping))
+    except Exception as exc:
+        logger.warning("market: upstox index map load failed: %s", exc)
+    return _upstox_index_cache
+
+
+def _fetch_upstox_index_bars_today(instrument_key: str) -> list[tuple[datetime, float, int | None]]:
+    import urllib.parse
+    url = _UPSTOX_INTRADAY_URL_TMPL.format(key=urllib.parse.quote(instrument_key, safe=""))
+    try:
+        resp = requests.get(url, timeout=10, headers={"Accept": "application/json"})
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:
+        logger.debug("market: upstox index fetch failed for %s: %s", instrument_key, exc)
+        return []
+    if not isinstance(payload, dict) or payload.get("status") != "success":
+        return []
+    candles = (payload.get("data") or {}).get("candles") or []
+    out: list[tuple[datetime, float, int | None]] = []
+    for row in candles:
+        if not isinstance(row, list) or len(row) < 6:
+            continue
+        try:
+            ts_str = row[0]
+            close = float(row[4])
+            volume_raw = row[5]
+            volume = int(volume_raw) if volume_raw is not None else None
+        except (TypeError, ValueError, IndexError):
+            continue
+        try:
+            ts_utc = datetime.fromisoformat(ts_str).astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        out.append((ts_utc, close, volume))
+    return out
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 FX_USD_BASE_URL = "https://open.er-api.com/v6/latest/USD"
 GIFT_NIFTY_URL = "https://giftcitynifty.com/gift-nifty-intraday-price-data/"
@@ -1292,13 +1379,51 @@ async def run_market_intraday_backfill_job() -> None:
         get_job_executor("market"),
         _sync_build_rows,
     )
-    if not rows:
+
+    def _build_upstox_index_rows() -> list[dict]:
+        index_map = _load_upstox_index_map()
+        if not index_map:
+            return []
+        from app.services import market_service as _svc
+        nse_target = {get_trading_date(now, NSE)}
+        out: list[dict] = []
+        for sym, asset_name in INDEX_SYMBOLS.items():
+            lookup = _UPSTOX_INDEX_NAME_ALIASES.get(asset_name, asset_name).casefold()
+            key = index_map.get(lookup)
+            if key is None:
+                continue
+            bars = _fetch_upstox_index_bars_today(key)
+            for dt, close, volume in bars:
+                if dt.date() not in nse_target:
+                    continue
+                ts_rounded = _svc._round_to_minute(dt).isoformat()
+                out.append({
+                    "asset": asset_name,
+                    "instrument_type": "index",
+                    "price": close,
+                    "timestamp": ts_rounded,
+                    "source_timestamp": ts_rounded,
+                    "provider": "upstox_intraday",
+                    "provider_priority": 1,
+                    "confidence_level": 0.95,
+                    "is_fallback": False,
+                    "quality": "primary",
+                })
+        return out
+
+    upstox_rows = await loop.run_in_executor(
+        get_job_executor("market"),
+        _build_upstox_index_rows,
+    )
+    all_rows = (rows or []) + upstox_rows
+
+    if not all_rows:
         logger.info("market_intraday_backfill: no rows built")
         return
-    inserted = await market_service.insert_intraday_batch(rows)
+    inserted = await market_service.insert_intraday_batch(all_rows)
     logger.info(
-        "market_intraday_backfill: %d bars built, %d upserted",
-        len(rows), inserted,
+        "market_intraday_backfill: %d bars built (%d yahoo + %d upstox), %d upserted",
+        len(all_rows), len(rows or []), len(upstox_rows), inserted,
     )
 
 
