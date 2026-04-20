@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import math
+import os
 import re
 import statistics
 import time as time_mod
@@ -56,6 +57,13 @@ NSE_BHAVCOPY_URL_TMPL = "https://archives.nseindia.com/content/cm/BhavCopy_NSE_C
 NSE_STOCK_SERIES = {"EQ", "BE", "BZ"}
 IST = ZoneInfo("Asia/Kolkata")
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+
+
+def _yahoo_chart_url(symbol: str) -> str:
+    proxy = os.environ.get("INTRADAY_YAHOO_PROXY_URL", "").strip()
+    if proxy:
+        return proxy.rstrip("/") + f"/v8/finance/chart/{symbol}"
+    return YAHOO_CHART_URL.format(symbol=symbol)
 
 
 # ---------------------------------------------------------------------------
@@ -782,7 +790,7 @@ class DiscoverStockScraper(BaseScraper):
 
     def _fetch_yahoo_quote(self, yahoo_symbol: str) -> dict | None:
         try:
-            payload = self._get_json(YAHOO_CHART_URL.format(symbol=yahoo_symbol))
+            payload = self._get_json(_yahoo_chart_url(yahoo_symbol))
             result = payload.get("chart", {}).get("result", [])
             if not result:
                 return None
