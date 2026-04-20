@@ -24,6 +24,32 @@ logger = logging.getLogger(__name__)
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 FX_USD_BASE_URL = "https://open.er-api.com/v6/latest/USD"
+TWELVE_DATA_QUOTE_URL = "https://api.twelvedata.com/quote"
+
+# Yahoo asset name → Twelve Data symbol. Same front-month/spot contract
+# as Yahoo's =F tickers so provider-mixing won't cause contract drift.
+# HO=F (heating oil) isn't in TD's commodity catalogue — stays Yahoo-only.
+_TWELVE_DATA_SYMBOL_MAP = {
+    "gold":        "XAU/USD",
+    "silver":      "XAG/USD",
+    "platinum":    "XPT/USD",
+    "palladium":   "XPD/USD",
+    "crude oil":   "WTI/USD",
+    "brent crude": "XBR/USD",
+    "natural gas": "NG/USD",
+    "copper":      "HG1",
+    "wheat":       "W_1",
+    "corn":        "C_1",
+    "soybeans":    "S_1",
+    "rice":        "RR1",
+    "oats":        "O_1",
+    "cotton":      "CT1",
+    "sugar":       "SB1",
+    "coffee":      "KC1",
+    "cocoa":       "CC1",
+    "aluminum":    "LMAHDS03",
+    "gasoline":    "XB1",
+}
 
 
 def _yahoo_chart_url(symbol: str) -> str:
@@ -262,22 +288,88 @@ class CommodityScraper(BaseScraper, QuoteProvider):
             out.append(fb)
         return out
 
+    def _fetch_twelve_data(self) -> List[Dict]:
+        api_key = os.environ.get("TWELVE_DATA_API_KEY", "").strip()
+        if not api_key:
+            return []
+        symbols = ",".join(sorted(set(_TWELVE_DATA_SYMBOL_MAP.values())))
+        try:
+            resp = requests.get(
+                TWELVE_DATA_QUOTE_URL,
+                params={"symbol": symbols, "apikey": api_key},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:
+            logger.warning("Commodity TwelveData fetch failed: %s", exc)
+            return []
+        if not isinstance(payload, dict):
+            return []
+        sym_to_asset = {v: k for k, v in _TWELVE_DATA_SYMBOL_MAP.items()}
+        unit_by_asset = {a: u for _, (a, u) in SYMBOLS.items()}
+        items: List[Dict] = []
+        for td_sym, quote in payload.items():
+            asset = sym_to_asset.get(td_sym)
+            if asset is None or not isinstance(quote, dict):
+                continue
+            if quote.get("status") == "error":
+                logger.debug("TwelveData error for %s: %s", td_sym, quote.get("message"))
+                continue
+            try:
+                price = float(quote["close"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            prev = None
+            try:
+                if quote.get("previous_close") is not None:
+                    prev = float(quote["previous_close"])
+            except (TypeError, ValueError):
+                pass
+            pct = None
+            if prev not in (None, 0):
+                pct = round((price - prev) / prev * 100, 2)
+            # TD 'timestamp' is unix seconds of the last tick
+            raw_ts = quote.get("timestamp")
+            try:
+                source_ts = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc) if raw_ts is not None else datetime.now(timezone.utc)
+            except (TypeError, ValueError, OSError):
+                source_ts = datetime.now(timezone.utc)
+            items.append({
+                "asset": asset,
+                "price": price,
+                "unit": unit_by_asset.get(asset),
+                "source": "twelve_data",
+                "change_percent": pct,
+                "previous_close": prev,
+                "source_timestamp": source_ts.isoformat(),
+                "provider": "twelve_data",
+                "provider_priority": 2,
+                "confidence_level": 0.9,
+                "is_fallback": True,
+                "quality": "fallback",
+            })
+        logger.debug("TwelveData commodity fetch: %d/%d symbols", len(items), len(_TWELVE_DATA_SYMBOL_MAP))
+        return items
+
     def fetch_quotes(self) -> List[Dict]:
         try:
             yahoo_rows = self._fetch_yahoo()
         except Exception:
             logger.exception("Commodity Yahoo fetch failed")
             yahoo_rows = []
-        all_rows = list(yahoo_rows)
-        # No cross-source fallback. Google Finance tracked different
-        # futures contracts than Yahoo (continuous vs front-month)
-        # which caused 3-15% price discontinuities in the 1D chart
-        # whenever Google ticks interleaved with Yahoo ones. Yahoo
-        # has 3-retry resilience and typically recovers within a
-        # minute; short gaps in the chart are more honest than
-        # wrong-contract ticks. If Yahoo is truly down long-term,
-        # the staleness gate in market_service will mark the data
-        # accordingly without surfacing synthetic values.
+        try:
+            td_rows = self._fetch_twelve_data()
+        except Exception:
+            logger.exception("Commodity TwelveData fetch failed")
+            td_rows = []
+        # Twelve Data tracks front-month futures same as Yahoo =F tickers,
+        # so mixing providers won't reproduce the Google-Finance continuous-
+        # vs-front-month price discontinuity. TD acts as fallback only
+        # (priority 2 vs Yahoo 1); _select_best_quotes keeps Yahoo when
+        # both are fresh, and _promote_delayed_primary_with_fallback
+        # switches to TD when Yahoo's source_ts goes stale.
+        all_rows = list(yahoo_rows) + list(td_rows)
         selected = self._select_best_quotes(all_rows)
         selected = self._promote_delayed_primary_with_fallback(selected, all_rows)
         return selected
