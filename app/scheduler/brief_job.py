@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable
@@ -15,6 +16,13 @@ from app.services import brief_service
 logger = logging.getLogger(__name__)
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+
+
+def _yahoo_chart_url(symbol: str) -> str:
+    proxy = os.environ.get("INTRADAY_YAHOO_PROXY_URL", "").strip()
+    if proxy:
+        return proxy.rstrip("/") + f"/v8/finance/chart/{symbol}"
+    return YAHOO_CHART_URL.format(symbol=symbol)
 
 
 @dataclass(frozen=True)
@@ -136,7 +144,7 @@ class BriefStockScraper(BaseScraper):
 
     def _fetch_one(self, item: StockDef, market: str) -> dict | None:
         try:
-            payload = self._get_json(YAHOO_CHART_URL.format(symbol=item.symbol))
+            payload = self._get_json(_yahoo_chart_url(item.symbol))
             result = payload.get("chart", {}).get("result", [])
             if not result:
                 return None

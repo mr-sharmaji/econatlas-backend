@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
@@ -20,6 +21,13 @@ logger = logging.getLogger(__name__)
 
 COINGECKO_SIMPLE_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+
+
+def _yahoo_chart_url(symbol: str) -> str:
+    proxy = os.environ.get("INTRADAY_YAHOO_PROXY_URL", "").strip()
+    if proxy:
+        return proxy.rstrip("/") + f"/v8/finance/chart/{symbol}"
+    return YAHOO_CHART_URL.format(symbol=symbol)
 
 # CoinGecko ID → (asset name, unit)
 COINGECKO_IDS: dict[str, tuple[str, str]] = {
@@ -125,7 +133,7 @@ class CryptoScraper(BaseScraper, QuoteProvider):
                 continue
 
             try:
-                payload = self._get_json(YAHOO_CHART_URL.format(symbol=symbol))
+                payload = self._get_json(_yahoo_chart_url(symbol))
                 result = payload.get("chart", {}).get("result", [])
                 if not result:
                     continue

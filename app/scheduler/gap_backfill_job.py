@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -22,6 +23,13 @@ from app.scheduler.base import BaseScraper
 logger = logging.getLogger(__name__)
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+
+
+def _yahoo_chart_url(symbol: str) -> str:
+    proxy = os.environ.get("INTRADAY_YAHOO_PROXY_URL", "").strip()
+    if proxy:
+        return proxy.rstrip("/") + f"/v8/finance/chart/{symbol}"
+    return _yahoo_chart_url(symbol)
 
 # Symbols Yahoo does not support for INR cross rates
 # Yahoo returns 404 for direct INR crosses (e.g. QARINR=X).
@@ -116,7 +124,7 @@ class GapBackfiller(BaseScraper):
         }
         try:
             payload = self._get_json(
-                YAHOO_CHART_URL.format(symbol=symbol), params=params
+                _yahoo_chart_url(symbol), params=params
             )
         except requests.exceptions.HTTPError as e:
             if e.response is not None and e.response.status_code in {400, 404}:
@@ -371,7 +379,7 @@ def _fetch_yahoo_1m_bars(
     """
     try:
         payload = scraper._get_json(
-            YAHOO_CHART_URL.format(symbol=symbol),
+            _yahoo_chart_url(symbol),
             params={"interval": "1m", "range": range_period},
             retries=2,
         )

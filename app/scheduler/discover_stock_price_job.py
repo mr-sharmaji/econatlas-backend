@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +24,13 @@ from app.core.database import get_pool
 logger = logging.getLogger(__name__)
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS?range={range}&interval=1d"
+
+
+def _yahoo_chart_url(symbol: str, yf_range: str) -> str:
+    proxy = os.environ.get("INTRADAY_YAHOO_PROXY_URL", "").strip()
+    if proxy:
+        return proxy.rstrip("/") + f"/v8/finance/chart/{symbol}.NS?range={yf_range}&interval=1d"
+    return YAHOO_CHART_URL.format(symbol=symbol, range=yf_range)
 MAX_RETRIES = 5
 CONCURRENCY = 10          # parallel threads
 BASE_DELAY = 0.5          # seconds between requests per thread
@@ -55,7 +63,7 @@ def _fetch_yahoo(
     back to the stock's listing date (often 2000s for NSE names,
     1980s-2000s for US blue chips).
     """
-    url = YAHOO_CHART_URL.format(symbol=symbol, range=yf_range)
+    url = _yahoo_chart_url(symbol, yf_range)
     for attempt in range(MAX_RETRIES):
         try:
             resp = requests.get(url, headers=get_browser_headers(), timeout=15)
