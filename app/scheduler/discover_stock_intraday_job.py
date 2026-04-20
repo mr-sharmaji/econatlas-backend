@@ -137,9 +137,12 @@ _NSE_TIMEOUT_SEC = 8
 
 # ── Yahoo fallback configuration ────────────────────────────────────
 _YAHOO_BATCH_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote"
-_YAHOO_BATCH_SIZE = 50
-_YAHOO_BATCH_CONCURRENCY = 6
-_YAHOO_PER_BATCH_TIMEOUT_SEC = 10
+_YAHOO_CRUMB_URL = "https://query1.finance.yahoo.com/v1/test/getcrumb"
+_YAHOO_COOKIE_URL = "https://fc.yahoo.com/?.src=fp-coins"
+_YAHOO_BATCH_SIZE = 25
+_YAHOO_BATCH_CONCURRENCY = 2
+_YAHOO_PER_BATCH_TIMEOUT_SEC = 15
+_YAHOO_INTER_BATCH_DELAY_SEC = 0.3
 
 # ── Overall wall-clock ceiling ──────────────────────────────────────
 _INTRADAY_TOTAL_TIMEOUT_SEC = 180
@@ -356,24 +359,66 @@ def _yahoo_base_url() -> str:
     return _YAHOO_BATCH_QUOTE_URL
 
 
+async def _bootstrap_yahoo_session(
+    client: httpx.AsyncClient,
+) -> str | None:
+    # Yahoo tightened v7 in 2024-2025: unauthenticated batches 429 quickly.
+    # fc.yahoo.com GET populates the B cookie on the shared jar; the crumb
+    # GET then returns a token we pass on subsequent quote calls.
+    try:
+        await _instrumented_get(
+            client,
+            _YAHOO_COOKIE_URL,
+            headers=_BROWSER_HEADERS,
+            timeout=_YAHOO_PER_BATCH_TIMEOUT_SEC,
+            follow_redirects=True,
+        )
+        resp = await _instrumented_get(
+            client,
+            _YAHOO_CRUMB_URL,
+            headers=_BROWSER_HEADERS,
+            timeout=_YAHOO_PER_BATCH_TIMEOUT_SEC,
+        )
+        resp.raise_for_status()
+        crumb = resp.text.strip()
+        if crumb and len(crumb) < 64:
+            return crumb
+        return None
+    except Exception as exc:
+        logger.warning("intraday: Yahoo crumb bootstrap failed: %s", exc)
+        return None
+
+
 async def _fetch_yahoo_batch(
     client: httpx.AsyncClient,
     symbols: list[str],
+    crumb: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Fetch up to ~50 quotes from Yahoo's v7 batch endpoint in one call."""
     if not symbols:
         return {}
     yahoo_symbols = [f"{s}.NS" for s in symbols]
+    params: dict[str, Any] = {"symbols": ",".join(yahoo_symbols)}
+    if crumb:
+        params["crumb"] = crumb
     try:
         resp = await _instrumented_get(
             client,
             _yahoo_base_url(),
-            params={"symbols": ",".join(yahoo_symbols)},
+            params=params,
             headers=_BROWSER_HEADERS,
             timeout=_YAHOO_PER_BATCH_TIMEOUT_SEC,
         )
         resp.raise_for_status()
         payload = resp.json()
+    except httpx.HTTPStatusError as exc:
+        level = logging.WARNING if exc.response.status_code == 429 else logging.DEBUG
+        logger.log(
+            level,
+            "intraday: Yahoo batch HTTP %d (%d symbols)",
+            exc.response.status_code, len(symbols),
+        )
+        return {}
     except Exception as exc:
         logger.debug(
             "intraday: Yahoo fallback batch failed (%d symbols): %s",
@@ -455,6 +500,11 @@ async def _fetch_yahoo_fallback(
     """Parallel Yahoo batch fetch over a list of symbols."""
     if not symbols:
         return {}
+
+    crumb = await _bootstrap_yahoo_session(client)
+    if crumb is None:
+        logger.warning("intraday: Yahoo crumb unavailable — proceeding without auth")
+
     batches = [
         symbols[i:i + _YAHOO_BATCH_SIZE]
         for i in range(0, len(symbols), _YAHOO_BATCH_SIZE)
@@ -464,8 +514,9 @@ async def _fetch_yahoo_fallback(
 
     async def _worker(batch: list[str]) -> None:
         async with sem:
-            result = await _fetch_yahoo_batch(client, batch)
+            result = await _fetch_yahoo_batch(client, batch, crumb=crumb)
             out.update(result)
+            await asyncio.sleep(_YAHOO_INTER_BATCH_DELAY_SEC)
 
     await asyncio.gather(
         *(_worker(b) for b in batches),
