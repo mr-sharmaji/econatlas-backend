@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 import re
 import time
@@ -23,6 +24,15 @@ logger = logging.getLogger(__name__)
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 FX_USD_BASE_URL = "https://open.er-api.com/v6/latest/USD"
+
+
+def _yahoo_chart_url(symbol: str) -> str:
+    # Honour the same Cloudflare Worker proxy env var the intraday job uses.
+    # Yahoo blanket-429s datacenter IPs; a proxy is the only unblock path.
+    proxy = os.environ.get("INTRADAY_YAHOO_PROXY_URL", "").strip()
+    if proxy:
+        return proxy.rstrip("/") + f"/v8/finance/chart/{symbol}"
+    return YAHOO_CHART_URL.format(symbol=symbol)
 
 SYMBOLS = {
     "GC=F": ("gold", "usd_per_troy_ounce"),
@@ -108,7 +118,7 @@ class CommodityScraper(BaseScraper, QuoteProvider):
                 # Previously a single failure fell through to Google
                 # which tracks a different contract (CLW00 vs CL=F).
                 payload = self._get_json(
-                    YAHOO_CHART_URL.format(symbol=symbol),
+                    _yahoo_chart_url(symbol),
                     retries=3,
                 )
                 result = payload.get("chart", {}).get("result", [])
