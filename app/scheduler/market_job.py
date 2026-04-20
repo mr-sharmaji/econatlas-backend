@@ -912,8 +912,21 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 continue
             try:
                 fallback_tick = self._fetch_google_index_fallback_for_asset(asset, cfg, now)
-                if fallback_tick is not None:
-                    out.append(fallback_tick)
+                if fallback_tick is None:
+                    continue
+                # Google occasionally returns a wrong-index price (observed: Sensex
+                # scraped as Nifty 50 value, ~70% off). Reject when primary exists
+                # and deviation is absurd — a real index move is capped by circuit
+                # filters well below 30%.
+                if primary is not None and primary.price > 0 and fallback_tick.price > 0:
+                    dev_pct = abs(fallback_tick.price - primary.price) / primary.price * 100.0
+                    if dev_pct > 30.0:
+                        logger.warning(
+                            "Index fallback rejected (deviation): asset=%s fb_price=%s primary=%s dev=%.1f%%",
+                            asset, fallback_tick.price, primary.price, dev_pct,
+                        )
+                        continue
+                out.append(fallback_tick)
             except Exception:
                 logger.debug("Index fallback fetch failed for %s", asset, exc_info=True)
         return out
