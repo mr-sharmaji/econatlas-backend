@@ -5,6 +5,7 @@ import csv
 import html
 import io
 import logging
+import os
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Tuple
@@ -36,6 +37,15 @@ from app.services import event_service, market_service
 logger = logging.getLogger(__name__)
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+
+
+def _yahoo_chart_url(symbol: str) -> str:
+    # Route through Cloudflare Worker when INTRADAY_YAHOO_PROXY_URL is set —
+    # Yahoo blanket-429s datacenter IPs on direct calls.
+    proxy = os.environ.get("INTRADAY_YAHOO_PROXY_URL", "").strip()
+    if proxy:
+        return proxy.rstrip("/") + f"/v8/finance/chart/{symbol}"
+    return YAHOO_CHART_URL.format(symbol=symbol)
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 FX_USD_BASE_URL = "https://open.er-api.com/v6/latest/USD"
 GIFT_NIFTY_URL = "https://giftcitynifty.com/gift-nifty-intraday-price-data/"
@@ -450,7 +460,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
                 logger.debug("Skipping Yahoo quote fetch for unsupported symbol %s", symbol)
                 continue
             try:
-                payload = self._get_json(YAHOO_CHART_URL.format(symbol=symbol))
+                payload = self._get_json(_yahoo_chart_url(symbol))
                 result = payload.get("chart", {}).get("result", [])
                 if not result:
                     continue
@@ -1067,7 +1077,7 @@ class MarketScraper(BaseScraper, QuoteProvider):
 
     def _fetch_single_index(self, symbol: str, name: str) -> QuoteTick | None:
         try:
-            payload = self._get_json(YAHOO_CHART_URL.format(symbol=symbol))
+            payload = self._get_json(_yahoo_chart_url(symbol))
             result = payload.get("chart", {}).get("result", [])
             if not result:
                 return None
@@ -1113,7 +1123,7 @@ def _fetch_yahoo_1m_bars(symbol: str, range_period: str = "2d") -> tuple[list[tu
         logger.debug("Skipping Yahoo 1m bars for unsupported symbol %s", symbol)
         return ([], "USD")
     try:
-        url = YAHOO_CHART_URL.format(symbol=symbol)
+        url = _yahoo_chart_url(symbol)
         payload = _scraper._get_json(url, params={"interval": "1m", "range": range_period})
         result = payload.get("chart", {}).get("result", [])
         if not result:
