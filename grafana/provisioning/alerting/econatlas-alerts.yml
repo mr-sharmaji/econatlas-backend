@@ -36,7 +36,7 @@ groups:
         # 2026-04-17: NoData-state pages fired even though scheduler
         # and DB were healthy). A real scheduler stall still flips the
         # expression to true and fires correctly.
-        noDataState: KeepLastState
+        noDataState: KeepLast
         execErrState: Alerting
         for: 1m
         labels:
@@ -254,7 +254,7 @@ groups:
         # KeepLastState so a brief Prometheus scrape gap during deploys
         # doesn't flip this critical rule into NoData-firing state.
         # A real pool-exhaustion still fires (expression evaluates true).
-        noDataState: KeepLastState
+        noDataState: KeepLast
         execErrState: Alerting
         for: 2m
         labels:
