@@ -4628,34 +4628,44 @@ async def refresh_stock_period_returns_live() -> int:
     # the HAVING clauses in get_bulk_stock_volatility_data.
     result = await pool.execute(
         """
-        WITH flagged AS (
-            SELECT symbol, close, trade_date,
-                   trade_date >= CURRENT_DATE - INTERVAL '365 days'  AS in_1y,
-                   trade_date >= CURRENT_DATE - INTERVAL '1095 days' AS in_3y,
-                   trade_date >= CURRENT_DATE - INTERVAL '1825 days' AS in_5y
+        WITH
+        first_1y AS (
+            SELECT DISTINCT ON (symbol) symbol, close AS first_close
+            FROM discover_stock_price_history
+            WHERE trade_date >= CURRENT_DATE - INTERVAL '365 days'
+            ORDER BY symbol, trade_date ASC
+        ),
+        first_3y AS (
+            SELECT DISTINCT ON (symbol) symbol, close AS first_close
+            FROM discover_stock_price_history
+            WHERE trade_date >= CURRENT_DATE - INTERVAL '1095 days'
+            ORDER BY symbol, trade_date ASC
+        ),
+        first_5y AS (
+            SELECT DISTINCT ON (symbol) symbol, close AS first_close
             FROM discover_stock_price_history
             WHERE trade_date >= CURRENT_DATE - INTERVAL '1825 days'
+            ORDER BY symbol, trade_date ASC
         ),
-        ranked AS (
-            SELECT symbol, close, trade_date, in_1y, in_3y, in_5y,
-                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date ASC)
-                       FILTER (WHERE in_1y) AS rn_1y,
-                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date ASC)
-                       FILTER (WHERE in_3y) AS rn_3y,
-                   ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date ASC)
-                       FILTER (WHERE in_5y) AS rn_5y
-            FROM flagged
+        counts AS (
+            SELECT symbol,
+                   COUNT(*) FILTER (WHERE trade_date >= CURRENT_DATE - INTERVAL '365 days')  AS cnt_1y,
+                   COUNT(*) FILTER (WHERE trade_date >= CURRENT_DATE - INTERVAL '1095 days') AS cnt_3y,
+                   COUNT(*) AS cnt_5y
+            FROM discover_stock_price_history
+            WHERE trade_date >= CURRENT_DATE - INTERVAL '1825 days'
+            GROUP BY symbol
         ),
         anchors AS (
-            SELECT symbol,
-                   MAX(close) FILTER (WHERE rn_1y = 1) AS first_close_1y,
-                   MAX(close) FILTER (WHERE rn_3y = 1) AS first_close_3y,
-                   MAX(close) FILTER (WHERE rn_5y = 1) AS first_close_5y,
-                   COUNT(*) FILTER (WHERE in_1y) AS cnt_1y,
-                   COUNT(*) FILTER (WHERE in_3y) AS cnt_3y,
-                   COUNT(*) FILTER (WHERE in_5y) AS cnt_5y
-            FROM ranked
-            GROUP BY symbol
+            SELECT c.symbol,
+                   f1.first_close AS first_close_1y,
+                   f3.first_close AS first_close_3y,
+                   f5.first_close AS first_close_5y,
+                   c.cnt_1y, c.cnt_3y, c.cnt_5y
+            FROM counts c
+            LEFT JOIN first_1y f1 ON f1.symbol = c.symbol
+            LEFT JOIN first_3y f3 ON f3.symbol = c.symbol
+            LEFT JOIN first_5y f5 ON f5.symbol = c.symbol
         )
         UPDATE discover_stock_snapshots s
         SET
