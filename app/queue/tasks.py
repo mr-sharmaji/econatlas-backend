@@ -365,6 +365,12 @@ async def task_discover_mf_nav(ctx: dict) -> None:
     await _run_with_retry(ctx, "discover_mf_nav", run_discover_mf_nav_job)
 
 
+async def task_reconcile_stock_snapshots(ctx: dict) -> None:
+    from app.services.discover_service import reconcile_stock_snapshots
+
+    await _run_with_retry(ctx, "reconcile_stock_snapshots", reconcile_stock_snapshots)
+
+
 async def task_rescore_stock(ctx: dict) -> None:
     from app.scheduler.discover_stock_job import rescore_discover_stocks
 

@@ -497,11 +497,41 @@ async def run_discover_mf_nav_job() -> None:
         )
     mfapi_new = int(mfapi_new_val or 0)
     total_new = amfi_new + mfapi_new
+
+    # Sync snapshot table with latest NAV from history so the UI-facing
+    # `discover_mutual_fund_snapshots.nav/nav_date` reflects today's write.
+    # Without this, writes land in history but the snapshot row keeps a
+    # weeks-old nav_date and the app renders stale values.
+    async with pool.acquire() as _conn_sync:
+        sync_result = await _conn_sync.execute(
+            """
+            UPDATE discover_mutual_fund_snapshots s
+            SET nav = h.nav,
+                nav_date = h.nav_date,
+                ingested_at = NOW()
+            FROM (
+                SELECT DISTINCT ON (scheme_code) scheme_code, nav, nav_date
+                FROM discover_mf_nav_history
+                ORDER BY scheme_code, nav_date DESC, ingested_at DESC
+            ) h
+            WHERE s.scheme_code::text = h.scheme_code
+              AND (s.nav_date IS NULL OR h.nav_date > s.nav_date)
+            """
+        )
+    snapshots_synced = 0
+    if sync_result:
+        parts = sync_result.split()
+        if len(parts) >= 2:
+            try:
+                snapshots_synced = int(parts[-1])
+            except ValueError:
+                pass
+
     logger.info(
         "MF NAV daily update complete: amfi_new=%d mfapi_attempted=%d "
-        "mfapi_new=%d total_new=%d errors=%d elapsed=%.1fs",
+        "mfapi_new=%d total_new=%d snapshots_synced=%d errors=%d elapsed=%.1fs",
         amfi_new, counters["inserted"], mfapi_new, total_new,
-        counters["errors"], elapsed,
+        snapshots_synced, counters["errors"], elapsed,
     )
 
     # Silent-success detector, now keyed off actually-new row count

@@ -581,15 +581,15 @@ def start_scheduler() -> None:
             misfire_grace_time=10800,
         )
         # ── Reconciliation: fix stale snapshot prices after daily pipeline ──
-        # Runs 65 min after main stock job (16:00 + 65 = 17:05 IST).
-        # At this point both discover_stock (16:00) and
-        # discover_stock_price (16:30) have finished. Any snapshot
+        # Runs 65 min after main stock job (17:00 + 65 = 18:05 IST).
+        # At this point both discover_stock (17:00) and
+        # discover_stock_price (17:30) have finished. Any snapshot
         # still stale gets its price synced from price_history.
         _scheduler.add_job(
             _run_reconcile_stock_snapshots,
             "cron",
             day_of_week=intervals["discover_stock_daily_days"],
-            hour=17,
+            hour=18,
             minute=5,
             timezone="Asia/Kolkata",
             id="reconcile_stock_snapshots",

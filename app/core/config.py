@@ -28,11 +28,11 @@ class Settings(BaseSettings):
     brief_interval_minutes: int = 5
     discover_cron_enabled: bool = True
     discover_stock_interval_minutes: int = 60
-    discover_stock_daily_hour_ist: int = 16
+    discover_stock_daily_hour_ist: int = 17
     discover_stock_daily_minute_ist: int = 0
     discover_stock_daily_days: str = "mon-fri"
     discover_stock_retry_enabled: bool = True
-    discover_stock_retry_hour_ist: int = 16
+    discover_stock_retry_hour_ist: int = 17
     discover_stock_retry_minute_ist: int = 20
     discover_mutual_fund_interval_minutes: int = 60
     discover_mf_daily_hour_ist: int = 22
